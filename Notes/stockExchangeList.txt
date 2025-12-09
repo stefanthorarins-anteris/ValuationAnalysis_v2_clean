@@ -1,0 +1,67 @@
+KOE - Korea Exchange
+BER - Berlin Stock Exchange
+SET - Stock Exchange of Thailand
+EBS - Euronext Brussels
+SAO - Bolsa de Valores de Sao Paulo
+NSI - National Stock Exchange of India
+TWO - Taipei Exchange
+DUS - Börse Düsseldorf
+FRA - Frankfurt Stock Exchange
+ASX - Australian Securities Exchange
+STU - Bolsa de Valores de Estudiantes (Student Stock Exchange)
+TLV - Tel Aviv Stock Exchange
+BSE - Bombay Stock Exchange
+HAM - Hamburg Stock Exchange
+TLO - TALLINN STOCK EXCHANGE - TALSE
+PNK - Moscow Exchange
+MUN - Munich Stock Exchange
+NYQ - New York Stock Exchange
+KLS - Kuala Lumpur Stock Exchange
+AMS - Amsterdam Stock Exchange
+NMS - NASDAQ
+VAN - TSX Venture Exchange
+NZE - New Zealand Exchange Limited
+MCE - Mercado Continuo Español
+LSE - London Stock Exchange
+NGM - NGM Equity
+ASE - Athens Stock Exchange
+NCM - Australian Securities Exchange
+GER - Bolsa de Madrid
+KSC - Kuwait Stock Exchange
+OSL - Oslo Stock Exchange
+SHH - Shanghai Stock Exchange
+HKG - Hong Kong Stock Exchange
+PAR - Euronext Paris
+IOB - Irish Stock Exchange
+CPH - NASDAQ OMX Copenhagen
+SES - Singapore Exchange
+MEX - Mexican Stock Exchange
+MIL - Borsa Italiana
+JKT - Indonesia Stock Exchange
+MCX - Moscow Exchange
+TAI - Taiwan Stock Exchange
+TOR - Toronto Stock Exchange
+ATH - Athens Stock Exchange
+IST - Istanbul Stock Exchange
+STO - NASDAQ OMX Stockholm
+HAN - Hanover Stock Exchange
+ENX - Euronext Lisbon
+OBB - Vienna Stock Exchange
+BUE - Bolsa de Comercio de Buenos Aires
+CCS - Bolsa de Valores de Caracas
+CNQ - TSX Venture Exchange
+HEL - NASDAQ OMX Helsinki
+BRU - Euronext Brussels
+MDD - Bolsa de Madrid
+DOH - Qatar Exchange
+PCX - NASDAQ OMX PHLX
+LIT - NASDAQ OMX LIT
+RIS - Riga Stock Exchange
+LIS - Euronext Lisbon
+VIE - Vienna Stock Exchange
+SHZ - Shenzhen Stock Exchange
+ISE - Irish Stock Exchange
+ICE - ICE (Intercontinental Exchange)
+TAL - Tallinn Stock Exchange
+MAD - Bolsa de Madrid
+EUX - Euronext Brussels

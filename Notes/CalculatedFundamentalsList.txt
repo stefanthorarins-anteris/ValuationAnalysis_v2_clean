@@ -1,0 +1,76 @@
+We seek to have all these expressions larger than 0.
+In all cases, assets are taken to be at the start of the period, other values at the end.
+we define 
+	dx 	 = x_t - x_(t-1);
+	logd(x)  = dx/x - 1;
+	Elogd(x) = x_t/Ex_t - 1; where Ex_t = 0.5*(x_(t-1) + x_(t-2))
+	Md(x)    = x - m(x); where m(x) is the competing firm mean
+----------------------------------------------------------------------
+Comments: In this list we have the following identities:
+		- Sales = Revenues or Operating Revenue.
+
+%% Prior Tiered List %%
+# S-Tier (weight 1)
+RoA 		= NBID_t/A_(t-1) [NBID is net income before taxes, interest and depcriciation, and A is assets.
+d(RoA) 		= increase in return on assets
+CFO 		= Positive cash flow from operations
+
+# A-Tier (weight 0.75)
+m(B/M) 		= higher book-to-market ratio relative to market
+d(GM/A) 	= increase in gross margins over assets ratio.
+m(FCF/mktCap)   = Free Cash flow to market cap
+m(GN/P) 	= Grahams number to price
+
+# B-Tier (weight 0.5)
+d(RoTA) 	= increase in return on tangible assets
+-(Elogd(I) - Elogd(S)) 	= decrease in deviation of Inventory less deviation of Sales. [or d(S) - d(I)>0]
+d(S/A) 		= increase in sales over assets ratio [Asset turnover]
+d(CFO/mktCap)   = Higher than average cash flow from operations as a ratio of market capitalization.
+GNN 		= Positive grahams netnet
+CFO/E -1		= operating_cashflow higher than net income
+
+# C-Tier (weight 0.3)
+dCurrent ratio  = d(CurrentAssets/CurrentLiabilities)
+dRoEq 		= increase in return on equity
+d(GM/S) 	= increase in gross profit over sales ratio
+-dT 		= decrease in effective taxes 
+m(S/mktCap)     = above average sale over market capitalization
+d(FCF/Eq)	= increase in free cash flow over equity
+m(E/P)		= Higher than average earnings per price (earnings yield)
+
+
+# D-Tier (weight 0.1)
+-dLtD/A 	= decrease in the ratio (long term debt/Assets). [Or d(A/LtD) > 0]
+d(ROI)[ROIC?]   = Return on Investment (income time t, investment t-1)
+d(GM)		= increase in gross margin
+-m(D/E)		= less Dept-Equity ratio than average
+d(E/P*EG)	= d(Earnings/Price)*d(Earnings)
+
+
+# Unsable-Tier (weight 0)
+
+
+# Add probably later Tier
+logd(S/L) 	= (Sales_t/Labour_t)/(Sales_(t-1)/Labour_(t-1)) - 1;
+-d(SO)		= decrease(non-increase) in shares outstanding
+dE 		= increase in equity 
+E(NOA)		= positive net operating assets relative to expectations
+d(NOA)		= increase in net operating assets
+m(FCF) 		= Free Cash flow.
+d(E/Share)	= Increase in earnings per share
+ElogD(S) 	= deviation in sales (operating revenue?)
+
+
+#Unkown-Tier
+d(bV)
+P/E * P/BV - 22.5 ( Warren Buffet rule)
+(P/E + P/BV*10)/15 - 1 (Warren Buffet rule variant) 
+m(E/mktCap)	= above average earnings over market capitalization
+Elogd(CapEx)    = deviation of capital expenditures.
+Elogd(S)-Elogd(OE) 	= devation of sales less deviation in operating expenses 
+CFO/A - ROA     = Cash flow from operations higher than net income less interest taxes and depriciation.
+P/E 		= Price/Earnings
+dividend yield 
+dOC/S 		= dOperatingCost - dSales
+Elogd(AR) 	= deviation in Accounts recievable.
+dAR -dS		= dAccountReceivables - dSales.

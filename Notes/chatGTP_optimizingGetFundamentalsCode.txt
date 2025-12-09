@@ -1,0 +1,19 @@
+There are a few things that can be done to improve the efficiency of your code:
+
+You are calling the callAPIandCheckForFailure function for each row of the dataframe. This may be slow if the API calls take a long time. You can try to optimize this by calling the API for multiple rows at once, and then processing the results for each row.
+
+The initTempMets function is called for each row, which creates multiple new dataframes. You can try to move this outside of the loop, so that it only needs to be called once.
+
+You are using multiple if-else statements to check which dictionary contains a certain key. Instead, you can create a list of dictionaries and iterate over that list. This will make the code more readable and easier to maintain.
+
+You are using pd.DataFrame() and pd.Series() to create new dataframes, which can be slow when working with large dataframes. You can try to use pd.concat() or pd.merge() to join dataframes together, which can be faster.
+
+You are iterating over the dataframe using df.itertuples(). This can be slow for large dataframes, as it creates a new tuple for each row. Instead, you can use the iterrows() function, which is more efficient for larger dataframes.
+
+You are performing the same operations multiple times in the code. You can try to refactor the code so that these operations are performed once and then the results are reused.
+
+You can use numpy array or pandas vectorized operations to perform calculations on the dataframe, this will be faster than iterating over each row and performing operations one by one.
+
+You can use the isin() method to check if a certain value is present in a column of the dataframe, which can be faster than iterating over the rows and checking one by one.
+
+I hope this helps.

@@ -1,0 +1,17 @@
+cat > .gitignore << 'EOF'
+*.pickle
+*.pkl
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.log
+
+# IDE
+.idea/
+.vscode/
+
+# OS cruft
+.DS_Store
+Thumbs.db
+EOF

@@ -1,0 +1,22 @@
+## Classic
+Current ratio => positive
+P/E => Ambigeous
+PEG => ?
+Leverage (D/E) => ?
+dividend yield => ?
+Free cash flow => ?
+Free cash flow change => ?
+Profitability (ROA, ROE, ROI) => positive
+
+## Non-standard
+Big:
+inventory increasing faster than sales => negative future earnings
+increase in percentage change in gross margin relative to sales => positive future earnings
+
+Medium:
+increase in sales per employee => positive future earnings
+increase in selling and administrative expanses relative to sales = negative future earnings
+
+Aux:
+higher effective tax rates => negative future earnings
+increase in account receivables relative to sales => positive future earnings
