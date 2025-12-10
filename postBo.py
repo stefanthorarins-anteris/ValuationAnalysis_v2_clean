@@ -10,13 +10,97 @@ from tqdm import tqdm
 from sklearn.linear_model import LinearRegression
 import numpy as np
 import getData_gen as gdg
+import warnings
+
+# Suppress FutureWarning about DataFrame concatenation with empty/all-NA entries
+warnings.filterwarnings('ignore', message='.*concatenation with empty or all-NA entries.*')
 
 def postBoWrapper(dmdic):
+    import sys
+    import numpy as np
+    
+    # Diagnostic: Check input data BEFORE any calculations
+    print("\n" + "="*60, flush=True)
+    print("DIAGNOSTIC: postBoWrapper input data check (BEFORE score calculation)", flush=True)
+    print("="*60, flush=True)
+    
     bmdf = dmdic['BoMetric_df']
-    bmav = dmdic['BoMetric_ave']
-    bmda = dmdic['BoMetric_dateAve']
-    cdx_df = dmdic['cdx_df']
-    n = dmdic['nrScorePeriods']
+    bmav = dmdic.get('BoMetric_ave', {})
+    bmda = dmdic.get('BoMetric_dateAve', pd.DataFrame())
+    cdx_df = dmdic.get('cdx_df', pd.DataFrame())
+    n = dmdic.get('nrScorePeriods', 8)
+    
+    # Check BoMetric_df
+    if bmdf.empty:
+        print("ERROR: BoMetric_df is EMPTY!", flush=True)
+    else:
+        print(f"BoMetric_df shape: {bmdf.shape} (rows, columns)", flush=True)
+        print(f"BoMetric_df unique sources: {bmdf['source'].nunique() if 'source' in bmdf.columns else 'NO SOURCE COLUMN'}", flush=True)
+        if 'source' in bmdf.columns:
+            first_source = bmdf['source'].iloc[0]
+            print(f"BoMetric_df first source: {first_source}", flush=True)
+            # Show sample rows for first source
+            first_source_data = bmdf[bmdf['source'] == first_source].head(3)
+            print(f"Sample rows for {first_source} (first 3):", flush=True)
+            numeric_cols_sample = first_source_data.select_dtypes(include=[np.number]).columns[:5]
+            if len(numeric_cols_sample) > 0:
+                print(first_source_data[['date', 'source'] + list(numeric_cols_sample)].to_string(), flush=True)
+        # Check for NaN in numeric columns
+        numeric_cols = bmdf.select_dtypes(include=[np.number]).columns
+        if len(numeric_cols) > 0:
+            nan_pct = (bmdf[numeric_cols].isna().sum() / len(bmdf) * 100).round(1)
+            print(f"\nBoMetric_df NaN percentage in numeric columns (first 5):", flush=True)
+            for col, pct in list(nan_pct.head(5).items()):
+                print(f"  {col}: {pct}%", flush=True)
+    
+    # Check cdx_df
+    if cdx_df.empty:
+        print("\nERROR: cdx_df is EMPTY!", flush=True)
+    else:
+        print(f"\ncdx_df shape: {cdx_df.shape} (rows, columns)", flush=True)
+        print(f"cdx_df unique sources: {cdx_df['source'].nunique() if 'source' in cdx_df.columns else 'NO SOURCE COLUMN'}", flush=True)
+        if 'source' in cdx_df.columns:
+            first_source = cdx_df['source'].iloc[0]
+            print(f"cdx_df first source: {first_source}", flush=True)
+            # Show sample rows for first source
+            first_source_data = cdx_df[cdx_df['source'] == first_source].head(3)
+            print(f"Sample rows for {first_source} (first 3):", flush=True)
+            key_cols = ['date', 'source', 'marketCap', 'freeCashFlow', 'price', 'totalAssets']
+            available_cols = [col for col in key_cols if col in first_source_data.columns]
+            if len(available_cols) > 0:
+                print(first_source_data[available_cols].to_string(), flush=True)
+    
+    # Check BoMetric_ave (could be dict, Series, or DataFrame)
+    if bmav is None:
+        print("\nWARNING: BoMetric_ave is None!", flush=True)
+    elif isinstance(bmav, pd.DataFrame):
+        if bmav.empty:
+            print("\nWARNING: BoMetric_ave DataFrame is empty!", flush=True)
+        else:
+            print(f"\nBoMetric_ave DataFrame shape: {bmav.shape}", flush=True)
+            print(f"BoMetric_ave columns: {list(bmav.columns[:5])}", flush=True)
+    elif isinstance(bmav, pd.Series):
+        if bmav.empty:
+            print("\nWARNING: BoMetric_ave Series is empty!", flush=True)
+        else:
+            print(f"\nBoMetric_ave Series length: {len(bmav)}", flush=True)
+            print(f"BoMetric_ave sample values (first 10):", flush=True)
+            for idx, val in bmav.head(10).items():
+                print(f"  {idx}: {val}", flush=True)
+    elif isinstance(bmav, dict):
+        if not bmav:
+            print("\nWARNING: BoMetric_ave dict is empty!", flush=True)
+        else:
+            print(f"\nBoMetric_ave dict has {len(bmav)} keys", flush=True)
+            print(f"BoMetric_ave sample values (first 10):", flush=True)
+            for key, val in list(bmav.items())[:10]:
+                print(f"  {key}: {val}", flush=True)
+    else:
+        print(f"\nBoMetric_ave type: {type(bmav)}", flush=True)
+    
+    print("="*60 + "\n", flush=True)
+    sys.stdout.flush()
+    
     BoScore_df = cs.simpleScore_fromDict(bmdf, bmav, bmda, n)
     BoS_dftop100 = BoScore_df.head(100)
     BoM_dftop100 = bmdf[bmdf['source'].isin(list(BoS_dftop100.source))].reset_index(drop=True)
@@ -102,37 +186,127 @@ def writeBoAggToCSV(fb_df, mscore, cscore, baseurl, api_key, ntopagg, fname_AggS
     pEratioVec = []
     mscoreVec = []
     cscoreVec = []
+    # Note: Bulk endpoints require higher subscription tier, using individual API calls only
+    profile_bulk_dict = {}
+    rating_bulk_dict = {}
+    dcf_bulk_dict = {}
+    
     print(f'Writing top {ntopagg} stocks to .csv')
     pbar = tqdm(total=ntopagg)
     for row in BoComp_tocsv.itertuples():
         symb = row.source
         temp_resp_km = requests.get(f'{baseurl}v3/key-metrics/{symb}?period=quarter&limit=4&apikey={api_key}').json()
         temp_resp_fr = requests.get(f'{baseurl}v3/ratios/{symb}?period=quarter&limit=4&apikey={api_key}').json()
-        temp_resp_pr = requests.get(f'{baseurl}v3/profile/{symb}?period=quarter&limit=4&apikey={api_key}').json()
-        temp_resp_dcf = requests.get(f'{baseurl}v3/discounted-cash-flow/{symb}?apikey={api_key}').json()
-        if type(temp_resp_fr[0]['currentRatio']) == int or type(temp_resp_fr[0]['currentRatio']) == float:
+        
+        # Use bulk data for profile, rating, and DCF if available, otherwise fallback to individual calls
+        if symb in profile_bulk_dict:
+            temp_resp_pr = [profile_bulk_dict[symb]]  # Convert dict to list format
+        else:
+            temp_resp_pr = requests.get(f'{baseurl}v3/profile/{symb}?apikey={api_key}').json()
+        
+        if symb in dcf_bulk_dict:
+            temp_resp_dcf = [dcf_bulk_dict[symb]]  # Convert dict to list format
+        else:
+            temp_resp_dcf_raw = requests.get(f'{baseurl}v3/discounted-cash-flow/{symb}?apikey={api_key}')
+            temp_resp_dcf = temp_resp_dcf_raw.json()
+        
+        # Diagnostic: Check what the DCF API actually returns (only for first ticker)
+        if len(crVec) == 0:  # Only print for first ticker to avoid spam
+            print(f"\nDEBUG: DCF API response for {symb}:")
+            print(f"  Status code: {temp_resp_dcf_raw.status_code}")
+            print(f"  Response type: {type(temp_resp_dcf)}")
+            if isinstance(temp_resp_dcf, list):
+                print(f"  Response length: {len(temp_resp_dcf)}")
+                if len(temp_resp_dcf) > 0:
+                    print(f"  First element type: {type(temp_resp_dcf[0])}")
+                    if isinstance(temp_resp_dcf[0], dict):
+                        print(f"  First element keys: {list(temp_resp_dcf[0].keys())}")
+            elif isinstance(temp_resp_dcf, dict):
+                print(f"  Dict keys: {list(temp_resp_dcf.keys())}")
+                print(f"  Dict content: {temp_resp_dcf}")
+            else:
+                print(f"  Response content: {temp_resp_dcf}")
+        
+        # Handle case where API returns a dict instead of a list (API might have changed)
+        if isinstance(temp_resp_dcf, dict):
+            # If it's a dict, try to convert to list format or extract error
+            if 'Error Message' in temp_resp_dcf or 'error' in str(temp_resp_dcf).lower():
+                temp_resp_dcf = []  # Treat as empty
+            else:
+                # Try to wrap in list if it's a single DCF object
+                temp_resp_dcf = [temp_resp_dcf] if temp_resp_dcf else []
+        
+        # Check if API responses are empty before accessing
+        # Check currentRatio
+        if len(temp_resp_fr) == 0 or 'currentRatio' not in temp_resp_fr[0]:
+            crVec.append('NaN')
+        elif type(temp_resp_fr[0]['currentRatio']) == int or type(temp_resp_fr[0]['currentRatio']) == float:
             crVec.append("{:.4f}".format(temp_resp_fr[0]['currentRatio']))
         else:
             crVec.append('NaN')
-        if type(temp_resp_km[0]['dividendYield']) == int or type(temp_resp_km[0]['dividendYield']) == float:
+            
+        # Check dividendYield
+        if len(temp_resp_km) == 0 or 'dividendYield' not in temp_resp_km[0]:
+            dyVec.append('NaN')
+        elif type(temp_resp_km[0]['dividendYield']) == int or type(temp_resp_km[0]['dividendYield']) == float:
             dyVec.append("{:.4f}".format(temp_resp_km[0]['dividendYield']*100))
         else:
             dyVec.append('NaN')
-        gtp = (temp_resp_km[0]['grahamNumber']/temp_resp_pr[0]['price'])
-        if type(gtp) == int or type(gtp) == float:
-            GNtPVec.append("{:.4f}".format(gtp))
-        else:
+            
+        # Check grahamNumberToPrice
+        if len(temp_resp_km) == 0 or len(temp_resp_pr) == 0:
             GNtPVec.append('NaN')
-        priceVec.append("{:.4f}".format(temp_resp_pr[0]['price']))
-        betaVec.append("{:.4f}".format(temp_resp_pr[0]['beta']))
-        sectorVec.append(temp_resp_pr[0]['sector'])
-        perat = temp_resp_fr[0]['priceEarningsRatio']
-        if type(perat) == int or type(perat) == float:
-            pEratioVec.append("{:.4f}".format(perat))
+        elif 'grahamNumber' not in temp_resp_km[0] or 'price' not in temp_resp_pr[0]:
+            GNtPVec.append('NaN')
+        elif temp_resp_km[0]['grahamNumber'] is None or temp_resp_pr[0]['price'] is None:
+            GNtPVec.append('NaN')
         else:
+            gtp = (temp_resp_km[0]['grahamNumber']/temp_resp_pr[0]['price'])
+            if type(gtp) == int or type(gtp) == float:
+                GNtPVec.append("{:.4f}".format(gtp))
+            else:
+                GNtPVec.append('NaN')
+                
+        # Check price
+        if len(temp_resp_pr) == 0 or 'price' not in temp_resp_pr[0]:
+            priceVec.append('NaN')
+        else:
+            priceVec.append("{:.4f}".format(temp_resp_pr[0]['price']))
+            
+        # Check beta
+        if len(temp_resp_pr) == 0 or 'beta' not in temp_resp_pr[0]:
+            betaVec.append('NaN')
+        else:
+            betaVec.append("{:.4f}".format(temp_resp_pr[0]['beta']))
+            
+        # Check sector
+        if len(temp_resp_pr) == 0 or 'sector' not in temp_resp_pr[0]:
+            sectorVec.append('NaN')
+        else:
+            sectorVec.append(temp_resp_pr[0]['sector'])
+            
+        # Check priceEarningsRatio
+        if len(temp_resp_fr) == 0 or 'priceEarningsRatio' not in temp_resp_fr[0]:
             pEratioVec.append('NaN')
-        temp_resp_rating = requests.get(f'{baseurl}/v3/rating/{symb}?apikey={api_key}').json()
-        ratingVec_fmp.append(temp_resp_rating[0]['ratingRecommendation'])
+        else:
+            perat = temp_resp_fr[0]['priceEarningsRatio']
+            if type(perat) == int or type(perat) == float:
+                pEratioVec.append("{:.4f}".format(perat))
+            else:
+                pEratioVec.append('NaN')
+                
+        # Check rating
+        # Use bulk rating data if available, otherwise fallback to individual call
+        if symb in rating_bulk_dict:
+            temp_resp_rating = [rating_bulk_dict[symb]]
+        else:
+            temp_resp_rating = requests.get(f'{baseurl}/v3/rating/{symb}?apikey={api_key}').json()
+        if len(temp_resp_rating) == 0 or 'ratingRecommendation' not in temp_resp_rating[0]:
+            ratingVec_fmp.append('NaN')
+        else:
+            ratingVec_fmp.append(temp_resp_rating[0]['ratingRecommendation'])
+            
+        # Check M_Score
         if not (mscore[mscore['source'] == symb]['M_Score_mean']).isna().item():
             mcurscore = mscore[mscore['source'] == symb]['M_Score_mean'].item().item()
             if type(mcurscore) == int or type(mcurscore) == float:
@@ -141,6 +315,8 @@ def writeBoAggToCSV(fb_df, mscore, cscore, baseurl, api_key, ntopagg, fname_AggS
                 mscoreVec.append('NaN')
         else:
             mscoreVec.append('NaN')
+            
+        # Check C_Score
         if not (cscore[cscore['source'] == symb]['C_Score_mean']).isna().item():
             curcscore = cscore[cscore['source'] == symb]['C_Score_mean'].item().item()
             if type(curcscore) == int or type(curcscore) == float:
@@ -150,14 +326,30 @@ def writeBoAggToCSV(fb_df, mscore, cscore, baseurl, api_key, ntopagg, fname_AggS
         else:
             cscoreVec.append('NaN')
 
-        if type(temp_resp_fr[0]['grossProfitMargin']) == int or type(temp_resp_fr[0]['grossProfitMargin']) == float:
+        # Check grossProfitMargin (needs 4 periods)
+        if len(temp_resp_fr) == 0 or 'grossProfitMargin' not in temp_resp_fr[0]:
+            margin.append('NaN')
+        elif len(temp_resp_fr) < 4:
+            margin.append('NaN')
+        elif type(temp_resp_fr[0]['grossProfitMargin']) == int or type(temp_resp_fr[0]['grossProfitMargin']) == float:
             gpmsum= temp_resp_fr[0]['grossProfitMargin'] + temp_resp_fr[1]['grossProfitMargin'] + temp_resp_fr[2]['grossProfitMargin'] + temp_resp_fr[3]['grossProfitMargin']
             margin.append("{:.4f}".format(gpmsum*25))
         else:
             margin.append('NaN')
 
-        if type(temp_resp_dcf[0]['dcf']) == int or type(temp_resp_dcf[0]['dcf']) == float:
-            if type((temp_resp_dcf[0]['Stock Price'])) == int or type((temp_resp_dcf[0]['Stock Price'])) == float:
+        # Check DCF to Price
+        if len(temp_resp_dcf) == 0:
+            dcf2p.append('NaN')
+        elif 'dcf' not in temp_resp_dcf[0]:
+            dcf2p.append('NaN')
+        elif temp_resp_dcf[0]['dcf'] is None:
+            dcf2p.append('NaN')
+        elif type(temp_resp_dcf[0]['dcf']) == int or type(temp_resp_dcf[0]['dcf']) == float:
+            if 'Stock Price' not in temp_resp_dcf[0]:
+                dcf2p.append('NaN')
+            elif temp_resp_dcf[0]['Stock Price'] is None:
+                dcf2p.append('NaN')
+            elif type(temp_resp_dcf[0]['Stock Price']) == int or type(temp_resp_dcf[0]['Stock Price']) == float:
                 dcf2p.append("{:.4f}".format(temp_resp_dcf[0]['dcf']/(temp_resp_dcf[0]['Stock Price'])))
             else:
                 dcf2p.append('NaN')
@@ -213,11 +405,15 @@ def createPresentation(finalBoRank_df, mscore, cscore, baseurl, api_key, topn, f
             f'{baseurl}v4/stock_peers?symbol={symb}&apikey={api_key}').json()
         cf = pd.DataFrame(
             requests.get(f'{baseurl}v3/cash-flow-statement/{symb}?period=annual&limit={years}&apikey={api_key}').json())
-        dcf = pd.DataFrame.from_dict(
-            requests.get(f'{baseurl}v3/discounted-cash-flow/{symb}?apikey={api_key}').json())
+        dcf_resp = requests.get(f'{baseurl}v3/discounted-cash-flow/{symb}?apikey={api_key}').json()
+        dcf = pd.DataFrame.from_dict(dcf_resp) if dcf_resp else pd.DataFrame()
+        
+        # Check if DCF has required columns, use fallback if empty
+        dcf_has_data = not dcf.empty and 'Stock Price' in dcf.columns and 'dcf' in dcf.columns
 
         NYSEspe = requests.get(f'https://financialmodelingprep.com/api/v4/sector_price_earning_ratio?date={ll5}&exchange=NYSE&apikey={api_key}').json()
-        nspe_df = pd.DataFrame(NYSEspe)
+        nspe_df = pd.DataFrame(NYSEspe) if isinstance(NYSEspe, list) and len(NYSEspe) > 0 else pd.DataFrame()
+        nspe_has_data = not nspe_df.empty and 'sector' in nspe_df.columns and 'pe' in nspe_df.columns
         symb_df = pd.DataFrame(
             columns=['Symbol', 'Date', 'Earnings yield', 'PE-ratio', 'Price-to-book', 'Current ratio',
                      'Dividend yield', 'Price-to-fair value', 'Price'])
@@ -229,9 +425,14 @@ def createPresentation(finalBoRank_df, mscore, cscore, baseurl, api_key, topn, f
         symb_df['Current ratio'] = km.currentRatio.apply(format_num)
         symb_df['Dividend yield'] = (km.dividendYield.fillna(0)*100).apply(format_num)
         symb_df['Price-to-fair value'] = fr.priceFairValue.apply(format_num)
-        price = dcf['Stock Price'].apply(format_num)
-        symb_df['Price'] = price
-        symb_df['Graham number to price'] = (km.grahamNumber/dcf['Stock Price']).apply(format_num)
+        # Handle empty DCF data (common for non-US stocks)
+        if dcf_has_data:
+            price = dcf['Stock Price'].apply(format_num)
+            symb_df['Price'] = price
+            symb_df['Graham number to price'] = (km.grahamNumber/dcf['Stock Price']).apply(format_num)
+        else:
+            symb_df['Price'] = 'N/A'
+            symb_df['Graham number to price'] = 'N/A'
 
         fcf = cf.freeCashFlow
         shares = fcf/km.freeCashFlowPerShare
@@ -253,42 +454,75 @@ def createPresentation(finalBoRank_df, mscore, cscore, baseurl, api_key, topn, f
         bold_font = Font(bold=True)
         psdf_col = len(symb_df.columns)+2
         psdf_row = 1
+        
+        # Check if profile data is available
+        pr_has_data = pr and len(pr) > 0 and isinstance(pr[0], dict)
+        
         ws.cell(row=psdf_row, column=psdf_col).font = bold_font
         ws.cell(row=psdf_row, column=psdf_col).value = 'Company'
-        ws.cell(row=psdf_row+1, column=psdf_col).value = pr[0]['companyName']
+        ws.cell(row=psdf_row+1, column=psdf_col).value = pr[0].get('companyName', 'N/A') if pr_has_data else 'N/A'
 
         ws.cell(row=psdf_row, column=psdf_col + 1).font = bold_font
         ws.cell(row=psdf_row, column=psdf_col+1).value = 'beta'
-        ws.cell(row=psdf_row+1, column=psdf_col+1).value = "{:.4f}".format(pr[0]['beta'])
+        if pr_has_data and pr[0].get('beta') is not None:
+            ws.cell(row=psdf_row+1, column=psdf_col+1).value = "{:.4f}".format(pr[0]['beta'])
+        else:
+            ws.cell(row=psdf_row+1, column=psdf_col+1).value = 'N/A'
 
         ws.cell(row=psdf_row, column=psdf_col + 2).font = bold_font
         ws.cell(row=psdf_row, column=psdf_col+2).value = 'Market Cap'
-        ws.cell(row=psdf_row+1, column=psdf_col+2).value = "{:,.2f}".format(pr[0]['mktCap']/1000000) + " million"
+        if pr_has_data and pr[0].get('mktCap') is not None:
+            ws.cell(row=psdf_row+1, column=psdf_col+2).value = "{:,.2f}".format(pr[0]['mktCap']/1000000) + " million"
+        else:
+            ws.cell(row=psdf_row+1, column=psdf_col+2).value = 'N/A'
 
         ws.cell(row=psdf_row, column=psdf_col + 3).font = bold_font
         ws.cell(row=psdf_row, column=psdf_col+3).value = 'Industry & Sector'
-        ws.cell(row=psdf_row+1, column=psdf_col+3).value = pr[0]['industry']
-        ws.cell(row=psdf_row+2, column=psdf_col+3).value = pr[0]['sector']
+        if pr_has_data and 'industry' in pr[0]:
+            ws.cell(row=psdf_row+1, column=psdf_col+3).value = pr[0]['industry']
+            ws.cell(row=psdf_row+2, column=psdf_col+3).value = pr[0].get('sector', 'N/A')
+        else:
+            ws.cell(row=psdf_row+1, column=psdf_col+3).value = 'N/A'
+            ws.cell(row=psdf_row+2, column=psdf_col+3).value = 'N/A'
 
         ws.cell(row=psdf_row, column=psdf_col + 4).font = bold_font
-        secpe = nspe_df[nspe_df['sector'] == pr[0]['sector']].pe.item()
         ws.cell(row=psdf_row, column=psdf_col+4).value = 'Sector Average PE-ratio'
-        ws.cell(row=psdf_row+1, column=psdf_col + 4).value = str(round(float(secpe), 4))
+        # Handle sector PE ratio - may not be available on all subscriptions
+        if nspe_has_data and pr_has_data and 'sector' in pr[0]:
+            sector_match = nspe_df[nspe_df['sector'] == pr[0]['sector']]
+            if not sector_match.empty:
+                secpe = sector_match.pe.iloc[0]
+                ws.cell(row=psdf_row+1, column=psdf_col + 4).value = str(round(float(secpe), 4))
+            else:
+                ws.cell(row=psdf_row+1, column=psdf_col + 4).value = 'N/A'
+        else:
+            ws.cell(row=psdf_row+1, column=psdf_col + 4).value = 'N/A'
 
         ws.cell(row=psdf_row + 5, column=psdf_col).font = bold_font
         ws.cell(row=psdf_row + 5, column=psdf_col).value = 'Rating Recommendation'
-        ws.cell(row=psdf_row + 6, column=psdf_col).value = rating[0]['ratingRecommendation']
+        # Handle empty rating response
+        if rating and len(rating) > 0 and 'ratingRecommendation' in rating[0]:
+            ws.cell(row=psdf_row + 6, column=psdf_col).value = rating[0]['ratingRecommendation']
+        else:
+            ws.cell(row=psdf_row + 6, column=psdf_col).value = 'N/A'
 
         ws.cell(row=psdf_row + 5, column=psdf_col+2).font = bold_font
         ws.cell(row=psdf_row + 5, column=psdf_col+2).value = '(QD?) DCF per price'
-        ws.cell(row=psdf_row + 6, column=psdf_col+2).value = str(round(float(dcf['dcf']/dcf['Stock Price']), 4))
+        if dcf_has_data:
+            ws.cell(row=psdf_row + 6, column=psdf_col+2).value = str(round(float(dcf['dcf']/dcf['Stock Price']), 4))
+        else:
+            ws.cell(row=psdf_row + 6, column=psdf_col+2).value = 'N/A'
         #ws.cell(row=psdf_row + 6, column=psdf_col+2).value = qdDCFperPrice
 
         ws.cell(row=psdf_row+5, column=psdf_col + 4).font = bold_font
-        peerslist = sp[0]['peersList']
         ws.cell(row=psdf_row + 5, column=psdf_col + 4).value = 'List of peers'
-        for peer in peerslist:
-            ws.cell(row=psdf_row +  6 + peerslist.index(peer), column=psdf_col + 4).value = peer
+        # Handle empty stock peers response
+        if sp and len(sp) > 0 and isinstance(sp[0], dict) and 'peersList' in sp[0]:
+            peerslist = sp[0]['peersList']
+            for i, peer in enumerate(peerslist):
+                ws.cell(row=psdf_row + 6 + i, column=psdf_col + 4).value = peer
+        else:
+            ws.cell(row=psdf_row + 6, column=psdf_col + 4).value = 'N/A'
 
         resize_columns(ws)
 
@@ -330,8 +564,7 @@ def moatIdentifier(symblist, cdx_df, n=20):
     nan_dict = {'source': np.nan,  'moatScore': np.nan, 'FCFyield': np.nan, 'GrossMargin': np.nan, 'RevtoASS': np.nan,
                 'RoE': np.nan, 'RoA': np.nan, 'ROIC': np.nan, 'SGAtoGP': np.nan, 'DeptoGP': np.nan,
                 'NetMargin': np.nan, 'CapExtoEarnings': np.nan, 'TLtoEquity': np.nan}
-    tempdf_orig = moatdf
-    tempdf_orig = tempdf_orig.append(nan_dict, ignore_index=True)
+    tempdf_orig = pd.concat([moatdf, pd.DataFrame([nan_dict])], ignore_index=True)
     for symb in symblist:
         tempdf = tempdf_orig
         cdx_temp = cdx_df[cdx_df['source'] == symb]
@@ -358,7 +591,7 @@ def moatIdentifier(symblist, cdx_df, n=20):
         mask = numeric_df > 0
         tempdf['moatScore'] = mask.sum(axis=1)
 
-        moatdf = pd.concat([moatdf,tempdf]).reset_index(drop=True)
+        moatdf = pd.concat([moatdf, tempdf]).reset_index(drop=True)
 
     moatdf.sort_values(by='moatScore', ascending=False, inplace=True)
 
@@ -381,7 +614,6 @@ def findHighestOfEachSector(resdic):
     sectorsnotfound = sectorlist
     bsdf = resdic['BoScore_df'].reset_index(drop=True)
     bsdf['score'] = bsdf['score'].astype(float)
-    bshs = pd.DataFrame(columns=[bsdf.columns])
     bshs = pd.DataFrame(columns=['source', 'score', 'sector'])
     symblist = bsdf['source']
 
@@ -396,24 +628,10 @@ def findHighestOfEachSector(resdic):
 
     #bshs['sector'] = sectorlist
 
-    for i in range(0,len(symblist)-1):
-        symb = symblist.iloc[i]
-        temp_resp_pr = gdg.safe_get(f'{baseurl}v3/profile/{symb}?period=quarter&limit=4&apikey={api_key}')
-        if temp_resp_pr is None or len(temp_resp_pr) == 0:
-            continue
-        sector = temp_resp_pr[0]['sector']
-        if sector not in sectorsfound:
-            if len(sector) > 0:
-                sectorsfound.append(sector)
-                bshs = pd.concat([bshs, bsdf[bsdf['source']==symb]], ignore_index=True)
-                sectorsnotfound.remove(sector)
-            if len(sectorsnotfound) == 0:
-                break
-        if i%100 == 0 and i > 0:
-            print(f'iteration {i}')
-            print(f'Sectors not found: {sectorsnotfound}')
-            if i > 1000:
-                break
+    # Removed second loop that was searching for sectors not in sectordic
+    # The first loop (lines 388-394) already finds the highest-scoring stock for each sector
+    # that exists in the current dataset. The second loop was inefficiently searching through
+    # all symbols for sectors that don't exist due to sector mapping/consolidation.
 
     resdic = {**resdic, **{'BoScore_highsectors': bshs}}
 

@@ -1,5 +1,9 @@
 import pandas as pd
 import numpy as np
+import warnings
+
+# Suppress FutureWarning about DataFrame concatenation with empty/all-NA entries
+warnings.filterwarnings('ignore', message='.*concatenation with empty or all-NA entries.*')
 
 def detectManipulationWrapper(resdic):
     symblist = list(resdic['postRank']['source'])
@@ -46,7 +50,7 @@ def calcMontierC(resdic,symblist):
         tmpcdf['DAPPdec'] = -dappTTM.diff(periods=-4).fillna(99999)
 
         taTTM = invrollsumTTM(tempcdx_df['totalAssets'])
-        tmpcdf['TAgr'] = taTTM.pct_change(-4).fillna(99999) - 0.1
+        tmpcdf['TAgr'] = taTTM.pct_change(-4, fill_method=None).fillna(99999) - 0.1
 
         tmpcdf['C_Score'] = (tmpcdf > 0).sum(axis=1)
 
@@ -78,19 +82,19 @@ def calcBeneishM(resdic,symblist):
         dsoTTM = invrollsumTTM(tempcdx_df['daysSalesOutstanding'])
         salesTTM = invrollsumTTM(tempcdx_df['revenue'])
         dsriTTM = dsoTTM/salesTTM
-        tmpmdf['DSRI'] = dsriTTM.pct_change(-4) + 1
+        tmpmdf['DSRI'] = dsriTTM.pct_change(-4, fill_method=None) + 1
 
         gmiTTM = invrollsumTTM(tempcdx_df['grossProfitMargin'])
-        tmpmdf['GMI'] = gmiTTM.pct_change(-4) + 1
+        tmpmdf['GMI'] = gmiTTM.pct_change(-4, fill_method=None) + 1
 
         tcaTTM = invrollsumTTM(tempcdx_df['totalCurrentAssets'])
         ppenTTM = invrollsumTTM(tempcdx_df['propertyPlantEquipmentNet'])
         taTTM = invrollsumTTM(tempcdx_df['totalAssets'])
         aqiTTM = 1- (tcaTTM + ppenTTM)/taTTM
-        tmpmdf['AQI'] = aqiTTM.pct_change(-4) + 1
+        tmpmdf['AQI'] = aqiTTM.pct_change(-4, fill_method=None) + 1
 
         sgiTTM = invrollsumTTM(tempcdx_df['revenue'])
-        tmpmdf['SGI'] = sgiTTM.pct_change(-4) + 1
+        tmpmdf['SGI'] = sgiTTM.pct_change(-4, fill_method=None) + 1
 
         #z = x / (x + y) = 1 / ((x + y) / (x)) = 1 / (1 + (y / x))
         # Ef w = y / x, þá: z = 1 / (1 + w). x = depreciationAndAmortization, y = PP&Enet
@@ -101,12 +105,12 @@ def calcBeneishM(resdic,symblist):
 
         sgaTTM = invrollsumTTM(tempcdx_df['sellingGeneralAndAdministrativeExpenses'])
         sgaiTTM = sgaTTM/sgiTTM
-        tmpmdf['SGAI'] = sgaiTTM.pct_change(-4) + 1
+        tmpmdf['SGAI'] = sgaiTTM.pct_change(-4, fill_method=None) + 1
 
         ltdTTM = invrollsumTTM(tempcdx_df['longTermDebt'])
         clTTM = invrollsumTTM(tempcdx_df['totalCurrentLiabilities'])
         lvgiTTM = (ltdTTM+clTTM)/taTTM
-        tmpmdf['LVGI'] = lvgiTTM.pct_change(-4) + 1
+        tmpmdf['LVGI'] = lvgiTTM.pct_change(-4, fill_method=None) + 1
 
         niTTM = invrollsumTTM(tempcdx_df['netIncome'])
         cfoTTM = invrollsumTTM(tempcdx_df['netCashProvidedByOperatingActivities'])

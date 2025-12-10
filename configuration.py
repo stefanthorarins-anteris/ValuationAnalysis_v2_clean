@@ -209,13 +209,15 @@ def getDataFetchConfiguration(args):
     else:
         portfoliotestyear = -1
 
-
-    if manelimtickersbool:
+    # Skip loading manual elimination CSV when loading metrics (it's already in the pickle file)
+    if loadBoMetric:
+        manualelimtickers = []
+    elif manelimtickersbool:
         with open(manelimtick_fname_toget, 'r') as file:
             reader = csv.reader(file)
             templist = list(reader)
             manualelimtickers = templist[0]
-    if not manelimtickersbool:
+    else:
         manualelimtickers = []
 
     # Inform of consistency
