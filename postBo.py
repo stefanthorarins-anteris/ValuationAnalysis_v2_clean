@@ -368,6 +368,9 @@ def writeBoAggToCSV(fb_df, mscore, cscore, baseurl, api_key, ntopagg, fname_AggS
     BoComp_tocsv['DCF-to-Price'] = dcf2p
     BoComp_tocsv['M-Score'] = mscoreVec
     BoComp_tocsv['C-Score'] = cscoreVec
+    # Add CycleHeat from postRank data (already calculated in postBoRank)
+    if 'CycleHeat' in fbdf_tocsv.columns:
+        BoComp_tocsv['CycleHeat'] = fbdf_tocsv['CycleHeat'].values
     BoComp_tocsv.to_csv(fname_AggScoretop)
     pbar.close()
     return None

@@ -387,6 +387,54 @@ def postBoScoreRanking(bmtop,bstop,cdxtop,baseurl,api_key,period='quarter',nq=16
                 else:
                     postScoreMetric_df.loc[postScoreMetric_df['source'] == ticker, key2] = np.nan
 
+            # CycleHeat: Penalizes stocks with earnings above historical mean, amplified by beta
+            # Higher CycleHeat = late-cycle / hot stock that may be due for a correction
+            if key2 == 'CycleHeat':
+                weight = postNewRankingDict[key2]['w']
+                weight_df[key2] = pd.Series(weight)
+                
+                cycle_heat = 0.0
+                try:
+                    # Calculate EPS ratio: current_EPS / mean_EPS
+                    eps = tempcdx['netIncome'] / tempcdx['weightedAverageShsOut']
+                    eps_clean = eps.replace([np.inf, -np.inf], np.nan).dropna()
+                    
+                    if len(eps_clean) >= 2:
+                        eps_current = eps_clean.iloc[0]  # Most recent
+                        eps_mean = eps_clean.mean()
+                        
+                        # Calculate EPS ratio (R)
+                        if eps_mean != 0 and not np.isnan(eps_mean) and eps_mean > 0:
+                            R = eps_current / eps_mean
+                        else:
+                            R = 1.0  # Neutral if mean is zero/negative/nan
+                        
+                        # R_excess: only penalize when above mean (R > 1)
+                        R_excess = max(0.0, R - 1.0)
+                        
+                        # Fetch beta from profile API (only for top stocks, not all)
+                        beta_stock = 0.0
+                        try:
+                            profile_resp = requests.get(f'{baseurl}v3/profile/{ticker}?apikey={api_key}').json()
+                            if profile_resp and len(profile_resp) > 0:
+                                beta_val = profile_resp[0].get('beta')
+                                if beta_val is not None:
+                                    beta_stock = max(0.0, float(beta_val))  # Only positive beta amplifies
+                        except Exception:
+                            pass
+                        
+                        # CycleHeat = R_excess * (1 + beta)
+                        # Higher beta amplifies the penalty for above-mean earnings
+                        cycle_heat = R_excess * (1.0 + beta_stock)
+                        
+                        # Cap CycleHeat to prevent extreme values
+                        cycle_heat = min(cycle_heat, 3.0)
+                        
+                except Exception:
+                    cycle_heat = 0.0
+                
+                postScoreMetric_df.loc[postScoreMetric_df['source'] == ticker, key2] = cycle_heat
+
         #    if key2 == 'SalePerEmployee':
         #        #temp = emp['employeeCount'].head(nq)
         #        #temp2 = inc['revenue'].head(nq)
@@ -400,7 +448,7 @@ def postBoScoreRanking(bmtop,bstop,cdxtop,baseurl,api_key,period='quarter',nq=16
 
         # Diagnostic: Check if any metrics were calculated for first ticker
         if tempcntr == 0:
-            sample_metrics = ['RoA', 'earnYield', 'grahamNumberToPrice', 'freeCashFlowYield', 'BoScore', 'Altman-Z', 'Piotroski']
+            sample_metrics = ['RoA', 'earnYield', 'grahamNumberToPrice', 'freeCashFlowYield', 'BoScore', 'Altman-Z', 'Piotroski', 'CycleHeat']
             print(f"\nDIAGNOSTIC: Sample metric values after calculation for {ticker}:", flush=True)
             for metric in sample_metrics:
                 if metric in postScoreMetric_df.columns:

@@ -81,18 +81,18 @@ def getDicts():
         'currentRatio':                 {'Upper': 'currentRatio',                           'Lower': 'Identity',                'Tier': 'B', 'Sign': 1},
         'assetsToLongTermLiabilities':  {'Upper': 'totalAssets',                            'Lower': 'longTermDebt',            'Tier': 'B', 'Sign': 1},
         'grossProfit':                  {'Upper': 'grossProfit',                            'Lower': 'Identity',                'Tier': 'N', 'Sign': 1},
-        'returnOnCapitalEmployed':      {'Upper': 'returnOnCapitalEmployed',                'Lower': 'Identity',                'Tier': 'B', 'Sign': 1},
-        'freeCashFlowToEquity':         {'Upper': 'freeCashFlow',                           'Lower': 'totalStockholdersEquity', 'Tier': 'C', 'Sign': 1},
-        'CFOtoMarketCap':               {'Upper': 'netCashProvidedByOperatingActivities',   'Lower': 'marketCap',               'Tier': 'D', 'Sign': 1},
+        'returnOnCapitalEmployed':      {'Upper': 'returnOnCapitalEmployed',                'Lower': 'Identity',                'Tier': 'A', 'Sign': 1},
+        'freeCashFlowToEquity':         {'Upper': 'freeCashFlow',                           'Lower': 'totalStockholdersEquity', 'Tier': 'B', 'Sign': 1},
+        'CFOtoMarketCap':               {'Upper': 'netCashProvidedByOperatingActivities',   'Lower': 'marketCap',               'Tier': 'B', 'Sign': 1},
         'netIncomePerShare':            {'Upper': 'netIncomePerShare',                      'Lower': 'Identity',                'Tier': 'N', 'Sign': 1},
         'pbRatio':                      {'Upper': 'pbRatio',                                'Lower': 'Identity',                'Tier': 'B', 'Sign': -1},
-        'revenue':                      {'Upper': 'revenue',                                'Lower': 'Identity',                'Tier': 'S', 'Sign': 1},
+        'revenue':                      {'Upper': 'revenue',                                'Lower': 'Identity',                'Tier': 'A', 'Sign': 1},
         'sharesOutstanding':            {'Upper': 'weightedAverageShsOut',                  'Lower': 'Identity',                'Tier': 'B', 'Sign': -1},
-        'EPS':                          {'Upper': 'netIncomePerShare',                      'Lower': 'Identity',                'Tier': 'B', 'Sign': -1}
+        'EPS':                          {'Upper': 'netIncomePerShare',                      'Lower': 'Identity',                'Tier': 'B', 'Sign': 1}
                              }
 
     BoMetric_mean_dict =    {
-        'pbRatio':              {'Upper': 'pbRatio',                    'Lower': 'Identity',    'Tier': 'A', 'Sign': -1},
+        'pbRatio':              {'Upper': 'pbRatio',                    'Lower': 'Identity',    'Tier': 'B', 'Sign': -1},
         'salesToMarketCap':     {'Upper': 'revenue',                    'Lower': 'marketCap',   'Tier': 'N', 'Sign': 1},
         'earningsYield':        {'Upper': 'earningsYield',              'Lower': 'Identity',    'Tier': 'S', 'Sign': 1},
         'debtEquityRatio':      {'Upper': 'debtEquityRatio',            'Lower': 'Identity',    'Tier': 'C', 'Sign': -1},
@@ -106,12 +106,12 @@ def getDicts():
         'currentRatio':         {'Upper': 'currentRatio',       'Lower': 'Identity',    'Tier': 'S', 'Sign': 1},
         'grahamNumberToPrice':  {'Upper': 'grahamNumber',       'Lower': 'price',       'Tier': 'S', 'Sign': 1},
         'incomeQuality':        {'Upper': 'incomeQuality',      'Lower': 'Identity',    'Tier': 'S', 'Sign': 1},
-        'netDebtToEBITDA':      {'Upper': 'netDebtToEBITDA',    'Lower': 'Identity',    'Tier': 'B', 'Sign': -1}
+        'netDebtToEBITDA':      {'Upper': 'netDebtToEBITDA',    'Lower': 'Identity',    'Tier': 'A', 'Sign': -1}
                              }
 
     BoMetric_special_dict ={
         'PEG':                              {'Tier': 'C', 'Sign': 1},
-        'returnOnEquity':                   {'Tier': 'B', 'Sign': 1},
+        'returnOnEquity':                   {'Tier': 'C', 'Sign': 1},
         'capitalExpenditureCoverageRatio':  {'Tier': 'C', 'Sign': 1},
                             }
 
@@ -129,23 +129,25 @@ def getPostDict(macroAdj=1):
                          'earnYield':           {'eqMet': 'earningsYield',          'w': 2},
                          'grahamNumberToPrice': {'eqMet': 'grahamNumberToPrice',    'w': 1},
                          'bVpRatio':            {'eqMet': 'pbRatio',                'w': 0.25},
-                         'revenueGrowth':       {'eqMet': 'revenue',                'w': 1.5},
+                         'revenueGrowth':       {'eqMet': 'revenue',                'w': 1},
                          'incomeQuality':       {'eqMet': 'incomeQuality',          'w': 1},
-                         'returnOnEquity':      {'eqMet': 'returnOnEquity',         'w': 2},
-                         'currentRatio':        {'eqMet': 'currentRatio',           'w': 0.2},
+                         'returnOnEquity':      {'eqMet': 'returnOnEquity',         'w': 1},
+                         'returnOnCapitalEmployed': {'eqMet': 'returnOnCapitalEmployed', 'w': 1},
+                         'currentRatio':        {'eqMet': 'currentRatio',           'w': 0.35},
                          'grossProfitMargin':   {'eqMet': 'grossProfitMargin',      'w': 0.75}
                          }
 
     postNewRankingDict =    {'freeCashFlowYield':           {'w': 2},
                              'freeCashFlowPerShareGrowth':  {'w': 1.5},
-                             'DcfToPrice':                  {'w': 0.25},
+                             'DcfToPrice':                  {'w': 0.35},
                              'marketCapRevQuants':          {'w': 0.25},
-                             'Altman-Z':                    {'w': 0.75},
+                             'Altman-Z':                    {'w': 0.5},
                              'Piotroski':                   {'w': 0.75},
                              'tbVpRatio':                   {'w': 0.5},
                              'BoScore':                     {'w': 0.1},
                              'EPStoEPSmean':                {'w': 0.5},
-                             'priceGrowth':                 {'w': 0.5}
+                             'priceGrowth':                 {'w': 0.5},
+                             'CycleHeat':                   {'w': -0.5}  # Negative weight penalizes hot late-cycle stocks
                              }
 
     return postBmRankingDict, postNewRankingDict
