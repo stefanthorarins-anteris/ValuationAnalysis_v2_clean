@@ -300,7 +300,7 @@ def writeBoAggToCSV(fb_df, mscore, cscore, baseurl, api_key, ntopagg, fname_AggS
         if symb in rating_bulk_dict:
             temp_resp_rating = [rating_bulk_dict[symb]]
         else:
-            temp_resp_rating = requests.get(f'{baseurl}/v3/rating/{symb}?apikey={api_key}').json()
+            temp_resp_rating = requests.get(f'{baseurl}v3/rating/{symb}?apikey={api_key}').json()
         if len(temp_resp_rating) == 0 or 'ratingRecommendation' not in temp_resp_rating[0]:
             ratingVec_fmp.append('NaN')
         else:
