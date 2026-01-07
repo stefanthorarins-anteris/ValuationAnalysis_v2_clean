@@ -209,6 +209,30 @@ def getDataFetchConfiguration(args):
     else:
         portfoliotestyear = -1
 
+    # Unified backtesting parameters
+    if '-runbacktest' in args:
+        runbacktest = 1
+    else:
+        runbacktest = 0
+    
+    if '-backtest_buy_years' in args:
+        iby = args.index('-backtest_buy_years')
+        backtest_buy_years = [int(y) for y in args[iby + 1].split(',')]
+    else:
+        backtest_buy_years = None  # Will use defaults in backtest_unified
+    
+    if '-backtest_eval_years' in args:
+        iey = args.index('-backtest_eval_years')
+        backtest_eval_years = [int(y) for y in args[iey + 1].split(',')]
+    else:
+        backtest_eval_years = None
+    
+    if '-backtest_topn' in args:
+        itn = args.index('-backtest_topn')
+        backtest_topn = int(args[itn + 1])
+    else:
+        backtest_topn = 100
+
     # Skip loading manual elimination CSV when loading metrics (it's already in the pickle file)
     if loadBoMetric:
         manualelimtickers = []
@@ -241,7 +265,9 @@ def getDataFetchConfiguration(args):
                  'loadBoResultsfname': loadBoResultsfname, 'manualelimtickers': manualelimtickers,
                  'lastindex_fn': lastindex_fn, 'nrScorePeriods': nrScorePeriods, 'ntopagg': ntopagg,
                  'ntopxlsx': ntopxlsx, 'sectorfilter': sectorfilter, 'portfoliotestyear': portfoliotestyear,
-                 'sectorlist': sectorlist}
+                 'sectorlist': sectorlist,
+                 'runbacktest': runbacktest, 'backtest_buy_years': backtest_buy_years,
+                 'backtest_eval_years': backtest_eval_years, 'backtest_topn': backtest_topn}
 
     return configdic
 
