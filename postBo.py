@@ -371,6 +371,9 @@ def writeBoAggToCSV(fb_df, mscore, cscore, baseurl, api_key, ntopagg, fname_AggS
     # Add CycleHeat from postRank data (already calculated in postBoRank)
     if 'CycleHeat' in fbdf_tocsv.columns:
         BoComp_tocsv['CycleHeat'] = fbdf_tocsv['CycleHeat'].values
+    # Add moatScore from postRank data (merged from moatIdentifier)
+    if 'moatScore' in fbdf_tocsv.columns:
+        BoComp_tocsv['moatScore'] = fbdf_tocsv['moatScore'].values
     BoComp_tocsv.to_csv(fname_AggScoretop)
     pbar.close()
     return None
