@@ -22,6 +22,12 @@ import configuration as cf
 import utils as utils
 import calcScore as csf
 
+try:
+    import backtest_outputs as bt_out
+    HAS_OUTPUT_MODULE = True
+except ImportError:
+    HAS_OUTPUT_MODULE = False
+
 
 def _get_price_from_cdx(cdx_df, symbol, target_date):
     """
@@ -237,12 +243,12 @@ def run_scenario(dmdic, buy_year, eval_years, topn, verbose=True):
     }
 
 
-def run_ols_metrics_vs_returns(dmdic, topn=100, min_stocks=5000, verbose=True):
+def run_ols_metrics_vs_returns(dmdic, topn=100, min_stocks=500, verbose=True):
     """
     Run OLS regression: BoMetric values → total returns
     
-    Uses the oldest buy year with sufficient data (>= min_stocks tickers)
-    and evaluates returns to the latest available data.
+    Uses a historical buy year (3 years before max data) to ensure
+    we have enough time for meaningful returns.
     Uses ALL stocks with valid returns (not just top-ranked).
     
     Parameters:
@@ -252,7 +258,7 @@ def run_ols_metrics_vs_returns(dmdic, topn=100, min_stocks=5000, verbose=True):
     topn : int
         Not used (kept for API compatibility)
     min_stocks : int
-        Minimum number of stocks required for a year to be "viable"
+        Minimum number of stocks required (default: 500)
     verbose : bool
         Print progress
         
@@ -263,19 +269,19 @@ def run_ols_metrics_vs_returns(dmdic, topn=100, min_stocks=5000, verbose=True):
     BoMetric_df = dmdic['BoMetric_df'].copy()
     cdx_df = dmdic['cdx_df'].copy()
     
-    # Find oldest year with sufficient data
-    yearly_counts = cdx_df.groupby(cdx_df['date'].dt.year)['source'].nunique()
-    viable_years = yearly_counts[yearly_counts >= min_stocks].index.tolist()
+    BoMetric_df['date'] = pd.to_datetime(BoMetric_df['date'])
+    cdx_df['date'] = pd.to_datetime(cdx_df['date'])
     
-    if not viable_years:
-        if verbose:
-            print(f"No years with >= {min_stocks} stocks found")
-        return None
+    min_date = cdx_df['date'].min()
+    max_date = cdx_df['date'].max()
     
-    # Use oldest viable year as buy year
-    buy_year = min(viable_years)
-    max_year = cdx_df['date'].max().year
-    eval_years = max_year - buy_year  # Hold until latest data
+    # Use 3 years before max_date as buy year for meaningful return horizon
+    buy_year = max_date.year - 3
+    if buy_year < min_date.year + 1:
+        buy_year = min_date.year + 1
+    
+    max_year = max_date.year
+    eval_years = max_year - buy_year
     
     if eval_years < 1:
         if verbose:
@@ -283,20 +289,22 @@ def run_ols_metrics_vs_returns(dmdic, topn=100, min_stocks=5000, verbose=True):
         return None
     
     buy_date = pd.Timestamp(f"{buy_year}-12-31")
-    eval_date = cdx_df['date'].max()
+    eval_date = max_date
     
-    if verbose:
-        print(f"Buy date: {buy_date.date()} ({yearly_counts[buy_year]} stocks)")
-        print(f"Eval date: {eval_date.date()} (~{eval_years} years)")
-    
-    # Filter to point-in-time
+    # Filter to point-in-time for BoMetric
     bm_filtered = BoMetric_df[BoMetric_df['date'] <= buy_date].copy()
     
-    # Get ALL unique symbols available at buy date
+    # Get unique symbols that have BoMetric data at buy date
     symbols = bm_filtered['source'].unique().tolist()
     
     if verbose:
-        print(f"Total stocks available at buy date: {len(symbols)}")
+        print(f"Buy date: {buy_date.date()}")
+        print(f"Eval date: {eval_date.date()} (~{eval_years} years)")
+        print(f"Stocks with BoMetric data at buy date: {len(symbols)}")
+    
+    if len(symbols) < min_stocks:
+        if verbose:
+            print(f"Warning: Only {len(symbols)} stocks available (< {min_stocks} min_stocks)")
     
     # Get BoMetric values for ALL stocks at buy time
     # Use the most recent data point for each stock before buy_date
@@ -349,8 +357,9 @@ def run_ols_metrics_vs_returns(dmdic, topn=100, min_stocks=5000, verbose=True):
     
     if verbose:
         print(f"Stocks with valid returns: {len(analysis_df)}")
-        print(f"Mean return: {analysis_df['total_return'].mean()*100:.1f}%")
-        print(f"Median return: {analysis_df['total_return'].median()*100:.1f}%")
+        if len(analysis_df) > 0:
+            print(f"Mean return: {analysis_df['total_return'].mean()*100:.1f}%")
+            print(f"Median return: {analysis_df['total_return'].median()*100:.1f}%")
     
     # Identify numeric metric columns (exclude identifiers)
     exclude_cols = ['source', 'date', 'total_return', 'price_return', 'div_return']
@@ -358,15 +367,17 @@ def run_ols_metrics_vs_returns(dmdic, topn=100, min_stocks=5000, verbose=True):
                    if c not in exclude_cols 
                    and analysis_df[c].dtype in ['float64', 'int64', 'float32', 'int32']]
     
-    # Filter to columns with enough non-NaN values (>= 50%)
+    # Filter to columns with enough non-NaN values (>= 50%) and no inf
     valid_metrics = []
     for col in metric_cols:
-        non_nan_pct = analysis_df[col].notna().mean()
+        col_data = analysis_df[col].replace([np.inf, -np.inf], np.nan)
+        non_nan_pct = col_data.notna().mean()
         if non_nan_pct >= 0.5:
             valid_metrics.append(col)
+            analysis_df[col] = col_data  # Replace inf with nan
     
     if verbose:
-        print(f"Valid metrics (>=50% non-NaN): {len(valid_metrics)}")
+        print(f"Valid metrics (>=50% non-NaN, no inf): {len(valid_metrics)}")
     
     if len(valid_metrics) == 0:
         if verbose:
@@ -379,7 +390,8 @@ def run_ols_metrics_vs_returns(dmdic, topn=100, min_stocks=5000, verbose=True):
         valid = analysis_df[[col, 'total_return']].dropna()
         if len(valid) >= 5:
             corr = valid.corr().iloc[0, 1]
-            correlations.append({'metric': col, 'correlation': corr, 'n': len(valid)})
+            if not np.isnan(corr):
+                correlations.append({'metric': col, 'correlation': corr, 'n': len(valid)})
     
     corr_df = pd.DataFrame(correlations)
     if not corr_df.empty:
@@ -390,7 +402,7 @@ def run_ols_metrics_vs_returns(dmdic, topn=100, min_stocks=5000, verbose=True):
     ols_results = None
     
     try:
-        from sklearn.linear_model import Ridge  # Use Ridge for regularization
+        from sklearn.linear_model import Ridge
         from sklearn.impute import SimpleImputer
         from sklearn.preprocessing import StandardScaler
         
@@ -401,14 +413,14 @@ def run_ols_metrics_vs_returns(dmdic, topn=100, min_stocks=5000, verbose=True):
         # Add time trend (days since earliest observation in dataset)
         if 'date' in analysis_df.columns:
             dates = pd.to_datetime(analysis_df['date'])
-            min_date = dates.min()
-            X['time_trend'] = (dates - min_date).dt.days
+            min_date_obs = dates.min()
+            X['time_trend'] = (dates - min_date_obs).dt.days
             valid_metrics_with_time = valid_metrics + ['time_trend']
         else:
             valid_metrics_with_time = valid_metrics
         
-        # Only require valid y (returns)
-        valid_y_mask = y.notna()
+        # Only require valid y (returns) and finite
+        valid_y_mask = y.notna() & np.isfinite(y)
         X = X[valid_y_mask]
         y = y[valid_y_mask]
         
@@ -432,7 +444,7 @@ def run_ols_metrics_vs_returns(dmdic, topn=100, min_stocks=5000, verbose=True):
             model.fit(X_scaled, y)
             r_squared = model.score(X_scaled, y)
             
-            # Get coefficients (use the metrics list that includes time_trend if added)
+            # Get coefficients
             coef_metrics = valid_metrics_with_time if 'time_trend' in X.columns else valid_metrics
             coef_df = pd.DataFrame({
                 'metric': coef_metrics,
@@ -450,12 +462,12 @@ def run_ols_metrics_vs_returns(dmdic, topn=100, min_stocks=5000, verbose=True):
             if verbose:
                 print(f"\nRidge Regression (n={len(y)}, returns winsorized to +/-500%):")
                 print(f"R-squared: {r_squared:.4f}")
-                print(f"\nTop 10 coefficients (standardized):")
-                print(coef_df.head(10).to_string(index=False))
+                print(f"\nTop 15 coefficients (standardized):")
+                print(coef_df.head(15).to_string(index=False))
                 
                 # Highlight strongest predictors
-                top_positive = coef_df[coef_df['coefficient'] > 0].head(3)
-                top_negative = coef_df[coef_df['coefficient'] < 0].head(3)
+                top_positive = coef_df[coef_df['coefficient'] > 0].head(5)
+                top_negative = coef_df[coef_df['coefficient'] < 0].head(5)
                 
                 print(f"\nInterpretation:")
                 if not top_positive.empty:
@@ -475,6 +487,8 @@ def run_ols_metrics_vs_returns(dmdic, topn=100, min_stocks=5000, verbose=True):
     except Exception as e:
         if verbose:
             print(f"\nRegression failed: {e}")
+            import traceback
+            traceback.print_exc()
     
     return {
         'buy_year': buy_year,
@@ -488,21 +502,249 @@ def run_ols_metrics_vs_returns(dmdic, topn=100, min_stocks=5000, verbose=True):
 
 def run_postrank_ols(dmdic, verbose=True):
     """
-    Load the most recent postRank pickle and run OLS on postRank metrics vs returns.
+    Run OLS on postRank-style metrics vs historical returns.
     
-    This uses the actual postRank metrics (Altman-Z, Piotroski, CycleHeat, moatScore, etc.)
-    that were calculated during the ranking process.
+    IMPORTANT: The current postRank represents TODAY's picks - we can't backtest
+    those because we don't have future returns. Instead, this function:
+    1. Uses historical data (buy_year) to get metrics at that time
+    2. Measures actual returns from buy_year to the latest data
+    3. Runs OLS to see which metrics predicted returns
+    
+    This tells us which postRank metrics WOULD HAVE predicted returns historically.
     """
     import glob
     
-    # Find most recent postRank pickle
+    # Load postRank to get the metric columns we want to analyze
+    postrank_files = glob.glob('postRank_*.pickle')
+    if postrank_files:
+        postrank_files.sort(reverse=True)
+        latest_file = postrank_files[0]
+        if verbose:
+            print(f"Reference postRank: {latest_file}")
+        try:
+            postrank_data = pd.read_pickle(latest_file)
+            postRank = postrank_data.get('postRank', pd.DataFrame())
+            if verbose:
+                print(f"PostRank metrics available: {list(postRank.columns)}")
+        except Exception:
+            postRank = pd.DataFrame()
+    else:
+        postRank = pd.DataFrame()
+        if verbose:
+            print("No postRank pickle found - using BoMetric columns only")
+    
+    # Use the BoMetric data for historical analysis
+    BoMetric_df = dmdic['BoMetric_df'].copy()
+    cdx_df = dmdic['cdx_df'].copy()
+    
+    BoMetric_df['date'] = pd.to_datetime(BoMetric_df['date'])
+    cdx_df['date'] = pd.to_datetime(cdx_df['date'])
+    
+    # Find a good historical buy year with sufficient data
+    min_date = cdx_df['date'].min()
+    max_date = cdx_df['date'].max()
+    
+    if verbose:
+        print(f"Data range: {min_date.date()} to {max_date.date()}")
+    
+    # Use ~3 years before max_date as buy year for meaningful returns
+    buy_year = max_date.year - 3
+    if buy_year < min_date.year + 1:
+        buy_year = min_date.year + 1
+    
+    buy_date = pd.Timestamp(f"{buy_year}-12-31")
+    eval_date = max_date
+    
+    if verbose:
+        print(f"Historical analysis: Buy {buy_date.date()}, Eval {eval_date.date()} (~{max_date.year - buy_year} years)")
+    
+    # Filter to point-in-time
+    bm_filtered = BoMetric_df[BoMetric_df['date'] <= buy_date].copy()
+    
+    # Get ALL unique symbols available at buy date
+    symbols = bm_filtered['source'].unique().tolist()
+    
+    if verbose:
+        print(f"Stocks available at buy date: {len(symbols)}")
+    
+    # Get metrics for all stocks at buy time (most recent before buy_date)
+    metric_rows = []
+    for symbol in symbols:
+        sym_data = bm_filtered[bm_filtered['source'] == symbol].sort_values('date')
+        if not sym_data.empty:
+            latest = sym_data.iloc[-1].to_dict()
+            metric_rows.append(latest)
+    
+    if not metric_rows:
+        if verbose:
+            print("No metric data found")
+        return None
+    
+    metrics_df = pd.DataFrame(metric_rows)
+    
+    # Calculate returns for all stocks
+    has_dividend_data = 'dividendYield' in cdx_df.columns
+    returns_data = []
+    
+    for symbol in symbols:
+        buy_price = _get_price_from_cdx(cdx_df, symbol, buy_date)
+        if pd.isna(buy_price) or buy_price <= 0:
+            continue
+        
+        eval_price = _get_price_from_cdx(cdx_df, symbol, eval_date)
+        if pd.isna(eval_price) or eval_price <= 0:
+            continue
+        
+        price_return = (eval_price - buy_price) / buy_price
+        
+        if has_dividend_data:
+            div_return = _get_dividend_yield_from_cdx(cdx_df, symbol, buy_date, eval_date)
+            total_return = price_return + div_return
+        else:
+            total_return = price_return
+        
+        returns_data.append({'source': symbol, 'total_return': total_return})
+    
+    if not returns_data:
+        if verbose:
+            print("No return data calculated")
+        return None
+    
+    returns_df = pd.DataFrame(returns_data)
+    
+    # Merge metrics with returns
+    analysis_df = metrics_df.merge(returns_df, on='source', how='inner')
+    
+    if verbose:
+        print(f"Stocks with valid returns: {len(analysis_df)}")
+        if len(analysis_df) > 0:
+            print(f"Mean return: {analysis_df['total_return'].mean()*100:.1f}%")
+            print(f"Median return: {analysis_df['total_return'].median()*100:.1f}%")
+    
+    if len(analysis_df) < 20:
+        if verbose:
+            print(f"Insufficient samples for OLS ({len(analysis_df)} < 20)")
+        return None
+    
+    # Identify metric columns (exclude identifiers)
+    exclude_cols = ['source', 'date', 'total_return', 'price_return', 'div_return']
+    metric_cols = [c for c in analysis_df.columns 
+                   if c not in exclude_cols 
+                   and analysis_df[c].dtype in ['float64', 'int64', 'float32', 'int32']]
+    
+    # Remove columns with inf values or >50% NaN
+    valid_metrics = []
+    for col in metric_cols:
+        col_data = analysis_df[col].replace([np.inf, -np.inf], np.nan)
+        if col_data.notna().mean() >= 0.5:
+            valid_metrics.append(col)
+            analysis_df[col] = col_data  # Replace inf with nan for these cols
+    
+    if verbose:
+        print(f"Valid metrics for OLS: {len(valid_metrics)}")
+    
+    if len(valid_metrics) == 0:
+        if verbose:
+            print("No valid metrics for regression")
+        return None
+    
+    # Run Ridge regression
+    try:
+        from sklearn.linear_model import Ridge
+        from sklearn.impute import SimpleImputer
+        from sklearn.preprocessing import StandardScaler
+        
+        X = analysis_df[valid_metrics].copy()
+        y = analysis_df['total_return'].copy()
+        
+        # Only require valid y (returns)
+        valid_mask = y.notna() & np.isfinite(y)
+        X = X[valid_mask]
+        y = y[valid_mask]
+        
+        # Winsorize extreme returns (cap at +/- 500%)
+        y = y.clip(-5, 5)
+        
+        if len(y) < 20:
+            if verbose:
+                print(f"Insufficient samples after filtering ({len(y)} < 20)")
+            return None
+        
+        # Impute missing X values with median
+        imputer = SimpleImputer(strategy='median')
+        X_imputed = imputer.fit_transform(X)
+        
+        # Standardize
+        scaler = StandardScaler()
+        X_scaled = scaler.fit_transform(X_imputed)
+        
+        # Use Ridge regression (regularized) to handle multicollinearity
+        model = Ridge(alpha=1.0)
+        model.fit(X_scaled, y)
+        r_squared = model.score(X_scaled, y)
+        
+        coef_df = pd.DataFrame({
+            'metric': valid_metrics,
+            'coefficient': model.coef_,
+            'abs_coef': np.abs(model.coef_)
+        }).sort_values('abs_coef', ascending=False)
+        
+        if verbose:
+            print(f"\nRidge Regression (n={len(y)}, returns winsorized +/-500%):")
+            print(f"R-squared: {r_squared:.4f}")
+            print(f"\nTop 15 coefficients (standardized):")
+            print(coef_df.head(15).to_string(index=False))
+            
+            # Highlight strongest predictors
+            top_pos = coef_df[coef_df['coefficient'] > 0].head(5)
+            top_neg = coef_df[coef_df['coefficient'] < 0].head(5)
+            
+            print(f"\nInterpretation:")
+            if not top_pos.empty:
+                print("  Higher values HELPED returns:")
+                for _, r in top_pos.iterrows():
+                    print(f"    {r['metric']}: +{r['coefficient']:.4f}")
+            if not top_neg.empty:
+                print("  Higher values HURT returns:")
+                for _, r in top_neg.iterrows():
+                    print(f"    {r['metric']}: {r['coefficient']:.4f}")
+        
+        return {
+            'r_squared': r_squared,
+            'coefficients': coef_df,
+            'n_samples': len(y),
+            'buy_year': buy_year,
+            'eval_date': eval_date,
+            'analysis_df': analysis_df
+        }
+        
+    except Exception as e:
+        if verbose:
+            print(f"Regression failed: {e}")
+            import traceback
+            traceback.print_exc()
+        return None
+
+
+def run_top100_postrank_ols(dmdic, verbose=True):
+    """
+    Run OLS specifically on the TOP 100 postRank stocks using their postRank metrics.
+    
+    This loads the saved postRank pickle (which contains ~100 stocks with metrics like
+    Altman-Z, Piotroski, CycleHeat, moatScore, etc.) and regresses those metrics
+    against historical returns for those same stocks.
+    
+    This tells us: "Among our top picks, which postRank metrics correlate with returns?"
+    """
+    import glob
+    
+    # Load postRank pickle
     postrank_files = glob.glob('postRank_*.pickle')
     if not postrank_files:
         if verbose:
             print("No postRank pickle files found. Run the main pipeline first.")
         return None
     
-    # Sort by filename (date) and get most recent
     postrank_files.sort(reverse=True)
     latest_file = postrank_files[0]
     
@@ -517,35 +759,39 @@ def run_postrank_ols(dmdic, verbose=True):
         return None
     
     postRank = postrank_data.get('postRank', pd.DataFrame())
-    cdx_df = postrank_data.get('cdx_df', dmdic.get('cdx_df', pd.DataFrame()))
+    postrank_cdx = postrank_data.get('cdx_df', dmdic.get('cdx_df', pd.DataFrame()))
     date_created = postrank_data.get('date_created', 'unknown')
     
     if postRank.empty:
         if verbose:
-            print("PostRank is empty")
+            print("PostRank DataFrame is empty")
         return None
     
     if verbose:
         print(f"PostRank created: {date_created}")
-        print(f"Stocks in postRank: {len(postRank)}")
+        print(f"Top stocks in postRank: {len(postRank)}")
     
-    # Get current prices to calculate returns since postRank was created
-    # Use the latest price data available
+    # Use cdx_df from dmdic (has full history) for price data
+    cdx_df = dmdic.get('cdx_df', postrank_cdx).copy()
     cdx_df['date'] = pd.to_datetime(cdx_df['date'])
-    eval_date = cdx_df['date'].max()
     
-    # Estimate buy date from postRank creation date
-    buy_date = pd.Timestamp(date_created) if date_created != 'unknown' else eval_date - pd.DateOffset(months=1)
+    max_date = cdx_df['date'].max()
+    
+    # For historical returns: use 3 years before max_date as buy date
+    buy_year = max_date.year - 3
+    buy_date = pd.Timestamp(f"{buy_year}-12-31")
+    eval_date = max_date
     
     if verbose:
-        print(f"Buy date (approx): {buy_date.date()}")
-        print(f"Eval date: {eval_date.date()}")
+        print(f"Return period: {buy_date.date()} to {eval_date.date()} (~3 years)")
     
-    # Calculate returns for postRank stocks
+    # Get symbols from postRank (top 100)
     symbols = postRank['source'].tolist()
-    has_dividend_data = 'dividendYield' in cdx_df.columns
     
+    # Calculate historical returns for these specific stocks
+    has_dividend_data = 'dividendYield' in cdx_df.columns
     returns_data = []
+    
     for symbol in symbols:
         buy_price = _get_price_from_cdx(cdx_df, symbol, buy_date)
         eval_price = _get_price_from_cdx(cdx_df, symbol, eval_date)
@@ -565,7 +811,7 @@ def run_postrank_ols(dmdic, verbose=True):
     
     if not returns_data:
         if verbose:
-            print("No return data available")
+            print("No return data available for postRank stocks")
         return None
     
     returns_df = pd.DataFrame(returns_data)
@@ -574,24 +820,43 @@ def run_postrank_ols(dmdic, verbose=True):
     analysis_df = postRank.merge(returns_df, on='source', how='inner')
     
     if verbose:
-        print(f"Stocks with returns: {len(analysis_df)}")
-        print(f"Mean return: {analysis_df['total_return'].mean()*100:.1f}%")
-        print(f"Median return: {analysis_df['total_return'].median()*100:.1f}%")
+        print(f"Stocks with valid returns: {len(analysis_df)}")
+        if len(analysis_df) > 0:
+            print(f"Mean return: {analysis_df['total_return'].mean()*100:.1f}%")
+            print(f"Median return: {analysis_df['total_return'].median()*100:.1f}%")
     
-    # Get postRank metric columns (exclude identifiers)
-    exclude_cols = ['source', 'date', 'total_return', 'symbol', 'Unnamed', 'index', 'rankOfRanks', 'AggScore']
-    metric_cols = [c for c in analysis_df.columns 
-                   if c not in exclude_cols 
-                   and analysis_df[c].dtype in ['float64', 'int64', 'float32', 'int32']
-                   and analysis_df[c].notna().mean() >= 0.3]  # At least 30% non-NaN
+    # Get postRank metric columns (the ones we care about)
+    # These are the normalized metrics used in ranking
+    postrank_metrics = ['RoA', 'earnYield', 'grahamNumberToPrice', 'bVpRatio', 'revenueGrowth',
+                        'incomeQuality', 'returnOnEquity', 'returnOnCapitalEmployed', 
+                        'currentRatio', 'grossProfitMargin', 'freeCashFlowYield',
+                        'freeCashFlowPerShareGrowth', 'DcfToPrice', 'marketCapRevQuants',
+                        'Altman-Z', 'Piotroski', 'tbVpRatio', 'BoScore', 'EPStoEPSmean',
+                        'priceGrowth', 'CycleHeat', 'moatScore']
+    
+    # Filter to metrics that exist in the data
+    available_metrics = [m for m in postrank_metrics if m in analysis_df.columns]
+    
+    # Also filter to metrics with valid data (no all-NaN, no all-inf)
+    valid_metrics = []
+    for col in available_metrics:
+        col_data = analysis_df[col].replace([np.inf, -np.inf], np.nan)
+        if col_data.notna().sum() >= 5:  # At least 5 valid values
+            valid_metrics.append(col)
+            analysis_df[col] = col_data
     
     if verbose:
-        print(f"PostRank metrics for OLS: {len(metric_cols)}")
-        print(f"  {metric_cols}")
+        print(f"PostRank metrics for OLS: {len(valid_metrics)}")
+        print(f"  {valid_metrics}")
     
-    if len(metric_cols) == 0:
+    if len(valid_metrics) == 0:
         if verbose:
-            print("No valid metrics for regression")
+            print("No valid postRank metrics for regression")
+        return None
+    
+    if len(analysis_df) < 10:
+        if verbose:
+            print(f"Insufficient samples ({len(analysis_df)} < 10)")
         return None
     
     # Run Ridge regression
@@ -600,15 +865,15 @@ def run_postrank_ols(dmdic, verbose=True):
         from sklearn.impute import SimpleImputer
         from sklearn.preprocessing import StandardScaler
         
-        X = analysis_df[metric_cols].copy()
+        X = analysis_df[valid_metrics].copy()
         y = analysis_df['total_return'].clip(-5, 5)  # Winsorize
         
-        mask = y.notna()
+        mask = y.notna() & np.isfinite(y)
         X, y = X[mask], y[mask]
         
         if len(y) < 10:
             if verbose:
-                print(f"Insufficient samples ({len(y)} < 10)")
+                print(f"Insufficient samples after filtering ({len(y)} < 10)")
             return None
         
         imputer = SimpleImputer(strategy='median')
@@ -620,20 +885,20 @@ def run_postrank_ols(dmdic, verbose=True):
         r_squared = model.score(X_scaled, y)
         
         coef_df = pd.DataFrame({
-            'metric': metric_cols,
+            'metric': valid_metrics,
             'coefficient': model.coef_,
             'abs_coef': np.abs(model.coef_)
         }).sort_values('abs_coef', ascending=False)
         
         if verbose:
-            print(f"\nRidge Regression (n={len(y)}):")
+            print(f"\nRidge Regression on TOP {len(y)} postRank stocks:")
             print(f"R-squared: {r_squared:.4f}")
-            print(f"\nTop 10 coefficients:")
-            print(coef_df.head(10).to_string(index=False))
+            print(f"\nCoefficients (standardized):")
+            print(coef_df.to_string(index=False))
             
-            print(f"\nInterpretation:")
-            top_pos = coef_df[coef_df['coefficient'] > 0].head(3)
-            top_neg = coef_df[coef_df['coefficient'] < 0].head(3)
+            print(f"\nInterpretation (for top-ranked stocks):")
+            top_pos = coef_df[coef_df['coefficient'] > 0.05].head(5)
+            top_neg = coef_df[coef_df['coefficient'] < -0.05].head(5)
             if not top_pos.empty:
                 print("  HELPED returns:")
                 for _, r in top_pos.iterrows():
@@ -654,6 +919,8 @@ def run_postrank_ols(dmdic, verbose=True):
     except Exception as e:
         if verbose:
             print(f"Regression failed: {e}")
+            import traceback
+            traceback.print_exc()
         return None
 
 
@@ -829,36 +1096,45 @@ def run_all(dmdic=None, loadfname=None, buy_years=None, eval_years_list=None,
     
     ols_result = run_ols_metrics_vs_returns(dmdic, topn, min_stocks=500, verbose=verbose)
     
-    # Save results
-    if save_results and not summary_df.empty:
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        
-        # Summary
-        summary_file = f"backtest_summary_{timestamp}.csv"
-        summary_df.to_csv(summary_file, index=False)
-        
-        # Detailed results per scenario
-        for key, result in scenario_details.items():
-            if 'analysis_df' in result:
-                result['analysis_df'].to_csv(f"backtest_detail_{key}_{timestamp}.csv", index=False)
-        
-        if verbose:
-            print(f"\nResults saved to: backtest_summary_{timestamp}.csv")
-    
-    # Run OLS on postRank metrics if a postRank pickle exists
-    if verbose:
-        print(f"\n{'='*70}")
-        print("OLS: POSTRANK METRICS vs RETURNS (from saved postRank)")
-        print('='*70)
-    
-    postrank_ols = run_postrank_ols(dmdic, verbose=verbose)
-    
-    return {
+    # Collect all results
+    all_results = {
         'summary': summary_df,
         'scenarios': scenario_details,
         'ols_analysis': ols_result,
-        'postrank_ols': postrank_ols,
     }
+    
+    # Run OLS on all stocks using BoMetric columns (already done above as ols_result)
+    # Now also run OLS specifically on TOP 100 postRank stocks with postRank metrics
+    if verbose:
+        print(f"\n{'='*70}")
+        print("OLS: ALL STOCKS with BoMetric columns (reference)")
+        print('='*70)
+    
+    postrank_ols = run_postrank_ols(dmdic, verbose=verbose)
+    all_results['postrank_ols'] = postrank_ols
+    
+    # Run OLS specifically on TOP 100 postRank stocks
+    if verbose:
+        print(f"\n{'='*70}")
+        print("OLS: TOP 100 POSTRANK STOCKS with postRank metrics")
+        print('='*70)
+    
+    top100_ols = run_top100_postrank_ols(dmdic, verbose=verbose)
+    all_results['top100_ols'] = top100_ols
+    
+    # Save all outputs using the new output module
+    if save_results and HAS_OUTPUT_MODULE:
+        output_folder = bt_out.save_all_outputs(all_results, verbose=verbose)
+        all_results['output_folder'] = output_folder
+    elif save_results:
+        # Fallback: save simple CSVs if output module not available
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        if not summary_df.empty:
+            summary_df.to_csv(f"backtest_summary_{timestamp}.csv", index=False)
+            if verbose:
+                print(f"\nResults saved to: backtest_summary_{timestamp}.csv")
+    
+    return all_results
 
 
 # Command-line interface
