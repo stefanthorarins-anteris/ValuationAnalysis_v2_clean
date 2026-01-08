@@ -93,6 +93,8 @@ def _get_top_symbols_fast(bm_filtered, cdx_filtered, dmdic, topn, verbose=False)
     
     This uses calcScore.simpleScore_fromDict to compute BoScore from local data only,
     avoiding the postBoScoreRanking step which makes API calls.
+    
+    Returns DataFrame with BoScore AND the underlying BoMetric values for correlation analysis.
     """
     import io
     
@@ -120,6 +122,22 @@ def _get_top_symbols_fast(bm_filtered, cdx_filtered, dmdic, topn, verbose=False)
     
     # Sort by score and return top N
     BoScore_df = BoScore_df.sort_values('score', ascending=False).head(topn)
+    
+    # Merge with most recent BoMetric values for each symbol (for correlation analysis)
+    top_symbols = BoScore_df['source'].tolist()
+    
+    # Get most recent metric values for each top symbol
+    metric_rows = []
+    for symbol in top_symbols:
+        sym_data = bm_filtered[bm_filtered['source'] == symbol].sort_values('date')
+        if not sym_data.empty:
+            metric_rows.append(sym_data.iloc[-1])
+    
+    if metric_rows:
+        metrics_df = pd.DataFrame(metric_rows)
+        # Merge BoScore with metrics
+        result_df = BoScore_df.merge(metrics_df, on='source', how='left')
+        return result_df
     
     return BoScore_df
 
