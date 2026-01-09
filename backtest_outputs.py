@@ -323,11 +323,13 @@ def plot_scenario_comparison(output_folder, summary_df, filename="scenario_compa
     return path
 
 
-def compute_cohort_analysis(analysis_df, score_col='score', return_col='total_return'):
+def compute_cohort_analysis(analysis_df, score_col='score', return_col='total_return', top_n=100):
     """
     Analyze returns by ranking cohorts to validate the ranking algorithm.
     
-    Cohorts: Bottom 50%, 50-25%, 25-10%, 10-5%, 5-1%, Top 1%
+    Cohorts: Bottom 50%, 50-25%, 25-10%, 10-5%, 5-1%, Top 1%, Top 100
+    
+    IMPORTANT: Higher score = better stock, so rank 1 = highest score = best stock
     
     Returns:
     --------
@@ -350,39 +352,72 @@ def compute_cohort_analysis(analysis_df, score_col='score', return_col='total_re
     if len(df) < 100:
         return None
     
-    # Rank stocks (1 = best)
-    if score_col in df.columns:
-        df['_rank'] = df[score_col].rank(ascending=False)
+    # Find the score column - try several common names
+    actual_score_col = None
+    score_candidates = ['BoScore', 'score', 'AggScore', 'Score']
+    
+    if score_col and score_col in df.columns:
+        actual_score_col = score_col
     else:
-        # If no score column, assume already sorted
-        df['_rank'] = range(1, len(df) + 1)
+        for candidate in score_candidates:
+            if candidate in df.columns:
+                actual_score_col = candidate
+                break
+    
+    if actual_score_col is None:
+        print(f"  WARNING: No score column found. Available columns: {list(df.columns)[:15]}...")
+        return None
+    
+    # Rank stocks: rank 1 = HIGHEST score = BEST stock
+    # ascending=False means highest score gets rank 1
+    df['_rank'] = df[actual_score_col].rank(ascending=False, method='first')
     
     n = len(df)
     
     # Define cohorts by percentile cutoffs
-    cohorts = {
-        'Bottom 50%': (0.50, 1.00),      # Ranks 50%-100% (worst half)
-        'Top 50-25%': (0.25, 0.50),      # Ranks 25%-50%
-        'Top 25-10%': (0.10, 0.25),      # Ranks 10%-25%
-        'Top 10-5%': (0.05, 0.10),       # Ranks 5%-10%
-        'Top 5-1%': (0.01, 0.05),        # Ranks 1%-5%
-        'Top 1%': (0.00, 0.01),          # Top 1%
-    }
+    # Note: For ranks, lower rank number = better stock
+    # Using percentiles for consistency (Top 100 removed since it varies with universe size)
+    cohorts = [
+        ('Bottom 50%', 0.50, 1.00),      # Ranks 50%-100% (worst half)
+        ('Top 50-25%', 0.25, 0.50),      # Ranks 25%-50%
+        ('Top 25-10%', 0.10, 0.25),      # Ranks 10%-25%
+        ('Top 10-5%', 0.05, 0.10),       # Ranks 5%-10%
+        ('Top 5-1%', 0.01, 0.05),        # Ranks 1%-5%
+        ('Top 1%', 0.00, 0.01),          # Top 1%
+        ('Top 50', 'absolute', 50),      # Exactly top 50 stocks
+        ('Top 20', 'absolute', 20),      # Exactly top 20 stocks
+        ('Top 5', 'absolute', 5),        # Exactly top 5 stocks
+    ]
     
     # Calculate stats for each cohort
     cohort_stats = []
-    for name, (lower_pct, upper_pct) in cohorts.items():
-        lower_rank = int(n * lower_pct) + 1
-        upper_rank = int(n * upper_pct)
+    for cohort_def in cohorts:
+        name = cohort_def[0]
         
-        if lower_rank > upper_rank:
-            lower_rank, upper_rank = upper_rank, lower_rank
-        
-        # Handle edge case for top 1%
-        if lower_pct == 0.00:
-            lower_rank = 1
-        
-        cohort_df = df[(df['_rank'] >= lower_rank) & (df['_rank'] <= upper_rank)]
+        if cohort_def[1] == 'absolute':
+            # Absolute number of stocks (e.g., Top 50, Top 20, Top 5)
+            top_count = cohort_def[2]
+            cohort_df = df[df['_rank'] <= top_count]
+            rank_range = f"1-{top_count}"
+        else:
+            lower_pct, upper_pct = cohort_def[1], cohort_def[2]
+            
+            # Convert percentiles to rank ranges
+            # Top X% means ranks 1 to X% of n
+            # Bottom 50% means ranks 50% of n to 100% of n
+            
+            if lower_pct == 0.00:
+                lower_rank = 1
+            else:
+                lower_rank = int(n * lower_pct) + 1
+            
+            upper_rank = max(1, int(n * upper_pct))
+            
+            if upper_rank < lower_rank:
+                lower_rank, upper_rank = upper_rank, lower_rank
+            
+            cohort_df = df[(df['_rank'] >= lower_rank) & (df['_rank'] <= upper_rank)]
+            rank_range = f"{lower_rank}-{upper_rank}"
         
         if len(cohort_df) == 0:
             continue
@@ -392,7 +427,7 @@ def compute_cohort_analysis(analysis_df, score_col='score', return_col='total_re
         cohort_stats.append({
             'cohort': name,
             'n_stocks': len(cohort_df),
-            'rank_range': f"{lower_rank}-{upper_rank}",
+            'rank_range': rank_range,
             'mean_return': returns.mean(),
             'median_return': returns.median(),
             'std_return': returns.std(),
@@ -400,6 +435,11 @@ def compute_cohort_analysis(analysis_df, score_col='score', return_col='total_re
             'min_return': returns.min(),
             'max_return': returns.max(),
         })
+    
+    # Debug output
+    print(f"  Cohort analysis using score column: '{actual_score_col}'")
+    print(f"  Score range: {df[actual_score_col].min():.4f} to {df[actual_score_col].max():.4f}")
+    print(f"  Total stocks: {n}, Top 100 exists: {len(df[df['_rank'] <= 100])}")
     
     if not cohort_stats:
         return None
@@ -445,12 +485,31 @@ def compute_cohort_analysis(analysis_df, score_col='score', return_col='total_re
     marginal_df = pd.DataFrame(marginal)
     
     # Summary statistics
-    # How much better is Top 1% vs Bottom 50%?
+    # How much better are top cohorts vs Bottom 50%?
     top1_median = stats_df[stats_df['cohort'] == 'Top 1%']['median_return'].values
+    top5_median = stats_df[stats_df['cohort'] == 'Top 5']['median_return'].values
+    top20_median = stats_df[stats_df['cohort'] == 'Top 20']['median_return'].values
+    top50_median = stats_df[stats_df['cohort'] == 'Top 50']['median_return'].values
     bottom50_median = stats_df[stats_df['cohort'] == 'Bottom 50%']['median_return'].values
     
+    # Calculate ratios safely (handle negative medians)
+    def safe_ratio(num, denom):
+        if denom == 0 or np.isnan(denom):
+            return np.nan
+        # If both positive or both negative, ratio is meaningful
+        if num * denom > 0:
+            return num / denom
+        # Mixed signs - return difference instead? Or NaN
+        return np.nan
+    
     summary = {
-        'top1_vs_bottom50_ratio': top1_median[0] / bottom50_median[0] if len(top1_median) > 0 and len(bottom50_median) > 0 and bottom50_median[0] != 0 else np.nan,
+        'top1_vs_bottom50_ratio': safe_ratio(top1_median[0], bottom50_median[0]) if len(top1_median) > 0 and len(bottom50_median) > 0 else np.nan,
+        'top5_vs_bottom50_ratio': safe_ratio(top5_median[0], bottom50_median[0]) if len(top5_median) > 0 and len(bottom50_median) > 0 else np.nan,
+        'top20_vs_bottom50_ratio': safe_ratio(top20_median[0], bottom50_median[0]) if len(top20_median) > 0 and len(bottom50_median) > 0 else np.nan,
+        'top50_vs_bottom50_ratio': safe_ratio(top50_median[0], bottom50_median[0]) if len(top50_median) > 0 and len(bottom50_median) > 0 else np.nan,
+        'top5_median_return': top5_median[0] if len(top5_median) > 0 else np.nan,
+        'top20_median_return': top20_median[0] if len(top20_median) > 0 else np.nan,
+        'bottom50_median_return': bottom50_median[0] if len(bottom50_median) > 0 else np.nan,
         'monotonic': all(marginal_df['absolute_improvement'] > 0) if len(marginal_df) > 0 else False,
         'avg_marginal_improvement': marginal_df['median_improvement_pct'].mean() if len(marginal_df) > 0 else np.nan,
     }
@@ -1055,31 +1114,62 @@ def generate_html_report(output_folder, results_dict, stock_picks_df=None, ols_r
     if 'cohort_analysis' in results_dict and results_dict['cohort_analysis'] is not None:
         cohort = results_dict['cohort_analysis']
         html_parts.append("""
-    <h2>Ranking Cohort Analysis</h2>
-    <p>This analysis validates the ranking algorithm by comparing returns across different percentile groups.
+    <h2>Ranking Cohort Analysis (Point-in-Time)</h2>
+    <p>This analysis validates the ranking algorithm using <strong>proper point-in-time selection</strong>:
+    stocks are ranked by BoScore calculated at the historical buy date (not today's scores).
     If the algorithm works, better-ranked stocks should have higher returns.</p>
 """)
         
         # Summary stats
         summary = cohort.get('summary', {})
         if summary:
-            ratio = summary.get('top1_vs_bottom50_ratio', np.nan)
+            ratio1 = summary.get('top1_vs_bottom50_ratio', np.nan)
+            ratio5 = summary.get('top5_vs_bottom50_ratio', np.nan)
+            ratio20 = summary.get('top20_vs_bottom50_ratio', np.nan)
+            top5_med = summary.get('top5_median_return', np.nan)
+            top20_med = summary.get('top20_median_return', np.nan)
+            bottom50_med = summary.get('bottom50_median_return', np.nan)
             monotonic = summary.get('monotonic', False)
             avg_marg = summary.get('avg_marginal_improvement', np.nan)
             
+            # Format ratios and medians safely
+            def fmt_ratio(r):
+                return f"{r:.2f}x" if r and not np.isnan(r) else "N/A"
+            def fmt_pct(p):
+                return f"{p*100:.1f}%" if p and not np.isnan(p) else "N/A"
+            def is_good(r):
+                return r and not np.isnan(r) and r > 1
+            
             html_parts.append(f"""
     <div class="stat-grid">
-        <div class="stat-card {'green' if ratio > 1 else 'orange'}">
+        <div class="stat-card {'green' if is_good(ratio5) else 'orange'}">
+            <h4>Top 5 vs Bottom 50%</h4>
+            <div class="value">{fmt_ratio(ratio5)}</div>
+            <p style="margin:0;font-size:10px;">Best 5 stocks</p>
+        </div>
+        <div class="stat-card {'green' if is_good(ratio20) else 'orange'}">
+            <h4>Top 20 vs Bottom 50%</h4>
+            <div class="value">{fmt_ratio(ratio20)}</div>
+        </div>
+        <div class="stat-card {'green' if is_good(ratio1) else 'orange'}">
             <h4>Top 1% vs Bottom 50%</h4>
-            <div class="value">{ratio:.2f}x</div>
+            <div class="value">{fmt_ratio(ratio1)}</div>
+        </div>
+        <div class="stat-card">
+            <h4>Top 5 Median Return</h4>
+            <div class="value">{fmt_pct(top5_med)}</div>
+        </div>
+        <div class="stat-card">
+            <h4>Top 20 Median Return</h4>
+            <div class="value">{fmt_pct(top20_med)}</div>
+        </div>
+        <div class="stat-card">
+            <h4>Bottom 50% Median Return</h4>
+            <div class="value">{fmt_pct(bottom50_med)}</div>
         </div>
         <div class="stat-card {'green' if monotonic else 'orange'}">
             <h4>Monotonic Improvement</h4>
             <div class="value">{'Yes' if monotonic else 'No'}</div>
-        </div>
-        <div class="stat-card">
-            <h4>Avg Marginal Improvement</h4>
-            <div class="value">{avg_marg:.1f}%</div>
         </div>
     </div>
 """)
@@ -1212,6 +1302,11 @@ def generate_html_report(output_folder, results_dict, stock_picks_df=None, ols_r
         ols = results_dict['top100_ols']
         html_parts.append(f"""
     <h2>OLS Analysis: Top 100 PostRank Stocks</h2>
+    <div class="metric-box" style="background-color:#fff3cd;border-left:4px solid #ffc107;">
+        <p><strong>CAUTION:</strong> This analysis uses TODAY's top picks (selected by AggScore) and 
+        measures their HISTORICAL returns. This has look-ahead bias - we're selecting today's winners
+        and seeing how they performed in the past. Use the Cohort Analysis above for proper point-in-time evaluation.</p>
+    </div>
     <div class="metric-box">
         <p><strong>R-squared:</strong> {ols.get('r_squared', 0):.4f}</p>
         <p><strong>Samples:</strong> {ols.get('n_samples', 0):,}</p>
@@ -1304,9 +1399,21 @@ def save_all_outputs(results_dict, verbose=True):
     if 'ols_analysis' in results_dict and results_dict['ols_analysis'] is not None:
         ols_df = results_dict['ols_analysis'].get('analysis_df')
         if ols_df is not None and not ols_df.empty:
-            # Use BoScore if available, otherwise just use return ranking
-            score_col = 'score' if 'score' in ols_df.columns else None
-            cohort_results = compute_cohort_analysis(ols_df, score_col=score_col, return_col='total_return')
+            # Use BoScore for ranking - this is the main ranking metric
+            # Try common score column names
+            score_col = None
+            for candidate in ['BoScore', 'score', 'AggScore', 'Score']:
+                if candidate in ols_df.columns:
+                    score_col = candidate
+                    break
+            
+            if score_col is None:
+                print("  WARNING: No BoScore column found for cohort analysis")
+                print(f"  Available columns: {list(ols_df.columns)[:20]}...")
+            else:
+                print(f"  Using '{score_col}' for cohort ranking")
+            
+            cohort_results = compute_cohort_analysis(ols_df, score_col=score_col, return_col='total_return', top_n=100)
             
             if cohort_results is not None:
                 save_cohort_analysis(output_folder, cohort_results, "cohort_all_stocks")
@@ -1316,9 +1423,19 @@ def save_all_outputs(results_dict, verbose=True):
                     
                     # Print quick summary
                     summary = cohort_results.get('summary', {})
+                    if summary.get('top5_vs_bottom50_ratio'):
+                        ratio = summary['top5_vs_bottom50_ratio']
+                        print(f"    Top 5 vs Bottom 50% median return ratio: {ratio:.2f}x")
+                    if summary.get('top20_vs_bottom50_ratio'):
+                        ratio = summary['top20_vs_bottom50_ratio']
+                        print(f"    Top 20 vs Bottom 50% median return ratio: {ratio:.2f}x")
                     if summary.get('top1_vs_bottom50_ratio'):
                         ratio = summary['top1_vs_bottom50_ratio']
                         print(f"    Top 1% vs Bottom 50% median return ratio: {ratio:.2f}x")
+                    if summary.get('top5_median_return'):
+                        print(f"    Top 5 median return: {summary['top5_median_return']*100:.1f}%")
+                    if summary.get('bottom50_median_return'):
+                        print(f"    Bottom 50% median return: {summary['bottom50_median_return']*100:.1f}%")
                     if summary.get('monotonic'):
                         print(f"    Monotonic improvement: Yes")
     

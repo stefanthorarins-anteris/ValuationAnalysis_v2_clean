@@ -379,6 +379,41 @@ def run_ols_metrics_vs_returns(dmdic, topn=100, min_stocks=500, verbose=True):
             print(f"Mean return: {analysis_df['total_return'].mean()*100:.1f}%")
             print(f"Median return: {analysis_df['total_return'].median()*100:.1f}%")
     
+    # Calculate BoScore for each stock so we can use it for cohort analysis
+    # Use the same scoring function as in _get_top_symbols_fast
+    try:
+        # Get averages (same as in _get_top_symbols_fast)
+        meandic = csf.getAves2(bm_filtered)
+        bmav = meandic['BoMetric_ave']
+        bmda = meandic['BoMetric_dateAve']
+        
+        # Suppress verbose output during BoScore calculation
+        import sys
+        import io
+        old_stdout = sys.stdout
+        sys.stdout = io.StringIO()
+        
+        try:
+            # Calculate BoScore for all stocks (same function used in main ranking)
+            BoScore_df = csf.simpleScore_fromDict(bm_filtered, bmav, bmda, n=8)
+        finally:
+            sys.stdout = old_stdout
+        
+        if not BoScore_df.empty:
+            # Merge BoScore into analysis_df
+            analysis_df = analysis_df.merge(BoScore_df[['source', 'score']], on='source', how='left')
+            analysis_df = analysis_df.rename(columns={'score': 'BoScore'})
+            
+            if verbose:
+                non_nan = analysis_df['BoScore'].notna().sum()
+                print(f"BoScore calculated for {non_nan} stocks")
+                print(f"BoScore range: {analysis_df['BoScore'].min():.2f} to {analysis_df['BoScore'].max():.2f}")
+    except Exception as e:
+        if verbose:
+            print(f"Could not calculate BoScore: {e}")
+            import traceback
+            traceback.print_exc()
+    
     # Identify numeric metric columns (exclude identifiers)
     exclude_cols = ['source', 'date', 'total_return', 'price_return', 'div_return']
     metric_cols = [c for c in analysis_df.columns 

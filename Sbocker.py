@@ -17,6 +17,7 @@ def main():
     import detectManipulation as dm
     import portfolio as pf
     import backtest_unified as bt
+    import data_quality as dq
     #import warnings
     #warnings.filterwarnings("ignore", category=FutureWarning)
     args = sys.argv[1:]
@@ -67,6 +68,9 @@ def main():
         # Note that **getfunddic should overwrite key-value combinations in datandmetricdic
         datandmetricdic = {**datandmetricdic, **{'Tickers_df': Tickers_df}, **getfunddic, **meandic, **configdic}
 
+        # Apply data quality filter to freshly fetched data
+        datandmetricdic = dq.apply_data_quality_filter(datandmetricdic, verbose=True, save_log=True)
+
         #write to info to file
         utils.write_lastIndexRead(configdic['lastindex_fn'], getfunddic['cind'])
         utils.writeManElimToFile(datandmetricdic,newmanelimtckrs)
@@ -76,6 +80,10 @@ def main():
     else:
         loadmetricdic = {'loadBoMetric': loadBoMetricbool, 'loadBoMetricfname': configdic['loadBoMetricfname']}
         datandmetricdic = utils.loadWrapper('metric', loadmetricdic)
+
+    # Apply data quality filter (remove corrupted/invalid price data)
+    # This must happen BEFORE any scoring to prevent garbage from affecting calculations
+    datandmetricdic = dq.apply_data_quality_filter(datandmetricdic, verbose=True, save_log=True)
 
     if portfoliotestyear > 0:
         datandmetricdic = pf.portfolioBacktestWrapper(portfoliotestyear,datandmetricdic)
