@@ -387,51 +387,56 @@ def postBoScoreRanking(bmtop,bstop,cdxtop,baseurl,api_key,period='quarter',nq=16
                 else:
                     postScoreMetric_df.loc[postScoreMetric_df['source'] == ticker, key2] = np.nan
 
-            # CycleHeat: Penalizes stocks with earnings above historical mean, amplified by beta
-            # Higher CycleHeat = late-cycle / hot stock that may be due for a correction
+            # CycleHeat: Measures how "hot" a stock is relative to its history
+            # Higher CycleHeat = earnings well above historical mean (potential late-cycle risk)
+            # Lower/negative CycleHeat = earnings below historical mean (potential recovery)
             if key2 == 'CycleHeat':
                 weight = postNewRankingDict[key2]['w']
                 weight_df[key2] = pd.Series(weight)
                 
-                cycle_heat = 0.0
+                cycle_heat = np.nan  # Use NaN for failed calculations, not 0
                 try:
-                    # Calculate EPS ratio: current_EPS / mean_EPS
+                    # Calculate EPS
                     eps = tempcdx['netIncome'] / tempcdx['weightedAverageShsOut']
                     eps_clean = eps.replace([np.inf, -np.inf], np.nan).dropna()
                     
                     if len(eps_clean) >= 2:
                         eps_current = eps_clean.iloc[0]  # Most recent
                         eps_mean = eps_clean.mean()
+                        eps_std = eps_clean.std()
                         
-                        # Calculate EPS ratio (R)
-                        if eps_mean != 0 and not np.isnan(eps_mean) and eps_mean > 0:
-                            R = eps_current / eps_mean
+                        # Calculate z-score of current EPS relative to history
+                        # This handles both positive and negative EPS correctly
+                        if eps_std > 0 and not np.isnan(eps_std):
+                            eps_zscore = (eps_current - eps_mean) / eps_std
+                        elif eps_mean != 0:
+                            # No variance - use simple ratio deviation
+                            eps_zscore = (eps_current - eps_mean) / abs(eps_mean)
                         else:
-                            R = 1.0  # Neutral if mean is zero/negative/nan
+                            eps_zscore = 0.0
                         
-                        # R_excess: only penalize when above mean (R > 1)
-                        R_excess = max(0.0, R - 1.0)
-                        
-                        # Fetch beta from profile API (only for top stocks, not all)
-                        beta_stock = 0.0
+                        # Fetch beta from profile API
+                        beta_stock = 1.0  # Default beta
                         try:
                             profile_resp = requests.get(f'{baseurl}v3/profile/{ticker}?apikey={api_key}').json()
                             if profile_resp and len(profile_resp) > 0:
                                 beta_val = profile_resp[0].get('beta')
                                 if beta_val is not None:
-                                    beta_stock = max(0.0, float(beta_val))  # Only positive beta amplifies
+                                    beta_stock = max(0.5, min(float(beta_val), 3.0))  # Clamp beta 0.5-3.0
                         except Exception:
                             pass
                         
-                        # CycleHeat = R_excess * (1 + beta)
-                        # Higher beta amplifies the penalty for above-mean earnings
-                        cycle_heat = R_excess * (1.0 + beta_stock)
+                        # CycleHeat = EPS z-score * beta
+                        # Positive = earnings above mean (hot)
+                        # Negative = earnings below mean (cold)
+                        # Beta amplifies the signal
+                        cycle_heat = eps_zscore * beta_stock
                         
-                        # Cap CycleHeat to prevent extreme values
-                        cycle_heat = min(cycle_heat, 3.0)
+                        # Cap to prevent extreme values
+                        cycle_heat = max(-3.0, min(cycle_heat, 3.0))
                         
-                except Exception:
-                    cycle_heat = 0.0
+                except Exception as e:
+                    cycle_heat = np.nan
                 
                 postScoreMetric_df.loc[postScoreMetric_df['source'] == ticker, key2] = cycle_heat
 
