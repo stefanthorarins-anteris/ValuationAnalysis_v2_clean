@@ -1,17 +1,28 @@
-cat > .gitignore << 'EOF'
+# ---- Secrets (never commit) ----
+fmpAPIkey.txt
+
+# ---- Large data artifacts (sync out-of-band, never in git; GitHub rejects >100MB) ----
 *.pickle
 *.pkl
+
+# ---- Generated output / results ----
+output/
+results/
+
+# ---- Python ----
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
+
+# ---- Logs ----
 *.log
 
-# IDE
+# ---- IDE ----
 .idea/
 .vscode/
 
-# OS cruft
+# ---- OS / app cruft ----
 .DS_Store
 Thumbs.db
-EOF
+.~lock.*#
