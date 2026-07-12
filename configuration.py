@@ -78,7 +78,7 @@ def getDataFetchConfiguration(args):
     #Assign number of periods to fetch
     if '-nrperiods' in args:
         inp = args.index('-nrperiods')
-        nrperiods = args[inp + 1]
+        nrperiods = int(args[inp + 1])
     else:
         nrperiods = 6 * 4
 
@@ -277,6 +277,17 @@ def getDataFetchConfiguration(args):
     else:
         backtest_topn = 100
 
+    # Transfer directory for end-of-run copy to Google-Drive-synced folder
+    # Default None (off). When set, the pipeline copies the output allowlist there at
+    # end-of-run, after ALL outputs are written and after ingestion completes.
+    if '-transfer_dir' in args:
+        itd = args.index('-transfer_dir')
+        if itd + 1 >= len(args):
+            raise Exception('-transfer_dir requires a directory path argument')
+        transfer_dir = args[itd + 1]
+    else:
+        transfer_dir = None
+
     # Skip loading manual elimination CSV when loading metrics (it's already in the pickle file)
     if loadBoMetric:
         manualelimtickers = []
@@ -314,7 +325,7 @@ def getDataFetchConfiguration(args):
                  'backtest_eval_years': backtest_eval_years, 'backtest_topn': backtest_topn,
                  'as_of': as_of, 'ingest_delisted': ingest_delisted,
                  'delisted_max_pages': delisted_max_pages,
-                 'startfromlastindex': startfromlastindex}
+                 'startfromlastindex': startfromlastindex, 'transfer_dir': transfer_dir}
 
     return configdic
 
