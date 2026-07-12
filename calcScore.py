@@ -3,7 +3,16 @@ import numpy as np
 from tqdm import tqdm
 import createDicts as cdic
 
-def simpleScore_fromDict(bm_df,bm_ave,bm_da,n=8):
+def simpleScore_fromDict(bm_df,bm_ave,bm_da,n=8,as_of=None):
+    """Stage-1 per-symbol scoring.
+
+    as_of : point-in-time date D (default None).  as_of=None reproduces the live
+    pipeline BIT-FOR-BIT: the PIT slice below is never entered, so every symbol is
+    scored over its full panel exactly as today.  Only when a real D is supplied is
+    each symbol's panel restricted to rows AVAILABLE on/before D (pit_slice, design
+    L1/L4) BEFORE the head(n) scoring window -- so head(n) picks the correct
+    as-of-D quarters instead of assuming "newest row == today".
+    """
     print(f'Calculating scores for each stock symbol in BoMetric_df')
     # test
     #    bm_df = BoMetric_df
@@ -18,6 +27,13 @@ def simpleScore_fromDict(bm_df,bm_ave,bm_da,n=8):
 
     for ticker in bm_df['source'].unique():
         bmdf_tick = bm_df[bm_df['source'] == ticker]
+        if as_of is not None:
+            # PIT: keep only rows available on/before D, then score head(n) over them.
+            # Never entered on a live run (as_of=None) -> live behaviour unchanged.
+            import pit_slice as ps
+            bmdf_tick = ps.slice_panel_as_of(bmdf_tick, D=as_of)
+            if bmdf_tick.empty:
+                continue
         tempscore = 0
         for key in dict_base:
             temp = calcByTier('base', dict_base[key]['Tier'], dict_base[key]['Sign'], bmdf_tick[key], bm_ave[key],key,n)

@@ -152,33 +152,92 @@ def get_fundamentals_fmp(Tickers_df, cdx_df, BoMetric_df, baseurl,
                   'datefail': datefail, 'emptyfail': emptyfail, 'cind': cntr, 'hasCurrentYear': hasCurrentYear}
     return resfunddic
 
+def _align_statements_by_date(bs, inc, cf, km, fr):
+    """R-E cross-statement date-join (design R-E, getData_fmp.py:48).
+
+    The old fillPreReqdf assigned bs/inc/cf/km/fr columns by RangeIndex POSITION.
+    Deep history makes ragged statement lengths (a missing/extra quarter in one
+    statement) more likely, and positional assignment then MISPAIRS periods across
+    statements, corrupting every cross-statement ratio.  This re-aligns each
+    statement to the balance-sheet reference dates by ACTUAL date.
+
+    IDENTITY GUARANTEE (bit-for-bit, behaviour-preserving on the common case): when
+    every statement carries the SAME, duplicate-free, identically-ordered date
+    vector as bs -- which is the well-formed case for essentially all tickers at the
+    current 24-quarter depth -- reindexing to bs['date'] returns each row in the same
+    position as the old positional code, so tempfund is byte-identical.  The join
+    only DIFFERS when statements are ragged (the bug it fixes).
+
+    SAFETY FALLBACK: if any statement (incl. bs) has duplicate or unusable dates,
+    date alignment is ambiguous -> fall back to the original POSITIONAL behaviour for
+    that ticker (never worse than today, and the row count is never changed).
+
+    Returns (aligned_dict, used_date_join: bool).  aligned_dict maps
+    'bs'/'inc'/'cf'/'km'/'fr' -> a frame reindexed to bs['date'] (or the raw frame on
+    fallback).
+    """
+    stmts = {'bs': bs, 'inc': inc, 'cf': cf, 'km': km, 'fr': fr}
+    ref_dates = pd.to_datetime(bs['date'], errors='coerce')
+    # unusable if bs dates are non-unique or all-NaT -> positional fallback
+    if ref_dates.isna().all() or ref_dates.duplicated().any():
+        return stmts, False
+    aligned = {}
+    for name, sdf in stmts.items():
+        if 'date' not in sdf.columns:
+            return stmts, False
+        s = sdf.copy()
+        s_dates = pd.to_datetime(s['date'], errors='coerce')
+        if s_dates.duplicated().any():
+            # ambiguous mapping for this statement -> positional fallback (whole ticker)
+            return stmts, False
+        s.index = s_dates
+        aligned[name] = s.reindex(ref_dates)
+    return aligned, True
+
+
 def fillPreReqdf(tempfund,preReq_dict,bs,inc,cf,km,fr):
     hcybool = False
+    aligned, used_join = _align_statements_by_date(bs, inc, cf, km, fr)
     for key1 in preReq_dict:
         for i in preReq_dict[key1]:
             if key1 == 'bs':
-                tempfund[i] = bs[i]
+                tempfund[i] = aligned['bs'][i].values if used_join else bs[i]
             elif key1 == 'inc':
-                tempfund[i] = inc[i]
+                tempfund[i] = aligned['inc'][i].values if used_join else inc[i]
             elif key1 == 'cf':
-                tempfund[i] = cf[i]
+                tempfund[i] = aligned['cf'][i].values if used_join else cf[i]
             elif key1 == 'km':
-                tempfund[i] = km[i]
+                tempfund[i] = aligned['km'][i].values if used_join else km[i]
             elif key1 == 'fr':
-                tempfund[i] = fr[i]
+                tempfund[i] = aligned['fr'][i].values if used_join else fr[i]
             else:
                 #tempfund['shares'] = inc['revenue'] / km['revenuePerShare']
-                tempfund['price'] = fr['priceEarningsRatio'] * (inc['netIncome'] / inc['weightedAverageShsOut'])
+                if used_join:
+                    _fr, _inc = aligned['fr'], aligned['inc']
+                    tempfund['price'] = (_fr['priceEarningsRatio'].values
+                                         * (_inc['netIncome'].values
+                                            / _inc['weightedAverageShsOut'].values))
+                else:
+                    tempfund['price'] = fr['priceEarningsRatio'] * (inc['netIncome'] / inc['weightedAverageShsOut'])
     tempfund = utils.setDatesToQuarterly(tempfund)
     if tempfund['date'].iloc[0].year == datetime.today().year:
         hcybool = True
 
     return tempfund, hcybool
 
-def getFsData_fmp(ticker, period, limit, baseurl, api_key,compyear, tickersfailed, lenfail,datefail,emptyfail):
+def getFsData_fmp(ticker, period, limit, baseurl, api_key,compyear, tickersfailed, lenfail,datefail,emptyfail,
+                  dead_path=False, http_get=None):
+    """Fetch the 5 statement endpoints for one ticker and apply the gates.
 
+    dead_path : forwarded to testForAPIFaults_fmp -- on the DELISTED-ENTITY
+        ingestion path it BYPASSES the datefail gate (F-A) and RELAXES the >=16q
+        lenfail gate (F-B) so dead names are not silently dropped.  Default False
+        keeps the live path bit-for-bit.
+    http_get : optional injected HTTP getter for offline testing.
+    """
     failcodes = list(range(400, 600))
-    failbool, whyfail, outdic = ft.testForAPIFaults_fmp(failcodes,compyear,ticker,period,limit,baseurl,api_key)
+    failbool, whyfail, outdic = ft.testForAPIFaults_fmp(failcodes,compyear,ticker,period,limit,baseurl,api_key,
+                                                        dead_path=dead_path, http_get=http_get)
     if failbool:
         tickersfailed.append(ticker)
         if whyfail == 'datefail':

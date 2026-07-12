@@ -24,6 +24,9 @@ def main():
 
     # Assign parameters
     configdic = cf.getDataFetchConfiguration(args)
+    # Point-in-time as-of date D (default None = today / live; reproduces current
+    # behaviour bit-for-bit).  Threaded into the universe build and the scorer.
+    as_of = configdic.get('as_of', None)
     loadBoMetricbool = configdic['loadBoMetric']
     loadBoResultbool = configdic['loadBoResults']
     saveBoMetricbool = configdic['saveBoMetric']
@@ -49,7 +52,7 @@ def main():
         manualelimtickers, baseurl = configdic['manualelimtickers'], configdic['baseurl']
         manualelimtickers = []
         Tickers_df = gdg.get_tickers(datasource, baseurl, api_key, manualelimtickers, tickerfilter,
-                                     sfilt ='all', mcapf = -1, fn = '')
+                                     sfilt ='all', mcapf = -1, fn = '', as_of=as_of)
         # Assign variables and get financial data and calculate relevant metrics
         cdx_df, BoMetric_df, nrTaT = datandmetricdic['cdx_df'], datandmetricdic['BoMetric_df'], configdic['nrTaT']
         getfunddic = gdf.get_fundamentals_fmp(Tickers_df, cdx_df, BoMetric_df, baseurl, api_key, configdic['compyear'],
@@ -90,7 +93,7 @@ def main():
 
     else:
         if not loadBoResultbool:
-            resdic = pb.postBoWrapper(datandmetricdic)
+            resdic = pb.postBoWrapper(datandmetricdic, as_of=as_of)
             resdic = {**resdic, **datandmetricdic}
 
             # save results according to boolean. Note that saveBoResults = 0 if loadBoResults = 1
@@ -131,6 +134,23 @@ def main():
     import pandas as pd
     pd.to_pickle(postrank_data, postrank_fname)
     print(f"PostRank saved to: {postrank_fname}")
+
+    # ---- Delisted-entity (survivorship) ingestion -- GATED, default OFF ----
+    # ACQUIRES survivorship data (registry + dead fundamentals + dead prices) and
+    # stores it for later point-in-time analysis.  It runs AFTER the live results
+    # are saved above, so the live top-20 is delivered first and is NEVER affected
+    # by (or delayed-into) the ingestion.  When -ingest_delisted is OFF the module
+    # is not even imported -> the live path is bit-for-bit unchanged.
+    if configdic.get('ingest_delisted'):
+        import delisted_ingest as di
+        # reuse the already-built live universe symbols when available (avoids a
+        # duplicate universe fetch); else run_ingest builds it itself.
+        live_syms = None
+        try:
+            live_syms = list(resdic['Tickers_df']['symbol'])
+        except Exception:
+            live_syms = None
+        di.run_ingest(configdic, live_symbols=live_syms)
 
     # Optional: Run unified backtesting if flag is set
     run_backtest = configdic.get('runbacktest', 0)

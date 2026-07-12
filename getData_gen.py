@@ -32,7 +32,80 @@ def safe_get(url, params=None, headers=None, timeout=10, retries=3, backoff=1):
             time.sleep(sleep_for)
     return None
 
-def get_tickers(ds, baseurl, api_key, manual_elim=None, tfilt='stock_NA1',sfilt='all', mcapf=-1,fn=''):
+
+class _FailedResponse:
+    """Stand-in Response returned by ``safe_http_get`` when every attempt raised
+    (connection error / timeout).  It carries a FAILING status_code so a downstream
+    status-code gate records a definitive, *retryable* ``failcode`` (fetch-unknown)
+    instead of either crashing on a ``None`` response or being mislabelled as a
+    genuine empty ("no data") response.  See ``safe_http_get`` and the dead-
+    fundamentals loop (review ADDENDUM-3 HIGH-1)."""
+
+    def __init__(self, status_code=599, url=None, error=None):
+        self.status_code = status_code
+        self.url = url
+        self.error = error
+
+    def json(self):
+        return []
+
+
+def safe_http_get(url, params=None, headers=None, timeout=10, retries=3, backoff=1,
+                  retry_statuses=(429, 500, 502, 503, 504), sleep=None, _get=None):
+    """Like ``safe_get`` but returns the raw ``requests.Response`` (NOT parsed JSON),
+    with the same retry/backoff/timeout discipline.
+
+    Used by the DELISTED dead-fundamentals loop, whose statement gate needs the
+    Response object (``.status_code`` / ``.json()``).  A transient failure -- a 429
+    throttle or a 5xx -- is retried with exponential backoff rather than being
+    swallowed; only after ``retries`` exhausts do we hand back the last FAILING
+    Response, so the caller can record a definitive ``failcode`` (re-audit) and NOT
+    silently reclassify a throttled dead name as "no fundamentals" (the HIGH-1 bias
+    hole).  If every attempt RAISED (connection error / timeout) we return a
+    ``_FailedResponse`` with a failing status_code so the caller never crashes on a
+    multi-hour loop.
+
+    ``sleep`` / ``_get`` are injectable for offline testing (no real network)."""
+    sleep = time.sleep if sleep is None else sleep
+    _get = requests.get if _get is None else _get
+    attempt = 0
+    last_resp = None
+    while attempt < retries:
+        try:
+            resp = _get(url, params=params, headers=headers, timeout=timeout)
+            last_resp = resp
+            if getattr(resp, "status_code", None) in retry_statuses:
+                attempt += 1
+                if attempt >= retries:
+                    return resp          # exhausted -> hand back the failing Response
+                sleep(backoff * (2 ** (attempt - 1)))
+                continue
+            return resp                  # non-retryable status (2xx/4xx-non-429) -> done
+        except requests.RequestException as e:
+            attempt += 1
+            if attempt >= retries:
+                warnings.warn(f"Failed to GET {url} after {retries} attempts: {e}")
+                return last_resp if last_resp is not None else _FailedResponse(url=url, error=str(e))
+            sleep(backoff * (2 ** (attempt - 1)))
+    return last_resp if last_resp is not None else _FailedResponse(url=url)
+
+def get_tickers(ds, baseurl, api_key, manual_elim=None, tfilt='stock_NA1',sfilt='all', mcapf=-1,fn='',
+                as_of=None, registry=None):
+    """Build the ticker universe.
+
+    as_of : point-in-time date D (default None).  as_of=None reproduces the live
+    universe BIT-FOR-BIT (available-traded/list intersect statement-symbol-lists,
+    page-0 delisted prune -- all as today).  Only when a real D is supplied is the
+    survivorship-safe PIT membership applied (universe_pit.build_universe): entities
+    alive-at-D are retained and not-yet-IPO'd names dropped.
+
+    NOTE (deferred, design Phase 2/3): a FULL PIT universe -- one that RETAINS names
+    that delisted after D but are dead today -- needs the paginated delisted
+    `registry` (not built yet) AND the page-0-prune inversion.  Until that registry
+    is supplied here, build_universe(as_of=D, registry=None) can only filter the
+    live occupants by ipoDate<=D; it cannot resurrect already-dead-today names.  The
+    as_of=None (live) path -- the one that runs tonight -- is unaffected.
+    """
     df = -1
     if ds == 'fromFile':
         # read tickers from CSV file; ensure returned dataframe is assigned to `df`
@@ -65,6 +138,13 @@ def get_tickers(ds, baseurl, api_key, manual_elim=None, tfilt='stock_NA1',sfilt=
         manual_elim = []
 
     df = df[~df['symbol'].isin(manual_elim)].reset_index(drop=True)
+
+    if as_of is not None:
+        # PIT membership over the union of live occupants + delisted registry.
+        # Never entered on a live run (as_of=None) -> live universe unchanged.
+        import universe_pit as up
+        keep = set(up.build_universe(df, registry=registry, as_of=as_of))
+        df = df[df['symbol'].isin(keep)].reset_index(drop=True)
 
     return df
 

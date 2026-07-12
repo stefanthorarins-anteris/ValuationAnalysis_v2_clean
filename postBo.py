@@ -1,5 +1,6 @@
 import calcScore as cs
 import postBoRank as pbr
+import forensicFlags as ff
 import pandas as pd
 import requests
 import openpyxl
@@ -15,7 +16,10 @@ import warnings
 # Suppress FutureWarning about DataFrame concatenation with empty/all-NA entries
 warnings.filterwarnings('ignore', message='.*concatenation with empty or all-NA entries.*')
 
-def postBoWrapper(dmdic):
+def postBoWrapper(dmdic, as_of=None):
+    """Scoring orchestration.  as_of (default None) threads the point-in-time date D
+    from Sbocker through Stage-1 (simpleScore_fromDict) and Stage-2
+    (postBoScoreRanking).  as_of=None -> live behaviour, BIT-FOR-BIT unchanged."""
     import sys
     import numpy as np
     
@@ -101,14 +105,14 @@ def postBoWrapper(dmdic):
     print("="*60 + "\n", flush=True)
     sys.stdout.flush()
     
-    BoScore_df = cs.simpleScore_fromDict(bmdf, bmav, bmda, n)
+    BoScore_df = cs.simpleScore_fromDict(bmdf, bmav, bmda, n, as_of=as_of)
     BoS_dftop100 = BoScore_df.head(100)
     BoM_dftop100 = bmdf[bmdf['source'].isin(list(BoS_dftop100.source))].reset_index(drop=True)
     cdx_dftop100 = cdx_df[cdx_df['source'].isin(list(BoS_dftop100.source))].reset_index(drop=True)
 
     n= 16
     rankdic = pbr.postBoScoreRanking(BoM_dftop100, BoS_dftop100, cdx_dftop100, dmdic['baseurl'], dmdic['api_key'],
-                                     dmdic['period'],n)
+                                     dmdic['period'],n,as_of=as_of)
 
     metricList = ['earningsYield', 'grahamNumberToPrice', 'RoA', 'EPStoEPSmean', 'freeCashFlowYield', 'reveneGrowth']
     cutoff = 1.5
@@ -158,15 +162,30 @@ def writeResWrapper(resdic):
     datasource = resdic['datasource']
     years = 6
 
-    # create csv listing the ntopagg stocks
+    # Build the per-name forensic-flag table ONCE (offline, no API calls) and route
+    # it into every top-N output. Promotes the already-computed M/C forensic signals
+    # + Sloan accruals + financial indicator from decoration to decision-support.
+    # Covers ntopagg so both the CSV (ntopagg) and the presentation (ntopxlsx) can
+    # index into it. FLAGS, NOT VERDICTS: nothing here drops a name.
+    flag_df = ff.buildForensicFlagTable(resdic, ntopagg)
+    fname_forensic = f'ForensicFlagsTop{ntopagg}-{fidag}_{datasource}_{tickerfilter}.csv'
+
+    # create csv listing the ntopagg stocks. writeBoAggToCSV fetches the API
+    # `sector` per name and cross-checks it against the pickle-derived financial
+    # classification (ff.applySectorFallback), returning the reconciled flag_df.
     fname_AggScoretop = f'AggScoreTop{ntopagg}-{fidag}_{datasource}_{tickerfilter}.csv'
-    writeBoAggToCSV(fb_df, mscore, cscore, baseurl, api_key, ntopagg, fname_AggScoretop)
+    flag_df = writeBoAggToCSV(fb_df, mscore, cscore, baseurl, api_key, ntopagg, fname_AggScoretop, flag_df)
+
+    # Write the standalone forensic decision-support CSV AFTER the API-sector
+    # cross-check, so it carries the reconciled (conservative) financial classification.
+    ff.writeForensicFlagsCSV(flag_df, fname_forensic)
+    print(f'Forensic-flag table written to: {fname_forensic}')
 
     # create presentation xlsx of ntopxlsx stocks
     fname_presentationtop= f'PresentationTop{ntopxlsx}-{fidag}_{datasource}_{tickerfilter}.xlsx'
-    createPresentation(fb_df, mscore, cscore, baseurl, api_key, ntopxlsx, fname_presentationtop, years)
+    createPresentation(fb_df, mscore, cscore, baseurl, api_key, ntopxlsx, fname_presentationtop, years, flag_df)
 
-def writeBoAggToCSV(fb_df, mscore, cscore, baseurl, api_key, ntopagg, fname_AggScoretop):
+def writeBoAggToCSV(fb_df, mscore, cscore, baseurl, api_key, ntopagg, fname_AggScoretop, flag_df=None):
     fbdf_tocsv = fb_df.head(ntopagg)
     symblist = list(fbdf_tocsv['source'])
     #BoComp_tocsv = pd.DataFrame(columns=['source','currentRatio','dividendYield','grahamNumberToPrice','price','beta',
@@ -374,11 +393,26 @@ def writeBoAggToCSV(fb_df, mscore, cscore, baseurl, api_key, ntopagg, fname_AggS
     # Add moatScore from postRank data (merged from moatIdentifier)
     if 'moatScore' in fbdf_tocsv.columns:
         BoComp_tocsv['moatScore'] = fbdf_tocsv['moatScore'].values
+
+    # Merge in the forensic-flag decision-support columns (offline-computed; no API).
+    # These make the M/C flags, their drivers, Sloan accruals, the financial-invalid
+    # indicator and the summary tag visible alongside the aggregate scores.
+    if flag_df is not None and not flag_df.empty:
+        # Cross-check the offline (pickle-based) financial classification against the
+        # API `sector` just fetched (sectorVec is aligned to symblist): if EITHER
+        # source says bank/insurer/REIT, the name is forensic-invalid (conservative).
+        flag_df = ff.applySectorFallback(flag_df, dict(zip(symblist, sectorVec)))
+        forensic_cols = ['source', 'isFinancial', 'financialKind', 'forensicValid',
+                         'M_flag_gt_-1.78', 'M_drivers', 'C_flag_ge_4', 'C_flags_fired',
+                         'sloanAccruals', 'sloan_worstQuintile_inShortlist', 'forensicTag']
+        keep = [c for c in forensic_cols if c in flag_df.columns]
+        BoComp_tocsv = BoComp_tocsv.merge(flag_df[keep], on='source', how='left')
     BoComp_tocsv.to_csv(fname_AggScoretop)
     pbar.close()
+    return flag_df
     return None
 
-def createPresentation(finalBoRank_df, mscore, cscore, baseurl, api_key, topn, fname, years):
+def createPresentation(finalBoRank_df, mscore, cscore, baseurl, api_key, topn, fname, years, flag_df=None):
     #test
     #fname = fname_spreadSheet
     #topn = 20
@@ -529,6 +563,35 @@ def createPresentation(finalBoRank_df, mscore, cscore, baseurl, api_key, topn, f
                 ws.cell(row=psdf_row + 6 + i, column=psdf_col + 4).value = peer
         else:
             ws.cell(row=psdf_row + 6, column=psdf_col + 4).value = 'N/A'
+
+        # --- Forensic decision-support block (offline; from precomputed flag_df) ---
+        # FLAGS, NOT VERDICTS. Surfaces the M/C flags + drivers, Sloan accruals, the
+        # financial-invalid indicator and the summary tag so the CEO's manual review
+        # sees the risk and its driver. No API call here.
+        if flag_df is not None and not flag_df.empty and (flag_df['source'] == symb).any():
+            frow = flag_df[flag_df['source'] == symb].iloc[0]
+            fcol = psdf_col
+            frow0 = psdf_row + 13
+            ws.cell(row=frow0, column=fcol).font = bold_font
+            ws.cell(row=frow0, column=fcol).value = 'FORENSIC FLAGS (guidance, not a drop)'
+            if not bool(frow.get('forensicValid', True)):
+                ws.cell(row=frow0, column=fcol + 1).value = (
+                    f"INVALID for {frow.get('financialKind', 'financial')} — use financial lens")
+            forensic_items = [
+                ('Summary tag', frow.get('forensicTag', '')),
+                ('Beneish M > -1.78?', 'FLAG' if frow.get('M_flag_gt_-1.78') else 'no'),
+                ('  M drivers', frow.get('M_drivers', '') or '-'),
+                ('Montier C >= 4?', 'FLAG' if frow.get('C_flag_ge_4') else 'no'),
+                ('  C flags fired', frow.get('C_flags_fired', '') or '-'),
+                ('Sloan accruals', frow.get('sloanAccruals', '')),
+                ('  Sloan worst-quintile (within shortlist)?',
+                 'FLAG' if frow.get('sloan_worstQuintile_inShortlist') else 'no'),
+                ('Financial (bank/insurer/REIT)?', 'YES' if frow.get('isFinancial') else 'no'),
+            ]
+            for i, (label, val) in enumerate(forensic_items, start=1):
+                ws.cell(row=frow0 + i, column=fcol).font = bold_font
+                ws.cell(row=frow0 + i, column=fcol).value = label
+                ws.cell(row=frow0 + i, column=fcol + 1).value = ('' if val is None else str(val))
 
         resize_columns(ws)
 

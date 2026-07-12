@@ -203,6 +203,50 @@ def getDataFetchConfiguration(args):
         manelimtickersbool = 1
         manelimtick_fname_toget = 'ManualEliminationTickersList_fmp_2023-02-14.csv'
 
+    # Point-in-time as-of date D (design 2026-07-12 restructure).  Default None =
+    # today / live run (reproduces current behaviour bit-for-bit).  Pass an ISO date
+    # (YYYY-MM-DD) to run the pipeline as-of that past date (survivorship-safe PIT
+    # universe + availability-date metric slice).  Tonight's full deep-fetch is a
+    # LIVE run -> omit this flag (as_of stays None).
+    if '-asof' in args:
+        iao = args.index('-asof')
+        # LOW-B fix: bounds-check so `-asof` as the FINAL arg (no date) raises a
+        # clear error instead of an opaque IndexError.
+        if iao + 1 >= len(args):
+            raise Exception('-asof requires a date argument (YYYY-MM-DD)')
+        as_of = args[iao + 1]
+        # MEDIUM-B guard (review addendum 2): the -asof path is only PARTIALLY
+        # point-in-time.  simpleScore_fromDict applies the row-level availability
+        # slice (L1/L4), but the cross-sectional baseline bm_ave / getAves2 (L2) and
+        # the per-ticker means (L3) are still computed over the FULL panel, and
+        # DCF/beta (L5/L6) are not substituted.  So a -asof run STILL embeds L2/L3
+        # lookahead and must NOT be treated as clean PIT.  Warn loudly so a
+        # partial-PIT run is never mistaken for a clean one.  (Tonight is as_of=None
+        # -> this never fires on the live run; the guard is wired for when -asof is
+        # used later.)
+        import warnings as _w
+        _w.warn(
+            "PARTIAL-PIT: -asof applies ONLY the row-level availability slice "
+            "(L1/L4). The cross-sectional baseline (L2, getAves2/bm_ave), the "
+            "per-ticker means (L3), and DCF/beta substitution (L5/L6) are NOT yet "
+            "point-in-time -- this run STILL embeds L2/L3 lookahead. Do NOT treat "
+            "its output as clean point-in-time.")
+    else:
+        as_of = None
+
+    # -ingest_delisted (default OFF): gate for the survivorship / delisted-entity
+    # ingestion (delisted_ingest.run_ingest).  When OFF the ingestion module is
+    # never imported and the live path is untouched / bit-for-bit.  Turn ON for the
+    # full survivorship deep-fetch.  Optional -delisted_max_pages bounds the
+    # registry pagination guard.
+    ingest_delisted = 1 if '-ingest_delisted' in args else 0
+    if '-delisted_max_pages' in args:
+        idmp = args.index('-delisted_max_pages')
+        delisted_max_pages = int(args[idmp + 1])
+    else:
+        delisted_max_pages = 500
+    startfromlastindex = 1 if '-startfromlastindex' in args else 0
+
     if '-portfolioTest' in args:
         ipt = args.index('-portfolioTest')
         portfoliotestyear = args[ipt +1]
@@ -267,7 +311,10 @@ def getDataFetchConfiguration(args):
                  'ntopxlsx': ntopxlsx, 'sectorfilter': sectorfilter, 'portfoliotestyear': portfoliotestyear,
                  'sectorlist': sectorlist,
                  'runbacktest': runbacktest, 'backtest_buy_years': backtest_buy_years,
-                 'backtest_eval_years': backtest_eval_years, 'backtest_topn': backtest_topn}
+                 'backtest_eval_years': backtest_eval_years, 'backtest_topn': backtest_topn,
+                 'as_of': as_of, 'ingest_delisted': ingest_delisted,
+                 'delisted_max_pages': delisted_max_pages,
+                 'startfromlastindex': startfromlastindex}
 
     return configdic
 

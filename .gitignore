@@ -4,10 +4,25 @@ fmpAPIkey.txt
 # ---- Large data artifacts (sync out-of-band, never in git; GitHub rejects >100MB) ----
 *.pickle
 *.pkl
+baseline_tools/price_data/
 
 # ---- Generated output / results ----
 output/
 results/
+# Root-level result artifacts emitted by a pipeline run (NEVER commit — they are
+# regenerated every run and can leak the ranked output). Dated variants match too.
+AggScoreTop*.csv
+PresentationTop*.xlsx
+ForensicFlagsTop*.csv
+# Real price data (moves via Google Drive only, never git). price_data/ already
+# covered above; this also guards a root-level copy.
+real_prices.csv
+
+# Delisted-entity ingestion DATA artifacts (multi-GB, move via Google Drive only,
+# never git): registry parquet, dead fundamentals pickle, bulk prices, death
+# signature, resume anchor. The compact run_logs/ MANIFEST + JSONL travel via
+# GitHub and are DELIBERATELY NOT ignored (how the house inspects a run).
+delisted_out/
 
 # ---- Python ----
 __pycache__/

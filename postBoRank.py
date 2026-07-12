@@ -5,7 +5,13 @@ import numpy as np
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 
-def postBoScoreRanking(bmtop,bstop,cdxtop,baseurl,api_key,period='quarter',nq=16):
+def postBoScoreRanking(bmtop,bstop,cdxtop,baseurl,api_key,period='quarter',nq=16,as_of=None):
+    # as_of : point-in-time date D (default None).  as_of=None reproduces the live
+    # Stage-2 ranking BIT-FOR-BIT.  The parameter is threaded here so the PIT DCF/beta
+    # engagement (computed point-in-time DcfToPrice + CycleHeat beta, design s2B/s2C)
+    # has a live seam; the point-in-time DCF/beta substitution itself is a later
+    # (registry-backed, Phase 3+) step and is NOT wired on this path yet.  With
+    # as_of=None nothing below branches on it -> live behaviour unchanged.
     import sys
     print('Ranking the top 100 stocks, according to BoScore.')
     sys.stdout.flush()  # Ensure output is printed before progress bar
