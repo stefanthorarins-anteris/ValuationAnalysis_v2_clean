@@ -136,7 +136,7 @@ def getDataFetchConfiguration(args):
 
     # Assign values to saving and loading bools
     if '-savebometric' in args:
-        isbm = args.index('-savebobetric')
+        isbm = args.index('-savebometric')
         saveBoMetric = 1 if int(args[isbm+1]) > 0 else 0
     else:
         saveBoMetric = 1
