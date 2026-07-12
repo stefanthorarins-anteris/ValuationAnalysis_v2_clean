@@ -36,7 +36,7 @@ import warnings
 import numpy as np
 import pandas as pd
 
-from detectManipulation import invrollsumTTM
+from detectManipulation import invrollsumTTM, _toNewestFirst
 
 # --- Beneish component decomposition constants -------------------------------
 # Coefficients as used in detectManipulation.calcBeneishM (the +1.78 shift there
@@ -137,21 +137,23 @@ def computeSloanAccruals(cdx_df, symblist):
     """Standalone Sloan accruals = (NI_ttm - CFO_ttm) / avg(TotalAssets).
 
     NI/CFO are TTM flows (trailing-4-quarter sums); TotalAssets is a stock, so the
-    denominator averages beginning and ending TA of the TTM window. cdx_df is
-    most-recent-first, so the most recent complete TTM is index 0 and the window
-    start is index 4. Higher (more positive) = more accruals = lower earnings
-    quality. Returns DataFrame[source, sloanAccruals]."""
+    denominator averages beginning and ending TA of the TTM window. The per-symbol
+    frame is normalized to NEWEST-FIRST here (via _toNewestFirst, same explicit
+    orientation the M/C forensics use) so index 0 IS the most recent quarter and
+    index 4 is 4 quarters earlier -- REGARDLESS of how cdx_df happens to be ordered.
+    The upstream cdx_df is oldest-first and is left untouched. Higher (more positive)
+    = more accruals = lower earnings quality. Returns DataFrame[source, sloanAccruals]."""
     out = pd.DataFrame({'source': symblist})
     vals = []
     for symb in symblist:
-        sub = cdx_df[cdx_df['source'] == symb]
+        sub = _toNewestFirst(cdx_df[cdx_df['source'] == symb])
         if len(sub) < 5:
             vals.append(np.nan)
             continue
         ni = pd.to_numeric(sub['netIncome'], errors='coerce')
         cfo = pd.to_numeric(sub['netCashProvidedByOperatingActivities'], errors='coerce')
         ta = pd.to_numeric(sub['totalAssets'], errors='coerce')
-        ni_ttm = invrollsumTTM(ni)
+        ni_ttm = invrollsumTTM(ni)      # newest-first: iloc[0] = TTM ending at most recent Q
         cfo_ttm = invrollsumTTM(cfo)
         ni_recent = ni_ttm.iloc[0]
         cfo_recent = cfo_ttm.iloc[0]

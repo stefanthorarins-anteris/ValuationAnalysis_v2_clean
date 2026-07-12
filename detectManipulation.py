@@ -16,6 +16,34 @@ def detectManipulationWrapper(resdic):
 
     return detmandic
 
+def _toNewestFirst(df):
+    """Normalize a per-symbol frame to NEWEST-FIRST (row 0 = most recent quarter).
+
+    The forensic M/C formulas and the recency window (head(...)) below are all
+    written to this single, explicit orientation. The upstream cdx_df is
+    oldest-first and is left untouched (other modules depend on that ordering);
+    the flip is local to the forensic computation. Sorting by parsed date makes
+    the orientation robust to however the rows happen to arrive."""
+    return (df.sort_values('date', key=lambda s: pd.to_datetime(s), ascending=False)
+              .reset_index(drop=True))
+
+
+def _yoyCurOverPrior(ttm):
+    """current / prior-year, on NEWEST-FIRST data.
+
+    Row k is the current quarter; row k+4 is the SAME quarter one year earlier
+    (4 rows older). Beneish DSRI/AQI/SGI/SGAI/LVGI are all defined current/prior."""
+    return ttm / ttm.shift(-4)
+
+
+def _yoyPriorOverCur(ttm):
+    """prior-year / current, on NEWEST-FIRST data.
+
+    Beneish GMI and DEPI are defined prior/current (a DECLINE in gross margin or
+    in the depreciation rate pushes the index ABOVE 1.0, the suspicious side)."""
+    return ttm.shift(-4) / ttm
+
+
 def calcMontierC(resdic,symblist):
     cdx_df = resdic['cdx_df']
     SLmeanCscore = pd.DataFrame(columns=['source', 'C_Score_mean'])
@@ -25,7 +53,10 @@ def calcMontierC(resdic,symblist):
     for symbol in symblist:
         tmpcdf = pd.DataFrame(columns=['date', 'symbol', 'NICFOdiv','DSOinc','DSIinc','OCARinc','DAPPdec','TAgr','C_Score'])
         # C-score if NICFO > 0, DSOinc > 0 ...
-        tempcdx_df = cdx_df[cdx_df['source'] == symbol]
+        # Newest-first so diff(-4)/pct_change(-4) read current-minus-prior (a YoY
+        # INCREASE is the suspicious side for every Montier flag) and head(...)
+        # summarizes the MOST RECENT quarters.
+        tempcdx_df = _toNewestFirst(cdx_df[cdx_df['source'] == symbol])
 
         cfoTTM = invrollsumTTM(tempcdx_df['netCashProvidedByOperatingActivities'])
         niTTM = invrollsumTTM(tempcdx_df['netIncome'])
@@ -60,6 +91,7 @@ def calcMontierC(resdic,symblist):
         symb_cscore = tmpcdf[0:len(tmpcdf)-4]
 
         cdf = pd.concat([cdf, symb_cscore])
+        # head(2): newest-first, so the 2 MOST RECENT quarters (current condition).
         cscore = symb_cscore['C_Score'].head(2).mean()
         SLmeanCscore.loc[SLmeanCscore['source']==symbol, 'C_Score_mean'] = cscore
 
@@ -78,45 +110,54 @@ def calcBeneishM(resdic,symblist):
     problemlist = []
     for symbol in symblist:
         tmpmdf = pd.DataFrame(columns=['date', 'symbol', 'DSRI','GMI','AQI','SGI','DEPI','SGAI','LVGI','TATA','M_Score'])
-        tempcdx_df = cdx_df[cdx_df['source'] == symbol]
+        # Newest-first so invrollsumTTM's trailing-4-quarter sum, the YoY helpers
+        # (prior = 4 rows older) and head(...) all read one known orientation.
+        tempcdx_df = _toNewestFirst(cdx_df[cdx_df['source'] == symbol])
         dsoTTM = invrollsumTTM(tempcdx_df['daysSalesOutstanding'])
         salesTTM = invrollsumTTM(tempcdx_df['revenue'])
         dsriTTM = dsoTTM/salesTTM
-        tmpmdf['DSRI'] = dsriTTM.pct_change(-4, fill_method=None) + 1
+        tmpmdf['DSRI'] = _yoyCurOverPrior(dsriTTM)          # (DSO/Sales)_t / (DSO/Sales)_{t-1}
 
         gmiTTM = invrollsumTTM(tempcdx_df['grossProfitMargin'])
-        tmpmdf['GMI'] = gmiTTM.pct_change(-4, fill_method=None) + 1
+        tmpmdf['GMI'] = _yoyPriorOverCur(gmiTTM)            # GM_{t-1} / GM_t  (margin decline -> >1)
 
         tcaTTM = invrollsumTTM(tempcdx_df['totalCurrentAssets'])
         ppenTTM = invrollsumTTM(tempcdx_df['propertyPlantEquipmentNet'])
         taTTM = invrollsumTTM(tempcdx_df['totalAssets'])
         aqiTTM = 1- (tcaTTM + ppenTTM)/taTTM
-        tmpmdf['AQI'] = aqiTTM.pct_change(-4, fill_method=None) + 1
+        tmpmdf['AQI'] = _yoyCurOverPrior(aqiTTM)            # AQI_t / AQI_{t-1}
 
         sgiTTM = invrollsumTTM(tempcdx_df['revenue'])
-        tmpmdf['SGI'] = sgiTTM.pct_change(-4, fill_method=None) + 1
+        tmpmdf['SGI'] = _yoyCurOverPrior(sgiTTM)            # Sales_t / Sales_{t-1}
 
         #z = x / (x + y) = 1 / ((x + y) / (x)) = 1 / (1 + (y / x))
         # Ef w = y / x, þá: z = 1 / (1 + w). x = depreciationAndAmortization, y = PP&Enet
         ddaTTM = invrollsumTTM(tempcdx_df['depreciationAndAmortization'])
         w = ppenTTM/ddaTTM
-        depiTTM = 1/(1+w)
-        tmpmdf['DEPI'] = depiTTM.shift(-1)/depiTTM
+        depiTTM = 1/(1+w)                                   # depreciation rate = Dep/(Dep+PPE)
+        tmpmdf['DEPI'] = _yoyPriorOverCur(depiTTM)          # rate_{t-1} / rate_t  (rate decline -> >1), full 4Q YoY
 
         sgaTTM = invrollsumTTM(tempcdx_df['sellingGeneralAndAdministrativeExpenses'])
         sgaiTTM = sgaTTM/sgiTTM
-        tmpmdf['SGAI'] = sgaiTTM.pct_change(-4, fill_method=None) + 1
+        tmpmdf['SGAI'] = _yoyCurOverPrior(sgaiTTM)          # (SGA/Sales)_t / (SGA/Sales)_{t-1}
 
         ltdTTM = invrollsumTTM(tempcdx_df['longTermDebt'])
         clTTM = invrollsumTTM(tempcdx_df['totalCurrentLiabilities'])
         lvgiTTM = (ltdTTM+clTTM)/taTTM
-        tmpmdf['LVGI'] = lvgiTTM.pct_change(-4, fill_method=None) + 1
+        tmpmdf['LVGI'] = _yoyCurOverPrior(lvgiTTM)          # Leverage_t / Leverage_{t-1}
 
         niTTM = invrollsumTTM(tempcdx_df['netIncome'])
         cfoTTM = invrollsumTTM(tempcdx_df['netCashProvidedByOperatingActivities'])
         cffTTM = invrollsumTTM(tempcdx_df['netCashUsedProvidedByFinancingActivities'])
+        # TATA is a current-period LEVEL (higher accruals = more suspicious), so it
+        # carries no YoY orientation to invert. NOTE: the extra -cffTTM term is a
+        # local modeling choice, NOT published Beneish (published TATA = (NI-CFO)/TA);
+        # left unchanged here because it is not an orientation/recency defect.
         tmpmdf['TATA'] = (niTTM - cfoTTM - cffTTM)/taTTM
 
+        # +1.78 folds the -1.78 manipulator cutoff into the stored score, so the
+        # stored M>0 is exactly the standard Beneish M>-1.78. Preserved verbatim;
+        # it now folds correctly-directed components.
         tmpmdf['M_Score'] = - 4.84 + 0.92*tmpmdf.DSRI + 0.528*tmpmdf.GMI + 0.404*tmpmdf.AQI + 0.892*tmpmdf.SGI +\
                             0.115*tmpmdf.DEPI - 0.172*tmpmdf.SGAI + 4.679*tmpmdf.TATA - 0.327*tmpmdf.LVGI + 1.78
         tmpmdf['date'] = tempcdx_df['date']
@@ -124,6 +165,7 @@ def calcBeneishM(resdic,symblist):
         symb_mscore = tmpmdf[0:len(tmpmdf)-4]
 
         mdf = pd.concat([mdf,symb_mscore])
+        # head(4): newest-first, so the 4 MOST RECENT quarters (current condition).
         mscore = symb_mscore['M_Score'].head(4).mean()
         SLmeanMscore.loc[SLmeanMscore['source']==symbol, 'M_Score_mean'] = mscore
 
