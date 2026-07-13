@@ -10,6 +10,7 @@ import shutil
 import os
 import glob
 from pathlib import Path
+import transfer_utils as tu
 
 def transfer_outputs_to_drive(transfer_dir, configdic, verbose=True):
     """
@@ -39,8 +40,9 @@ def transfer_outputs_to_drive(transfer_dir, configdic, verbose=True):
             print("[TRANSFER] Skipped (transfer_dir not set)")
         return result
 
-    # DENYLIST: patterns that must NEVER be copied
-    denylist_patterns = ['*key*', '*pem', 'fmpAPIkey.txt']
+    # DENYLIST: patterns that must NEVER be copied.  Sourced from transfer_utils so
+    # the end-of-run path and the incremental per-phase path share ONE denylist.
+    denylist_patterns = tu.DENYLIST_PATTERNS
 
     # ALLOWLIST: explicit patterns to copy
     allowlist_patterns = [
@@ -87,19 +89,8 @@ def transfer_outputs_to_drive(transfer_dir, configdic, verbose=True):
         result['message'] = f'Could not create target directory: {e}'
         return result
 
-    # Helper to check if a file matches the denylist
-    def is_denied(filename):
-        fname_lower = filename.lower()
-        for pattern in denylist_patterns:
-            if '*' in pattern:
-                # Simple wildcard matching
-                prefix = pattern.replace('*', '')
-                if prefix in fname_lower:
-                    return True
-            else:
-                if fname_lower == pattern.lower():
-                    return True
-        return False
+    # Denylist check reused from transfer_utils (single source of truth).
+    is_denied = tu.is_denied
 
     # Copy files matching allowlist patterns
     copied_files = []
@@ -166,19 +157,11 @@ def transfer_outputs_to_drive(transfer_dir, configdic, verbose=True):
             if verbose:
                 print(f"[TRANSFER] ERROR copying directory {dirpat}: {e}")
 
-    # Assert that the key file was NOT copied
-    key_file_in_target = transfer_path / 'fmpAPIkey.txt'
-    if key_file_in_target.exists():
-        if verbose:
-            print(f"[TRANSFER] CRITICAL ERROR: fmpAPIkey.txt was copied! Removing it.")
-        try:
-            key_file_in_target.unlink()
-        except Exception as e:
-            if verbose:
-                print(f"[TRANSFER] ERROR removing key file: {e}")
-            result['status'] = 'error'
-            result['message'] = 'Key file was mistakenly copied and could not be removed'
-            return result
+    # Assert that the key file was NOT copied (shared post-copy safety net).
+    if not tu.assert_no_key_file(transfer_path, verbose=verbose):
+        result['status'] = 'error'
+        result['message'] = 'Key file was mistakenly copied and could not be removed'
+        return result
 
     result['status'] = 'success'
     result['copied_files'] = len(copied_files)
@@ -265,7 +248,12 @@ def main():
         utils.writeManElimToFile(datandmetricdic,newmanelimtckrs)
         # Save results if saveBoMetric == 1
         if saveBoMetricbool:
-            utils.saveWrapper('metric', datandmetricdic)
+            metric_fname = utils.saveWrapper('metric', datandmetricdic)
+            # PHASE 1 boundary: sync the freshly-written metric pickle to Drive so a
+            # later crash still leaves phase-1 output on Drive.  No-op if transfer_dir
+            # unset; never raises.
+            tu.copy_artifacts_to_transfer_dir(
+                configdic.get('transfer_dir'), [metric_fname], verbose=True)
     else:
         loadmetricdic = {'loadBoMetric': loadBoMetricbool, 'loadBoMetricfname': configdic['loadBoMetricfname']}
         datandmetricdic = utils.loadWrapper('metric', loadmetricdic)
@@ -284,7 +272,10 @@ def main():
 
             # save results according to boolean. Note that saveBoResults = 0 if loadBoResults = 1
             if saveBoResultbool:
-                utils.saveWrapper('results',resdic)
+                results_fname = utils.saveWrapper('results',resdic)
+                # PHASE 2 boundary: sync the results pickle to Drive incrementally.
+                tu.copy_artifacts_to_transfer_dir(
+                    configdic.get('transfer_dir'), [results_fname], verbose=True)
         else:
             loadresdic = {'loadBoResults': loadBoResultbool, 'loadBoResultsfname': configdic['loadBoResultsfname']}
             resdic = utils.loadWrapper('results', loadresdic)
@@ -304,8 +295,17 @@ def main():
 
     print(resdic['postRank'].head(50))
 
-    pb.writeResWrapper(resdic)
-    
+    deliverable_fnames = pb.writeResWrapper(resdic)
+
+    # PHASE 3 boundary (deliverables): the human-readable top-N deliverables
+    # (AggScoreTop*.csv, PresentationTop*.xlsx, ForensicFlagsTop*.csv) are written
+    # by writeResWrapper ABOVE, before the postRank pickle and the (optional,
+    # multi-hour) delisted ingestion below.  Sync them to Drive as soon as they are
+    # written so an ingestion-phase crash can't lose them.  Same helper + denylist as
+    # the other phase copies; no-op when transfer_dir is unset; never raises.
+    tu.copy_artifacts_to_transfer_dir(
+        configdic.get('transfer_dir'), deliverable_fnames, verbose=True)
+
     # Save postRank to pickle for backtesting
     from datetime import datetime
     postrank_fname = f"postRank_{datetime.today().strftime('%Y-%m-%d')}_{configdic['datasource']}_{configdic['tickerfilter']}.pickle"
@@ -320,6 +320,11 @@ def main():
     import pandas as pd
     pd.to_pickle(postrank_data, postrank_fname)
     print(f"PostRank saved to: {postrank_fname}")
+
+    # PHASE 3 boundary: sync the postRank pickle to Drive incrementally, so the
+    # ranked output is on Drive before the (optional, long) delisted ingestion runs.
+    tu.copy_artifacts_to_transfer_dir(
+        configdic.get('transfer_dir'), [postrank_fname], verbose=True)
 
     # ---- Delisted-entity (survivorship) ingestion -- GATED, default OFF ----
     # ACQUIRES survivorship data (registry + dead fundamentals + dead prices) and

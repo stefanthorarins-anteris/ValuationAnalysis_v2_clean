@@ -185,6 +185,12 @@ def writeResWrapper(resdic):
     fname_presentationtop= f'PresentationTop{ntopxlsx}-{fidag}_{datasource}_{tickerfilter}.xlsx'
     createPresentation(fb_df, mscore, cscore, baseurl, api_key, ntopxlsx, fname_presentationtop, years, flag_df)
 
+    # Return the human-readable top-N deliverables just written (same pattern as
+    # utils.saveWrapper returning its pickle name) so Sbocker.main can copy them to
+    # the Drive-synced transfer dir at the pre-ingestion phase boundary. Data-only:
+    # nothing here changes scoring/ranking/forensic output.
+    return [fname_AggScoretop, fname_presentationtop, fname_forensic]
+
 def writeBoAggToCSV(fb_df, mscore, cscore, baseurl, api_key, ntopagg, fname_AggScoretop, flag_df=None):
     fbdf_tocsv = fb_df.head(ntopagg)
     symblist = list(fbdf_tocsv['source'])
