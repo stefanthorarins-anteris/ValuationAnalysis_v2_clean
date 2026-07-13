@@ -101,6 +101,27 @@ def postBoScoreRanking(bmtop,bstop,cdxtop,baseurl,api_key,period='quarter',nq=16
                      **{k: postNewRankingDict_local[k]['w'] for k in postNewRankingDict_local}}
     #weight_df['BoScore'] = pd.Series(0.2)
     weightzerobool = False
+
+    # --- ORDERING FIX (Stage-2): enforce NEWEST-first for the entire scorer -----
+    # Every metric below indexes with .head(nq) / .iloc[0] / .iloc[0:4] /
+    # pct_change assuming the most-recent quarter is row 0 (comments say
+    # iloc[0]=="most recent"). But data_quality.py sorts cdx OLDEST-first and
+    # nothing re-sorts it on the way here, so those reads silently used the wrong
+    # end (stale windows, sign-flipped growth, time-reversed Piotroski). Re-sort a
+    # COPY to newest-first, robustly: dates are coerced to datetime (a naive string
+    # sort_values('date') mis-orders mixed/malformed date strings and would leave a
+    # subset stale). We COPY because cdx_dftop100 is also stored in resdic and must
+    # not be mutated. Assert per-ticker row count and NaT count are unchanged.
+    cdxtop = cdxtop.copy()
+    _n_before = cdxtop.groupby('source').size()
+    cdxtop['date'] = pd.to_datetime(cdxtop['date'], errors='coerce')
+    _nat_before = int(cdxtop['date'].isna().sum())
+    cdxtop = cdxtop.sort_values(['source', 'date'], ascending=[True, False]).reset_index(drop=True)
+    assert cdxtop.groupby('source').size().equals(_n_before), \
+        "Stage-2 newest-first re-sort changed per-ticker row counts"
+    assert int(cdxtop['date'].isna().sum()) == _nat_before, \
+        "Stage-2 newest-first re-sort changed NaT count"
+
     mcapAve = cdxtop.marketCap.mean()
     cdxtop['mcapQuants'] = (-1)*((pd.qcut(cdxtop['marketCap'], 4).cat.codes/(3) - 0.5))
     #mcapAve = 70310173993
@@ -386,9 +407,16 @@ def postBoScoreRanking(bmtop,bstop,cdxtop,baseurl,api_key,period='quarter',nq=16
                 weight_df[key2] = pd.Series(weight)
                 # Calculate priceGrowth from price data in cdxtop dataframe (no API call needed)
                 if 'price' in tempcdx.columns and not tempcdx['price'].empty:
-                    # Calculate percentage change (negative because we want growth, not decline)
-                    # pct_change(-1) calculates change from previous period (going backwards in time)
-                    price_growth = -tempcdx['price'].pct_change(-1, fill_method=None).head(nq).mean()
+                    # cdxtop is NEWEST-first (re-sorted at function entry), so
+                    # pct_change(-1)[i] = (price[i] - price[i+1]) / price[i+1]
+                    # = (newer - older) / older = period growth, POSITIVE when the
+                    # price rose. NO negation: positive priceGrowth == appreciation,
+                    # entering the score with its +0.5 (momentum) weight.
+                    # BUGFIX: the previous leading '-' inverted the sign once the
+                    # ordering was corrected to newest-first (it had partially
+                    # cancelled the old oldest-first bug). Must stay removed in
+                    # lockstep with the baseline_tools/stage2_pit.py negation.
+                    price_growth = tempcdx['price'].pct_change(-1, fill_method=None).head(nq).mean()
                     postScoreMetric_df.loc[postScoreMetric_df['source'] == ticker, key2] = price_growth
                 else:
                     postScoreMetric_df.loc[postScoreMetric_df['source'] == ticker, key2] = np.nan
@@ -399,18 +427,26 @@ def postBoScoreRanking(bmtop,bstop,cdxtop,baseurl,api_key,period='quarter',nq=16
             if key2 == 'CycleHeat':
                 weight = postNewRankingDict[key2]['w']
                 weight_df[key2] = pd.Series(weight)
-                
+
                 cycle_heat = np.nan  # Use NaN for failed calculations, not 0
                 try:
-                    # Calculate EPS
-                    eps = tempcdx['netIncome'] / tempcdx['weightedAverageShsOut']
+                    # Build the EPS history aligned to the reporting date and sorted
+                    # OLDEST->NEWEST, so "current" is unambiguously the most recent
+                    # quarter regardless of how cdx happens to be ordered.
+                    # BUGFIX: cdx is stored oldest-first, so the previous
+                    # eps_clean.iloc[0] read the OLDEST quarter (labelled "Most
+                    # recent"), which mis-targeted the late-cycle signal.
+                    eps_src = tempcdx[['date', 'netIncome', 'weightedAverageShsOut']].copy()
+                    eps_src['date'] = pd.to_datetime(eps_src['date'], errors='coerce')
+                    eps_src = eps_src.dropna(subset=['date']).sort_values('date')
+                    eps = eps_src['netIncome'] / eps_src['weightedAverageShsOut']
                     eps_clean = eps.replace([np.inf, -np.inf], np.nan).dropna()
-                    
+
                     if len(eps_clean) >= 2:
-                        eps_current = eps_clean.iloc[0]  # Most recent
+                        eps_current = eps_clean.iloc[-1]  # MOST RECENT quarter (post oldest->newest sort)
                         eps_mean = eps_clean.mean()
                         eps_std = eps_clean.std()
-                        
+
                         # Calculate z-score of current EPS relative to history
                         # This handles both positive and negative EPS correctly
                         if eps_std > 0 and not np.isnan(eps_std):
@@ -420,30 +456,29 @@ def postBoScoreRanking(bmtop,bstop,cdxtop,baseurl,api_key,period='quarter',nq=16
                             eps_zscore = (eps_current - eps_mean) / abs(eps_mean)
                         else:
                             eps_zscore = 0.0
-                        
-                        # Fetch beta from profile API
-                        beta_stock = 1.0  # Default beta
-                        try:
-                            profile_resp = requests.get(f'{baseurl}v3/profile/{ticker}?apikey={api_key}').json()
-                            if profile_resp and len(profile_resp) > 0:
-                                beta_val = profile_resp[0].get('beta')
-                                if beta_val is not None:
-                                    beta_stock = max(0.5, min(float(beta_val), 3.0))  # Clamp beta 0.5-3.0
-                        except Exception:
-                            pass
-                        
-                        # CycleHeat = EPS z-score * beta
-                        # Positive = earnings above mean (hot)
-                        # Negative = earnings below mean (cold)
-                        # Beta amplifies the signal
-                        cycle_heat = eps_zscore * beta_stock
-                        
+
+                        # CycleHeat = EPS z-score of the most-recent quarter vs the
+                        # stock's OWN earnings history (self-normalized by that
+                        # stock's earnings volatility).
+                        # Positive = earnings well above the stock's mean (hot / potential late-cycle risk)
+                        # Negative = earnings below the stock's mean (cold / potential recovery)
+                        #
+                        # BUGFIX: the market-beta multiplier was removed. Market beta
+                        # measures co-movement with the equity market, NOT
+                        # commodity/business-cycle exposure. It is systematically LOW
+                        # for hedge-like cyclicals (e.g. gold miners, beta ~0.5-0.7),
+                        # so multiplying by it SHRANK the heat signal for exactly the
+                        # late-cycle names CycleHeat exists to flag -- an axis error.
+                        # The per-stock EPS z-score already captures "how far into its
+                        # own earnings cycle" a name is, for all cyclicals generally.
+                        cycle_heat = eps_zscore
+
                         # Cap to prevent extreme values
                         cycle_heat = max(-3.0, min(cycle_heat, 3.0))
-                        
+
                 except Exception as e:
                     cycle_heat = np.nan
-                
+
                 postScoreMetric_df.loc[postScoreMetric_df['source'] == ticker, key2] = cycle_heat
 
         #    if key2 == 'SalePerEmployee':

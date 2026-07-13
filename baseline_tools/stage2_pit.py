@@ -123,10 +123,14 @@ def _stage2_metric_loop_offline(bstop, cdxtop, nq=16):
             epstoepsmean = 0
         setv("EPStoEPSmean", epstoepsmean)
 
-        # priceGrowth (postBoRank.py:378-386)
+        # priceGrowth -- MUST stay in lockstep with postBoRank.postBoScoreRanking.
+        # tempcdx here is newest-first (_sort_newest_first), so pct_change(-1) is
+        # already positive-for-risers; the leading '-' was REMOVED to match the
+        # production fix (it would otherwise invert priceGrowth relative to prod).
+        # If you touch the sign here, change postBoRank.py in the same commit.
         if "price" in tempcdx.columns and not tempcdx["price"].empty:
             setv("priceGrowth",
-                 -tempcdx["price"].pct_change(-1, fill_method=None).head(nq).mean())
+                 tempcdx["price"].pct_change(-1, fill_method=None).head(nq).mean())
         else:
             setv("priceGrowth", np.nan)
 

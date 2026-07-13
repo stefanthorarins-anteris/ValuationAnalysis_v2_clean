@@ -116,6 +116,24 @@ def get_tickers(ds, baseurl, api_key, manual_elim=None, tfilt='stock_NA1',sfilt=
         resp_stockAT_cmp_json = safe_get(f'{baseurl}v3/available-traded/list?apikey={api_key}')
         resp_tckr_json = safe_get(f'{baseurl}v3/financial-statement-symbol-lists?apikey={api_key}')
         resp_stockAT_cmp_df = pd.DataFrame(resp_stockAT_cmp_json) if resp_stockAT_cmp_json else pd.DataFrame()
+
+        # INGESTION CAPTURE (future runs, zero extra calls): available-traded/list
+        # carries the raw `type` in {stock,etf,fund,trust} and `name`, which the
+        # type-filter below discards for non-stocks. Persist the raw pre-filter
+        # table so future runs get a free positive fund/trust tag (feeds the
+        # carve-out investment-vehicle detection). Best-effort; never breaks the
+        # universe build; does NOT alter the filtered universe returned below.
+        try:
+            if not resp_stockAT_cmp_df.empty:
+                import datetime as _dt
+                _keep = [c for c in ['symbol', 'name', 'type', 'exchangeShortName']
+                         if c in resp_stockAT_cmp_df.columns]
+                if 'symbol' in _keep:
+                    _raw = resp_stockAT_cmp_df[_keep].drop_duplicates(subset='symbol')
+                    _raw.to_pickle(f"available_traded_raw_{_dt.date.today().isoformat()}.pickle")
+        except Exception as _e:
+            print(f"WARNING: available-traded raw type/name capture skipped ({_e})")
+
         #resp_stock_cmp_df = pd.DataFrame(resp_stock_cmp.json())
         resp_tckr_df = pd.DataFrame(resp_tckr_json) if resp_tckr_json else pd.DataFrame()
         resp_tckr_df.columns = ['symbol']

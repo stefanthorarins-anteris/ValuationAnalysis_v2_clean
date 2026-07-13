@@ -14,6 +14,23 @@ def simpleScore_fromDict(bm_df,bm_ave,bm_da,n=8,as_of=None):
     as-of-D quarters instead of assuming "newest row == today".
     """
     print(f'Calculating scores for each stock symbol in BoMetric_df')
+
+    # --- ORDERING INVARIANT (Stage-1): calcByTier's .head(n) scoring window
+    # assumes each ticker's rows are NEWEST-first. On tonight's data BoMetric_df
+    # arrives newest-first (verified 600/600 descending), but NOTHING on the live
+    # path enforces it -- data_quality re-sorts only cdx_df, so this is an
+    # incidental FMP ingestion order, not an invariant. Defensively re-sort a COPY
+    # to newest-first: a no-op when already correct, a fix if the order ever drifts.
+    # Dates coerced robustly (a naive string sort mis-orders mixed/malformed dates).
+    # Mirrors stage2_pit._sort_newest_first and the Stage-2 re-sort in
+    # postBoRank.postBoScoreRanking.
+    if 'date' in bm_df.columns:
+        bm_df = bm_df.copy()
+        _n_before = bm_df.groupby('source').size()
+        bm_df['date'] = pd.to_datetime(bm_df['date'], errors='coerce')
+        bm_df = bm_df.sort_values(['source', 'date'], ascending=[True, False]).reset_index(drop=True)
+        assert bm_df.groupby('source').size().equals(_n_before), \
+            "Stage-1 newest-first re-sort changed per-ticker row counts"
     # test
     #    bm_df = BoMetric_df
     #    bm_da = BoMetric_dateAve
