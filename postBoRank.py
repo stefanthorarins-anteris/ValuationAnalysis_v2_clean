@@ -5,7 +5,7 @@ import numpy as np
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 
-def postBoScoreRanking(bmtop,bstop,cdxtop,baseurl,api_key,period='quarter',nq=16,as_of=None):
+def postBoScoreRanking(bmtop,bstop,cdxtop,baseurl,api_key,period='quarter',nq=16,as_of=None,weight_override=None):
     # as_of : point-in-time date D (default None).  as_of=None reproduces the live
     # Stage-2 ranking BIT-FOR-BIT.  The parameter is threaded here so the PIT DCF/beta
     # engagement (computed point-in-time DcfToPrice + CycleHeat beta, design s2B/s2C)
@@ -99,6 +99,13 @@ def postBoScoreRanking(bmtop,bstop,cdxtop,baseurl,api_key,period='quarter',nq=16
     postBmRankingDict_local, postNewRankingDict_local = cdic.getPostDict()
     weight_series = {**{k: postBmRankingDict_local[k]['w'] for k in postBmRankingDict_local},
                      **{k: postNewRankingDict_local[k]['w'] for k in postNewRankingDict_local}}
+    # Per-cohort weight vector (carveOut.COHORT_WEIGHTS): overrides the default weight
+    # for any metric it lists. weight_override=None (the general/main pool) keeps the
+    # default vector. A 0 weight zeroes that metric's AggScore contribution AND makes
+    # the weighted column constant (0) -> neutral in rankOfRanks; it does NOT change
+    # cohort membership (a row is dropped only if ALL metrics are NaN, upstream).
+    if weight_override:
+        weight_series = {**weight_series, **weight_override}
     #weight_df['BoScore'] = pd.Series(0.2)
     weightzerobool = False
 

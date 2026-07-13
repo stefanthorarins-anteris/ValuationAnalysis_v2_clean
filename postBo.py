@@ -132,7 +132,9 @@ def postBoWrapper(dmdic, as_of=None):
         diag = carve['diagnostics']
         print(f"CARVE-OUT: general pool = {gp_count} names after cohorts + $25M floor "
               f"(REIT={diag['n_REIT']}, Mining={diag['n_Mining']}, "
-              f"InvestmentVehicle={diag['n_InvestmentVehicle']}, "
+              f"FIN1_Vehicle={diag['n_InvestmentVehicle']}, "
+              f"FIN2_Manager={diag.get('n_FinManager', 0)}, "
+              f"FIN3_BalanceSheet={diag.get('n_BalanceSheetFin', 0)}, "
               f"below_floor={diag['n_below_floor']}, unknown_mcap_kept={diag['n_unknown_mcap']})",
               flush=True)
         if gp_count < 100:
@@ -178,9 +180,13 @@ def postBoWrapper(dmdic, as_of=None):
                     continue
                 bm = bmdf[bmdf['source'].isin(list(head.source))].reset_index(drop=True)
                 cd = cdx_df[cdx_df['source'].isin(list(head.source))].reset_index(drop=True)
-                print(f"CARVE-OUT side-list '{label}': ranking {len(head)} names", flush=True)
+                # per-cohort weight vector (general/main pool keeps the default)
+                wov = co.COHORT_WEIGHTS.get(label)
+                print(f"CARVE-OUT side-list '{label}': ranking {len(head)} names"
+                      f"{' with per-cohort weights' if wov else ''}", flush=True)
                 carveout_sidelists[label] = pbr.postBoScoreRanking(bm, head, cd, dmdic['baseurl'], dmdic['api_key'],
-                                                                   dmdic['period'], n, as_of=as_of)
+                                                                   dmdic['period'], n, as_of=as_of,
+                                                                   weight_override=wov)
             except Exception as e:
                 print(f"CARVE-OUT side-list '{label}' FAILED ({type(e).__name__}: {e}); "
                       f"skipping this side-list (main output unaffected).", flush=True)
