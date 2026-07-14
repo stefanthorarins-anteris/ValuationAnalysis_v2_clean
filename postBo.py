@@ -172,8 +172,14 @@ def postBoWrapper(dmdic, as_of=None):
     cdx_dftop100 = cdx_df[cdx_df['source'].isin(list(BoS_dftop100.source))].reset_index(drop=True)
 
     n= 16
+    # issuer names for the emission-time issuer-dedup (edge B: name+shares). cdx-based
+    # edges (A/C) work without names; passing them widens dual-listing coverage.
+    _tdf = dmdic.get('Tickers_df')
+    _names = (dict(zip(_tdf['symbol'], _tdf['name']))
+              if _tdf is not None and 'symbol' in getattr(_tdf, 'columns', [])
+                 and 'name' in getattr(_tdf, 'columns', []) else {})
     rankdic = pbr.postBoScoreRanking(BoM_dftop100, BoS_dftop100, cdx_dftop100, dmdic['baseurl'], dmdic['api_key'],
-                                     dmdic['period'],n,as_of=as_of)
+                                     dmdic['period'],n,as_of=as_of,names=_names)
 
     # UNWINNED FILTER: -1.5 z-score pass-filter on six metrics (earnYield, grahamNumberToPrice,
     # RoA, EPStoEPSmean, freeCashFlowYield, revenueGrowth). Computed and stored in resdic but

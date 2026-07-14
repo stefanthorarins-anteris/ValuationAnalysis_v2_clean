@@ -5,7 +5,7 @@ import numpy as np
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 
-def postBoScoreRanking(bmtop,bstop,cdxtop,baseurl,api_key,period='quarter',nq=16,as_of=None,weight_override=None):
+def postBoScoreRanking(bmtop,bstop,cdxtop,baseurl,api_key,period='quarter',nq=16,as_of=None,weight_override=None,names=None,dedup_issuers=True):
     # as_of : point-in-time date D (default None).  as_of=None reproduces the live
     # Stage-2 ranking BIT-FOR-BIT.  The parameter is threaded here so the PIT DCF/beta
     # engagement (computed point-in-time DcfToPrice + CycleHeat beta, design s2B/s2C)
@@ -604,11 +604,70 @@ def postBoScoreRanking(bmtop,bstop,cdxtop,baseurl,api_key,period='quarter',nq=16
     #roror = getRankOfRankOfRanks(finalPostRank_df)
 
     pbar.close()
+
+    # --- Issuer-level de-dup of the EMITTED ranking (CEO standing principle: NO
+    # duplicate issuers in the deployed top-N).  postRank is AggScore-descending, and
+    # downstream emission (writeBoAggToCSV / createPresentation) takes head(N) off it,
+    # so collapsing same-issuer lines HERE makes the CEO-reviewed top-20 contain DISTINCT
+    # issuers.  We keep the HIGHEST-RANKED line per issuer and drop later same-issuer
+    # lines (share-classes / cross-listings, e.g. TFPM / TFPM.TO) -- the SAME rank-based
+    # rule and SAME fingerprint (carveOut.dedup_ranked / _issuer_components) the backtest
+    # harness (stage2_pit.reproduce_pit_top) uses.  So live and backtest agree on issuer
+    # IDENTITY and economic exposure (one slot per issuer) -- NOT necessarily on the
+    # specific surviving TICKER: on the carve-ON live path the upstream carve already
+    # collapsed each issuer to its mcap/sector-preferred line, whereas the backtest /
+    # carve-OFF path keeps the highest-RANKED line.  Both satisfy "distinct issuers".
+    #
+    # This changes ONLY which lines survive into the emitted ranking; no score, no sort
+    # order, and no other pick logic is touched.  For a LIVE run as_of is NOW, so the
+    # fingerprint reads CURRENT fundamentals -> merging same-issuer listings is correct
+    # with NO lookahead (the PIT-purity caveat applies only to backtest dedup at past D).
+    # The pre-dedup ranking is retained for audit.  If the carve-out already collapsed
+    # the universe to one line per issuer upstream, this is a safe no-op; it is
+    # load-bearing on the carve-off / carve-fallback path (and any carve-missed listing).
+    postRank_predupe = postRank.copy()
+    issuer_dupes_dropped = []
+    if dedup_issuers:
+        try:
+            import carveOut as _co
+            ranked_srcs = postRank['source'].tolist()
+            kept, issuer_dupes_dropped = _co.dedup_ranked(ranked_srcs, cdxtop, names or {})
+            if issuer_dupes_dropped:
+                keptset = set(kept)
+                postRank = postRank[postRank['source'].isin(keptset)].reset_index(drop=True)
+                print("postBoRank issuer-dedup: collapsed %d same-issuer line(s) in the "
+                      "ranking -> %s"
+                      % (len(issuer_dupes_dropped),
+                         ['%s->%s' % (d, k) for d, k in issuer_dupes_dropped]), flush=True)
+        except Exception as _e:
+            # LOUD FALLBACK (matches the carve-out banner at postBo.py:143-164). The
+            # emission-time issuer-dedup IS the "no duplicate issuers in the top-20"
+            # guarantee; if it fails we still ship (never crash the deliverable) but the
+            # emitted top-20 may carry dual-listings / share-classes, so a single quiet
+            # stdout line is a defect -- make the degradation IMPOSSIBLE to miss on BOTH
+            # streams, exactly like the carve fallback.
+            import traceback
+            _banner = (
+                "\n" + "!" * 78 + "\n"
+                "!!! ISSUER-DEDUP DID NOT RUN -- EMITTED TOP-20 MAY CONTAIN DUAL-LISTINGS !!!\n"
+                "!!! The ranking was NOT de-duplicated by issuer this run: expect possible !!!\n"
+                "!!!   share-class / cross-listing DUPLICATES in the top-N (e.g. TFPM +     !!!\n"
+                "!!!   TFPM.TO occupying two slots for one economic bet).                   !!!\n"
+                "!!! Cause: %s: %s\n"
+                "!!! DO NOT treat this top-20 as issuer-deduplicated.                       !!!\n"
+                % (type(_e).__name__, _e)
+                + "!" * 78 + "\n")
+            print(_banner, file=sys.stderr, flush=True)
+            traceback.print_exc(file=sys.stderr)
+            print(_banner, flush=True)
+            traceback.print_exc(file=sys.stdout)
+
     #rankdic = {'finalBoRank_df': finalPostRank_df, 'postRank': postRank, 'postRankOfRanks': postRankOfRanks,
     #           'psmdf_normalized': psmdf_normalized, 'BoAggCorr': BoAggCorr, 'outlierlist': outlierlist,
     #           'roror': roror}
     rankdic = {'postRank': postRank, 'postScoreMetric': postScoreMetric_df,
-               'psmdf_normalized': psmdf_normalized, 'BoAggCorr': BoAggCorr, 'outlierlist': outlierlist}
+               'psmdf_normalized': psmdf_normalized, 'BoAggCorr': BoAggCorr, 'outlierlist': outlierlist,
+               'postRank_predupe': postRank_predupe, 'issuer_dupes_dropped': issuer_dupes_dropped}
 
     return rankdic
 
