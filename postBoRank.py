@@ -589,11 +589,15 @@ def postBoScoreRanking(bmtop,bstop,cdxtop,baseurl,api_key,period='quarter',nq=16
     BoAggCorr = tmpcorr[0,1]
 
     postRank = getRankOfRanks(postRank)
-    plotRank = postRank
-    plotRank['rankOfRanks'] = plotRank['rankOfRanks']/10
-    plotRank['AggScore'] = plotRank['AggScore']/10
-    mlist = list(set(plotRank.columns) - set(['source']))
-    plotRank = postBoRankingPassFilter(plotRank,mlist,5,5)
+    # BUGFIX: removed a dead 'plotRank' block that aliased postRank (no .copy())
+    # and did plotRank['rankOfRanks']/=10, plotRank['AggScore']/=10 -- which
+    # silently DEFLATED the RETURNED postRank by 10x in place before it lands in
+    # rankdic below. plotRank was never read after the block (not returned, stored,
+    # plotted or printed) and postBoRankingPassFilter returns a copy (no input
+    # mutation), so the block's ONLY effect was that unintended deflation, causing a
+    # production vs offline-reproduction (stage2_pit / validate_gate) magnitude
+    # divergence. Order was monotonic-preserved (getAggScore already sorted before
+    # the /10), so top-N membership and sort order are unchanged by this removal.
 
     #finalPostRank_df = getFinalRank(postRank)
 

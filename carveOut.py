@@ -44,6 +44,7 @@ data gap -- conservative; better to keep a good name than silently discard it).
 
 import os
 import re
+import sys
 import numpy as np
 import pandas as pd
 
@@ -412,6 +413,34 @@ def _norm_issuer_name(x):
     return re.sub(r'\s+', ' ', s).strip()
 
 
+# Cross-listing near-equal tolerance (edge C). FMP reports an issuer's two listings
+# in a common reporting currency, so their revenue/netIncome/totalAssets agree to
+# within ~0.3-1% (verified: Barrick B vs ABX.TO 0.26%; Lundin Gold ~1%). 5% gives
+# headroom above that while staying far below the gap between genuinely distinct
+# firms -- and it is gated by an EXACT share-count match, which does the real work.
+_XLIST_FUND_TOL = 0.05
+
+
+def _fund_near_equal(a, b, latest, cols, tol=_XLIST_FUND_TOL):
+    """True iff EVERY fundamental in `cols` is present for both a and b and agrees
+    within relative tolerance `tol`. Backs the FX-/rename-invariant cross-listing
+    edge: a missing value on either side is a NON-match (never merge on a data gap)."""
+    for c in cols:
+        va = latest.at[a, c] if (a in latest.index and c in latest.columns) else None
+        vb = latest.at[b, c] if (b in latest.index and c in latest.columns) else None
+        if va is None or vb is None or pd.isna(va) or pd.isna(vb):
+            return False
+        va, vb = float(va), float(vb)
+        denom = max(abs(va), abs(vb))
+        if denom == 0.0:
+            if va != vb:
+                return False
+            continue
+        if abs(va - vb) / denom > tol:
+            return False
+    return True
+
+
 def _latest_raw(cdx_df, cols):
     have = [c for c in cols if c in cdx_df.columns]
     df = cdx_df[['source', 'date'] + have].copy()
@@ -471,6 +500,32 @@ def dedup_to_issuers(BoScore_df, cdx_df, sector_map, names):
         sh = _val(s, 'weightedAverageShsOut')
         if nm and sh is not None:
             nsmap.setdefault((nm, sh), []).append(s)
+    # edge C: FX-/rename-invariant fingerprint -- EXACT weightedAverageShsOut +
+    # NEAR-equal revenue/netIncome/totalAssets. Catches cross-listings both other edges
+    # miss: edge A (exact fingerprint) fails because FMP reports the two lines with
+    # tiny (~0.3-1%) reporting differences, not byte-equal; edge B (name+shares) fails
+    # when the listings carry DIFFERENT names -- e.g. Barrick's NYSE line "Barrick
+    # Mining Corp" vs its TSX line still "Barrick Gold Corp" after the 2025 rename, so
+    # the normalized names diverge ("barrick mining" != "barrick gold") and B (which FMP
+    # mis-sectors as Industrials) escaped the Mining carve into the general pool. Share
+    # count is currency- and name-invariant; requiring an exact share match AND three
+    # near-equal fundamentals makes a false merge of two distinct issuers effectively
+    # impossible. Grouped by exact shares first so the pairwise check stays O(k^2) over
+    # tiny (usually 1-3 name) share-collision groups.
+    shmap = {}
+    for s in syms:
+        sh = _val(s, 'weightedAverageShsOut')
+        if sh is not None and sh > 0:
+            shmap.setdefault(sh, []).append(s)
+    _xlist_cols = ['revenue', 'netIncome', 'totalAssets']
+    for grp in shmap.values():
+        if len(grp) < 2:
+            continue
+        for i in range(len(grp)):
+            for j in range(i + 1, len(grp)):
+                if _fund_near_equal(grp[i], grp[j], latest, _xlist_cols):
+                    union(grp[i], grp[j])
+
     for grp in list(fpmap.values()) + list(nsmap.values()):
         for s in grp[1:]:
             union(grp[0], s)
@@ -540,15 +595,40 @@ def partition_universe(BoScore_df, cdx_df, tickers_df,
 
     sector_map = _load_sector_map(sector_pickle)
     if not sector_map:
-        print("carveOut WARNING: sector map empty/absent -- REIT & Mining cohorts "
-              "will be EMPTY and everything stays in the general pool (size floor "
-              "still applies).", flush=True)
+        # CATASTROPHIC: no sector map => empty REIT/Mining cohorts => Basic-Materials
+        # (miners) and Real-Estate would silently leak back into the general pool,
+        # defeating the whole carve while the output still LOOKS carved. Do NOT proceed
+        # with a half-carved pool. Banner on BOTH streams, then RAISE so the postBo
+        # guard trips the LOUD fallback (ships legacy un-carved WITH its banner) rather
+        # than a silently-degraded carve. (Banner here too, in case partition_universe
+        # is ever called directly, not via the postBo guard.)
+        msg = ("carveOut: sector map empty/absent (looked for '%s' in CWD %s). "
+               "Cannot carve REIT/Mining without it." % (sector_pickle, os.getcwd()))
+        banner = ("\n" + "!" * 78 + "\n"
+                  "!!! CARVE-OUT ABORTED -- SECTOR MAP MISSING/EMPTY !!!\n"
+                  "!!! REIT & Mining CANNOT be carved; Basic-Materials/REITs would leak !!!\n"
+                  "!!! into the general pool. Refusing to ship a silently half-carved   !!!\n"
+                  "!!! general pool -- aborting the carve so the fallback is LOUD.       !!!\n"
+                  "!!! " + msg + "\n"
+                  + "!" * 78 + "\n")
+        print(banner, file=sys.stderr, flush=True)
+        print(banner, flush=True)
+        raise RuntimeError(msg)
 
     industry_map = _load_industry_map(industry_pickle)
     if not industry_map:
-        print("carveOut WARNING: industry map absent -- FIN-2/FIN-3 split falls back "
-              "to the name-keyword rule (weak). Provide industrydic_fmp_*.pickle.",
-              flush=True)
+        # DEGRADES SAFELY: FIN-2/FIN-3 falls back to the (weak) name-keyword rule. This
+        # does NOT leak miners/REITs into the general pool, so PROCEED -- but make the
+        # degradation unmistakable (loud warning on BOTH streams), never silent.
+        wbanner = ("\n" + "!" * 78 + "\n"
+                   "!!! CARVE-OUT WARNING -- INDUSTRY MAP MISSING/EMPTY !!!\n"
+                   "!!! FIN-2 (managers) vs FIN-3 (banks/insurers) split DEGRADED to the !!!\n"
+                   "!!! weak name-keyword rule; financial sub-cohorts may be mislabeled. !!!\n"
+                   "!!! General-pool integrity is UNAFFECTED (no miner/REIT leak) so the !!!\n"
+                   "!!! run PROCEEDS. Provide industrydic_fmp_*.pickle in the run CWD.    !!!\n"
+                   + "!" * 78 + "\n")
+        print(wbanner, file=sys.stderr, flush=True)
+        print(wbanner, flush=True)
 
     names = {}
     cols = getattr(tickers_df, 'columns', [])

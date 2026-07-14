@@ -141,8 +141,27 @@ def postBoWrapper(dmdic, as_of=None):
             print(f"CARVE-OUT WARNING: general pool has only {gp_count} names (<100); "
                   f"top-100 selection is short -- top-20 may not fully fill.", flush=True)
     except Exception as e:
-        print(f"CARVE-OUT FAILED ({type(e).__name__}: {e}); FALLING BACK to legacy "
-              f"BoScore_df.head(100) -- no carve-out / side-lists this run.", flush=True)
+        # LOUD FALLBACK. The carve-out/dedup IS the deliverable's integrity guarantee
+        # (no issuer duplicates; 0 Basic-Materials / financials in the general pool). A
+        # SILENT fallback is itself a defect: on 2026-07-13 it shipped legacy un-carved
+        # output that looked like a carved deliverable and nobody noticed. Keep the
+        # safety net (never crash the pipeline) but make a fallback IMPOSSIBLE to mistake
+        # for success: full traceback + an unmistakable banner on BOTH stdout and stderr.
+        import traceback
+        banner = (
+            "\n" + "!" * 78 + "\n"
+            "!!! CARVE-OUT/DEDUP DID NOT RUN -- SHIPPING LEGACY UN-CARVED TOP-100 !!!\n"
+            "!!! The general pool is NEITHER de-duped NOR sector-carved this run:  !!!\n"
+            "!!!   expect issuer/share-class duplicates AND Basic-Materials /       !!!\n"
+            "!!!   financials leaking into the general top-100.                     !!!\n"
+            f"!!! Cause: {type(e).__name__}: {e}\n"
+            "!!! DO NOT treat this output as a carved deliverable.                  !!!\n"
+            + "!" * 78 + "\n")
+        # stderr first (survives stdout redirection and tqdm progress-bar noise).
+        print(banner, file=sys.stderr, flush=True)
+        traceback.print_exc(file=sys.stderr)
+        print(banner, flush=True)
+        traceback.print_exc(file=sys.stdout)
         carve = None
         general_scores = BoScore_df
         gp_count = len(general_scores)
@@ -156,7 +175,7 @@ def postBoWrapper(dmdic, as_of=None):
     rankdic = pbr.postBoScoreRanking(BoM_dftop100, BoS_dftop100, cdx_dftop100, dmdic['baseurl'], dmdic['api_key'],
                                      dmdic['period'],n,as_of=as_of)
 
-    metricList = ['earningsYield', 'grahamNumberToPrice', 'RoA', 'EPStoEPSmean', 'freeCashFlowYield', 'reveneGrowth']
+    metricList = ['earnYield', 'grahamNumberToPrice', 'RoA', 'EPStoEPSmean', 'freeCashFlowYield', 'revenueGrowth']
     cutoff = 1.5
     psbrfilter = pbr.postBoRankingPassFilter(rankdic['postRank'],metricList,-cutoff,np.inf)
 
