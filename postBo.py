@@ -175,6 +175,12 @@ def postBoWrapper(dmdic, as_of=None):
     rankdic = pbr.postBoScoreRanking(BoM_dftop100, BoS_dftop100, cdx_dftop100, dmdic['baseurl'], dmdic['api_key'],
                                      dmdic['period'],n,as_of=as_of)
 
+    # UNWINNED FILTER: -1.5 z-score pass-filter on six metrics (earnYield, grahamNumberToPrice,
+    # RoA, EPStoEPSmean, freeCashFlowYield, revenueGrowth). Computed and stored in resdic but
+    # NOT wired into any shipped deliverable — the shortlist is built from resdic['postRank']
+    # only, so psbrfilter currently filters zero names. Left in place per CEO decision
+    # (2026-07-14) pending a future decision to either wire it in (would require a soundness
+    # review of the -1.5 cutoff on these 6 metrics) or remove it.
     metricList = ['earnYield', 'grahamNumberToPrice', 'RoA', 'EPStoEPSmean', 'freeCashFlowYield', 'revenueGrowth']
     cutoff = 1.5
     psbrfilter = pbr.postBoRankingPassFilter(rankdic['postRank'],metricList,-cutoff,np.inf)
@@ -182,7 +188,7 @@ def postBoWrapper(dmdic, as_of=None):
     regressMetricsOnROR(rankdic)
 
     resdic = {**rankdic, **{'BoS_dftop100': BoS_dftop100, 'BoM_dftop100': BoM_dftop100, 'cdx_dftop100': cdx_dftop100,
-                          'BoScore_df': BoScore_df, 'psbrfilter': psbrfilter,
+                          'BoScore_df': BoScore_df, 'psbrfilter': psbrfilter,  # NOT WIRED — see above comment
                           'general_pool_count': gp_count}}
 
     # --- Side-lists: guarded best-effort, AFTER resdic is complete -------------
