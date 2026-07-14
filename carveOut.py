@@ -450,23 +450,21 @@ def _latest_raw(cdx_df, cols):
     return df.groupby('source')[have].last()
 
 
-def dedup_to_issuers(BoScore_df, cdx_df, sector_map, names):
-    """Collapse same-issuer lines to ONE survivor each, with sector propagation.
+def _issuer_components(syms, cdx_df, names):
+    """Union-find grouping of same-issuer lines by fundamental fingerprint.
 
-    Returns dict: survivors(set), member_to_survivor(dict), sector_override(dict
-    survivor->propagated sector), diagnostics(dict with report DataFrame + counts).
+    Groups share-classes / preferreds / notes / cross-listings of ONE economic issuer
+    via three edges (see dedup_to_issuers for the full rationale):
+      A  identical fundamental fingerprint (same-currency lines);
+      B  currency-invariant (normalized companyName + weightedAverageShsOut);
+      C  FX-/rename-invariant (EXACT shares + near-equal revenue/netIncome/totalAssets).
 
-    SURVIVOR RULE (stated explicitly): within an issuer group, prefer
-      (1) a line the sector map already tags (the recognised primary), then
-      (2) largest latest market cap (most investable), then
-      (3) a symbol NOT starting with a digit (deprioritise LSE IOB/grey-market
-          depositary lines, e.g. 0R4M.L), then
-      (4) fewest punctuation (bare ticker), shortest, alphabetical (deterministic).
-    SECTOR PROPAGATION: the survivor inherits the group's known sector (majority of
-    tagged members) -- this is what plugs the cross-listing leak regardless of which
-    line survives. A conflict (two DIFFERENT known sectors in one group) is flagged.
-    """
-    syms = list(BoScore_df['source'])
+    Returns (comps, latest, _val):
+      comps  : dict root_symbol -> [member symbols]  (insertion order = order in syms)
+      latest : per-source latest raw fundamentals (from _latest_raw)
+      _val   : (symbol, col) -> rounded finite float or None
+    Shared by dedup_to_issuers (sector-survivor rule) and dedup_ranked (rank-survivor
+    rule) so both resolve issuer identity IDENTICALLY."""
     fp_cols = ['revenue', 'netIncome', 'totalAssets', 'weightedAverageShsOut']
     latest = _latest_raw(cdx_df, fp_cols + ['marketCap'])
 
@@ -533,6 +531,62 @@ def dedup_to_issuers(BoScore_df, cdx_df, sector_map, names):
     comps = {}
     for s in syms:
         comps.setdefault(find(s), []).append(s)
+    return comps, latest, _val
+
+
+def dedup_ranked(ranked_sources, cdx_df, names):
+    """Collapse same-issuer lines in a RANK-ORDERED source list, keeping the
+    HIGHEST-RANKED (earliest-appearing) line per issuer and dropping every later
+    same-issuer line. Order-preserving.
+
+    CEO standing principle: NO duplicate issuers in the emitted top-N -- a dual-listing
+    or share-class must not occupy two slots (the TFPM / TFPM.TO case). This is the
+    SELECTION-TIME dedup: apply it to the full ranked list BEFORE taking head(N), so the
+    emitted top-N contains N DISTINCT issuers. It reuses the EXACT issuer-fingerprint
+    grouping (_issuer_components, edges A/B/C) the carve-out uses, so "same issuer"
+    means the same thing across the pipeline.
+
+    Note the survivor rule differs from dedup_to_issuers by design: here we keep the
+    highest-RANKED line (the pick the score actually surfaced); the carve-out keeps the
+    most-investable/recognised line for sector propagation. Both are correct for their
+    purpose.
+
+    Returns (kept, dropped):
+      kept    : deduped rank-ordered source list (>= 1 line per distinct issuer)
+      dropped : list of (dropped_symbol, kept_survivor) in rank order (audit trail)
+    """
+    ranked = list(ranked_sources)
+    comps, _latest, _val = _issuer_components(ranked, cdx_df, names)
+    root_of = {s: r for r, members in comps.items() for s in members}
+    kept, dropped, first_of = [], [], {}
+    for s in ranked:
+        r = root_of.get(s, s)
+        if r in first_of:
+            dropped.append((s, first_of[r]))
+        else:
+            first_of[r] = s
+            kept.append(s)
+    return kept, dropped
+
+
+def dedup_to_issuers(BoScore_df, cdx_df, sector_map, names):
+    """Collapse same-issuer lines to ONE survivor each, with sector propagation.
+
+    Returns dict: survivors(set), member_to_survivor(dict), sector_override(dict
+    survivor->propagated sector), diagnostics(dict with report DataFrame + counts).
+
+    SURVIVOR RULE (stated explicitly): within an issuer group, prefer
+      (1) a line the sector map already tags (the recognised primary), then
+      (2) largest latest market cap (most investable), then
+      (3) a symbol NOT starting with a digit (deprioritise LSE IOB/grey-market
+          depositary lines, e.g. 0R4M.L), then
+      (4) fewest punctuation (bare ticker), shortest, alphabetical (deterministic).
+    SECTOR PROPAGATION: the survivor inherits the group's known sector (majority of
+    tagged members) -- this is what plugs the cross-listing leak regardless of which
+    line survives. A conflict (two DIFFERENT known sectors in one group) is flagged.
+    """
+    syms = list(BoScore_df['source'])
+    comps, latest, _val = _issuer_components(syms, cdx_df, names)
 
     from collections import Counter
     def _key(s):

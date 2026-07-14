@@ -203,7 +203,9 @@ def _cycleheat(tempcdx, beta_stock=1.0):
 
 def reproduce_pit_top(dmdic, D, na1_only=True, nq_stage1=8, nq_stage2=16,
                       topn_stage1=100, topn_final=20, cycleheat_beta=1.0,
-                      boscore_noise=0.0, price_noise_frac=0.0, rng=None):
+                      boscore_noise=0.0, price_noise_frac=0.0, rng=None,
+                      universe_override=None, weight_override=None,
+                      dedup_issuers=True):
     """Full PIT reproduction as-of date D. Returns a result dict.
 
     Controlled-noise hooks (for the churn diagnostic, both default OFF):
@@ -213,6 +215,33 @@ def reproduce_pit_top(dmdic, D, na1_only=True, nq_stage1=8, nq_stage2=16,
       price_noise_frac: multiplicative Gaussian noise on the NEWEST quarter's
                         synthetic price & marketCap per name -> isolates the
                         Stage-2 price-metric channel (pool held fixed).
+
+    universe_override : optional iterable of `source` values defining the as-of-D
+                        universe.  DEFAULT None -> exactly today's behaviour
+                        (na1_symbols(Tickers_df) when na1_only).  When supplied (the
+                        SURVIVORSHIP-CLEAN path: dead names merged in via
+                        dead_merge.merge_dead_into_dmdic, universe from its
+                        `pit_universe`), it REPLACES the na1 filter so dead-but-
+                        alive-at-D names are scored.  The live path (override=None)
+                        is bit-for-bit unchanged.
+
+    weight_override   : optional {metric_name: weight} dict merged over the default
+                        getPostDict weight vector (mirrors postBoRank.py:107-108's
+                        cohort-weight hook).  DEFAULT None -> default weights, live
+                        path bit-for-bit unchanged.  Used by the scoring-comparison
+                        grid to run an equal-weight variant (all metric weights = 1).
+
+    dedup_issuers     : collapse same-issuer lines in the ranked pool, keeping the
+                        HIGHEST-RANKED line per issuer, BEFORE the head(topn_final)
+                        cut (CEO standing principle: no duplicate issuers in the
+                        emitted top-N -- the TFPM/TFPM.TO case).  Reuses
+                        carveOut.dedup_ranked (same issuer-fingerprint as the carve).
+                        DEFAULT True.  It shapes ONLY the emitted `top20`; the returned
+                        `pool_after_norm` is the UNDEDUPED full pool (so the tune's
+                        validate_finish / bit-for-bit anchor is unaffected).  Set False
+                        to reproduce the pre-dedup top-N.  The pre-dedup top-N is always
+                        returned as `top20_predupe`, and the dropped lines as
+                        `issuer_dupes_dropped`, for the slot-change audit.
     """
     D = pd.Timestamp(D)
     if rng is None:
@@ -223,7 +252,14 @@ def reproduce_pit_top(dmdic, D, na1_only=True, nq_stage1=8, nq_stage2=16,
     cdx["date"] = pd.to_datetime(cdx["date"], errors="coerce")
 
     universe = None
-    if na1_only:
+    if universe_override is not None:
+        # SURVIVORSHIP-CLEAN path: membership already resolved (live survivors + dead
+        # entities alive_as_of D) upstream; do NOT apply the na1 survivor filter, which
+        # would drop the dead names we just merged in.
+        universe = set(universe_override)
+        bm = bm[bm["source"].isin(universe)]
+        cdx = cdx[cdx["source"].isin(universe)]
+    elif na1_only:
         universe = na1_symbols(dmdic["Tickers_df"])
         bm = bm[bm["source"].isin(universe)]
         cdx = cdx[cdx["source"].isin(universe)]
@@ -261,6 +297,10 @@ def reproduce_pit_top(dmdic, D, na1_only=True, nq_stage1=8, nq_stage2=16,
     postBm, postNew = cdic.getPostDict()
     weight_series = {**{k: postBm[k]["w"] for k in postBm},
                      **{k: postNew[k]["w"] for k in postNew}}
+    # Optional weight override (mirrors postBoRank.py:107-108's cohort-weight hook).
+    # weight_override=None leaves the default vector -> the live path is bit-identical.
+    if weight_override:
+        weight_series = {**weight_series, **weight_override}
     weighted = psm_norm.drop("source", axis=1)
     for col in weighted.columns:
         weighted[col] = psm_norm[col].values * weight_series.get(col, 1)
@@ -268,15 +308,39 @@ def reproduce_pit_top(dmdic, D, na1_only=True, nq_stage1=8, nq_stage2=16,
         [psm_norm[psm_norm.columns.difference(weighted.columns)], weighted], axis=1)
     postRank = pbr.getAggScore(psmdf_norm)
 
-    top20 = postRank.head(topn_final)["source"].tolist()
+    ranked_sources = postRank["source"].tolist()
+    top20_predupe = ranked_sources[:topn_final]
+    dedup_dropped = []
+    if dedup_issuers:
+        # Reuse the carve-out's issuer-fingerprint grouping; keep the highest-ranked
+        # line per issuer BEFORE the head cut (CEO: no duplicate issuers in the top-N).
+        # Use the UNIVERSE-filtered FULL cdx (all dates), NOT the date<=D slice: issuer
+        # identity is a STRUCTURAL fact, and the fingerprint keys on EXACT shares +
+        # near-equal fundamentals. A PIT slice breaks it on trivial reporting drift --
+        # e.g. buy2022 TFPM vs TFPM.TO have identical revenue/NI/TA but shares differing
+        # by 0.001% (1,563 of 155.8M) as-of-2022, escaping every edge; on full history
+        # the share counts match exactly and edge C catches the dual-listing. This is
+        # NOT return-inflating lookahead: it only collapses same-issuer lines to one
+        # slot, never touches a score or a return.
+        import carveOut as _co
+        tdf = dmdic.get("Tickers_df")
+        _cols = getattr(tdf, "columns", [])
+        names = (dict(zip(tdf["symbol"], tdf["name"]))
+                 if tdf is not None and "symbol" in _cols and "name" in _cols else {})
+        deduped, dedup_dropped = _co.dedup_ranked(ranked_sources, cdx, names)
+    else:
+        deduped = ranked_sources
+    top20 = deduped[:topn_final]
     return {
         "date": str(D.date()),
         "na1_only": na1_only,
         "cycleheat_beta": cycleheat_beta,
         "dropped_metrics": DROP_METRICS,
         "stage1_top100": BoS_top["source"].tolist(),
-        "pool_after_norm": postRank["source"].tolist(),
+        "pool_after_norm": postRank["source"].tolist(),   # UNDEDUPED (validate_finish anchor)
         "top20": top20,
+        "top20_predupe": top20_predupe,
+        "issuer_dupes_dropped": dedup_dropped,
         "postRank": postRank,
         "universe_size": (len(universe) if universe else cdx["source"].nunique()),
     }
