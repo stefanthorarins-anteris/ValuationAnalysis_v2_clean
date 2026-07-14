@@ -326,6 +326,30 @@ def main():
     tu.copy_artifacts_to_transfer_dir(
         configdic.get('transfer_dir'), [postrank_fname], verbose=True)
 
+    # ---- PROSPECTIVE PICK-LOG stage (append-only forward track record) --------
+    # Append this run's GENERAL top-N + the five cohort side-lists as NEW, immutable
+    # rows to pick_log.csv -- one row per (run, list, stock), stamped with the run's
+    # as_of date BEFORE any outcome exists (survivorship-free, un-gameable). Runs AFTER
+    # the deliverables are emitted (writeResWrapper above) so it logs exactly the frames
+    # that shipped. Fully isolated + guarded: a failure logs LOUDLY but never crashes the
+    # run, and it only writes the LOCAL file (no auto-commit/push -- public repo, per CEO).
+    # The import itself is inside this guard too: run_pick_log_stage is self-guarded and
+    # never raises, so this outer try only catches an IMPORT failure -- degrading it
+    # loud-but-safe rather than letting a pick-log module problem crash the deliverable.
+    try:
+        import pick_log as plog
+        plog.run_pick_log_stage(resdic, as_of=as_of)
+    except Exception:
+        import traceback as _tb
+        _pl_banner = ("\n" + "!" * 78 + "\n"
+                      "!!! PICK-LOG STAGE COULD NOT BE IMPORTED/STARTED -- RUN CONTINUES !!!\n"
+                      "!!! The forward pick-log was NOT written this run; deliverables above  !!!\n"
+                      "!!! are UNAFFECTED. Investigate the pick_log module import.            !!!\n"
+                      + "!" * 78 + "\n")
+        print(_pl_banner, file=sys.stderr, flush=True)
+        _tb.print_exc(file=sys.stderr)
+        print(_pl_banner, flush=True)
+
     # ---- Delisted-entity (survivorship) ingestion -- GATED, default OFF ----
     # ACQUIRES survivorship data (registry + dead fundamentals + dead prices) and
     # stores it for later point-in-time analysis.  It runs AFTER the live results
