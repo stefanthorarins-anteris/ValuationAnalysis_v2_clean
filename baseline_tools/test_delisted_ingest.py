@@ -36,12 +36,19 @@ from run_logging import RunLogger
 # Fakes
 # --------------------------------------------------------------------------- #
 class FakeResp:
-    def __init__(self, payload, status=200):
+    def __init__(self, payload, status=200, content_type="application/json", text_body=None):
         self._payload = payload
         self.status_code = status
+        self.headers = {"Content-Type": content_type}
+        self.text = text_body if text_body is not None else ""
 
     def json(self):
         return self._payload
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            import requests
+            raise requests.HTTPError(f"HTTP {self.status_code}")
 
 
 def make_http_get(statement_map, status_map=None):
@@ -506,6 +513,153 @@ def test_config_asof_lastarg_no_indexerror():
     print("PASS -asof last-arg raises clean error (LOW-B) + PARTIAL-PIT warn (MEDIUM-B)")
 
 
+# --------------------------------------------------------------------------- #
+# safe_get_bulk_csv: CSV/JSON-aware getter for bulk-price endpoint
+# --------------------------------------------------------------------------- #
+def test_safe_get_bulk_csv_csv_body():
+    """CSV body (header + 2 data rows) → returns list of dicts with all 8 keys."""
+    import requests
+    csv_text = (
+        "symbol,date,open,low,high,close,adjClose,volume\n"
+        "DEADX,2026-01-31,50.0,48.0,52.0,51.0,51.0,1000000\n"
+        "DEADY,2026-01-31,100.0,95.0,105.0,102.0,102.0,500000"
+    )
+
+    # Mock requests.get to return a CSV response
+    def mock_get(url, timeout=None):
+        resp = FakeResp(payload=None, status=200, content_type="text/csv", text_body=csv_text)
+        resp.raise_for_status()
+        return resp
+
+    # Patch requests.get
+    original_get = requests.get
+    try:
+        requests.get = mock_get
+        result = di.safe_get_bulk_csv("http://test/bulk?date=2026-01-31&apikey=KEY")
+        assert isinstance(result, list), f"expected list, got {type(result)}"
+        assert len(result) == 2, f"expected 2 rows, got {len(result)}"
+        # Check first row has all 8 keys
+        row0 = result[0]
+        expected_keys = {"symbol", "date", "open", "low", "high", "close", "adjClose", "volume"}
+        assert set(row0.keys()) == expected_keys, f"missing keys: {expected_keys - set(row0.keys())}"
+        # Check values match
+        assert row0["symbol"] == "DEADX"
+        assert row0["close"] == "51.0"
+        assert row0["volume"] == "1000000"
+        # Check second row
+        assert result[1]["symbol"] == "DEADY"
+        assert result[1]["close"] == "102.0"
+        print("PASS safe_get_bulk_csv CSV body (header + 2 rows = list of dicts)")
+    finally:
+        requests.get = original_get
+
+
+def test_safe_get_bulk_csv_json_list():
+    """JSON list body → returned as-is (passthrough)."""
+    import requests
+    json_payload = [
+        {"symbol": "DEADX", "date": "2026-01-31", "close": 51.0, "adjClose": 51.0},
+        {"symbol": "DEADY", "date": "2026-01-31", "close": 102.0, "adjClose": 102.0},
+    ]
+
+    def mock_get(url, timeout=None):
+        resp = FakeResp(payload=json_payload, status=200, content_type="application/json")
+        resp.raise_for_status()
+        return resp
+
+    original_get = requests.get
+    try:
+        requests.get = mock_get
+        result = di.safe_get_bulk_csv("http://test/bulk?date=2026-01-31&apikey=KEY")
+        assert result == json_payload, "JSON list must be returned as-is"
+        assert len(result) == 2
+        assert result[0]["symbol"] == "DEADX"
+        print("PASS safe_get_bulk_csv JSON list (passthrough)")
+    finally:
+        requests.get = original_get
+
+
+def test_safe_get_bulk_csv_empty_200():
+    """Empty-but-200 body → returns []."""
+    import requests
+
+    def mock_get(url, timeout=None):
+        resp = FakeResp(payload=None, status=200, content_type="text/csv", text_body="")
+        resp.raise_for_status()
+        return resp
+
+    original_get = requests.get
+    try:
+        requests.get = mock_get
+        result = di.safe_get_bulk_csv("http://test/bulk?date=2026-01-31&apikey=KEY")
+        assert result == [], f"expected empty list, got {result}"
+        print("PASS safe_get_bulk_csv empty-but-200 (returns [])")
+    finally:
+        requests.get = original_get
+
+
+def test_safe_get_bulk_csv_failure_non_200():
+    """Non-200 after retries → returns None."""
+    import requests
+
+    call_count = {"n": 0}
+
+    def mock_get(url, timeout=None):
+        call_count["n"] += 1
+        resp = FakeResp(payload=None, status=503, content_type="text/plain", text_body="Service Unavailable")
+        return resp
+
+    def mock_sleep(s):
+        pass
+
+    original_get = requests.get
+    try:
+        requests.get = mock_get
+        result = di.safe_get_bulk_csv("http://test/bulk?date=2026-01-31&apikey=KEY",
+                                      retries=2, sleep=mock_sleep)
+        assert result is None, f"expected None on 503, got {result}"
+        assert call_count["n"] == 2, f"expected 2 retries, got {call_count['n']}"
+        print("PASS safe_get_bulk_csv failure non-200 (returns None after retries)")
+    finally:
+        requests.get = original_get
+
+
+def test_safe_get_bulk_csv_exception_with_key_masking():
+    """Exception containing apikey=SECRETKEY123 → masked to apikey=*** in warning."""
+    import requests
+
+    def mock_get_raises(url, timeout=None):
+        # Simulate an exception that includes the URL (which contains the secret key)
+        raise requests.ConnectionError(
+            f"Connection failed to {url} with apikey=SECRETKEY123"
+        )
+
+    def mock_sleep(s):
+        pass
+
+    original_get = requests.get
+    try:
+        requests.get = mock_get_raises
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            result = di.safe_get_bulk_csv(
+                "http://test/bulk?date=2026-01-31&apikey=SECRETKEY123",
+                retries=1,
+                sleep=mock_sleep
+            )
+            assert result is None, "expected None on exception after retries"
+            # Check that a warning was emitted
+            assert len(w) >= 1, "expected at least one warning"
+            warning_text = str(w[0].message)
+            # The secret key should NOT appear in the warning
+            assert "SECRETKEY123" not in warning_text, f"secret key leaked in warning: {warning_text}"
+            # The masked form SHOULD appear in the warning
+            assert "apikey=***" in warning_text, f"apikey=*** not found in warning: {warning_text}"
+            print("PASS safe_get_bulk_csv key masking (SECRETKEY123 masked to apikey=***)")
+    finally:
+        requests.get = original_get
+
+
 if __name__ == "__main__":
     test_FA_datefail_bypass()
     test_FB_short_history()
@@ -526,4 +680,9 @@ if __name__ == "__main__":
     test_api_key_never_logged()
     test_config_ingest_flag_default_off()
     test_config_asof_lastarg_no_indexerror()
+    test_safe_get_bulk_csv_csv_body()
+    test_safe_get_bulk_csv_json_list()
+    test_safe_get_bulk_csv_empty_200()
+    test_safe_get_bulk_csv_failure_non_200()
+    test_safe_get_bulk_csv_exception_with_key_masking()
     print("\nALL DELISTED-INGEST TESTS PASSED")

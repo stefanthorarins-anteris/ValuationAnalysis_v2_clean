@@ -37,6 +37,7 @@ ARTIFACT SPLIT (design s8)
     the run without pulling the data.
 """
 import os
+import csv
 import time
 import json
 import warnings
@@ -44,6 +45,7 @@ from datetime import datetime, timedelta
 
 import numpy as np
 import pandas as pd
+import requests
 
 import getData_gen as gdg
 import getData_fmp as gdf
@@ -450,6 +452,58 @@ def monthly_grid(trailing_months=BULK_TRAILING_MONTHS, end=None, extra_dates=Non
     return sorted(dates)
 
 
+def safe_get_bulk_csv(url, timeout=30, retries=3, backoff=1, sleep=None):
+    """CSV/JSON-aware getter for the bulk-by-date price endpoint ONLY.
+
+    The shared ``gdg.safe_get`` parses ``resp.json()`` and returns None on any
+    non-JSON body.  The on-plan bulk endpoint (v4/batch-request-end-of-day-prices)
+    returns a ~3.7MB **CSV** body (header symbol,date,open,low,high,close,adjClose,
+    volume) -- so ``safe_get`` returned None for EVERY date and the run misdiagnosed
+    a working endpoint as 'bulk_endpoint_unavailable'.  This getter is scoped to the
+    bulk-price path so the global JSON behaviour of ``safe_get`` (relied on by every
+    other caller) is untouched.  CSV handling models the correct reader already in
+    baseline_tools/fetch_prices.py:fetch_bulk_for_date.
+
+    Returns, mirroring the list-of-dict shape the downstream builder expects:
+      * list-of-dict rows  on a successful 200 (JSON list OR parsed CSV),
+      * []                 on a successful-but-empty 200 body (truly no data),
+      * None               on a GENUINE failure (non-200 after retries, timeout,
+                           connection error) -> the caller skips the date and the
+                           outage guard can distinguish a real outage from absence.
+    """
+    sleep = time.sleep if sleep is None else sleep
+    attempt = 0
+    while attempt < retries:
+        try:
+            resp = requests.get(url, timeout=timeout)
+            resp.raise_for_status()
+            ctype = resp.headers.get("Content-Type", "")
+            if "json" in ctype.lower():
+                try:
+                    data = resp.json()
+                except ValueError:
+                    data = None
+                return data if isinstance(data, list) else []
+            # CSV body (the on-plan default for this endpoint).
+            text = resp.text.strip()
+            if not text:
+                return []
+            return list(csv.DictReader(text.splitlines()))
+        except requests.RequestException as e:
+            attempt += 1
+            if attempt >= retries:
+                # Never echo the apikey query-param into logs/warnings -- it can
+                # appear both in the URL and inside the requests exception string.
+                import re as _re
+                safe_url = url.split("&apikey=")[0].split("?apikey=")[0]
+                safe_err = _re.sub(r"apikey=[^&\s]+", "apikey=***", str(e))
+                warnings.warn(f"Failed to GET bulk prices {safe_url} after {retries} "
+                              f"attempts: {safe_err}")
+                return None
+            sleep(backoff * (2 ** (attempt - 1)))
+    return None
+
+
 def fetch_bulk_prices(dates, dead_symbols, baseurl, api_key, get=None, sleep=None,
                       probe_symbol=PROBE_SYMBOL, probe_date=PROBE_DATE, logger=None,
                       live_symbols=None):
@@ -476,7 +530,10 @@ def fetch_bulk_prices(dates, dead_symbols, baseurl, api_key, get=None, sleep=Non
     Returns (prices_df, meta).  prices_df columns: date_requested, date_actual,
     symbol, close, adjClose (whatever the endpoint provides).
     """
-    get = get or gdg.safe_get
+    # BULK path uses a CSV/JSON-aware getter -- the endpoint returns CSV, which the
+    # shared JSON-only gdg.safe_get would drop to None (the false 'unavailable'
+    # misdiagnosis).  Tests inject their own list-returning getter via `get=`.
+    get = get or safe_get_bulk_csv
     sleep = time.sleep if sleep is None else sleep
     dead_set = set(dead_symbols or [])
     live_set = set(live_symbols or [])
