@@ -10,7 +10,6 @@ from datetime import datetime, timedelta
 from tqdm import tqdm
 from sklearn.linear_model import LinearRegression
 import numpy as np
-import getData_gen as gdg
 import warnings
 
 # Suppress FutureWarning about DataFrame concatenation with empty/all-NA entries
@@ -540,7 +539,6 @@ def writeBoAggToCSV(fb_df, mscore, cscore, baseurl, api_key, ntopagg, fname_AggS
     BoComp_tocsv.to_csv(fname_AggScoretop)
     pbar.close()
     return flag_df
-    return None
 
 def createPresentation(finalBoRank_df, mscore, cscore, baseurl, api_key, topn, fname, years, flag_df=None):
     #test

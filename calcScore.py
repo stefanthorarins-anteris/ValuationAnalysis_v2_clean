@@ -106,21 +106,6 @@ def calcByTier(dict,Tier,Sign,metvec,avec,met,n):
 
     return res
 
-def getIQmean(df):
-    dategrouped = df.groupby('date')
-    # For each date, calculate the first and third quantiles (25th and 75th percentiles) for each column
-    results = []
-    for date, group in dategrouped:
-        Q1 = group.quantile(0.25)
-        Q3 = group.quantile(0.75)
-        mask = (group >= Q1) & (group <= Q3)
-        df_middle_quantile = group[mask.all(axis=1)]
-        mean = df_middle_quantile.mean()
-        results.append({'date': date, 'mean': mean})
-    result_df = pd.DataFrame(results)
-
-    # Display the result
-    print(mean)
 
 def getAves2(df):
     print('Getting average values')
@@ -148,50 +133,3 @@ def getAves2(df):
     meandic = {'BoMetric_ave': res_fullMean, 'BoMetric_dateAve': res_withDates, 'colslost': colslost}
     return meandic
 
-def getAves_fuckedTTT(df):
-    print('Getting average values')
-    temp = df.drop(columns=['source'], axis=1)
-    res_withDates = temp.groupby('date').mean()
-    mc1 = set(df.columns) - set(res_withDates.columns)
-    if len(mc1)>2:
-        if 'source' in mc1:
-            mc1.remove('source')
-        if 'date' in mc1:
-            mc1.remove('date')
-        temp_mc1 = pd.DataFrame()
-        temp_mc1['date'] = df['date'].unique()
-        temp_mc1 = temp_mc1.sort_values(by='date').reset_index(drop=False)
-        temp_mc1.drop('index',axis=1,inplace=True)
-        temp_mc1 = temp_mc1.assign(**{string: None for string in mc1})
-        res_withDates = res_withDates.assign(**{string: None for string in mc1})
-
-        for col in mc1:
-            for row in temp_mc1.itertuples():
-                curdate = row.date
-                indexes = df[df['date'] == curdate].index
-                if len(indexes) < 0.33*df['source'].nunique():
-                    if any(temp_mc1['date'] == curdate):
-                        temp_mc1.drop(temp_mc1[temp_mc1['date'] == curdate].index, axis=0, inplace=True)
-                    if curdate in res_withDates.index:
-                        res_withDates.drop(res_withDates.loc[res_withDates.index == curdate].index, axis=0, inplace=True)
-                else:
-                    temp_date = df.iloc[indexes]
-                    temp_mc1.loc[temp_mc1['date'] == curdate, col] = temp_date[col].median()
-            res_withDates[col] = temp_mc1[col].values
-
-    res_fullMean = df.median()
-    for i in res_fullMean.index:
-        if np.isnan(res_fullMean[i]):
-            if np.isnan(res_withDates[i].mean()) == False:
-                print(res_withDates[i])
-                res_fullMean[i] = res_withDates[i].median()
-            else:
-                res_fullMean.dropna()
-
-    colslost = set(df.columns) - set(res_fullMean.index)
-    res_withDates = res_withDates.iloc[::-1]
-#    temp = df.drop(columns=['source','date'], axis=1)
-#    res_fullMean = res_fullMean.iloc[::-1]
-
-    meandic = {'BoMetric_ave': res_fullMean, 'BoMetric_dateAve': res_withDates, 'colslost': colslost}
-    return meandic

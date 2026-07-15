@@ -110,27 +110,31 @@ def test_live_wiring_present():
     assert "dedup_issuers" in sig.parameters, sig
     assert sig.parameters["dedup_issuers"].default is True
 
-    # Parse the function body; comments/docstrings are dropped by the parser, so only a
-    # real executable call survives.  Assert there is an ast.Call to `dedup_ranked` AND
-    # that the audit keys are assigned as live code (not just named in a comment).
-    src = textwrap.dedent(inspect.getsource(pbr.postBoScoreRanking))
-    tree = ast.parse(src)
+    # Parse the function bodies; comments/docstrings are dropped by the parser, so only a
+    # real executable call survives.  The dedup was extracted into the private helper
+    # _dedup_issuers_in_ranking (readability refactor), so inspect BOTH the orchestrator
+    # and that helper: assert (1) postBoScoreRanking WIRES the helper in, (2) the helper
+    # actually CALLS dedup_ranked as live code, and (3) the audit keys are emitted as live
+    # code (not just named in a comment).
     called = set()
     assigned_str = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Call):
-            f = node.func
-            if isinstance(f, ast.Attribute):
-                called.add(f.attr)
-            elif isinstance(f, ast.Name):
-                called.add(f.id)
-        # dict literal keys for the audit interface (rankdic = {... 'issuer_dupes_dropped': ...})
-        if isinstance(node, ast.Constant) and isinstance(node.value, str):
-            assigned_str.add(node.value)
+    for fn in (pbr.postBoScoreRanking, pbr._dedup_issuers_in_ranking):
+        tree = ast.parse(textwrap.dedent(inspect.getsource(fn)))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                f = node.func
+                if isinstance(f, ast.Attribute):
+                    called.add(f.attr)
+                elif isinstance(f, ast.Name):
+                    called.add(f.id)
+            # dict literal keys for the audit interface (rankdic = {... 'issuer_dupes_dropped': ...})
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                assigned_str.add(node.value)
+    assert "_dedup_issuers_in_ranking" in called, "orchestrator does not WIRE the dedup helper (AST)"
     assert "dedup_ranked" in called, "live ranker does not CALL carveOut.dedup_ranked (AST)"
     assert "issuer_dupes_dropped" in assigned_str, "audit key not emitted as live code"
     assert "postRank_predupe" in assigned_str, "pre-dedup audit frame not emitted as live code"
-    print("  [ok] postBoScoreRanking CALLS dedup_ranked (AST) + emits audit keys + params")
+    print("  [ok] postBoScoreRanking wires + CALLS dedup_ranked (AST) + emits audit keys + params")
 
 
 if __name__ == "__main__":

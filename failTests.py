@@ -41,16 +41,8 @@ def testForAPIFaults_fmp(failcodes,compyear,ticker,period,limit,baseurl,api_key,
         http_get = requests.get
     failbool = False
     whyfail = 'None'
-    #baseurl = 'https://financialmodelingprep.com/api/'
-    #resp_km = requests.get(f'{baseurl}v3/key-metrics/{ticker}?period={period}&limit={limit}&apikey={api_key}')
-    #resp_fr = requests.get(f'{baseurl}v3/ratios/{ticker}?period={period}&limit={limit}&apikey={api_key}')
-    #resp_inc = requests.get(f'{baseurl}v3/income-statement/{ticker}?period={period}&limit={limit}&apikey={api_key}')
-    #resp_bs = requests.get(f'{baseurl}v3/balance-sheet-statement/{ticker}?period={period}&limit={limit}&apikey={api_key}')
-    #resp_cf = requests.get(f'{baseurl}v3/cash-flow-statement/{ticker}?period={period}&limit={limit}&apikey={api_key}')
     calldic = {'km': 'key-metrics', 'fr': 'ratios','inc': 'income-statement', 'bs': 'balance-sheet-statement',
                'cf': 'cash-flow-statement'}
-    #respstatcodes = [resp_km.status_code, resp_fr.status_code, resp_inc.status_code, resp_bs.status_code,
-    #                 resp_cf.status_code]
     resplist = []
     respfail = False
     fsdfdic = {}

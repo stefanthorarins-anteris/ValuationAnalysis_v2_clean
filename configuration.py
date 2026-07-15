@@ -277,6 +277,21 @@ def getDataFetchConfiguration(args):
     else:
         backtest_topn = 100
 
+    # -run_estimation (VALUED, default 0): gate for the HEAVY estimation sub-block
+    # inside the post-pick analysis suite (tuner / tune_run / rebalance_engine + the
+    # depth-grid weight/carve tuning sweeps).  DEFAULT 0 -> the estimation block is
+    # SKIPPED entirely.  The grading / IC / depth-grid / beat-rate / oracle / random
+    # READOUTS still run by default (each self-guarded), because they are cheap and
+    # measure tonight's model; only the expensive parameter-SEARCH is behind this gate.
+    # Same valued-arg shape as -backtest_topn (read via configdic.get('run_estimation')).
+    if '-run_estimation' in args:
+        ire = args.index('-run_estimation')
+        if ire + 1 >= len(args):
+            raise Exception('-run_estimation requires an integer argument (0 or 1)')
+        run_estimation = int(args[ire + 1])
+    else:
+        run_estimation = 0
+
     # Transfer directory for end-of-run copy to Google-Drive-synced folder
     # Default None (off). When set, the pipeline copies the output allowlist there at
     # end-of-run, after ALL outputs are written and after ingestion completes.
@@ -325,7 +340,8 @@ def getDataFetchConfiguration(args):
                  'backtest_eval_years': backtest_eval_years, 'backtest_topn': backtest_topn,
                  'as_of': as_of, 'ingest_delisted': ingest_delisted,
                  'delisted_max_pages': delisted_max_pages,
-                 'startfromlastindex': startfromlastindex, 'transfer_dir': transfer_dir}
+                 'startfromlastindex': startfromlastindex, 'transfer_dir': transfer_dir,
+                 'run_estimation': run_estimation}
 
     return configdic
 

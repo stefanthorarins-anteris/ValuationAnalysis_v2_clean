@@ -134,18 +134,11 @@ def get_tickers(ds, baseurl, api_key, manual_elim=None, tfilt='stock_NA1',sfilt=
         except Exception as _e:
             print(f"WARNING: available-traded raw type/name capture skipped ({_e})")
 
-        #resp_stock_cmp_df = pd.DataFrame(resp_stock_cmp.json())
         resp_tckr_df = pd.DataFrame(resp_tckr_json) if resp_tckr_json else pd.DataFrame()
         resp_tckr_df.columns = ['symbol']
 
-        #tickers_df = resp_stock_cmp_df.merge(resp_tckr_df, on='symbol', how='inner', indicator=True)
-        #tickers_df.drop('_merge', axis=1, inplace=True)
-
         maskAT = resp_stockAT_cmp_df['symbol'].isin(resp_tckr_df['symbol'])
-        #mask = resp_stock_cmp_df['symbol'].isin(resp_tckr_df['symbol'])
         tickersAT_df = resp_stockAT_cmp_df[maskAT].drop_duplicates(subset='symbol').reset_index(drop=True)
-        #tickers_df = resp_stock_cmp_df[mask].drop_duplicates(subset='symbol').reset_index(drop=True).copy()
-        #tickers_df = resp_tckr_df
 
         df = tickerfilterWrapper(tickersAT_df, tfilt, sfilt, mcapf, baseurl, api_key)
 

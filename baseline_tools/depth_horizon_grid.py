@@ -158,6 +158,48 @@ def load_inputs(pickle_path, dead_path, registry_path, log):
             "live_sources": live_sources, "bm_all": bm_all}
 
 
+def inputs_from_memory(dmdic, merged, registry, log):
+    """Build the rank_all_anchors `inputs` dict from ALREADY-LOADED objects (no pickle
+    load, no dead-merge rebuild).  Mirrors load_inputs' output contract but takes the
+    dead-merge that the pipeline orchestrator built ONCE and shares across stages, so
+    the expensive merge_dead_into_dmdic is not repeated per stage.
+    """
+    live_sources = set(dmdic["cdx_df"]["source"].dropna().unique())
+    bm_all = merged["BoMetric_df"].copy()
+    bm_all["date"] = pd.to_datetime(bm_all["date"], errors="coerce")
+    log(f"    inputs_from_memory: live_sources={len(live_sources)} "
+        f"bm_all_rows={len(bm_all)}")
+    return {"dmdic": dmdic, "registry": registry, "merged": merged,
+            "live_sources": live_sources, "bm_all": bm_all}
+
+
+def run_in_pipeline(dmdic, merged, registry, price_source, log=None,
+                    weights="default", carve="off"):
+    """IN-MEMORY entry point for the automatic pipeline (post-pick analysis suite).
+
+    Reproduces the PIT ranking as-of each historical buy anchor USING TONIGHT's model
+    (the fresh `dmdic`/`merged` scoring frames), then builds the depth x horizon
+    average-total-return grid -- NOT the hardcoded stale DEFAULT_PICKLE that main()
+    loads.  This is the HISTORICAL PIT backtest re-run against tonight's model; it does
+    NOT analyze tonight's live pick (no forward prices exist yet).
+
+    Returns (report_text, per_anchor).  per_anchor is returned so the beat-rate-vs-URTH
+    stage can REUSE the (expensive) rankings instead of reproducing them again.
+    Never prints any api_key.
+    """
+    log = log or (lambda *a: None)
+    inputs = inputs_from_memory(dmdic, merged, registry, log)
+    per_anchor = rank_all_anchors(inputs, log, weights=weights, carve=carve)
+    cells, pooled, pooled_clean = compute_grid(per_anchor, price_source)
+    text = build_report(per_anchor, cells, pooled, pooled_clean)
+    print("\n" + "#" * 72)
+    print(f"# DEPTH x HORIZON avg-total-return GRID  (tonight's model, real prices, "
+          f"weights={weights}, carve={carve})")
+    print("#" * 72)
+    print(text, flush=True)
+    return text, per_anchor
+
+
 # --------------------------------------------------------------------------- #
 #  Ranking: once per buy anchor (full ordering to depth 100)                  #
 # --------------------------------------------------------------------------- #
@@ -195,6 +237,11 @@ def rank_all_anchors(inputs, log, weights="default", carve="off"):
 
         per_anchor[wid] = {
             "buy": buy, "ranking": ranking, "rank_depth": len(ranking),
+            # DEPLOYED deployed top-20: issuer-DEDUPED (what actually ships), vs
+            # `ranking` (=pool_after_norm) which is UNDEDUPED and used for the depth-cut
+            # diagnostic.  The beat-rate operational readout uses this deduped list so
+            # its number reflects the shipped filter, not the raw pool.
+            "top20_deduped": res.get("top20", ranking[:20]),
             "universe_size": len(uni), "n_pit_scored": n_pit,
             "n_pit_live": n_pit_live, "n_pit_dead": n_pit - n_pit_live,
         }

@@ -185,6 +185,76 @@ def information_coefficient(panel, dates, horizon):
     return pd.DataFrame(rows).sort_values("mean_IC", key=lambda s: s.abs(), ascending=False)
 
 
+def run_in_pipeline(dmdic, price_source=None, log=None):
+    """IN-MEMORY entry point for the automatic pipeline (post-pick analysis suite).
+
+    Runs parts 1-5 (persistence / variance / correlation / IC / composite-vs-best)
+    on the JUST-COMPUTED scoring dict `dmdic` (tonight's fresh cdx_df) -- NOT the
+    hardcoded stale PICKLE that main() loads.  This is the crux: wiring main() as-is
+    would analyze a stale Jan/Jul snapshot = silently wrong.
+
+    price_source is accepted for signature parity across the suite; parts 1-5 use the
+    reconstructed (synthetic) price embedded in the panel (see module CAVEAT), so it is
+    not consumed here -- real_ic.run_in_pipeline is the REAL-price IC readout.
+
+    Prints its report to stdout (the run log captures it); returns the IC tables dict.
+    Never loads from disk; never prints any api_key.
+    """
+    log = log or (lambda *a: None)
+    cdx = dmdic.get("cdx_df")
+    if cdx is None:
+        raise ValueError("dmdic has no 'cdx_df' -- cannot build the metric panel")
+    log("[model_vs_metric] building metric panel from tonight's cdx_df (in-memory) ...")
+    panel = build_panel(cdx)
+    print("\n" + "#" * 72)
+    print("# MODEL-vs-METRIC diagnostic  (tonight's model, in-memory)")
+    print("#   persistence / variance / correlation / IC(reconstructed price)")
+    print("#" * 72)
+    print(f"panel rows: {len(panel)}, names: {panel['source'].nunique()}", flush=True)
+
+    print("\n" + "=" * 72)
+    print("1+2. PERSISTENCE (half-life) & TIME-VARIANCE (per-name CV)")
+    print("=" * 72)
+    pv = persistence_and_variance(panel).sort_values("median_autocorr", ascending=False)
+    print(pv.to_string(index=False,
+          formatters={"median_autocorr": "{:.2f}".format,
+                      "half_life_q": "{:.1f}".format, "median_CV": "{:.2f}".format}))
+
+    print("\n" + "=" * 72)
+    print("3. CROSS-METRIC CORRELATION (Spearman, as-of 2021-12-31) - |corr|>0.5 pairs")
+    print("=" * 72)
+    C = correlation_matrix(panel)
+    pairs = []
+    for i, a in enumerate(METRICS):
+        for b in METRICS[i + 1:]:
+            c = C.loc[a, b]
+            if pd.notna(c) and abs(c) > 0.5:
+                pairs.append((a, b, c))
+    pairs.sort(key=lambda x: -abs(x[2]))
+    for a, b, c in pairs:
+        print(f"   {c:+.2f}  {a} ~ {b}")
+    if not pairs:
+        print("   (no pair |corr|>0.5 -> metrics largely independent)")
+
+    print("\n" + "=" * 72)
+    print("4+5. INFORMATION COEFFICIENT vs FORWARD RECONSTRUCTED-PRICE RETURN")
+    print("     (DIRECTIONAL - synthetic price, ~0.73 corr to real; CAVEAT)")
+    print("=" * 72)
+    ic_dates = ["2018-12-31", "2019-12-31", "2020-12-31", "2021-12-31"]
+    tables = {}
+    for h, lbl in [(4, "12-month"), (12, "36-month")]:
+        ic = information_coefficient(panel, ic_dates, h)
+        tables[lbl] = ic
+        print(f"\n  --- {lbl} forward horizon (mean IC over {ic_dates}) ---")
+        print(ic.to_string(index=False, formatters={"mean_IC": "{:+.3f}".format}))
+        comp = ic[ic["metric"] == "COMPOSITE"]["mean_IC"].iloc[0]
+        best = ic[ic["metric"] != "COMPOSITE"].iloc[0]
+        print(f"  COMPOSITE IC={comp:+.3f}  vs  best single "
+              f"({best['metric']})={best['mean_IC']:+.3f}")
+    print("\n[model_vs_metric] DONE (parts 1-5).", flush=True)
+    return tables
+
+
 def main():
     print("Loading pickle (offline) ...", flush=True)
     dmdic = pd.read_pickle(PICKLE)

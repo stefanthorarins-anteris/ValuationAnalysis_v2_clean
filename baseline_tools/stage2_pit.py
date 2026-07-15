@@ -38,6 +38,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import createDicts as cdic
 import calcScore as csf
 import postBoRank as pbr
+import stage2_metrics as sm
 
 NA1_EXCHANGES = ["NYSE", "NASDAQ", "TSX"]
 DROP_METRICS = ["DcfToPrice"]  # not reconstructable PIT offline
@@ -69,12 +70,8 @@ def _stage2_metric_loop_offline(bstop, cdxtop, nq=16):
     out["source"] = bstop["source"].values
 
     cdxtop = cdxtop.copy()
-    # pool-level marketCap quartile code (postBoRank.py:99)
-    try:
-        cdxtop["mcapQuants"] = (-1) * ((pd.qcut(cdxtop["marketCap"], 4,
-                                        duplicates="drop").cat.codes / 3) - 0.5)
-    except Exception:
-        cdxtop["mcapQuants"] = 0.0
+    # pool-level marketCap quartile code (stage2_metrics.add_mcap_quants)
+    cdxtop["mcapQuants"] = sm.add_mcap_quants(cdxtop)
 
     for ticker in bstop["source"]:
         tempcdx = cdxtop.loc[cdxtop["source"] == ticker]
@@ -82,123 +79,35 @@ def _stage2_metric_loop_offline(bstop, cdxtop, nq=16):
             continue
         tempfcf = tempcdx.freeCashFlow
         tempshares = tempcdx.weightedAverageShsOut
-        tempmcap = tempcdx.marketCap
         tempmcapQuants = tempcdx.mcapQuants.iloc[0]
 
         def setv(col, val):
             out.loc[out["source"] == ticker, col] = val
 
-        # ---- postBmRankingDict metrics (postBoRank.py:172-186) ----
+        # ---- postBmRankingDict metrics ----
         for key1 in postBm:
-            met = postBm[key1]["eqMet"]
-            if key1 == "grahamNumberToPrice":
-                setv(key1, (tempcdx["grahamNumber"] / tempcdx["price"]).head(nq).mean())
-            elif key1 == "bVpRatio":
-                setv(key1, (1 / tempcdx[met]).head(nq).mean())
-            elif key1 == "revenueGrowth":
-                setv(key1, tempcdx[met].pct_change(-4, fill_method=None).head(nq).mean())
-            else:
-                setv(key1, tempcdx[met].head(nq).mean())
+            setv(key1, sm.postbm_metric(key1, postBm[key1]["eqMet"], tempcdx, nq))
 
-        # ---- postNewRankingDict metrics (postBoRank.py:189-441) ----
-        setv("freeCashFlowYield", (tempfcf / tempmcap).head(nq).mean())
-        fcfps = tempfcf / tempshares
+        # ---- postNewRankingDict metrics (shared with production via stage2_metrics) ----
+        setv("freeCashFlowYield", sm.free_cash_flow_yield(tempfcf, tempcdx.marketCap, nq))
         setv("freeCashFlowPerShareGrowth",
-             fcfps.pct_change(-4, fill_method=None).head(nq).mean())
-        # DcfToPrice: DROPPED
+             sm.free_cash_flow_per_share_growth(tempfcf, tempshares, nq))
+        # DcfToPrice: DROPPED offline (no point-in-time DCF; weight 0 in the live vector)
         setv("marketCapRevQuants", tempmcapQuants)
-        setv("tbVpRatio", (tempcdx["tangibleBookValuePerShare"] / tempcdx["price"]).head(nq).mean())
+        setv("tbVpRatio", sm.tbv_p_ratio(tempcdx, nq))
         setv("BoScore", float(bstop.loc[bstop["source"] == ticker, "score"].iloc[0]))
-
-        # EPStoEPSmean (postBoRank.py:212-225)
-        eps = tempcdx["netIncome"] / tempcdx["weightedAverageShsOut"]
-        epsmean = eps.mean()
-        a = 0.4
-        tw = a * (1 + (1 - a) + (1 - a) ** 2 + (1 - a) ** 3)
-        if len(eps) >= 4 and all(eps.iloc[0:4] > 0):
-            epstoepsmean = epsmean - (a / tw) * (
-                eps.iloc[0] + eps.iloc[1] * (1 - a) +
-                eps.iloc[2] * (1 - a) ** 2 + eps.iloc[3] * (1 - a) ** 3)
-        else:
-            epstoepsmean = 0
-        setv("EPStoEPSmean", epstoepsmean)
-
-        # priceGrowth -- MUST stay in lockstep with postBoRank.postBoScoreRanking.
-        # tempcdx here is newest-first (_sort_newest_first), so pct_change(-1) is
-        # already positive-for-risers; the leading '-' was REMOVED to match the
-        # production fix (it would otherwise invert priceGrowth relative to prod).
-        # If you touch the sign here, change postBoRank.py in the same commit.
-        if "price" in tempcdx.columns and not tempcdx["price"].empty:
-            setv("priceGrowth",
-                 tempcdx["price"].pct_change(-1, fill_method=None).head(nq).mean())
-        else:
-            setv("priceGrowth", np.nan)
-
-        # Altman-Z (postBoRank.py:277-316)
-        setv("Altman-Z", _altman_z(tempcdx))
-        # Piotroski (postBoRank.py:320-369)
-        setv("Piotroski", _piotroski(tempcdx))
-        # CycleHeat with beta=1.0 (postBoRank.py:393-441)
-        setv("CycleHeat", _cycleheat(tempcdx, beta_stock=1.0))
+        setv("EPStoEPSmean", sm.eps_to_eps_mean(tempcdx))
+        setv("priceGrowth", sm.price_growth(tempcdx, nq))
+        setv("Altman-Z", sm.altman_z(tempcdx))
+        setv("Piotroski", sm.piotroski(tempcdx))
+        # CycleHeat: the SAME shared function the live scorer uses.  Its canonical
+        # EPS prep (stage2_metrics.prepare_eps_series) collapses duplicate-dated
+        # (restated) quarters to the last-ingested figure, so the live and offline
+        # paths now agree by construction -- including on the previously-divergent
+        # ILMN-type restatement names.
+        setv("CycleHeat", sm.cycleheat(tempcdx))
 
     return out
-
-
-def _altman_z(tempcdx):
-    try:
-        curr = tempcdx.iloc[0]
-        ta, tl = curr["totalAssets"], curr["totalLiabilities"]
-        if ta > 0 and tl > 0:
-            x1 = (curr["totalCurrentAssets"] - curr["totalCurrentLiabilities"]) / ta
-            x2 = curr["totalStockholdersEquity"] / ta
-            x3 = curr["operatingIncome"] / ta
-            x4 = curr["marketCap"] / tl
-            x5 = curr["revenue"] / ta
-            return 1.2 * x1 + 1.4 * x2 + 3.3 * x3 + 0.6 * x4 + 1.0 * x5
-    except Exception:
-        pass
-    return np.nan
-
-
-def _piotroski(tempcdx):
-    try:
-        if len(tempcdx) < 2:
-            return np.nan
-        curr, prev = tempcdx.iloc[0], tempcdx.iloc[1]
-        ta_c, ta_p = curr["totalAssets"], prev["totalAssets"]
-        if ta_c <= 0 or ta_p <= 0:
-            return np.nan
-        p1 = 1 if curr["netIncome"] / ta_c > 0 else 0
-        p2 = 1 if curr["netCashProvidedByOperatingActivities"] > 0 else 0
-        p3 = 1 if (curr["netIncome"] / ta_c) > (prev["netIncome"] / ta_p) else 0
-        p4 = 1 if curr["netCashProvidedByOperatingActivities"] > curr["netIncome"] else 0
-        p5 = 1 if (curr["longTermDebt"] / ta_c) < (prev["longTermDebt"] / ta_p) else 0
-        p6 = 1 if curr["currentRatio"] > prev["currentRatio"] else 0
-        p7 = 1 if curr["weightedAverageShsOut"] <= prev["weightedAverageShsOut"] else 0
-        p8 = 1 if curr["grossProfitMargin"] > prev["grossProfitMargin"] else 0
-        p9 = 1 if (curr["revenue"] / ta_c) > (prev["revenue"] / ta_p) else 0
-        return p1 + p2 + p3 + p4 + p5 + p6 + p7 + p8 + p9
-    except Exception:
-        return np.nan
-
-
-def _cycleheat(tempcdx, beta_stock=1.0):
-    try:
-        eps = tempcdx["netIncome"] / tempcdx["weightedAverageShsOut"]
-        eps_clean = eps.replace([np.inf, -np.inf], np.nan).dropna()
-        if len(eps_clean) < 2:
-            return np.nan
-        cur, mean, std = eps_clean.iloc[0], eps_clean.mean(), eps_clean.std()
-        if std > 0 and not np.isnan(std):
-            z = (cur - mean) / std
-        elif mean != 0:
-            z = (cur - mean) / abs(mean)
-        else:
-            z = 0.0
-        ch = z * beta_stock
-        return max(-3.0, min(ch, 3.0))
-    except Exception:
-        return np.nan
 
 
 def reproduce_pit_top(dmdic, D, na1_only=True, nq_stage1=8, nq_stage2=16,

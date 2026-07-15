@@ -1,3 +1,29 @@
+"""
+Sbocker.py -- the pipeline ENTRY POINT / orchestrator for the ValuationAnalysis
+filter.  Full AS-IS + AS-INTENDED map: design/pipeline-reference.md.
+
+LIVE / DECISIONAL stage order (drives the emitted top-20):
+  1. fetch fundamentals (getData_fmp)      -> raw FMP data
+  2. data-quality prune (data_quality)     -> cleaned cdx_df / BoMetric_df
+  3. Stage-1 BoScore   (calcScore)          -> top-100 pool
+  4. carve partition + issuer-dedup (carveOut) -> per-cohort pools
+  5. Stage-2 AggScore  (postBo -> postBoRank.postBoScoreRanking, mu weights)
+                                            -> general top-20 + 5 cohort side-lists
+  6. forensic / moat / manipulation decoration (forensicFlags, detectManipulation)
+  7. emit postRank pickle + presentation + append-only pick-log (pick_log)
+
+Stage-2 metric formulas live ONCE in stage2_metrics.py, shared with the offline
+reproduction (baseline_tools/stage2_pit.py) so the live scorer and the
+validation gate can never silently drift apart.
+
+Gated-OFF by default (hand-run offline harness, NOT part of the automatic run):
+delisted-ingest, in-run backtest, Drive transfer, and the whole
+baseline_tools/ validation / beat-rate / tuner stack.
+
+PHASE-B SEAM (not built here): wiring the offline validation/analysis INTO this
+run belongs after the emission stages -- keep that boundary clean.
+"""
+
 import sys
 import configuration as cf
 import utils as utils
@@ -349,6 +375,33 @@ def main():
         print(_pl_banner, file=sys.stderr, flush=True)
         _tb.print_exc(file=sys.stderr)
         print(_pl_banner, flush=True)
+
+    # ---- POST-PICK ANALYSIS SUITE (strictly additive, guarded) -----------------
+    # Promote the offline baseline_tools/ diagnostics into pipeline stages so a single
+    # overnight run also emits the analysis.  Runs AFTER the pick-log (picks + pickle +
+    # pick-log already written above => pick path is DONE and UNAFFECTED) and BEFORE the
+    # optional delisted ingestion.  Each analysis is a SEPARATELY-guarded stage inside
+    # run_analysis_suite; a stage failure banners loudly + never crashes the run or the
+    # picks.  The outer try here only guards the IMPORT (baseline_tools is a sys.path dir,
+    # not a package), mirroring the pick-log stage's import guard.  NO commit/push; heavy
+    # ESTIMATION sub-block is OFF unless -run_estimation 1.
+    try:
+        _bt_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'baseline_tools')
+        if _bt_dir not in sys.path:
+            sys.path.insert(0, _bt_dir)
+        import pipeline_analysis as _pa
+        _pa.run_analysis_suite(resdic, configdic)
+    except Exception:
+        import traceback as _tb
+        _pa_banner = ("\n" + "!" * 78 + "\n"
+                      "!!! ANALYSIS SUITE COULD NOT BE IMPORTED/STARTED -- RUN CONTINUES !!!\n"
+                      "!!! The post-pick analysis readouts were NOT produced this run;       !!!\n"
+                      "!!! the deliverables + pick-log above are UNAFFECTED. Investigate the  !!!\n"
+                      "!!! pipeline_analysis import.                                          !!!\n"
+                      + "!" * 78 + "\n")
+        print(_pa_banner, file=sys.stderr, flush=True)
+        _tb.print_exc(file=sys.stderr)
+        print(_pa_banner, flush=True)
 
     # ---- Delisted-entity (survivorship) ingestion -- GATED, default OFF ----
     # ACQUIRES survivorship data (registry + dead fundamentals + dead prices) and

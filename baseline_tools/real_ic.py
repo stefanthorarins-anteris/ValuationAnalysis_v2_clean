@@ -29,8 +29,8 @@ REAL = os.path.join(os.path.dirname(os.path.abspath(__file__)), "price_data", "r
 REAL_DATES = ["2018-12-31", "2020-12-28", "2022-12-27", "2024-12-28"]
 
 
-def load_real():
-    df = pd.read_csv(REAL)
+def load_real(path=None):
+    df = pd.read_csv(path or REAL)
     df["adjClose"] = pd.to_numeric(df["adjClose"], errors="coerce")
     # (date_actual, symbol) -> adjClose
     piv = df.pivot_table(index="symbol", columns="date_actual", values="adjClose", aggfunc="last")
@@ -106,6 +106,63 @@ def profit_timing_real(dmdic, panel, real):
             r.append({"during": p1 / p0 - 1, "after": p3 / p1 - 1, "full": p3 / p0 - 1})
         return pd.DataFrame(r)
     return ex, st, _t(ex), _t(st)
+
+
+def run_in_pipeline(dmdic, price_source=None, real_prices_csv=None, log=None):
+    """IN-MEMORY entry point for the automatic pipeline (post-pick analysis suite).
+
+    Re-runs the IC (real vs reconstructed price) + profit-timing decomposition on
+    TONIGHT's fresh scoring dict `dmdic`, NOT the hardcoded stale PICKLE that main()
+    loads.  Real adjusted-close prices come from real_prices.csv (the same file the
+    guarded price-fetch step ensures is present); dmdic supplies the metric panel.
+
+    `real_prices_csv` overrides the default REAL path (machine-independence); if the
+    real-price file is missing the caller's guard banners -- this raises rather than
+    silently producing an empty table.  price_source is accepted for parity (unused;
+    real_ic reads the year-anchor CSV directly).  Never prints any api_key.
+    """
+    log = log or (lambda *a: None)
+    cdx = dmdic.get("cdx_df")
+    if cdx is None:
+        raise ValueError("dmdic has no 'cdx_df' -- cannot build the metric panel")
+    log("[real_ic] building panel + loading real prices (in-memory) ...")
+    panel = mvm.build_panel(cdx)
+    real = load_real(real_prices_csv)
+    ov = len(set(panel['source'].unique()) & set(real.index))
+    print("\n" + "#" * 72)
+    print("# REAL-IC diagnostic  (tonight's model, real adjusted-close returns)")
+    print("#" * 72)
+    print(f"real price matrix: {real.shape[0]} symbols x {list(real.columns)}", flush=True)
+    print(f"symbols overlapping pipeline universe: {ov}", flush=True)
+
+    print("\n" + "=" * 72)
+    print("IC on REAL vs RECONSTRUCTED returns  (24-month horizon; buy 2018/2020/2022)")
+    print("=" * 72)
+    pairs24 = [("2018-12-31", "2020-12-28"), ("2020-12-28", "2022-12-27"),
+               ("2022-12-27", "2024-12-28")]
+    tbl, _ = ic_table(panel, real, pairs24, "24m")
+    tbl = tbl.sort_values("IC_real", key=lambda s: s.abs(), ascending=False)
+    print(tbl.to_string(index=False, formatters={"IC_real": "{:+.3f}".format,
+                                                  "IC_recon": "{:+.3f}".format}))
+    singles = tbl[tbl["metric"] != "COMPOSITE"]
+    comp = tbl[tbl["metric"] == "COMPOSITE"].iloc[0]
+    best_real = singles.iloc[0]
+    print(f"\n  COMPOSITE IC_real={comp['IC_real']:+.3f} vs best single "
+          f"({best_real['metric']}) IC_real={best_real['IC_real']:+.3f}  "
+          f"-> smoking gun {'HOLDS' if comp['IC_real'] < best_real['IC_real'] else 'DOES NOT hold'}")
+
+    print("\n" + "=" * 72)
+    print("PROFIT-TIMING vs CHURN on REAL prices (D=2020-12 -> +2y -> +4y)")
+    print("=" * 72)
+    ex, st, exdf, stdf = profit_timing_real(dmdic, panel, real)
+    print(f"top-20 at D=2020: exit by +2y={len(ex)}, stay={len(st)}")
+    for lbl, d in [("EXITERS", exdf), ("STAYERS", stdf)]:
+        if d.empty:
+            print(f"  {lbl}: no priceable"); continue
+        print(f"  {lbl} (n={len(d)}): during[D,+2y]={d['during'].median()*100:+.1f}%  "
+              f"after[+2y,+4y]={d['after'].median()*100:+.1f}%  full={d['full'].median()*100:+.1f}%")
+    print("\n[real_ic] DONE.", flush=True)
+    return {"ic_24m": tbl, "exiters": exdf, "stayers": stdf}
 
 
 def main():
