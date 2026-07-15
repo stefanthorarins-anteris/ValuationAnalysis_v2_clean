@@ -142,12 +142,30 @@ class RunLogger:
         self._summary["distributions"][key] = self._scrub(value)
 
     def write_manifest(self):
+        """Write the manifest to disk.
+
+        SAFE TO CALL REPEATEDLY: an idempotent overwrite of manifest_path with the
+        CURRENT accumulated summary, so flushing at every phase boundary leaves a
+        current manifest on disk even if the run is later killed.  `finished` is
+        (re)stamped on each call to mark the as-of of the flush.
+
+        Crash-resilient: writes to a temp file and atomically replaces the target,
+        so a mid-run kill never leaves a half-written manifest.  NEVER raises -- a
+        flush hiccup must not kill a multi-hour run (returns None on failure).
+        """
         self._summary["finished"] = _now_iso()
-        with open(self.manifest_path, "w", encoding="utf-8") as f:
-            json.dump(self._scrub(self._summary), f, indent=2, default=str)
-        if self.echo:
-            print(f"[manifest] wrote {self.manifest_path}", flush=True)
-        return self.manifest_path
+        try:
+            tmp = self.manifest_path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(self._scrub(self._summary), f, indent=2, default=str)
+            os.replace(tmp, self.manifest_path)
+            if self.echo:
+                print(f"[manifest] wrote {self.manifest_path}", flush=True)
+            return self.manifest_path
+        except Exception as e:
+            if self.echo:
+                print(f"[manifest] WARNING: failed to write manifest: {e}", flush=True)
+            return None
 
     def close(self):
         try:

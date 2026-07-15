@@ -10,7 +10,6 @@ from datetime import datetime, timedelta
 from tqdm import tqdm
 from sklearn.linear_model import LinearRegression
 import numpy as np
-import getData_gen as gdg
 import warnings
 
 # Suppress FutureWarning about DataFrame concatenation with empty/all-NA entries
@@ -106,22 +105,127 @@ def postBoWrapper(dmdic, as_of=None):
     sys.stdout.flush()
     
     BoScore_df = cs.simpleScore_fromDict(bmdf, bmav, bmda, n, as_of=as_of)
-    BoS_dftop100 = BoScore_df.head(100)
+
+    # --- Phase-1 cohort carve-out (BEFORE the head(100) selection) -------------
+    # Partition the full BoScore-ranked universe into a GENERAL pool + three
+    # disjoint side-cohorts (REITs / Mining / investment vehicles) and apply a
+    # gentle $25M market-cap floor uniformly.  The MAIN shortlist is drawn ONLY
+    # from the general pool; each cohort is ranked with the SAME machinery and
+    # presented as a labeled side-list.  This only changes WHICH names feed each
+    # ranking -- the ranking (and its as_of/live behaviour) is unchanged.
+    #
+    # ROBUSTNESS (critical path): the carve-out must NEVER be able to destroy the
+    # main deliverable.  The partition is wrapped so a failure falls back to the
+    # legacy BoScore_df.head(100) (original, no-carve behaviour); the MAIN ranking
+    # + resdic are built FIRST, fully independent of the cohorts; and the
+    # side-lists run afterwards in a per-cohort guarded best-effort block, so a
+    # small/degenerate cohort (e.g. qcut on ~10 names) can crash at most its own
+    # side-list -- never the general ranking that already succeeded.
+    carve = None
+    try:
+        import carveOut as co
+        carve = co.partition_universe(BoScore_df, cdx_df, dmdic.get('Tickers_df'),
+                                      mcap_floor=25e6, cohort_head=25)
+        general_scores = carve['general']
+        gp_count = len(general_scores)
+        diag = carve['diagnostics']
+        print(f"CARVE-OUT: general pool = {gp_count} names after cohorts + $25M floor "
+              f"(REIT={diag['n_REIT']}, Mining={diag['n_Mining']}, "
+              f"FIN1_Vehicle={diag['n_InvestmentVehicle']}, "
+              f"FIN2_Manager={diag.get('n_FinManager', 0)}, "
+              f"FIN3_BalanceSheet={diag.get('n_BalanceSheetFin', 0)}, "
+              f"below_floor={diag['n_below_floor']}, unknown_mcap_kept={diag['n_unknown_mcap']})",
+              flush=True)
+        if gp_count < 100:
+            print(f"CARVE-OUT WARNING: general pool has only {gp_count} names (<100); "
+                  f"top-100 selection is short -- top-20 may not fully fill.", flush=True)
+    except Exception as e:
+        # LOUD FALLBACK. The carve-out/dedup IS the deliverable's integrity guarantee
+        # (no issuer duplicates; 0 Basic-Materials / financials in the general pool). A
+        # SILENT fallback is itself a defect: on 2026-07-13 it shipped legacy un-carved
+        # output that looked like a carved deliverable and nobody noticed. Keep the
+        # safety net (never crash the pipeline) but make a fallback IMPOSSIBLE to mistake
+        # for success: full traceback + an unmistakable banner on BOTH stdout and stderr.
+        import traceback
+        banner = (
+            "\n" + "!" * 78 + "\n"
+            "!!! CARVE-OUT/DEDUP DID NOT RUN -- SHIPPING LEGACY UN-CARVED TOP-100 !!!\n"
+            "!!! The general pool is NEITHER de-duped NOR sector-carved this run:  !!!\n"
+            "!!!   expect issuer/share-class duplicates AND Basic-Materials /       !!!\n"
+            "!!!   financials leaking into the general top-100.                     !!!\n"
+            f"!!! Cause: {type(e).__name__}: {e}\n"
+            "!!! DO NOT treat this output as a carved deliverable.                  !!!\n"
+            + "!" * 78 + "\n")
+        # stderr first (survives stdout redirection and tqdm progress-bar noise).
+        print(banner, file=sys.stderr, flush=True)
+        traceback.print_exc(file=sys.stderr)
+        print(banner, flush=True)
+        traceback.print_exc(file=sys.stdout)
+        carve = None
+        general_scores = BoScore_df
+        gp_count = len(general_scores)
+
+    # --- MAIN ranking + resdic: built first, independent of the cohorts --------
+    BoS_dftop100 = general_scores.head(100)
     BoM_dftop100 = bmdf[bmdf['source'].isin(list(BoS_dftop100.source))].reset_index(drop=True)
     cdx_dftop100 = cdx_df[cdx_df['source'].isin(list(BoS_dftop100.source))].reset_index(drop=True)
 
     n= 16
+    # issuer names for the emission-time issuer-dedup (edge B: name+shares). cdx-based
+    # edges (A/C) work without names; passing them widens dual-listing coverage.
+    _tdf = dmdic.get('Tickers_df')
+    _names = (dict(zip(_tdf['symbol'], _tdf['name']))
+              if _tdf is not None and 'symbol' in getattr(_tdf, 'columns', [])
+                 and 'name' in getattr(_tdf, 'columns', []) else {})
     rankdic = pbr.postBoScoreRanking(BoM_dftop100, BoS_dftop100, cdx_dftop100, dmdic['baseurl'], dmdic['api_key'],
-                                     dmdic['period'],n,as_of=as_of)
+                                     dmdic['period'],n,as_of=as_of,names=_names)
 
-    metricList = ['earningsYield', 'grahamNumberToPrice', 'RoA', 'EPStoEPSmean', 'freeCashFlowYield', 'reveneGrowth']
+    # UNWINNED FILTER: -1.5 z-score pass-filter on six metrics (earnYield, grahamNumberToPrice,
+    # RoA, EPStoEPSmean, freeCashFlowYield, revenueGrowth). Computed and stored in resdic but
+    # NOT wired into any shipped deliverable — the shortlist is built from resdic['postRank']
+    # only, so psbrfilter currently filters zero names. Left in place per CEO decision
+    # (2026-07-14) pending a future decision to either wire it in (would require a soundness
+    # review of the -1.5 cutoff on these 6 metrics) or remove it.
+    metricList = ['earnYield', 'grahamNumberToPrice', 'RoA', 'EPStoEPSmean', 'freeCashFlowYield', 'revenueGrowth']
     cutoff = 1.5
     psbrfilter = pbr.postBoRankingPassFilter(rankdic['postRank'],metricList,-cutoff,np.inf)
 
     regressMetricsOnROR(rankdic)
 
     resdic = {**rankdic, **{'BoS_dftop100': BoS_dftop100, 'BoM_dftop100': BoM_dftop100, 'cdx_dftop100': cdx_dftop100,
-                          'BoScore_df': BoScore_df, 'psbrfilter': psbrfilter}}
+                          'BoScore_df': BoScore_df, 'psbrfilter': psbrfilter,  # NOT WIRED — see above comment
+                          'general_pool_count': gp_count}}
+
+    # --- Side-lists: guarded best-effort, AFTER resdic is complete -------------
+    # Only runs if the partition succeeded.  Per-cohort try/except so one
+    # degenerate cohort degrades to "no side-list for that cohort" (visible
+    # warning) without touching the others or the already-built main output.
+    carveout_sidelists = {}
+    if carve is not None:
+        for label, cohort_scores in carve['cohorts'].items():
+            try:
+                head = cohort_scores.head(25)
+                if head.empty:
+                    carveout_sidelists[label] = None
+                    continue
+                bm = bmdf[bmdf['source'].isin(list(head.source))].reset_index(drop=True)
+                cd = cdx_df[cdx_df['source'].isin(list(head.source))].reset_index(drop=True)
+                # per-cohort weight vector (general/main pool keeps the default)
+                wov = co.COHORT_WEIGHTS.get(label)
+                print(f"CARVE-OUT side-list '{label}': ranking {len(head)} names"
+                      f"{' with per-cohort weights' if wov else ''}", flush=True)
+                carveout_sidelists[label] = pbr.postBoScoreRanking(bm, head, cd, dmdic['baseurl'], dmdic['api_key'],
+                                                                   dmdic['period'], n, as_of=as_of,
+                                                                   weight_override=wov)
+            except Exception as e:
+                print(f"CARVE-OUT side-list '{label}' FAILED ({type(e).__name__}: {e}); "
+                      f"skipping this side-list (main output unaffected).", flush=True)
+                carveout_sidelists[label] = None
+        resdic['carveout_sidelists'] = carveout_sidelists
+        resdic['carveout_labels'] = carve['labels']
+        resdic['carveout_diagnostics'] = carve['diagnostics']
+    else:
+        resdic['carveout_sidelists'] = {}
 
     return resdic
 
@@ -184,6 +288,31 @@ def writeResWrapper(resdic):
     # create presentation xlsx of ntopxlsx stocks
     fname_presentationtop= f'PresentationTop{ntopxlsx}-{fidag}_{datasource}_{tickerfilter}.xlsx'
     createPresentation(fb_df, mscore, cscore, baseurl, api_key, ntopxlsx, fname_presentationtop, years, flag_df)
+
+    # Phase-1 carve-out: write each labeled side-list (REIT / Mining / investment
+    # vehicles) as its own compact CSV alongside the main deliverables. Best-effort
+    # and self-contained: never raises, and is a no-op when no side-lists are
+    # present (e.g. an older resdic), so the main path is unchanged.
+    sidelist_fnames = []
+    try:
+        sidelists = resdic.get('carveout_sidelists') or {}
+        for label, sdic in sidelists.items():
+            if not sdic or 'postRank' not in sdic:
+                continue
+            sl_df = sdic['postRank'].head(ntopagg).copy()
+            keep = [c for c in ['source', 'AggScore', 'rankOfRanks'] if c in sl_df.columns]
+            fname_sidelist = f'SideList_{label}_Top{ntopagg}-{fidag}_{datasource}_{tickerfilter}.csv'
+            sl_df[keep].to_csv(fname_sidelist, index=False)
+            sidelist_fnames.append(fname_sidelist)
+            print(f'Carve-out side-list written to: {fname_sidelist}')
+    except Exception as _e:
+        print(f'WARNING: carve-out side-list writing skipped ({_e})')
+
+    # Return the human-readable top-N deliverables just written (same pattern as
+    # utils.saveWrapper returning its pickle name) so Sbocker.main can copy them to
+    # the Drive-synced transfer dir at the pre-ingestion phase boundary. Data-only:
+    # nothing here changes scoring/ranking/forensic output.
+    return [fname_AggScoretop, fname_presentationtop, fname_forensic] + sidelist_fnames
 
 def writeBoAggToCSV(fb_df, mscore, cscore, baseurl, api_key, ntopagg, fname_AggScoretop, flag_df=None):
     fbdf_tocsv = fb_df.head(ntopagg)
@@ -410,7 +539,6 @@ def writeBoAggToCSV(fb_df, mscore, cscore, baseurl, api_key, ntopagg, fname_AggS
     BoComp_tocsv.to_csv(fname_AggScoretop)
     pbar.close()
     return flag_df
-    return None
 
 def createPresentation(finalBoRank_df, mscore, cscore, baseurl, api_key, topn, fname, years, flag_df=None):
     #test

@@ -14,6 +14,23 @@ def simpleScore_fromDict(bm_df,bm_ave,bm_da,n=8,as_of=None):
     as-of-D quarters instead of assuming "newest row == today".
     """
     print(f'Calculating scores for each stock symbol in BoMetric_df')
+
+    # --- ORDERING INVARIANT (Stage-1): calcByTier's .head(n) scoring window
+    # assumes each ticker's rows are NEWEST-first. On tonight's data BoMetric_df
+    # arrives newest-first (verified 600/600 descending), but NOTHING on the live
+    # path enforces it -- data_quality re-sorts only cdx_df, so this is an
+    # incidental FMP ingestion order, not an invariant. Defensively re-sort a COPY
+    # to newest-first: a no-op when already correct, a fix if the order ever drifts.
+    # Dates coerced robustly (a naive string sort mis-orders mixed/malformed dates).
+    # Mirrors stage2_pit._sort_newest_first and the Stage-2 re-sort in
+    # postBoRank.postBoScoreRanking.
+    if 'date' in bm_df.columns:
+        bm_df = bm_df.copy()
+        _n_before = bm_df.groupby('source').size()
+        bm_df['date'] = pd.to_datetime(bm_df['date'], errors='coerce')
+        bm_df = bm_df.sort_values(['source', 'date'], ascending=[True, False]).reset_index(drop=True)
+        assert bm_df.groupby('source').size().equals(_n_before), \
+            "Stage-1 newest-first re-sort changed per-ticker row counts"
     # test
     #    bm_df = BoMetric_df
     #    bm_da = BoMetric_dateAve
@@ -89,21 +106,6 @@ def calcByTier(dict,Tier,Sign,metvec,avec,met,n):
 
     return res
 
-def getIQmean(df):
-    dategrouped = df.groupby('date')
-    # For each date, calculate the first and third quantiles (25th and 75th percentiles) for each column
-    results = []
-    for date, group in dategrouped:
-        Q1 = group.quantile(0.25)
-        Q3 = group.quantile(0.75)
-        mask = (group >= Q1) & (group <= Q3)
-        df_middle_quantile = group[mask.all(axis=1)]
-        mean = df_middle_quantile.mean()
-        results.append({'date': date, 'mean': mean})
-    result_df = pd.DataFrame(results)
-
-    # Display the result
-    print(mean)
 
 def getAves2(df):
     print('Getting average values')
@@ -131,50 +133,3 @@ def getAves2(df):
     meandic = {'BoMetric_ave': res_fullMean, 'BoMetric_dateAve': res_withDates, 'colslost': colslost}
     return meandic
 
-def getAves_fuckedTTT(df):
-    print('Getting average values')
-    temp = df.drop(columns=['source'], axis=1)
-    res_withDates = temp.groupby('date').mean()
-    mc1 = set(df.columns) - set(res_withDates.columns)
-    if len(mc1)>2:
-        if 'source' in mc1:
-            mc1.remove('source')
-        if 'date' in mc1:
-            mc1.remove('date')
-        temp_mc1 = pd.DataFrame()
-        temp_mc1['date'] = df['date'].unique()
-        temp_mc1 = temp_mc1.sort_values(by='date').reset_index(drop=False)
-        temp_mc1.drop('index',axis=1,inplace=True)
-        temp_mc1 = temp_mc1.assign(**{string: None for string in mc1})
-        res_withDates = res_withDates.assign(**{string: None for string in mc1})
-
-        for col in mc1:
-            for row in temp_mc1.itertuples():
-                curdate = row.date
-                indexes = df[df['date'] == curdate].index
-                if len(indexes) < 0.33*df['source'].nunique():
-                    if any(temp_mc1['date'] == curdate):
-                        temp_mc1.drop(temp_mc1[temp_mc1['date'] == curdate].index, axis=0, inplace=True)
-                    if curdate in res_withDates.index:
-                        res_withDates.drop(res_withDates.loc[res_withDates.index == curdate].index, axis=0, inplace=True)
-                else:
-                    temp_date = df.iloc[indexes]
-                    temp_mc1.loc[temp_mc1['date'] == curdate, col] = temp_date[col].median()
-            res_withDates[col] = temp_mc1[col].values
-
-    res_fullMean = df.median()
-    for i in res_fullMean.index:
-        if np.isnan(res_fullMean[i]):
-            if np.isnan(res_withDates[i].mean()) == False:
-                print(res_withDates[i])
-                res_fullMean[i] = res_withDates[i].median()
-            else:
-                res_fullMean.dropna()
-
-    colslost = set(df.columns) - set(res_fullMean.index)
-    res_withDates = res_withDates.iloc[::-1]
-#    temp = df.drop(columns=['source','date'], axis=1)
-#    res_fullMean = res_fullMean.iloc[::-1]
-
-    meandic = {'BoMetric_ave': res_fullMean, 'BoMetric_dateAve': res_withDates, 'colslost': colslost}
-    return meandic

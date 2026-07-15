@@ -116,18 +116,29 @@ def get_tickers(ds, baseurl, api_key, manual_elim=None, tfilt='stock_NA1',sfilt=
         resp_stockAT_cmp_json = safe_get(f'{baseurl}v3/available-traded/list?apikey={api_key}')
         resp_tckr_json = safe_get(f'{baseurl}v3/financial-statement-symbol-lists?apikey={api_key}')
         resp_stockAT_cmp_df = pd.DataFrame(resp_stockAT_cmp_json) if resp_stockAT_cmp_json else pd.DataFrame()
-        #resp_stock_cmp_df = pd.DataFrame(resp_stock_cmp.json())
+
+        # INGESTION CAPTURE (future runs, zero extra calls): available-traded/list
+        # carries the raw `type` in {stock,etf,fund,trust} and `name`, which the
+        # type-filter below discards for non-stocks. Persist the raw pre-filter
+        # table so future runs get a free positive fund/trust tag (feeds the
+        # carve-out investment-vehicle detection). Best-effort; never breaks the
+        # universe build; does NOT alter the filtered universe returned below.
+        try:
+            if not resp_stockAT_cmp_df.empty:
+                import datetime as _dt
+                _keep = [c for c in ['symbol', 'name', 'type', 'exchangeShortName']
+                         if c in resp_stockAT_cmp_df.columns]
+                if 'symbol' in _keep:
+                    _raw = resp_stockAT_cmp_df[_keep].drop_duplicates(subset='symbol')
+                    _raw.to_pickle(f"available_traded_raw_{_dt.date.today().isoformat()}.pickle")
+        except Exception as _e:
+            print(f"WARNING: available-traded raw type/name capture skipped ({_e})")
+
         resp_tckr_df = pd.DataFrame(resp_tckr_json) if resp_tckr_json else pd.DataFrame()
         resp_tckr_df.columns = ['symbol']
 
-        #tickers_df = resp_stock_cmp_df.merge(resp_tckr_df, on='symbol', how='inner', indicator=True)
-        #tickers_df.drop('_merge', axis=1, inplace=True)
-
         maskAT = resp_stockAT_cmp_df['symbol'].isin(resp_tckr_df['symbol'])
-        #mask = resp_stock_cmp_df['symbol'].isin(resp_tckr_df['symbol'])
         tickersAT_df = resp_stockAT_cmp_df[maskAT].drop_duplicates(subset='symbol').reset_index(drop=True)
-        #tickers_df = resp_stock_cmp_df[mask].drop_duplicates(subset='symbol').reset_index(drop=True).copy()
-        #tickers_df = resp_tckr_df
 
         df = tickerfilterWrapper(tickersAT_df, tfilt, sfilt, mcapf, baseurl, api_key)
 

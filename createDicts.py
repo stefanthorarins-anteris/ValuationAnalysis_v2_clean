@@ -124,9 +124,50 @@ def getBaseMeanDiffUnitySpecialDicts():
 
     return BoMetric_base_dict, BoMetric_mean_dict, BoMetric_diff_dict, BoMetric_unity_dict, BoMetric_special_dict
 def getPostDict(macroAdj=1):
-    #'SalePerEmployee': {'w': 0.5},
-    #'FCFperShare': {'w': 0.2},
-    # calculate FCFyield (>5-10%), Profit Margin over sales (>15%)
+    # DECISIONAL weights. Promoted 2026-07-14 (MD directive, valuation-specialist
+    # theory prior) to the mu THEORY-PRIOR vector that produced the certified 38.5%
+    # target-cell beat-rate (top-20, 36mo, pooled buy2021+buy2022) -- up from the 30.0%
+    # baseline under the legacy double-counted defaults. This is exactly
+    # tune_run.MU_GENERAL (GP=0.100 primary variant): the LOCKED effective weights
+    # mapped onto these getPostDict keys and normalized Sigma=1. ONLY the weight VALUES
+    # changed vs the legacy vector -- every metric key / eqMet / scoring path / ordering
+    # is identical, so the as_of=None machinery invariant holds: only the picks move.
+    # Three metrics zeroed (DcfToPrice / BoScore / priceGrowth -- two drops + the
+    # priceGrowth bug); CycleHeat stays NEGATIVE (late-cycle penalty). Legacy defaults
+    # preserved in getPostDict_legacy() for A/B -- NOT deleted.
+    postBmRankingDict = {'RoA':                 {'eqMet': 'returnOnAssets',         'w': 0.060},   # legacy 2
+                         'earnYield':           {'eqMet': 'earningsYield',          'w': 0.0605},  # legacy 2
+                         'grahamNumberToPrice': {'eqMet': 'grahamNumberToPrice',    'w': 0.033},   # legacy 1
+                         'bVpRatio':            {'eqMet': 'pbRatio',                'w': 0.033},   # legacy 0.25
+                         'revenueGrowth':       {'eqMet': 'revenue',                'w': 0.027},   # legacy 1
+                         'incomeQuality':       {'eqMet': 'incomeQuality',          'w': 0.072},   # legacy 1
+                         'returnOnEquity':      {'eqMet': 'returnOnEquity',         'w': 0.030},   # legacy 1
+                         'returnOnCapitalEmployed': {'eqMet': 'returnOnCapitalEmployed', 'w': 0.060},  # legacy 1
+                         'currentRatio':        {'eqMet': 'currentRatio',           'w': 0.038},   # legacy 0.35
+                         'grossProfitMargin':   {'eqMet': 'grossProfitMargin',      'w': 0.100}    # legacy 0.75
+                         }
+
+    postNewRankingDict =    {'freeCashFlowYield':           {'w': 0.0605},  # legacy 2
+                             'freeCashFlowPerShareGrowth':  {'w': 0.043},   # legacy 1.5
+                             'DcfToPrice':                  {'w': 0.000},   # legacy 0.35 -- DROPPED (BoDCF broken / no PIT DCF)
+                             'marketCapRevQuants':          {'w': 0.080},   # legacy 0.25
+                             'Altman-Z':                    {'w': 0.062},   # legacy 0.5
+                             'Piotroski':                   {'w': 0.072},   # legacy 0.75
+                             'tbVpRatio':                   {'w': 0.033},   # legacy 0.5
+                             'BoScore':                     {'w': 0.000},   # legacy 0.1 -- DROPPED
+                             'EPStoEPSmean':                {'w': 0.056},   # legacy 0.5
+                             'priceGrowth':                 {'w': 0.000},   # legacy 0.5 -- DROPPED (sign/seasonality bug)
+                             'CycleHeat':                   {'w': -0.080}   # legacy -0.5 -- NEGATIVE: penalizes hot late-cycle stocks
+                             }
+
+    return postBmRankingDict, postNewRankingDict
+
+
+def getPostDict_legacy(macroAdj=1):
+    """Pre-2026-07-14 double-counted DEFAULT weights (the certified 30.0% target-cell
+    baseline). Retained for A/B against the promoted mu theory prior now decisional in
+    getPostDict(); NOT decisional. Identical keys/eqMet/ordering to getPostDict -- only
+    the 'w' values differ, so swapping this in reproduces the pre-promotion picks."""
     postBmRankingDict = {'RoA':                 {'eqMet': 'returnOnAssets',         'w': 2},
                          'earnYield':           {'eqMet': 'earningsYield',          'w': 2},
                          'grahamNumberToPrice': {'eqMet': 'grahamNumberToPrice',    'w': 1},

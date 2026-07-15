@@ -1,27 +1,225 @@
+import sys
+
 import createDicts as cdic
 import requests
 import pandas as pd
 import numpy as np
 from tqdm import tqdm
-import matplotlib.pyplot as plt
 
-def postBoScoreRanking(bmtop,bstop,cdxtop,baseurl,api_key,period='quarter',nq=16,as_of=None):
+import stage2_metrics as sm
+
+
+# --------------------------------------------------------------------------- #
+#  Stage-2 scorer -- postBoScoreRanking, split into single-responsibility
+#  helpers.  The per-metric formulas live ONCE in stage2_metrics.py and are
+#  shared with the offline reproduction (baseline_tools/stage2_pit.py); this
+#  file owns the LIVE orchestration (input checks, the newest-first re-sort, the
+#  live DCF fetch, normalisation/weighting/aggregation, and issuer-dedup).
+# --------------------------------------------------------------------------- #
+def postBoScoreRanking(bmtop, bstop, cdxtop, baseurl, api_key, period='quarter',
+                       nq=16, as_of=None, weight_override=None, names=None,
+                       dedup_issuers=True):
     # as_of : point-in-time date D (default None).  as_of=None reproduces the live
     # Stage-2 ranking BIT-FOR-BIT.  The parameter is threaded here so the PIT DCF/beta
     # engagement (computed point-in-time DcfToPrice + CycleHeat beta, design s2B/s2C)
     # has a live seam; the point-in-time DCF/beta substitution itself is a later
     # (registry-backed, Phase 3+) step and is NOT wired on this path yet.  With
     # as_of=None nothing below branches on it -> live behaviour unchanged.
-    import sys
     print('Ranking the top 100 stocks, according to BoScore.')
     sys.stdout.flush()  # Ensure output is printed before progress bar
-    
-    # Diagnostic: Check input dataframes BEFORE any calculations
-    print("\n" + "="*60, flush=True)
+
+    _diagnose_inputs(bmtop, bstop, cdxtop)
+
+    postBmRankingDict, postNewRankingDict = cdic.getPostDict()
+    postScoreMetric_df = pd.DataFrame()
+    postScoreMetric_df['source'] = bstop['source']
+    postScoreMetric_df = pd.concat([postScoreMetric_df, pd.DataFrame(columns=postBmRankingDict.keys())], axis=1)
+    postScoreMetric_df = pd.concat([postScoreMetric_df, pd.DataFrame(columns=postNewRankingDict.keys())], axis=1)
+
+    # Build a stable weight mapping from the post dictionaries so we always have a
+    # weight for each metric.  Per-cohort weight vector (carveOut.COHORT_WEIGHTS):
+    # weight_override overrides the default weight for any metric it lists.
+    # weight_override=None (the general/main pool) keeps the default vector.  A 0
+    # weight zeroes that metric's AggScore contribution AND makes the weighted column
+    # constant (0) -> neutral in rankOfRanks; it does NOT change cohort membership (a
+    # row is dropped only if ALL metrics are NaN, upstream).
+    weight_series = {**{k: postBmRankingDict[k]['w'] for k in postBmRankingDict},
+                     **{k: postNewRankingDict[k]['w'] for k in postNewRankingDict}}
+    if weight_override:
+        weight_series = {**weight_series, **weight_override}
+
+    cdxtop = _sort_cdx_newest_first(cdxtop)
+    cdxtop['mcapQuants'] = sm.add_mcap_quants(cdxtop)
+
+    # Note: Bulk endpoints require higher subscription tier, using individual API calls only
+    dcf_bulk_dict = {}
+
+    pbar = tqdm(total=len(bstop['source'].unique()))
+    for tempcntr, ticker in enumerate(bstop['source']):
+        tempcdx = cdxtop.loc[cdxtop['source'] == ticker]
+
+        # DCF data (used for the DcfToPrice metric); live per-ticker fetch.
+        dcf, dcf_from_bulk, resp_dcf_status, resp_dcf = _fetch_ticker_dcf(
+            ticker, baseurl, api_key, dcf_bulk_dict)
+
+        if tempcntr == 0:
+            _diagnose_first_ticker_data(ticker, dcf, dcf_from_bulk, resp_dcf_status,
+                                        resp_dcf, tempcdx)
+
+        _compute_ticker_metrics(ticker, tempcdx, dcf, bstop, nq, tempcntr,
+                                postBmRankingDict, postNewRankingDict, postScoreMetric_df)
+
+        if tempcntr == 0:
+            _diagnose_first_ticker_metrics(ticker, postScoreMetric_df)
+
+        pbar.update(n=1)
+
+    _diagnose_pre_normalize(postScoreMetric_df)
+
+    postScoreMetric_df, outlierlist = normalizeAndDropNA(postScoreMetric_df)
+
+    # Apply weights using the stable weight_series mapping; if a weight is missing,
+    # default to 1.
+    temp_normpsmdf_weighted = postScoreMetric_df.drop('source', axis=1)
+    for col in temp_normpsmdf_weighted.columns:
+        w = weight_series.get(col, 1)
+        temp_normpsmdf_weighted[col] = postScoreMetric_df[col].values * w
+    psmdf_normalized = pd.concat(
+        [postScoreMetric_df[postScoreMetric_df.columns.difference(temp_normpsmdf_weighted.columns)],
+         temp_normpsmdf_weighted], axis=1)
+
+    postRank = getAggScore(psmdf_normalized)
+
+    tmpcorr = np.corrcoef(list(postRank['BoScore'].values), list(postRank['AggScore'].values))
+    BoAggCorr = tmpcorr[0, 1]
+
+    postRank = getRankOfRanks(postRank)
+
+    pbar.close()
+
+    postRank_predupe = postRank.copy()
+    postRank, issuer_dupes_dropped = _dedup_issuers_in_ranking(
+        postRank, cdxtop, names, dedup_issuers)
+
+    rankdic = {'postRank': postRank, 'postScoreMetric': postScoreMetric_df,
+               'psmdf_normalized': psmdf_normalized, 'BoAggCorr': BoAggCorr, 'outlierlist': outlierlist,
+               'postRank_predupe': postRank_predupe, 'issuer_dupes_dropped': issuer_dupes_dropped}
+
+    return rankdic
+
+
+def _sort_cdx_newest_first(cdxtop):
+    """Enforce NEWEST-first row order for the whole scorer (Stage-2 ORDERING FIX).
+
+    Every metric indexes with .head(nq) / .iloc[0] / .iloc[0:4] / pct_change
+    assuming the most-recent quarter is row 0.  data_quality.py sorts cdx
+    OLDEST-first and nothing re-sorts it on the way here, so those reads would
+    silently use the wrong end (stale windows, sign-flipped growth, time-reversed
+    Piotroski).  Re-sort a COPY newest-first, robustly: dates are coerced to
+    datetime (a naive string sort mis-orders mixed/malformed date strings).  We
+    COPY because cdx_dftop100 is also stored in resdic and must not be mutated.
+    Assert per-ticker row count and NaT count are unchanged.
+    """
+    cdxtop = cdxtop.copy()
+    _n_before = cdxtop.groupby('source').size()
+    cdxtop['date'] = pd.to_datetime(cdxtop['date'], errors='coerce')
+    _nat_before = int(cdxtop['date'].isna().sum())
+    cdxtop = cdxtop.sort_values(['source', 'date'], ascending=[True, False]).reset_index(drop=True)
+    assert cdxtop.groupby('source').size().equals(_n_before), \
+        "Stage-2 newest-first re-sort changed per-ticker row counts"
+    assert int(cdxtop['date'].isna().sum()) == _nat_before, \
+        "Stage-2 newest-first re-sort changed NaT count"
+    return cdxtop
+
+
+def _fetch_ticker_dcf(ticker, baseurl, api_key, dcf_bulk_dict):
+    """Fetch (or reuse bulk) DCF data for one ticker and return it as a normalised
+    DataFrame.  Returns (dcf_df, dcf_from_bulk, resp_dcf_status, resp_dcf).
+    """
+    dcf_from_bulk = ticker in dcf_bulk_dict
+    resp_dcf = None
+    if dcf_from_bulk:
+        dcf_data = [dcf_bulk_dict[ticker]]
+        resp_dcf_status = "bulk"
+    else:
+        # Fallback to individual API call
+        resp_dcf = requests.get(f'{baseurl}v3/discounted-cash-flow/{ticker}?apikey={api_key}')
+        resp_dcf_status = resp_dcf.status_code
+        try:
+            dcf_data = resp_dcf.json() if resp_dcf.status_code == 200 else []
+        except:
+            dcf_data = []
+
+    # Convert bulk data (already in dict format) or API response to DataFrame
+    dcf = pd.DataFrame.from_dict(dcf_data) if dcf_data and isinstance(dcf_data, list) else pd.DataFrame()
+
+    # Normalize DCF column names - bulk CSV might have different names than JSON API
+    if not dcf.empty:
+        column_mapping = {}
+        for col in dcf.columns:
+            col_lower = col.lower().replace(' ', '').replace('_', '')
+            if col_lower == 'stockprice' or col_lower == 'stock_price':
+                column_mapping[col] = 'Stock Price'
+            elif col_lower == 'dcf':
+                column_mapping[col] = 'dcf'
+        if column_mapping:
+            dcf = dcf.rename(columns=column_mapping)
+
+    return dcf, dcf_from_bulk, resp_dcf_status, resp_dcf
+
+
+def _compute_ticker_metrics(ticker, tempcdx, dcf, bstop, nq, tempcntr,
+                            postBmRankingDict, postNewRankingDict, postScoreMetric_df):
+    """Compute every Stage-2 metric for one ticker and write it into
+    postScoreMetric_df.  All formulas come from the shared stage2_metrics module
+    (kept in lockstep with the offline reproduction); this function only decides
+    which column each result lands in.
+    """
+    def setv(col, val):
+        postScoreMetric_df.loc[postScoreMetric_df['source'] == ticker, col] = val
+
+    # ---- postBmRankingDict metrics ----
+    for key1 in postBmRankingDict.keys():
+        setv(key1, sm.postbm_metric(key1, postBmRankingDict[key1]['eqMet'], tempcdx, nq))
+
+    # ---- postNewRankingDict metrics ----
+    tempfcf = tempcdx.freeCashFlow
+    tempshares = tempcdx.weightedAverageShsOut
+    tempmcap = tempcdx.marketCap
+
+    setv('freeCashFlowYield', sm.free_cash_flow_yield(tempfcf, tempmcap, nq))
+    setv('freeCashFlowPerShareGrowth', sm.free_cash_flow_per_share_growth(tempfcf, tempshares, nq))
+    setv('EPStoEPSmean', sm.eps_to_eps_mean(tempcdx))
+    setv('marketCapRevQuants', tempcdx.mcapQuants.iloc[0])
+    setv('tbVpRatio', sm.tbv_p_ratio(tempcdx, nq))
+    setv('Altman-Z', sm.altman_z(tempcdx))
+    setv('Piotroski', sm.piotroski(tempcdx))
+    setv('priceGrowth', sm.price_growth(tempcdx, nq))
+    setv('CycleHeat', sm.cycleheat(tempcdx))
+
+    # DcfToPrice needs the live DCF frame; diagnostic-log missing columns for the
+    # first ticker (matches the historical behaviour).
+    if not dcf.empty and tempcntr == 0 and not (
+            'dcf' in dcf.columns and any(c in dcf.columns for c in
+                                         ('Stock Price', 'StockPrice', 'stock_price'))):
+        print(f"  WARNING: DCF missing required columns. Available: {list(dcf.columns)}, "
+              f"need: ['dcf', price_col]", flush=True)
+    setv('DcfToPrice', sm.dcf_to_price(dcf, nq))
+
+    # BoScore is a straight pass-through of the Stage-1 score (weight 0 in the live
+    # vector).  Assigned as a Series to preserve the historical index-alignment.
+    postScoreMetric_df.loc[postScoreMetric_df['source'] == ticker, 'BoScore'] = \
+        bstop.loc[bstop['source'] == ticker, 'score']
+
+
+# --------------------------------------------------------------------------- #
+#  Diagnostics (stdout only -- no effect on the emitted ranking)              #
+# --------------------------------------------------------------------------- #
+def _diagnose_inputs(bmtop, bstop, cdxtop):
+    print("\n" + "=" * 60, flush=True)
     print("DIAGNOSTIC: Input dataframes check (BEFORE calculations)", flush=True)
-    print("="*60, flush=True)
-    
-    # Check bmtop (BoMetric top 100)
+    print("=" * 60, flush=True)
+
     if bmtop.empty:
         print("ERROR: bmtop (BoMetric top 100) is EMPTY!", flush=True)
     else:
@@ -30,13 +228,11 @@ def postBoScoreRanking(bmtop,bstop,cdxtop,baseurl,api_key,period='quarter',nq=16
         if 'source' in bmtop.columns:
             print(f"bmtop sample sources: {list(bmtop['source'].head(3).values)}", flush=True)
         print(f"bmtop columns (first 10): {list(bmtop.columns[:10])}", flush=True)
-        # Check for NaN in numeric columns
         numeric_cols = bmtop.select_dtypes(include=[np.number]).columns
         if len(numeric_cols) > 0:
             nan_pct = (bmtop[numeric_cols].isna().sum() / len(bmtop) * 100).round(1)
             print(f"bmtop NaN percentage in numeric columns (first 5): {dict(nan_pct.head(5))}", flush=True)
-    
-    # Check bstop (BoScore top 100)
+
     if bstop.empty:
         print("ERROR: bstop (BoScore top 100) is EMPTY!", flush=True)
     else:
@@ -46,8 +242,7 @@ def postBoScoreRanking(bmtop,bstop,cdxtop,baseurl,api_key,period='quarter',nq=16
             print(f"bstop sample sources: {list(bstop['source'].head(3).values)}", flush=True)
         if 'score' in bstop.columns:
             print(f"bstop score stats: min={bstop['score'].min():.4f}, max={bstop['score'].max():.4f}, mean={bstop['score'].mean():.4f}", flush=True)
-    
-    # Check cdxtop (cdx top 100) - this is critical as many metrics depend on it
+
     if cdxtop.empty:
         print("\nERROR: cdxtop (cdx top 100) is EMPTY!", flush=True)
     else:
@@ -56,9 +251,7 @@ def postBoScoreRanking(bmtop,bstop,cdxtop,baseurl,api_key,period='quarter',nq=16
         if 'source' in cdxtop.columns:
             print(f"cdxtop sample sources: {list(cdxtop['source'].head(3).values)}", flush=True)
         print(f"cdxtop columns (first 10): {list(cdxtop.columns[:10])}", flush=True)
-        # Check for required columns that will be used in calculations
-        # Including columns needed for Altman-Z and Piotroski calculations
-        required_cols = ['freeCashFlow', 'weightedAverageShsOut', 'marketCap', 'grahamNumber', 'price', 
+        required_cols = ['freeCashFlow', 'weightedAverageShsOut', 'marketCap', 'grahamNumber', 'price',
                          'tangibleBookValuePerShare', 'totalAssets', 'totalLiabilities', 'totalCurrentAssets',
                          'totalCurrentLiabilities', 'totalStockholdersEquity', 'operatingIncome', 'revenue',
                          'netIncome', 'netCashProvidedByOperatingActivities', 'longTermDebt', 'currentRatio',
@@ -68,453 +261,78 @@ def postBoScoreRanking(bmtop,bstop,cdxtop,baseurl,api_key,period='quarter',nq=16
             print(f"WARNING: cdxtop missing required columns: {missing_cols}", flush=True)
         else:
             print(f"cdxtop has all required columns: {required_cols}", flush=True)
-        # Check for NaN in key columns
         key_cols = [col for col in required_cols if col in cdxtop.columns]
         if key_cols:
             nan_pct = (cdxtop[key_cols].isna().sum() / len(cdxtop) * 100).round(1)
             print(f"cdxtop NaN percentage in key columns: {dict(nan_pct)}", flush=True)
-    
-    print("="*60 + "\n", flush=True)
-    sys.stdout.flush()  # Final flush before starting calculations
-    
-    #test
-    #bmtop = BoM_dftop100
-    #bstop = BoS_dftop100
-    #cdxtop = cdx_dftop100
-    #period='quarter'
-    #nq = 12
-    #baseurl = configdic['baseurl']
-    #api_key = configdic['api_key']
-    #test
-    postBmRankingDict, postNewRankingDict = cdic.getPostDict()
-    postScoreMetric_df = pd.DataFrame()
-    postScoreMetric_df['source'] = bstop['source']
-    postScoreMetric_df = pd.concat([postScoreMetric_df, pd.DataFrame(columns=postBmRankingDict.keys())], axis=1)
-    postScoreMetric_df = pd.concat([postScoreMetric_df, pd.DataFrame(columns=postNewRankingDict.keys())], axis = 1)
-    #postScoreMetric_df.drop(labels=['SalePerEmployee'],axis=1,inplace=True)
-    #postScoreMetric_df['BoScore'] = bstop['score']*0.2
-    postRanking_df = pd.DataFrame()
-    weight_df = pd.DataFrame()
-    # Build a stable weight mapping from the post dictionaries so we always have a weight for each metric
-    postBmRankingDict_local, postNewRankingDict_local = cdic.getPostDict()
-    weight_series = {**{k: postBmRankingDict_local[k]['w'] for k in postBmRankingDict_local},
-                     **{k: postNewRankingDict_local[k]['w'] for k in postNewRankingDict_local}}
-    #weight_df['BoScore'] = pd.Series(0.2)
-    weightzerobool = False
-    mcapAve = cdxtop.marketCap.mean()
-    cdxtop['mcapQuants'] = (-1)*((pd.qcut(cdxtop['marketCap'], 4).cat.codes/(3) - 0.5))
-    #mcapAve = 70310173993
-    tempcntr = 0
 
-    # Note: Bulk endpoints require higher subscription tier, using individual API calls only
-    dcf_bulk_dict = {}
-    scores_bulk_dict = {}
+    print("=" * 60 + "\n", flush=True)
+    sys.stdout.flush()
 
-    pbar = tqdm(total=len(bstop['source'].unique()))
-    for ticker in bstop['source']:
-        tempcdx = cdxtop.loc[cdxtop['source'] == ticker]
-        tempfcf = tempcdx.freeCashFlow
-        tempshares = tempcdx.weightedAverageShsOut
-        tempmcap = tempcdx.marketCap
-        tempmcapQuants = tempcdx.mcapQuants.iloc[0]
-        #tempcr = tempcdx.currentRatio
 
-        #resp_fr = requests.get(f'{baseurl}v3/ratios/{ticker}?period={period}&limit={nq}&apikey={api_key}')
-        #resp_km = requests.get(f'{baseurl}v3/key-metrics/{ticker}?period={period}&limit={nq}&apikey={api_key}')
-        
-        # DCF data (used for DcfToPrice metric)
-        dcf_from_bulk = ticker in dcf_bulk_dict
-        if dcf_from_bulk:
-            dcf_data = [dcf_bulk_dict[ticker]]
-            resp_dcf_status = "bulk"
-        else:
-            # Fallback to individual API call
-            resp_dcf = requests.get(f'{baseurl}v3/discounted-cash-flow/{ticker}?apikey={api_key}')
-            resp_dcf_status = resp_dcf.status_code
-            try:
-                dcf_data = resp_dcf.json() if resp_dcf.status_code == 200 else []
-            except:
-                dcf_data = []
-        
-        # Note: Altman-Z and Piotroski are now calculated from fundamentals (no API needed)
-        # Financial growth still needs individual calls (no bulk endpoint available)
-        resp_fg = requests.get(f'{baseurl}v3/financial-growth/{ticker}?limit={nq}&apikey={api_key}')
-        # Note: Using price data from cdxtop dataframe instead of API call
-        
-        # Convert bulk data (already in dict format) or API response to DataFrame
-        dcf = pd.DataFrame.from_dict(dcf_data) if dcf_data and isinstance(dcf_data, list) else pd.DataFrame()
-        
-        # Normalize DCF column names - bulk CSV might have different names than JSON API
-        if not dcf.empty:
-            # Map common variations to standard names
-            column_mapping = {}
-            for col in dcf.columns:
-                col_lower = col.lower().replace(' ', '').replace('_', '')
-                if col_lower == 'stockprice' or col_lower == 'stock_price':
-                    column_mapping[col] = 'Stock Price'
-                elif col_lower == 'dcf':
-                    column_mapping[col] = 'dcf'
-            if column_mapping:
-                dcf = dcf.rename(columns=column_mapping)
-        
-        # Diagnostic for first ticker only
-        if tempcntr == 0:
-            print(f"\nDIAGNOSTIC: First ticker ({ticker}) data:", flush=True)
-            print(f"  DCF source: {'bulk' if dcf_from_bulk else 'individual'}, status: {resp_dcf_status}, empty: {dcf.empty}, shape: {dcf.shape if not dcf.empty else 'N/A'}", flush=True)
-            if not dcf.empty:
-                print(f"  DCF columns: {list(dcf.columns)}", flush=True)
-            print(f"  tempcdx (fundamentals) empty: {tempcdx.empty}, shape: {tempcdx.shape if not tempcdx.empty else 'N/A'}", flush=True)
-            if not tempcdx.empty:
-                print(f"  tempcdx columns: {list(tempcdx.columns[:5])}...", flush=True)
-                print(f"  tempcdx sample values (first row):", flush=True)
-                print(f"    freeCashFlow: {tempcdx['freeCashFlow'].iloc[0] if 'freeCashFlow' in tempcdx.columns else 'N/A'}", flush=True)
-                print(f"    marketCap: {tempcdx['marketCap'].iloc[0] if 'marketCap' in tempcdx.columns else 'N/A'}", flush=True)
-                print(f"    operatingIncome: {tempcdx['operatingIncome'].iloc[0] if 'operatingIncome' in tempcdx.columns else 'N/A'}", flush=True)
-            if not dcf_from_bulk and resp_dcf_status != 200:
-                print(f"  DCF error: {resp_dcf.text[:100] if 'resp_dcf' in locals() else 'N/A'}", flush=True)
-            print(f"  Note: Altman-Z and Piotroski calculated from tempcdx fundamentals", flush=True)
-        
-        # Calculate metrics using tempcdx fundamentals and bstop scores
-        for key1 in postBmRankingDict.keys():
-            met = postBmRankingDict[key1]['eqMet']
-            weight = postBmRankingDict[key1]['w']
-            temp = bmtop[bmtop['source']==ticker].head(nq)
-            if key1 == 'grahamNumberToPrice':
-                tempgnprat = tempcdx['grahamNumber'] / tempcdx['price']
-                postScoreMetric_df.loc[postScoreMetric_df['source'] == ticker, key1] = tempgnprat.head(nq).mean()
-            elif key1 == 'bVpRatio':
-                tempbvtop = 1/tempcdx[met]
-                postScoreMetric_df.loc[postScoreMetric_df['source'] == ticker, key1] = tempbvtop.head(nq).mean()
-            elif key1 == 'revenueGrowth':
-                revPCTgr = tempcdx[met].pct_change(-4, fill_method=None)
-                postScoreMetric_df.loc[postScoreMetric_df['source'] == ticker, key1] = revPCTgr.head(nq).mean()
+def _diagnose_first_ticker_data(ticker, dcf, dcf_from_bulk, resp_dcf_status, resp_dcf, tempcdx):
+    print(f"\nDIAGNOSTIC: First ticker ({ticker}) data:", flush=True)
+    print(f"  DCF source: {'bulk' if dcf_from_bulk else 'individual'}, status: {resp_dcf_status}, empty: {dcf.empty}, shape: {dcf.shape if not dcf.empty else 'N/A'}", flush=True)
+    if not dcf.empty:
+        print(f"  DCF columns: {list(dcf.columns)}", flush=True)
+    print(f"  tempcdx (fundamentals) empty: {tempcdx.empty}, shape: {tempcdx.shape if not tempcdx.empty else 'N/A'}", flush=True)
+    if not tempcdx.empty:
+        print(f"  tempcdx columns: {list(tempcdx.columns[:5])}...", flush=True)
+        print(f"  tempcdx sample values (first row):", flush=True)
+        print(f"    freeCashFlow: {tempcdx['freeCashFlow'].iloc[0] if 'freeCashFlow' in tempcdx.columns else 'N/A'}", flush=True)
+        print(f"    marketCap: {tempcdx['marketCap'].iloc[0] if 'marketCap' in tempcdx.columns else 'N/A'}", flush=True)
+        print(f"    operatingIncome: {tempcdx['operatingIncome'].iloc[0] if 'operatingIncome' in tempcdx.columns else 'N/A'}", flush=True)
+    if not dcf_from_bulk and resp_dcf_status != 200:
+        print(f"  DCF error: {resp_dcf.text[:100] if resp_dcf is not None else 'N/A'}", flush=True)
+    print(f"  Note: Altman-Z and Piotroski calculated from tempcdx fundamentals", flush=True)
+
+
+def _diagnose_first_ticker_metrics(ticker, postScoreMetric_df):
+    sample_metrics = ['RoA', 'earnYield', 'grahamNumberToPrice', 'freeCashFlowYield', 'BoScore', 'Altman-Z', 'Piotroski', 'CycleHeat']
+    print(f"\nDIAGNOSTIC: Sample metric values after calculation for {ticker}:", flush=True)
+    for metric in sample_metrics:
+        if metric in postScoreMetric_df.columns:
+            val = postScoreMetric_df.loc[postScoreMetric_df['source'] == ticker, metric].values
+            if len(val) > 0 and not pd.isna(val[0]):
+                print(f"  {metric}: {val[0]}", flush=True)
             else:
-                postScoreMetric_df.loc[postScoreMetric_df['source'] == ticker, key1] = tempcdx[met].head(nq).mean()
-            weight_df[key1] = pd.Series(weight)
+                print(f"  {metric}: NOT CALCULATED (NaN)", flush=True)
+        else:
+            print(f"  {metric}: COLUMN NOT FOUND", flush=True)
+    print(f"  Note: Altman-Z and Piotroski are now calculated from fundamentals (no API needed)", flush=True)
 
-        for key2 in postNewRankingDict.keys():
-            weightzerobool = False
-            #if key2 == 'FCFperShare':
-            #    weight = postNewRankingDict[key2]['w']
-            #    weight_df[key2] = pd.Series(weight)
-            #    #postScoreMetric_df.loc[postScoreMetric_df['source'] == ticker, key2] = fr['freeCashFlowPerShare'].head(nq).mean()*weight
-            #    postScoreMetric_df.loc[postScoreMetric_df['source'] == ticker, key2] = (tempfcf/tempshares).head(nq).mean()*weight
 
-            if key2 == 'freeCashFlowYield':
-                weight = postNewRankingDict[key2]['w']
-                weight_df[key2] = pd.Series(weight)
-                #postScoreMetric_df.loc[postScoreMetric_df['source'] == ticker, key2] = km['freeCashFlowYield'].head(nq).mean()*weight
-                postScoreMetric_df.loc[postScoreMetric_df['source'] == ticker, key2] = (tempfcf / tempmcap).head(nq).mean()
-                #postScoreMetric_df.loc[postScoreMetric_df['source'] == ticker, key2] = km.freeCashFlowYield.head(nq).mean() * weight
-
-            if key2 == 'freeCashFlowPerShareGrowth':
-                weight = postNewRankingDict[key2]['w']
-                weight_df[key2] = pd.Series(weight)
-                fcfps = tempfcf/tempshares
-                fcfpsgr = fcfps.pct_change(-4, fill_method=None)
-                postScoreMetric_df.loc[postScoreMetric_df['source'] == ticker, key2] = fcfpsgr.head(nq).mean()
-                #postScoreMetric_df.loc[postScoreMetric_df['source'] == ticker, key2] = km.freeCashFlowYield.head(nq).mean() * weight
-
-            if key2 == 'EPStoEPSmean':
-                weight = postNewRankingDict[key2]['w']
-                weight_df[key2] = pd.Series(weight)
-                eps = tempcdx['netIncome'] / tempcdx['weightedAverageShsOut']
-                epsmean = eps.mean()
-                a = 0.4
-                tw = a*(1+(1-a) + (1-a)**2 + (1-a)**3)
-                if all(eps.iloc[0:4] > 0):
-                    epstoepsmean = epsmean - (a/tw)*(eps.iloc[0] + eps.iloc[1]*(1-a) +
-                                                     eps.iloc[2]*(1-a)**2 + eps.iloc[3]*(1-a)**3)
-                else:
-                    epstoepsmean = 0
-
-                postScoreMetric_df.loc[postScoreMetric_df['source'] == ticker, key2] = epstoepsmean
-
-            # Metrics that need dcf - only calculate if dcf is available
-            if key2 == 'DcfToPrice':
-                if not dcf.empty:
-                    weight = postNewRankingDict[key2]['w']
-                    weight_df[key2] = pd.Series(weight)
-                    # DCF endpoint returns 'Stock Price' not 'price'
-                    # Handle both JSON API format ('Stock Price') and CSV bulk format variations
-                    price_col = None
-                    if 'Stock Price' in dcf.columns:
-                        price_col = 'Stock Price'
-                    elif 'StockPrice' in dcf.columns:
-                        price_col = 'StockPrice'
-                    elif 'stock_price' in dcf.columns:
-                        price_col = 'stock_price'
-                    
-                    if 'dcf' in dcf.columns and price_col:
-                        temp = dcf['dcf'].head(nq).mean()
-                        temp2 = dcf[price_col].iloc[0] if len(dcf) > 0 else None
-                        if temp2 is not None and temp2 != 0:
-                            postScoreMetric_df.loc[postScoreMetric_df['source'] == ticker, key2] = (temp/temp2)
-                        else:
-                            postScoreMetric_df.loc[postScoreMetric_df['source'] == ticker, key2] = np.nan
-                    else:
-                        # Diagnostic: log missing columns for first ticker
-                        if tempcntr == 0:
-                            print(f"  WARNING: DCF missing required columns. Available: {list(dcf.columns)}, need: ['dcf', price_col]", flush=True)
-                        postScoreMetric_df.loc[postScoreMetric_df['source'] == ticker, key2] = np.nan
-                else:
-                    postScoreMetric_df.loc[postScoreMetric_df['source'] == ticker, key2] = np.nan
-
-            #if key2 == 'currentRatio':
-            #    weight = postNewRankingDict[key2]['w']
-            #    weight_df[key2] = pd.Series(weight)
-            #    postScoreMetric_df.loc[postScoreMetric_df['source'] == ticker, key2] = tempcr.head(nq).mean()*weight
-
-            if key2 == 'marketCapRevQuants':
-                weight = postNewRankingDict[key2]['w']
-                weight_df[key2] = pd.Series(weight)
-                #postScoreMetric_df.loc[postScoreMetric_df['source'] == ticker, key2] = (tempmcap.head(nq).mean()/mcapAve - 1)*weight
-                postScoreMetric_df.loc[postScoreMetric_df['source'] == ticker, key2] = tempmcapQuants
-
-            if key2 == 'tbVpRatio':
-                weight = postNewRankingDict[key2]['w']
-                weight_df[key2] = pd.Series(weight)
-                tbtp = tempcdx['tangibleBookValuePerShare']/tempcdx['price']
-                postScoreMetric_df.loc[postScoreMetric_df['source'] == ticker, key2] =\
-                    tbtp.head(nq).mean()
-
-            # Calculate Altman-Z Score from available data (no API needed)
-            # Z = 1.2×(WC/TA) + 1.4×(RE/TA) + 3.3×(EBIT/TA) + 0.6×(MVE/TL) + 1.0×(Sales/TA)
-            if key2 == 'Altman-Z':
-                weight = postNewRankingDict[key2]['w']
-                weight_df[key2] = pd.Series(weight)
-                try:
-                    if len(tempcdx) >= 1:
-                        # Use most recent data
-                        curr = tempcdx.iloc[0]
-                        ta = curr['totalAssets']
-                        tl = curr['totalLiabilities']
-                        
-                        if ta > 0 and tl > 0:
-                            # Working Capital / Total Assets
-                            wc = curr['totalCurrentAssets'] - curr['totalCurrentLiabilities']
-                            x1 = wc / ta
-                            
-                            # Retained Earnings / Total Assets (approximated using equity)
-                            # RE is typically the largest component of stockholders' equity
-                            re = curr['totalStockholdersEquity']
-                            x2 = re / ta
-                            
-                            # EBIT / Total Assets
-                            ebit = curr['operatingIncome']
-                            x3 = ebit / ta
-                            
-                            # Market Value of Equity / Total Liabilities
-                            mve = curr['marketCap']
-                            x4 = mve / tl
-                            
-                            # Sales / Total Assets
-                            sales = curr['revenue']
-                            x5 = sales / ta
-                            
-                            altman_z = 1.2*x1 + 1.4*x2 + 3.3*x3 + 0.6*x4 + 1.0*x5
-                            postScoreMetric_df.loc[postScoreMetric_df['source'] == ticker, key2] = altman_z
-                        else:
-                            postScoreMetric_df.loc[postScoreMetric_df['source'] == ticker, key2] = np.nan
-                    else:
-                        postScoreMetric_df.loc[postScoreMetric_df['source'] == ticker, key2] = np.nan
-                except Exception:
-                    postScoreMetric_df.loc[postScoreMetric_df['source'] == ticker, key2] = np.nan
-
-            # Calculate Piotroski F-Score from available data (no API needed)
-            # 9 binary criteria, each worth 1 point
-            if key2 == 'Piotroski':
-                weight = postNewRankingDict[key2]['w']
-                weight_df[key2] = pd.Series(weight)
-                try:
-                    if len(tempcdx) >= 2:
-                        curr = tempcdx.iloc[0]  # Most recent
-                        prev = tempcdx.iloc[1]  # Previous period
-                        
-                        ta_curr = curr['totalAssets']
-                        ta_prev = prev['totalAssets']
-                        
-                        if ta_curr > 0 and ta_prev > 0:
-                            # Profitability (4 points)
-                            # 1. ROA > 0
-                            p1 = 1 if curr['netIncome'] / ta_curr > 0 else 0
-                            # 2. Operating Cash Flow > 0
-                            p2 = 1 if curr['netCashProvidedByOperatingActivities'] > 0 else 0
-                            # 3. Change in ROA > 0
-                            roa_curr = curr['netIncome'] / ta_curr
-                            roa_prev = prev['netIncome'] / ta_prev
-                            p3 = 1 if roa_curr > roa_prev else 0
-                            # 4. Accrual: Cash Flow > Net Income
-                            p4 = 1 if curr['netCashProvidedByOperatingActivities'] > curr['netIncome'] else 0
-                            
-                            # Leverage/Liquidity (3 points)
-                            # 5. Decrease in Long-term Debt ratio
-                            ltd_ratio_curr = curr['longTermDebt'] / ta_curr
-                            ltd_ratio_prev = prev['longTermDebt'] / ta_prev
-                            p5 = 1 if ltd_ratio_curr < ltd_ratio_prev else 0
-                            # 6. Increase in Current Ratio
-                            p6 = 1 if curr['currentRatio'] > prev['currentRatio'] else 0
-                            # 7. No new shares issued
-                            p7 = 1 if curr['weightedAverageShsOut'] <= prev['weightedAverageShsOut'] else 0
-                            
-                            # Operating Efficiency (2 points)
-                            # 8. Higher Gross Margin
-                            p8 = 1 if curr['grossProfitMargin'] > prev['grossProfitMargin'] else 0
-                            # 9. Higher Asset Turnover
-                            at_curr = curr['revenue'] / ta_curr
-                            at_prev = prev['revenue'] / ta_prev
-                            p9 = 1 if at_curr > at_prev else 0
-                            
-                            piotroski = p1 + p2 + p3 + p4 + p5 + p6 + p7 + p8 + p9
-                            postScoreMetric_df.loc[postScoreMetric_df['source'] == ticker, key2] = piotroski
-                        else:
-                            postScoreMetric_df.loc[postScoreMetric_df['source'] == ticker, key2] = np.nan
-                    else:
-                        postScoreMetric_df.loc[postScoreMetric_df['source'] == ticker, key2] = np.nan
-                except Exception:
-                    postScoreMetric_df.loc[postScoreMetric_df['source'] == ticker, key2] = np.nan
-
-            if key2 == 'BoScore':
-                weight = postNewRankingDict[key2]['w']
-                weight_df[key2] = pd.Series(weight)
-                postScoreMetric_df.loc[postScoreMetric_df['source'] == ticker, key2] = bstop.loc[
-                    bstop['source'] == ticker, 'score']
-
-            # Metrics that need dcf - only calculate if dcf is available
-            if key2 == 'priceGrowth':
-                weight = postNewRankingDict[key2]['w']
-                weight_df[key2] = pd.Series(weight)
-                # Calculate priceGrowth from price data in cdxtop dataframe (no API call needed)
-                if 'price' in tempcdx.columns and not tempcdx['price'].empty:
-                    # Calculate percentage change (negative because we want growth, not decline)
-                    # pct_change(-1) calculates change from previous period (going backwards in time)
-                    price_growth = -tempcdx['price'].pct_change(-1, fill_method=None).head(nq).mean()
-                    postScoreMetric_df.loc[postScoreMetric_df['source'] == ticker, key2] = price_growth
-                else:
-                    postScoreMetric_df.loc[postScoreMetric_df['source'] == ticker, key2] = np.nan
-
-            # CycleHeat: Measures how "hot" a stock is relative to its history
-            # Higher CycleHeat = earnings well above historical mean (potential late-cycle risk)
-            # Lower/negative CycleHeat = earnings below historical mean (potential recovery)
-            if key2 == 'CycleHeat':
-                weight = postNewRankingDict[key2]['w']
-                weight_df[key2] = pd.Series(weight)
-                
-                cycle_heat = np.nan  # Use NaN for failed calculations, not 0
-                try:
-                    # Calculate EPS
-                    eps = tempcdx['netIncome'] / tempcdx['weightedAverageShsOut']
-                    eps_clean = eps.replace([np.inf, -np.inf], np.nan).dropna()
-                    
-                    if len(eps_clean) >= 2:
-                        eps_current = eps_clean.iloc[0]  # Most recent
-                        eps_mean = eps_clean.mean()
-                        eps_std = eps_clean.std()
-                        
-                        # Calculate z-score of current EPS relative to history
-                        # This handles both positive and negative EPS correctly
-                        if eps_std > 0 and not np.isnan(eps_std):
-                            eps_zscore = (eps_current - eps_mean) / eps_std
-                        elif eps_mean != 0:
-                            # No variance - use simple ratio deviation
-                            eps_zscore = (eps_current - eps_mean) / abs(eps_mean)
-                        else:
-                            eps_zscore = 0.0
-                        
-                        # Fetch beta from profile API
-                        beta_stock = 1.0  # Default beta
-                        try:
-                            profile_resp = requests.get(f'{baseurl}v3/profile/{ticker}?apikey={api_key}').json()
-                            if profile_resp and len(profile_resp) > 0:
-                                beta_val = profile_resp[0].get('beta')
-                                if beta_val is not None:
-                                    beta_stock = max(0.5, min(float(beta_val), 3.0))  # Clamp beta 0.5-3.0
-                        except Exception:
-                            pass
-                        
-                        # CycleHeat = EPS z-score * beta
-                        # Positive = earnings above mean (hot)
-                        # Negative = earnings below mean (cold)
-                        # Beta amplifies the signal
-                        cycle_heat = eps_zscore * beta_stock
-                        
-                        # Cap to prevent extreme values
-                        cycle_heat = max(-3.0, min(cycle_heat, 3.0))
-                        
-                except Exception as e:
-                    cycle_heat = np.nan
-                
-                postScoreMetric_df.loc[postScoreMetric_df['source'] == ticker, key2] = cycle_heat
-
-        #    if key2 == 'SalePerEmployee':
-        #        #temp = emp['employeeCount'].head(nq)
-        #        #temp2 = inc['revenue'].head(nq)
-        #        #spe = temp2/temp
-        #        #dspe = spe - spe.shift(-1)
-
-        #        #if any(np.isinf(dspe)) or any(np.isnan(dspe)):
-        #            #weightzerobool = True
-
-        #        #postScoreMetric_df.loc[postScoreMetric_df['source'] == ticker, key2] = dspe.mean()
-
-        # Diagnostic: Check if any metrics were calculated for first ticker
-        if tempcntr == 0:
-            sample_metrics = ['RoA', 'earnYield', 'grahamNumberToPrice', 'freeCashFlowYield', 'BoScore', 'Altman-Z', 'Piotroski', 'CycleHeat']
-            print(f"\nDIAGNOSTIC: Sample metric values after calculation for {ticker}:", flush=True)
-            for metric in sample_metrics:
-                if metric in postScoreMetric_df.columns:
-                    val = postScoreMetric_df.loc[postScoreMetric_df['source'] == ticker, metric].values
-                    if len(val) > 0 and not pd.isna(val[0]):
-                        print(f"  {metric}: {val[0]}", flush=True)
-                    else:
-                        print(f"  {metric}: NOT CALCULATED (NaN)", flush=True)
-                else:
-                    print(f"  {metric}: COLUMN NOT FOUND", flush=True)
-            print(f"  Note: Altman-Z and Piotroski are now calculated from fundamentals (no API needed)", flush=True)
-
-        tempcntr  = tempcntr + 1
-        pbar.update(n=1)
-
-    #normalize
-    testpsm_df = postScoreMetric_df
-    
-    # Diagnostic check: Print statistics about postScoreMetric_df before normalization
-    print("\n" + "="*60)
+def _diagnose_pre_normalize(postScoreMetric_df):
+    print("\n" + "=" * 60)
     print("DIAGNOSTIC: postScoreMetric_df statistics before normalizeAndDropNA")
-    print("="*60)
+    print("=" * 60)
     print(f"DataFrame shape: {postScoreMetric_df.shape} (rows, columns)")
     print(f"Total rows: {len(postScoreMetric_df)}")
     print(f"Columns: {list(postScoreMetric_df.columns)}")
-    
+
     if not postScoreMetric_df.empty:
         metric_cols = [col for col in postScoreMetric_df.columns if col != 'source']
         print(f"\nMetric columns (excluding 'source'): {len(metric_cols)}")
-        
+
         if len(metric_cols) > 0:
-            # Convert to numeric for analysis
             numeric_df = postScoreMetric_df[metric_cols].apply(pd.to_numeric, errors='coerce')
-            
-            # NaN statistics per column
+
             print("\nNaN statistics per column:")
             nan_counts = numeric_df.isna().sum()
             nan_pct = (nan_counts / len(numeric_df) * 100).round(2)
             for col in metric_cols:
                 print(f"  {col}: {nan_counts[col]} NaN ({nan_pct[col]}%)")
-            
-            # Overall statistics
+
             total_cells = len(numeric_df) * len(metric_cols)
             total_nan = numeric_df.isna().sum().sum()
             print(f"\nOverall: {total_nan}/{total_cells} NaN values ({total_nan/total_cells*100:.2f}%)")
-            
-            # Rows with all NaN
+
             rows_all_nan = (numeric_df.isna().sum(axis=1) == len(metric_cols)).sum()
             print(f"Rows with ALL metrics NaN: {rows_all_nan}/{len(numeric_df)} ({rows_all_nan/len(numeric_df)*100:.2f}%)")
-            
-            # Rows with at least one valid metric
+
             rows_some_valid = (numeric_df.isna().sum(axis=1) < len(metric_cols)).sum()
             print(f"Rows with at least one valid metric: {rows_some_valid}/{len(numeric_df)} ({rows_some_valid/len(numeric_df)*100:.2f}%)")
-            
-            # Mean, min, max for columns with valid data
+
             print("\nColumn statistics (for non-NaN values):")
             for col in metric_cols:
                 col_data = numeric_df[col].dropna()
@@ -526,79 +344,107 @@ def postBoScoreRanking(bmtop,bstop,cdxtop,baseurl,api_key,period='quarter',nq=16
             print("WARNING: No metric columns found!")
     else:
         print("WARNING: DataFrame is empty!")
-    
-    print("="*60 + "\n")
-    
-    postScoreMetric_df, outlierlist = normalizeAndDropNA(postScoreMetric_df)
 
-    temp_normpsmdf_weighted = postScoreMetric_df.drop('source', axis=1)
-    # Apply weights using the stable weight_series mapping; if a weight is missing, default to 1
-    for col in temp_normpsmdf_weighted.columns:
-        w = weight_series.get(col, 1)
-        temp_normpsmdf_weighted[col] = postScoreMetric_df[col].values * w
-    #psmdf_normalized = pd.concat([postScoreMetric_df[postScoreMetric_df.columns.difference(tempnum.columns)], temp_normpsmdf_weighted], axis=1)
-    psmdf_normalized = pd.concat(
-        [postScoreMetric_df[postScoreMetric_df.columns.difference(temp_normpsmdf_weighted.columns)], temp_normpsmdf_weighted], axis=1)
+    print("=" * 60 + "\n")
 
 
-    postRank = getAggScore(psmdf_normalized)
+def _dedup_issuers_in_ranking(postRank, cdxtop, names, dedup_issuers):
+    """Issuer-level de-dup of the EMITTED ranking (CEO standing principle: NO
+    duplicate issuers in the deployed top-N).  postRank is AggScore-descending, and
+    downstream emission (writeBoAggToCSV / createPresentation) takes head(N) off it,
+    so collapsing same-issuer lines HERE makes the CEO-reviewed top-20 contain
+    DISTINCT issuers.  We keep the HIGHEST-RANKED line per issuer and drop later
+    same-issuer lines (share-classes / cross-listings, e.g. TFPM / TFPM.TO) -- the
+    SAME rank-based rule and SAME fingerprint (carveOut.dedup_ranked /
+    _issuer_components) the backtest harness (stage2_pit.reproduce_pit_top) uses.  So
+    live and backtest agree on issuer IDENTITY and economic exposure (one slot per
+    issuer) -- NOT necessarily on the specific surviving TICKER: on the carve-ON live
+    path the upstream carve already collapsed each issuer to its mcap/sector-preferred
+    line, whereas the backtest / carve-OFF path keeps the highest-RANKED line.  Both
+    satisfy "distinct issuers".
 
-    tmpcorr = np.corrcoef(list(postRank['BoScore'].values), list(postRank['AggScore'].values))
-    BoAggCorr = tmpcorr[0,1]
+    This changes ONLY which lines survive into the emitted ranking; no score, no sort
+    order, and no other pick logic is touched.  For a LIVE run as_of is NOW, so the
+    fingerprint reads CURRENT fundamentals -> merging same-issuer listings is correct
+    with NO lookahead (the PIT-purity caveat applies only to backtest dedup at past D).
+    If the carve-out already collapsed the universe to one line per issuer upstream,
+    this is a safe no-op; it is load-bearing on the carve-off / carve-fallback path
+    (and any carve-missed listing).
 
-    postRank = getRankOfRanks(postRank)
-    plotRank = postRank
-    plotRank['rankOfRanks'] = plotRank['rankOfRanks']/10
-    plotRank['AggScore'] = plotRank['AggScore']/10
-    mlist = list(set(plotRank.columns) - set(['source']))
-    plotRank = postBoRankingPassFilter(plotRank,mlist,5,5)
+    Returns (postRank, issuer_dupes_dropped).
+    """
+    issuer_dupes_dropped = []
+    if not dedup_issuers:
+        return postRank, issuer_dupes_dropped
+    try:
+        import carveOut as _co
+        ranked_srcs = postRank['source'].tolist()
+        kept, issuer_dupes_dropped = _co.dedup_ranked(ranked_srcs, cdxtop, names or {})
+        if issuer_dupes_dropped:
+            keptset = set(kept)
+            postRank = postRank[postRank['source'].isin(keptset)].reset_index(drop=True)
+            print("postBoRank issuer-dedup: collapsed %d same-issuer line(s) in the "
+                  "ranking -> %s"
+                  % (len(issuer_dupes_dropped),
+                     ['%s->%s' % (d, k) for d, k in issuer_dupes_dropped]), flush=True)
+    except Exception as _e:
+        # LOUD FALLBACK (matches the carve-out banner at postBo.py:143-164). The
+        # emission-time issuer-dedup IS the "no duplicate issuers in the top-20"
+        # guarantee; if it fails we still ship (never crash the deliverable) but the
+        # emitted top-20 may carry dual-listings / share-classes, so a single quiet
+        # stdout line is a defect -- make the degradation IMPOSSIBLE to miss on BOTH
+        # streams, exactly like the carve fallback.
+        import traceback
+        _banner = (
+            "\n" + "!" * 78 + "\n"
+            "!!! ISSUER-DEDUP DID NOT RUN -- EMITTED TOP-20 MAY CONTAIN DUAL-LISTINGS !!!\n"
+            "!!! The ranking was NOT de-duplicated by issuer this run: expect possible !!!\n"
+            "!!!   share-class / cross-listing DUPLICATES in the top-N (e.g. TFPM +     !!!\n"
+            "!!!   TFPM.TO occupying two slots for one economic bet).                   !!!\n"
+            "!!! Cause: %s: %s\n"
+            "!!! DO NOT treat this top-20 as issuer-deduplicated.                       !!!\n"
+            % (type(_e).__name__, _e)
+            + "!" * 78 + "\n")
+        print(_banner, file=sys.stderr, flush=True)
+        traceback.print_exc(file=sys.stderr)
+        print(_banner, flush=True)
+        traceback.print_exc(file=sys.stdout)
+    return postRank, issuer_dupes_dropped
 
-    #finalPostRank_df = getFinalRank(postRank)
-
-    #roror = getRankOfRankOfRanks(finalPostRank_df)
-
-    pbar.close()
-    #rankdic = {'finalBoRank_df': finalPostRank_df, 'postRank': postRank, 'postRankOfRanks': postRankOfRanks,
-    #           'psmdf_normalized': psmdf_normalized, 'BoAggCorr': BoAggCorr, 'outlierlist': outlierlist,
-    #           'roror': roror}
-    rankdic = {'postRank': postRank, 'postScoreMetric': postScoreMetric_df,
-               'psmdf_normalized': psmdf_normalized, 'BoAggCorr': BoAggCorr, 'outlierlist': outlierlist}
-
-    return rankdic
 
 def normalizeAndDropNA(df):
     df.reset_index(inplace=True, drop=True)
-    
+
     # Check if dataframe is empty or has no metric columns
     if df.empty:
         print("Warning: Input dataframe is empty.")
         return df, []
-    
+
     # Replace inf values with nan (modern approach without inplace)
     metric_cols = [col for col in df.columns if col != 'source']
-    
+
     if len(metric_cols) == 0:
         print("Warning: No metric columns found (only 'source' column present).")
         return df, []
-    
+
     df_clean = df.copy()
     # Suppress the FutureWarning about downcasting in replace()
     with pd.option_context('future.no_silent_downcasting', True):
         for col in metric_cols:
             df_clean[col] = df_clean[col].replace([np.inf, -np.inf], np.nan)
-    
+
     # Drop rows only if ALL metric columns are NaN (completely invalid rows)
     # This is less aggressive than dropping rows with ANY NaN, preserving more data
     nan_counts = df_clean[metric_cols].isna().sum(axis=1)
     dropmask = nan_counts < len(metric_cols)  # Keep rows with at least one valid metric
     outlierlist = list(df_clean['source'][~dropmask].copy())
     dfnona = df_clean[dropmask].copy()
-    
+
     # Guard: if all rows have NaN, return empty df with warning
     if dfnona.empty:
         print(f"Warning: All {len(df)} rows dropped due to NaN values (all metric columns were NaN). Returning empty dataframe.")
         return dfnona, list(df['source'])
-    
+
     tempnum = dfnona.drop('source',axis=1).apply(pd.to_numeric, errors='coerce')
     # calculate the mean and standard deviation of each column (NaN values are skipped by default)
     colmeans = tempnum.mean()
@@ -614,7 +460,7 @@ def normalizeAndDropNA(df):
     to_keep = (~mask).all(axis=1)  # Keep rows where ALL columns are within 4 std (stricter than original)
     dfnonanorm = dfnona[to_keep].copy()
     outlierlist = list(set(outlierlist + list(dfnona['source'][~to_keep])))
-    
+
     # Guard: if filtering removed all rows, keep at least the top 20% (avoid empty result)
     if dfnonanorm.empty and len(dfnona) > 0:
         print(f"Warning: Outlier filtering (>4 std) dropped all {len(dfnona)} rows. Keeping top 20% by row count.")
@@ -631,17 +477,6 @@ def getAggScore(df):
     postRank.sort_values(by='AggScore',ascending=False,inplace=True)
     postRank.reset_index(drop=True,inplace=True)
 
-    #postRank = pd.DataFrame(columns=['source','AggScore'])
-    #postRank['source'] = df['source']
-    #postRank['BoScore'] = df['BoScore']
-    #for i in range(0,len(postRank['source'])):
-    #    rl = list(df.iloc[i,:])
-    #    postRank.loc[postRank['source'] == rl[0], 'AggScore'] = sum(rl[1:])
-
-    #postRank.dropna(inplace=True)
-    #postRank.sort_values(by='AggScore',ascending=False,inplace=True)
-    #postRank.reset_index(drop=True,inplace=True)
-
     return postRank
 
 def getRankOfRanks(df):
@@ -655,26 +490,7 @@ def getRankOfRanks(df):
 
     return df
 
-def getRankOfRankOfRanks(df):
-    roror = pd.DataFrame()
-    roror['source'] = df['source']
-    for col in df.columns:
-        if col in ['rankOfRanks', 'AggScore']:
-            roror[col + 'ror'] = df[col].rank(ascending=False,method='dense')
 
-    roror['rankOfRanksOfRanks'] = roror.sum(1)
-    roror['rankOfRanksOfRanks'] = roror['rankOfRanksOfRanks'].rank(ascending=True,method='dense')
-    roror.sort_values(by='rankOfRanksOfRanks',inplace=True)
-
-    return roror
-
-def getFinalRank(pr_df,pror_df):
-    tmpfpr_df = pd.DataFrame(columns=['source','AggScore'])
-    tmpfpr_df['source'] = pr_df['source']
-    tmpfpr_df['AggScore'] = pr_df['AggScore']
-    finalPostRank_df = tmpfpr_df.merge(pror_df[['source','rankOfRanks','BoScorerank']], on='source',how='inner')
-
-    return finalPostRank_df
 
 def postBoRankingPassFilter(df,mlist,lco,hco):
     pf = df[~df[df.columns.intersection(mlist)].lt(lco).any(axis=1)]

@@ -1,3 +1,29 @@
+"""
+Sbocker.py -- the pipeline ENTRY POINT / orchestrator for the ValuationAnalysis
+filter.  Full AS-IS + AS-INTENDED map: design/pipeline-reference.md.
+
+LIVE / DECISIONAL stage order (drives the emitted top-20):
+  1. fetch fundamentals (getData_fmp)      -> raw FMP data
+  2. data-quality prune (data_quality)     -> cleaned cdx_df / BoMetric_df
+  3. Stage-1 BoScore   (calcScore)          -> top-100 pool
+  4. carve partition + issuer-dedup (carveOut) -> per-cohort pools
+  5. Stage-2 AggScore  (postBo -> postBoRank.postBoScoreRanking, mu weights)
+                                            -> general top-20 + 5 cohort side-lists
+  6. forensic / moat / manipulation decoration (forensicFlags, detectManipulation)
+  7. emit postRank pickle + presentation + append-only pick-log (pick_log)
+
+Stage-2 metric formulas live ONCE in stage2_metrics.py, shared with the offline
+reproduction (baseline_tools/stage2_pit.py) so the live scorer and the
+validation gate can never silently drift apart.
+
+Gated-OFF by default (hand-run offline harness, NOT part of the automatic run):
+delisted-ingest, in-run backtest, Drive transfer, and the whole
+baseline_tools/ validation / beat-rate / tuner stack.
+
+PHASE-B SEAM (not built here): wiring the offline validation/analysis INTO this
+run belongs after the emission stages -- keep that boundary clean.
+"""
+
 import sys
 import configuration as cf
 import utils as utils
@@ -10,6 +36,7 @@ import shutil
 import os
 import glob
 from pathlib import Path
+import transfer_utils as tu
 
 def transfer_outputs_to_drive(transfer_dir, configdic, verbose=True):
     """
@@ -39,8 +66,9 @@ def transfer_outputs_to_drive(transfer_dir, configdic, verbose=True):
             print("[TRANSFER] Skipped (transfer_dir not set)")
         return result
 
-    # DENYLIST: patterns that must NEVER be copied
-    denylist_patterns = ['*key*', '*pem', 'fmpAPIkey.txt']
+    # DENYLIST: patterns that must NEVER be copied.  Sourced from transfer_utils so
+    # the end-of-run path and the incremental per-phase path share ONE denylist.
+    denylist_patterns = tu.DENYLIST_PATTERNS
 
     # ALLOWLIST: explicit patterns to copy
     allowlist_patterns = [
@@ -87,19 +115,8 @@ def transfer_outputs_to_drive(transfer_dir, configdic, verbose=True):
         result['message'] = f'Could not create target directory: {e}'
         return result
 
-    # Helper to check if a file matches the denylist
-    def is_denied(filename):
-        fname_lower = filename.lower()
-        for pattern in denylist_patterns:
-            if '*' in pattern:
-                # Simple wildcard matching
-                prefix = pattern.replace('*', '')
-                if prefix in fname_lower:
-                    return True
-            else:
-                if fname_lower == pattern.lower():
-                    return True
-        return False
+    # Denylist check reused from transfer_utils (single source of truth).
+    is_denied = tu.is_denied
 
     # Copy files matching allowlist patterns
     copied_files = []
@@ -166,19 +183,11 @@ def transfer_outputs_to_drive(transfer_dir, configdic, verbose=True):
             if verbose:
                 print(f"[TRANSFER] ERROR copying directory {dirpat}: {e}")
 
-    # Assert that the key file was NOT copied
-    key_file_in_target = transfer_path / 'fmpAPIkey.txt'
-    if key_file_in_target.exists():
-        if verbose:
-            print(f"[TRANSFER] CRITICAL ERROR: fmpAPIkey.txt was copied! Removing it.")
-        try:
-            key_file_in_target.unlink()
-        except Exception as e:
-            if verbose:
-                print(f"[TRANSFER] ERROR removing key file: {e}")
-            result['status'] = 'error'
-            result['message'] = 'Key file was mistakenly copied and could not be removed'
-            return result
+    # Assert that the key file was NOT copied (shared post-copy safety net).
+    if not tu.assert_no_key_file(transfer_path, verbose=verbose):
+        result['status'] = 'error'
+        result['message'] = 'Key file was mistakenly copied and could not be removed'
+        return result
 
     result['status'] = 'success'
     result['copied_files'] = len(copied_files)
@@ -265,7 +274,12 @@ def main():
         utils.writeManElimToFile(datandmetricdic,newmanelimtckrs)
         # Save results if saveBoMetric == 1
         if saveBoMetricbool:
-            utils.saveWrapper('metric', datandmetricdic)
+            metric_fname = utils.saveWrapper('metric', datandmetricdic)
+            # PHASE 1 boundary: sync the freshly-written metric pickle to Drive so a
+            # later crash still leaves phase-1 output on Drive.  No-op if transfer_dir
+            # unset; never raises.
+            tu.copy_artifacts_to_transfer_dir(
+                configdic.get('transfer_dir'), [metric_fname], verbose=True)
     else:
         loadmetricdic = {'loadBoMetric': loadBoMetricbool, 'loadBoMetricfname': configdic['loadBoMetricfname']}
         datandmetricdic = utils.loadWrapper('metric', loadmetricdic)
@@ -284,7 +298,10 @@ def main():
 
             # save results according to boolean. Note that saveBoResults = 0 if loadBoResults = 1
             if saveBoResultbool:
-                utils.saveWrapper('results',resdic)
+                results_fname = utils.saveWrapper('results',resdic)
+                # PHASE 2 boundary: sync the results pickle to Drive incrementally.
+                tu.copy_artifacts_to_transfer_dir(
+                    configdic.get('transfer_dir'), [results_fname], verbose=True)
         else:
             loadresdic = {'loadBoResults': loadBoResultbool, 'loadBoResultsfname': configdic['loadBoResultsfname']}
             resdic = utils.loadWrapper('results', loadresdic)
@@ -304,8 +321,17 @@ def main():
 
     print(resdic['postRank'].head(50))
 
-    pb.writeResWrapper(resdic)
-    
+    deliverable_fnames = pb.writeResWrapper(resdic)
+
+    # PHASE 3 boundary (deliverables): the human-readable top-N deliverables
+    # (AggScoreTop*.csv, PresentationTop*.xlsx, ForensicFlagsTop*.csv) are written
+    # by writeResWrapper ABOVE, before the postRank pickle and the (optional,
+    # multi-hour) delisted ingestion below.  Sync them to Drive as soon as they are
+    # written so an ingestion-phase crash can't lose them.  Same helper + denylist as
+    # the other phase copies; no-op when transfer_dir is unset; never raises.
+    tu.copy_artifacts_to_transfer_dir(
+        configdic.get('transfer_dir'), deliverable_fnames, verbose=True)
+
     # Save postRank to pickle for backtesting
     from datetime import datetime
     postrank_fname = f"postRank_{datetime.today().strftime('%Y-%m-%d')}_{configdic['datasource']}_{configdic['tickerfilter']}.pickle"
@@ -320,6 +346,62 @@ def main():
     import pandas as pd
     pd.to_pickle(postrank_data, postrank_fname)
     print(f"PostRank saved to: {postrank_fname}")
+
+    # PHASE 3 boundary: sync the postRank pickle to Drive incrementally, so the
+    # ranked output is on Drive before the (optional, long) delisted ingestion runs.
+    tu.copy_artifacts_to_transfer_dir(
+        configdic.get('transfer_dir'), [postrank_fname], verbose=True)
+
+    # ---- PROSPECTIVE PICK-LOG stage (append-only forward track record) --------
+    # Append this run's GENERAL top-N + the five cohort side-lists as NEW, immutable
+    # rows to pick_log.csv -- one row per (run, list, stock), stamped with the run's
+    # as_of date BEFORE any outcome exists (survivorship-free, un-gameable). Runs AFTER
+    # the deliverables are emitted (writeResWrapper above) so it logs exactly the frames
+    # that shipped. Fully isolated + guarded: a failure logs LOUDLY but never crashes the
+    # run, and it only writes the LOCAL file (no auto-commit/push -- public repo, per CEO).
+    # The import itself is inside this guard too: run_pick_log_stage is self-guarded and
+    # never raises, so this outer try only catches an IMPORT failure -- degrading it
+    # loud-but-safe rather than letting a pick-log module problem crash the deliverable.
+    try:
+        import pick_log as plog
+        plog.run_pick_log_stage(resdic, as_of=as_of)
+    except Exception:
+        import traceback as _tb
+        _pl_banner = ("\n" + "!" * 78 + "\n"
+                      "!!! PICK-LOG STAGE COULD NOT BE IMPORTED/STARTED -- RUN CONTINUES !!!\n"
+                      "!!! The forward pick-log was NOT written this run; deliverables above  !!!\n"
+                      "!!! are UNAFFECTED. Investigate the pick_log module import.            !!!\n"
+                      + "!" * 78 + "\n")
+        print(_pl_banner, file=sys.stderr, flush=True)
+        _tb.print_exc(file=sys.stderr)
+        print(_pl_banner, flush=True)
+
+    # ---- POST-PICK ANALYSIS SUITE (strictly additive, guarded) -----------------
+    # Promote the offline baseline_tools/ diagnostics into pipeline stages so a single
+    # overnight run also emits the analysis.  Runs AFTER the pick-log (picks + pickle +
+    # pick-log already written above => pick path is DONE and UNAFFECTED) and BEFORE the
+    # optional delisted ingestion.  Each analysis is a SEPARATELY-guarded stage inside
+    # run_analysis_suite; a stage failure banners loudly + never crashes the run or the
+    # picks.  The outer try here only guards the IMPORT (baseline_tools is a sys.path dir,
+    # not a package), mirroring the pick-log stage's import guard.  NO commit/push; heavy
+    # ESTIMATION sub-block is OFF unless -run_estimation 1.
+    try:
+        _bt_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'baseline_tools')
+        if _bt_dir not in sys.path:
+            sys.path.insert(0, _bt_dir)
+        import pipeline_analysis as _pa
+        _pa.run_analysis_suite(resdic, configdic)
+    except Exception:
+        import traceback as _tb
+        _pa_banner = ("\n" + "!" * 78 + "\n"
+                      "!!! ANALYSIS SUITE COULD NOT BE IMPORTED/STARTED -- RUN CONTINUES !!!\n"
+                      "!!! The post-pick analysis readouts were NOT produced this run;       !!!\n"
+                      "!!! the deliverables + pick-log above are UNAFFECTED. Investigate the  !!!\n"
+                      "!!! pipeline_analysis import.                                          !!!\n"
+                      + "!" * 78 + "\n")
+        print(_pa_banner, file=sys.stderr, flush=True)
+        _tb.print_exc(file=sys.stderr)
+        print(_pa_banner, flush=True)
 
     # ---- Delisted-entity (survivorship) ingestion -- GATED, default OFF ----
     # ACQUIRES survivorship data (registry + dead fundamentals + dead prices) and

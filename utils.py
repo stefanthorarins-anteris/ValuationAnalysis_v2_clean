@@ -31,6 +31,10 @@ def saveWrapper(type,savedata):
     ds = savedata['datasource']
     fname_bmdf = f'Bo{type}_dic-{ds}_{tf}_{sf}_{fidag}_len{lentdf}_manelim{nrmanelim}_fails{lentfail}.pickle'
     pd.to_pickle(savedata, fname_bmdf)
+    # Return the written path so callers can incrementally transfer this exact
+    # artifact at the phase boundary (crash-resilience).  Backward compatible:
+    # existing callers that ignore the return value are unaffected.
+    return fname_bmdf
 
 def initBoMetric_fromDict():
     preReq_dict, BoMetric_Calc_dict, BoMetric_base_dict, BoMetric_mean_dict, BoMetric_diff_dict, BoMetric_unity_dict,BoMetric_special_dict = cdic.getDicts()

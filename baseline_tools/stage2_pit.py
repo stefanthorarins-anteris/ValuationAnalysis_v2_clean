@@ -38,6 +38,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import createDicts as cdic
 import calcScore as csf
 import postBoRank as pbr
+import stage2_metrics as sm
 
 NA1_EXCHANGES = ["NYSE", "NASDAQ", "TSX"]
 DROP_METRICS = ["DcfToPrice"]  # not reconstructable PIT offline
@@ -69,12 +70,8 @@ def _stage2_metric_loop_offline(bstop, cdxtop, nq=16):
     out["source"] = bstop["source"].values
 
     cdxtop = cdxtop.copy()
-    # pool-level marketCap quartile code (postBoRank.py:99)
-    try:
-        cdxtop["mcapQuants"] = (-1) * ((pd.qcut(cdxtop["marketCap"], 4,
-                                        duplicates="drop").cat.codes / 3) - 0.5)
-    except Exception:
-        cdxtop["mcapQuants"] = 0.0
+    # pool-level marketCap quartile code (stage2_metrics.add_mcap_quants)
+    cdxtop["mcapQuants"] = sm.add_mcap_quants(cdxtop)
 
     for ticker in bstop["source"]:
         tempcdx = cdxtop.loc[cdxtop["source"] == ticker]
@@ -82,124 +79,42 @@ def _stage2_metric_loop_offline(bstop, cdxtop, nq=16):
             continue
         tempfcf = tempcdx.freeCashFlow
         tempshares = tempcdx.weightedAverageShsOut
-        tempmcap = tempcdx.marketCap
         tempmcapQuants = tempcdx.mcapQuants.iloc[0]
 
         def setv(col, val):
             out.loc[out["source"] == ticker, col] = val
 
-        # ---- postBmRankingDict metrics (postBoRank.py:172-186) ----
+        # ---- postBmRankingDict metrics ----
         for key1 in postBm:
-            met = postBm[key1]["eqMet"]
-            if key1 == "grahamNumberToPrice":
-                setv(key1, (tempcdx["grahamNumber"] / tempcdx["price"]).head(nq).mean())
-            elif key1 == "bVpRatio":
-                setv(key1, (1 / tempcdx[met]).head(nq).mean())
-            elif key1 == "revenueGrowth":
-                setv(key1, tempcdx[met].pct_change(-4, fill_method=None).head(nq).mean())
-            else:
-                setv(key1, tempcdx[met].head(nq).mean())
+            setv(key1, sm.postbm_metric(key1, postBm[key1]["eqMet"], tempcdx, nq))
 
-        # ---- postNewRankingDict metrics (postBoRank.py:189-441) ----
-        setv("freeCashFlowYield", (tempfcf / tempmcap).head(nq).mean())
-        fcfps = tempfcf / tempshares
+        # ---- postNewRankingDict metrics (shared with production via stage2_metrics) ----
+        setv("freeCashFlowYield", sm.free_cash_flow_yield(tempfcf, tempcdx.marketCap, nq))
         setv("freeCashFlowPerShareGrowth",
-             fcfps.pct_change(-4, fill_method=None).head(nq).mean())
-        # DcfToPrice: DROPPED
+             sm.free_cash_flow_per_share_growth(tempfcf, tempshares, nq))
+        # DcfToPrice: DROPPED offline (no point-in-time DCF; weight 0 in the live vector)
         setv("marketCapRevQuants", tempmcapQuants)
-        setv("tbVpRatio", (tempcdx["tangibleBookValuePerShare"] / tempcdx["price"]).head(nq).mean())
+        setv("tbVpRatio", sm.tbv_p_ratio(tempcdx, nq))
         setv("BoScore", float(bstop.loc[bstop["source"] == ticker, "score"].iloc[0]))
-
-        # EPStoEPSmean (postBoRank.py:212-225)
-        eps = tempcdx["netIncome"] / tempcdx["weightedAverageShsOut"]
-        epsmean = eps.mean()
-        a = 0.4
-        tw = a * (1 + (1 - a) + (1 - a) ** 2 + (1 - a) ** 3)
-        if len(eps) >= 4 and all(eps.iloc[0:4] > 0):
-            epstoepsmean = epsmean - (a / tw) * (
-                eps.iloc[0] + eps.iloc[1] * (1 - a) +
-                eps.iloc[2] * (1 - a) ** 2 + eps.iloc[3] * (1 - a) ** 3)
-        else:
-            epstoepsmean = 0
-        setv("EPStoEPSmean", epstoepsmean)
-
-        # priceGrowth (postBoRank.py:378-386)
-        if "price" in tempcdx.columns and not tempcdx["price"].empty:
-            setv("priceGrowth",
-                 -tempcdx["price"].pct_change(-1, fill_method=None).head(nq).mean())
-        else:
-            setv("priceGrowth", np.nan)
-
-        # Altman-Z (postBoRank.py:277-316)
-        setv("Altman-Z", _altman_z(tempcdx))
-        # Piotroski (postBoRank.py:320-369)
-        setv("Piotroski", _piotroski(tempcdx))
-        # CycleHeat with beta=1.0 (postBoRank.py:393-441)
-        setv("CycleHeat", _cycleheat(tempcdx, beta_stock=1.0))
+        setv("EPStoEPSmean", sm.eps_to_eps_mean(tempcdx))
+        setv("priceGrowth", sm.price_growth(tempcdx, nq))
+        setv("Altman-Z", sm.altman_z(tempcdx))
+        setv("Piotroski", sm.piotroski(tempcdx))
+        # CycleHeat: the SAME shared function the live scorer uses.  Its canonical
+        # EPS prep (stage2_metrics.prepare_eps_series) collapses duplicate-dated
+        # (restated) quarters to the last-ingested figure, so the live and offline
+        # paths now agree by construction -- including on the previously-divergent
+        # ILMN-type restatement names.
+        setv("CycleHeat", sm.cycleheat(tempcdx))
 
     return out
 
 
-def _altman_z(tempcdx):
-    try:
-        curr = tempcdx.iloc[0]
-        ta, tl = curr["totalAssets"], curr["totalLiabilities"]
-        if ta > 0 and tl > 0:
-            x1 = (curr["totalCurrentAssets"] - curr["totalCurrentLiabilities"]) / ta
-            x2 = curr["totalStockholdersEquity"] / ta
-            x3 = curr["operatingIncome"] / ta
-            x4 = curr["marketCap"] / tl
-            x5 = curr["revenue"] / ta
-            return 1.2 * x1 + 1.4 * x2 + 3.3 * x3 + 0.6 * x4 + 1.0 * x5
-    except Exception:
-        pass
-    return np.nan
-
-
-def _piotroski(tempcdx):
-    try:
-        if len(tempcdx) < 2:
-            return np.nan
-        curr, prev = tempcdx.iloc[0], tempcdx.iloc[1]
-        ta_c, ta_p = curr["totalAssets"], prev["totalAssets"]
-        if ta_c <= 0 or ta_p <= 0:
-            return np.nan
-        p1 = 1 if curr["netIncome"] / ta_c > 0 else 0
-        p2 = 1 if curr["netCashProvidedByOperatingActivities"] > 0 else 0
-        p3 = 1 if (curr["netIncome"] / ta_c) > (prev["netIncome"] / ta_p) else 0
-        p4 = 1 if curr["netCashProvidedByOperatingActivities"] > curr["netIncome"] else 0
-        p5 = 1 if (curr["longTermDebt"] / ta_c) < (prev["longTermDebt"] / ta_p) else 0
-        p6 = 1 if curr["currentRatio"] > prev["currentRatio"] else 0
-        p7 = 1 if curr["weightedAverageShsOut"] <= prev["weightedAverageShsOut"] else 0
-        p8 = 1 if curr["grossProfitMargin"] > prev["grossProfitMargin"] else 0
-        p9 = 1 if (curr["revenue"] / ta_c) > (prev["revenue"] / ta_p) else 0
-        return p1 + p2 + p3 + p4 + p5 + p6 + p7 + p8 + p9
-    except Exception:
-        return np.nan
-
-
-def _cycleheat(tempcdx, beta_stock=1.0):
-    try:
-        eps = tempcdx["netIncome"] / tempcdx["weightedAverageShsOut"]
-        eps_clean = eps.replace([np.inf, -np.inf], np.nan).dropna()
-        if len(eps_clean) < 2:
-            return np.nan
-        cur, mean, std = eps_clean.iloc[0], eps_clean.mean(), eps_clean.std()
-        if std > 0 and not np.isnan(std):
-            z = (cur - mean) / std
-        elif mean != 0:
-            z = (cur - mean) / abs(mean)
-        else:
-            z = 0.0
-        ch = z * beta_stock
-        return max(-3.0, min(ch, 3.0))
-    except Exception:
-        return np.nan
-
-
 def reproduce_pit_top(dmdic, D, na1_only=True, nq_stage1=8, nq_stage2=16,
                       topn_stage1=100, topn_final=20, cycleheat_beta=1.0,
-                      boscore_noise=0.0, price_noise_frac=0.0, rng=None):
+                      boscore_noise=0.0, price_noise_frac=0.0, rng=None,
+                      universe_override=None, weight_override=None,
+                      dedup_issuers=True):
     """Full PIT reproduction as-of date D. Returns a result dict.
 
     Controlled-noise hooks (for the churn diagnostic, both default OFF):
@@ -209,6 +124,33 @@ def reproduce_pit_top(dmdic, D, na1_only=True, nq_stage1=8, nq_stage2=16,
       price_noise_frac: multiplicative Gaussian noise on the NEWEST quarter's
                         synthetic price & marketCap per name -> isolates the
                         Stage-2 price-metric channel (pool held fixed).
+
+    universe_override : optional iterable of `source` values defining the as-of-D
+                        universe.  DEFAULT None -> exactly today's behaviour
+                        (na1_symbols(Tickers_df) when na1_only).  When supplied (the
+                        SURVIVORSHIP-CLEAN path: dead names merged in via
+                        dead_merge.merge_dead_into_dmdic, universe from its
+                        `pit_universe`), it REPLACES the na1 filter so dead-but-
+                        alive-at-D names are scored.  The live path (override=None)
+                        is bit-for-bit unchanged.
+
+    weight_override   : optional {metric_name: weight} dict merged over the default
+                        getPostDict weight vector (mirrors postBoRank.py:107-108's
+                        cohort-weight hook).  DEFAULT None -> default weights, live
+                        path bit-for-bit unchanged.  Used by the scoring-comparison
+                        grid to run an equal-weight variant (all metric weights = 1).
+
+    dedup_issuers     : collapse same-issuer lines in the ranked pool, keeping the
+                        HIGHEST-RANKED line per issuer, BEFORE the head(topn_final)
+                        cut (CEO standing principle: no duplicate issuers in the
+                        emitted top-N -- the TFPM/TFPM.TO case).  Reuses
+                        carveOut.dedup_ranked (same issuer-fingerprint as the carve).
+                        DEFAULT True.  It shapes ONLY the emitted `top20`; the returned
+                        `pool_after_norm` is the UNDEDUPED full pool (so the tune's
+                        validate_finish / bit-for-bit anchor is unaffected).  Set False
+                        to reproduce the pre-dedup top-N.  The pre-dedup top-N is always
+                        returned as `top20_predupe`, and the dropped lines as
+                        `issuer_dupes_dropped`, for the slot-change audit.
     """
     D = pd.Timestamp(D)
     if rng is None:
@@ -219,7 +161,14 @@ def reproduce_pit_top(dmdic, D, na1_only=True, nq_stage1=8, nq_stage2=16,
     cdx["date"] = pd.to_datetime(cdx["date"], errors="coerce")
 
     universe = None
-    if na1_only:
+    if universe_override is not None:
+        # SURVIVORSHIP-CLEAN path: membership already resolved (live survivors + dead
+        # entities alive_as_of D) upstream; do NOT apply the na1 survivor filter, which
+        # would drop the dead names we just merged in.
+        universe = set(universe_override)
+        bm = bm[bm["source"].isin(universe)]
+        cdx = cdx[cdx["source"].isin(universe)]
+    elif na1_only:
         universe = na1_symbols(dmdic["Tickers_df"])
         bm = bm[bm["source"].isin(universe)]
         cdx = cdx[cdx["source"].isin(universe)]
@@ -257,6 +206,10 @@ def reproduce_pit_top(dmdic, D, na1_only=True, nq_stage1=8, nq_stage2=16,
     postBm, postNew = cdic.getPostDict()
     weight_series = {**{k: postBm[k]["w"] for k in postBm},
                      **{k: postNew[k]["w"] for k in postNew}}
+    # Optional weight override (mirrors postBoRank.py:107-108's cohort-weight hook).
+    # weight_override=None leaves the default vector -> the live path is bit-identical.
+    if weight_override:
+        weight_series = {**weight_series, **weight_override}
     weighted = psm_norm.drop("source", axis=1)
     for col in weighted.columns:
         weighted[col] = psm_norm[col].values * weight_series.get(col, 1)
@@ -264,15 +217,39 @@ def reproduce_pit_top(dmdic, D, na1_only=True, nq_stage1=8, nq_stage2=16,
         [psm_norm[psm_norm.columns.difference(weighted.columns)], weighted], axis=1)
     postRank = pbr.getAggScore(psmdf_norm)
 
-    top20 = postRank.head(topn_final)["source"].tolist()
+    ranked_sources = postRank["source"].tolist()
+    top20_predupe = ranked_sources[:topn_final]
+    dedup_dropped = []
+    if dedup_issuers:
+        # Reuse the carve-out's issuer-fingerprint grouping; keep the highest-ranked
+        # line per issuer BEFORE the head cut (CEO: no duplicate issuers in the top-N).
+        # Use the UNIVERSE-filtered FULL cdx (all dates), NOT the date<=D slice: issuer
+        # identity is a STRUCTURAL fact, and the fingerprint keys on EXACT shares +
+        # near-equal fundamentals. A PIT slice breaks it on trivial reporting drift --
+        # e.g. buy2022 TFPM vs TFPM.TO have identical revenue/NI/TA but shares differing
+        # by 0.001% (1,563 of 155.8M) as-of-2022, escaping every edge; on full history
+        # the share counts match exactly and edge C catches the dual-listing. This is
+        # NOT return-inflating lookahead: it only collapses same-issuer lines to one
+        # slot, never touches a score or a return.
+        import carveOut as _co
+        tdf = dmdic.get("Tickers_df")
+        _cols = getattr(tdf, "columns", [])
+        names = (dict(zip(tdf["symbol"], tdf["name"]))
+                 if tdf is not None and "symbol" in _cols and "name" in _cols else {})
+        deduped, dedup_dropped = _co.dedup_ranked(ranked_sources, cdx, names)
+    else:
+        deduped = ranked_sources
+    top20 = deduped[:topn_final]
     return {
         "date": str(D.date()),
         "na1_only": na1_only,
         "cycleheat_beta": cycleheat_beta,
         "dropped_metrics": DROP_METRICS,
         "stage1_top100": BoS_top["source"].tolist(),
-        "pool_after_norm": postRank["source"].tolist(),
+        "pool_after_norm": postRank["source"].tolist(),   # UNDEDUPED (validate_finish anchor)
         "top20": top20,
+        "top20_predupe": top20_predupe,
+        "issuer_dupes_dropped": dedup_dropped,
         "postRank": postRank,
         "universe_size": (len(universe) if universe else cdx["source"].nunique()),
     }

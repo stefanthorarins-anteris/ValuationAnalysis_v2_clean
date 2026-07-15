@@ -37,6 +37,7 @@ ARTIFACT SPLIT (design s8)
     the run without pulling the data.
 """
 import os
+import csv
 import time
 import json
 import warnings
@@ -44,11 +45,13 @@ from datetime import datetime, timedelta
 
 import numpy as np
 import pandas as pd
+import requests
 
 import getData_gen as gdg
 import getData_fmp as gdf
 import entity_id as eid
 from run_logging import RunLogger
+import transfer_utils as tu
 
 # ------------------------------------------------------------------------- #
 # Output locations
@@ -449,6 +452,58 @@ def monthly_grid(trailing_months=BULK_TRAILING_MONTHS, end=None, extra_dates=Non
     return sorted(dates)
 
 
+def safe_get_bulk_csv(url, timeout=30, retries=3, backoff=1, sleep=None):
+    """CSV/JSON-aware getter for the bulk-by-date price endpoint ONLY.
+
+    The shared ``gdg.safe_get`` parses ``resp.json()`` and returns None on any
+    non-JSON body.  The on-plan bulk endpoint (v4/batch-request-end-of-day-prices)
+    returns a ~3.7MB **CSV** body (header symbol,date,open,low,high,close,adjClose,
+    volume) -- so ``safe_get`` returned None for EVERY date and the run misdiagnosed
+    a working endpoint as 'bulk_endpoint_unavailable'.  This getter is scoped to the
+    bulk-price path so the global JSON behaviour of ``safe_get`` (relied on by every
+    other caller) is untouched.  CSV handling models the correct reader already in
+    baseline_tools/fetch_prices.py:fetch_bulk_for_date.
+
+    Returns, mirroring the list-of-dict shape the downstream builder expects:
+      * list-of-dict rows  on a successful 200 (JSON list OR parsed CSV),
+      * []                 on a successful-but-empty 200 body (truly no data),
+      * None               on a GENUINE failure (non-200 after retries, timeout,
+                           connection error) -> the caller skips the date and the
+                           outage guard can distinguish a real outage from absence.
+    """
+    sleep = time.sleep if sleep is None else sleep
+    attempt = 0
+    while attempt < retries:
+        try:
+            resp = requests.get(url, timeout=timeout)
+            resp.raise_for_status()
+            ctype = resp.headers.get("Content-Type", "")
+            if "json" in ctype.lower():
+                try:
+                    data = resp.json()
+                except ValueError:
+                    data = None
+                return data if isinstance(data, list) else []
+            # CSV body (the on-plan default for this endpoint).
+            text = resp.text.strip()
+            if not text:
+                return []
+            return list(csv.DictReader(text.splitlines()))
+        except requests.RequestException as e:
+            attempt += 1
+            if attempt >= retries:
+                # Never echo the apikey query-param into logs/warnings -- it can
+                # appear both in the URL and inside the requests exception string.
+                import re as _re
+                safe_url = url.split("&apikey=")[0].split("?apikey=")[0]
+                safe_err = _re.sub(r"apikey=[^&\s]+", "apikey=***", str(e))
+                warnings.warn(f"Failed to GET bulk prices {safe_url} after {retries} "
+                              f"attempts: {safe_err}")
+                return None
+            sleep(backoff * (2 ** (attempt - 1)))
+    return None
+
+
 def fetch_bulk_prices(dates, dead_symbols, baseurl, api_key, get=None, sleep=None,
                       probe_symbol=PROBE_SYMBOL, probe_date=PROBE_DATE, logger=None,
                       live_symbols=None):
@@ -475,7 +530,10 @@ def fetch_bulk_prices(dates, dead_symbols, baseurl, api_key, get=None, sleep=Non
     Returns (prices_df, meta).  prices_df columns: date_requested, date_actual,
     symbol, close, adjClose (whatever the endpoint provides).
     """
-    get = get or gdg.safe_get
+    # BULK path uses a CSV/JSON-aware getter -- the endpoint returns CSV, which the
+    # shared JSON-only gdg.safe_get would drop to None (the false 'unavailable'
+    # misdiagnosis).  Tests inject their own list-returning getter via `get=`.
+    get = get or safe_get_bulk_csv
     sleep = time.sleep if sleep is None else sleep
     dead_set = set(dead_symbols or [])
     live_set = set(live_symbols or [])
@@ -839,6 +897,22 @@ def run_ingest(configdic, live_symbols=None, get=None, http_get=None, sleep=None
     api_key = configdic["api_key"]
     run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
     logger = RunLogger(run_id, out_dir=log_dir, secrets=[api_key])
+    transfer_dir = configdic.get("transfer_dir")
+
+    def _flush_boundary(artifacts, phase):
+        """Phase-boundary crash-resilience hook.  (1) Flush a CURRENT manifest to
+        disk (idempotent, never raises) so a mid-run kill leaves an up-to-date
+        manifest with the counts accumulated so far.  (2) If -transfer_dir is set,
+        incrementally copy the just-written artifacts + the current manifest + the
+        JSONL event log to Drive, so a late crash leaves ALL prior phases synced.
+        Copy/flush failures never propagate."""
+        logger.write_manifest()  # already safe/idempotent/never-raises
+        if transfer_dir:
+            paths = list(artifacts) + [logger.manifest_path, logger.events_path]
+            tu.copy_artifacts_to_transfer_dir(transfer_dir, paths, verbose=True)
+        if logger.echo:
+            print(f"[boundary] flushed manifest after phase={phase}", flush=True)
+
     try:
         # live universe (for the entity_id union + universe membership)
         if live_symbols is None:
@@ -860,7 +934,7 @@ def run_ingest(configdic, live_symbols=None, get=None, http_get=None, sleep=None
         logger.data('universe_union', live=len(live_symbols),
                     dead_ingested=int(registry_ent["entity_id"].nunique())
                     if not registry_ent.empty else 0, union_size=union_size)
-        _write_table(registry_ent, "delisted_registry", data_dir, logger=logger)
+        registry_path = _write_table(registry_ent, "delisted_registry", data_dir, logger=logger)
         # MEDIUM-2: deterministic resume.  On a resume we REPLAY the persisted
         # enumeration anchor (so an integer start_index always points at the same
         # entity even if the registry drifted); on a fresh run we compute + persist
@@ -880,19 +954,27 @@ def run_ingest(configdic, live_symbols=None, get=None, http_get=None, sleep=None
         # 3. N_dead checkpoint (BEFORE the long loop)
         n_dead_checkpoint(order, logger=logger)
 
+        # PHASE BOUNDARY: registry + resume anchor written -> flush + sync.
+        _flush_boundary([registry_path, order_path], "registry")
+
         # 4. ride-along verifications (2 calls; capture raw JSON; PASS/FAIL)
         ra = ridealong or _default_ridealong(baseurl, api_key, get=get)
         # LOW-3: raw vendor JSON goes to the gitignored Drive data dir, NOT the
         # committed run_logs/ dir (keep raw payloads out of git; the PASS/FAIL +
         # values that the house inspects are logged via logger.verify below).
+        split_path = os.path.join(data_dir, f"ridealong_split_{run_id}.json")
         split_json = ra["split"]()
-        _dump_json(split_json, os.path.join(data_dir, f"ridealong_split_{run_id}.json"))
+        _dump_json(split_json, split_path)
         split_pass, split_vals = classify_split_adjustment(split_json)
         logger.verify("ridealong_split_adjustment", split_pass, values=split_vals)
+        filing_path = os.path.join(data_dir, f"ridealong_filing_{run_id}.json")
         filing_json = ra["filing"]()
-        _dump_json(filing_json, os.path.join(data_dir, f"ridealong_filing_{run_id}.json"))
+        _dump_json(filing_json, filing_path)
         filing_pass, filing_vals = classify_filing_dates(filing_json)
         logger.verify("ridealong_filing_dates", filing_pass, values=filing_vals)
+
+        # PHASE BOUNDARY: ride-along verifications done -> flush + sync.
+        _flush_boundary([split_path, filing_path], "ridealongs")
 
         # 5. bulk prices (probe + present/absent branch) + death signature
         dead_syms = [o["symbol"] for o in order]
@@ -904,12 +986,17 @@ def run_ingest(configdic, live_symbols=None, get=None, http_get=None, sleep=None
         prices, price_meta = fetch_bulk_prices(grid, dead_syms, baseurl, api_key,
                                                get=get, sleep=sleep, logger=logger,
                                                live_symbols=live_symbols)
+        bulk_path = None
         if not prices.empty:
-            _write_table(prices, "bulk_prices", data_dir, logger=logger)
+            bulk_path = _write_table(prices, "bulk_prices", data_dir, logger=logger)
         death_df = classify_death_signature(prices, registry_ent,
                                             mode=price_meta["mode"], logger=logger)
+        death_path = None
         if not death_df.empty:
-            _write_table(death_df, "death_signature", data_dir, logger=logger)
+            death_path = _write_table(death_df, "death_signature", data_dir, logger=logger)
+
+        # PHASE BOUNDARY: bulk prices + death signature written -> flush + sync.
+        _flush_boundary([bulk_path, death_path], "bulk_prices")
 
         # 6. dead fundamentals (recent-first, resumable) -- the LONG loop, last
         if do_fundamentals:
@@ -928,21 +1015,26 @@ def run_ingest(configdic, live_symbols=None, get=None, http_get=None, sleep=None
             # emptyfail (genuine no-data) and the failcode (fetch-unknown / re-audit)
             # sets as first-class manifest artifacts (HIGH-1: the bias is now
             # measurable, not silently folded into "no fundamentals").
-            pd.to_pickle(results, os.path.join(data_dir,
-                                               f"dead_fundamentals_{run_id}.pickle"))
+            dead_pickle_path = os.path.join(data_dir, f"dead_fundamentals_{run_id}.pickle")
+            pd.to_pickle(results, dead_pickle_path)
+            ef_path = None
             ef_df = pd.DataFrame(emptyfail)
             if not ef_df.empty:
-                ef_df.to_csv(os.path.join(log_dir, f"dead_emptyfail_{run_id}.csv"),
-                             index=False)
+                ef_path = os.path.join(log_dir, f"dead_emptyfail_{run_id}.csv")
+                ef_df.to_csv(ef_path, index=False)
+            fc_path = None
             fc_df = pd.DataFrame(failcode)
             if not fc_df.empty:
-                fc_df.to_csv(os.path.join(log_dir, f"dead_failcode_reaudit_{run_id}.csv"),
-                             index=False)
+                fc_path = os.path.join(log_dir, f"dead_failcode_reaudit_{run_id}.csv")
+                fc_df.to_csv(fc_path, index=False)
                 logger.data('dead_fund_failcode_set', level='WARN',
                             n_reaudit=len(failcode),
                             note='transient/HTTP-failed dead names -- treat as '
                                  'FETCH-UNKNOWN and re-audit; NOT "no fundamentals"')
             logger.set_coverage("dead_fund", fund_meta)
+
+            # PHASE BOUNDARY: dead fundamentals + empty/failcode sets written.
+            _flush_boundary([dead_pickle_path, ef_path, fc_path], "dead_fundamentals")
 
         manifest = logger.write_manifest()
         print(f"\n[delisted-ingest] DONE. run_id={run_id}. manifest={manifest}",

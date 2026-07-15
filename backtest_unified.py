@@ -7,6 +7,14 @@ Calculates returns from quarterly price data already in cdx_df.
 Usage:
   Standalone: python backtest_unified.py --loadfname <pickle> --buy_years 2019,2020,2021
   From pipeline: import backtest_unified; backtest_unified.run_all(dmdic)
+
+NOT THE LIVE SCORER.  This harness scores on STAGE-1 BoScore only; it does NOT
+run the deployed two-stage AggScore filter (Stage-1 BoScore -> Stage-2 AggScore
+with the mu weights, carve/dedup).  Its beat-rate / return numbers therefore
+measure a DIFFERENT, cruder strategy and MUST NOT be read as validating the
+shipped filter.  The faithful offline reproduction of the deployed scorer is
+baseline_tools/stage2_pit.reproduce_pit_top (which shares Stage-2 formulas with
+production via stage2_metrics.py).
 """
 
 import pandas as pd

@@ -74,10 +74,32 @@ def level_on_or_before(series, target_date):
     return float("nan")
 
 
-def window_return(series, buy_date, eval_date):
-    """Total return of the benchmark over [buy_date, eval_date]."""
-    b = level_on_or_before(series, buy_date)
-    e = level_on_or_before(series, eval_date)
+def window_return(series, buy_date, eval_date, require_exact=False):
+    """Total return of the benchmark over [buy_date, eval_date].
+
+    require_exact (LOW-2 guard, 2026-07-14): when True, both buy_date and
+    eval_date MUST be present as exact index anchors in `series`. If an anchor
+    is absent the function RAISES rather than silently forward-filling a stale
+    earlier level -- forward-fill on a missing EVAL anchor would understate/over-
+    state the benchmark by a whole period and silently corrupt the beat-rate.
+    Default False preserves the original forward-fill semantics for existing
+    callers; the rebalance/tuning path opts in with require_exact=True. (Verified
+    2026-07-14: URTH is present at every year-end anchor in the standard grid, so
+    turning the guard on does not change any shipped number -- it only fails loud
+    if a future anchor is missing.)
+    """
+    if require_exact:
+        b_ts, e_ts = pd.Timestamp(buy_date), pd.Timestamp(eval_date)
+        if b_ts not in series.index:
+            raise KeyError(f"benchmark missing exact buy anchor {buy_date!r} "
+                           f"(require_exact); refusing to forward-fill a stale level")
+        if e_ts not in series.index:
+            raise KeyError(f"benchmark missing exact eval anchor {eval_date!r} "
+                           f"(require_exact); refusing to forward-fill a stale level")
+        b, e = float(series.loc[b_ts]), float(series.loc[e_ts])
+    else:
+        b = level_on_or_before(series, buy_date)
+        e = level_on_or_before(series, eval_date)
     if not b or pd.isna(b) or pd.isna(e):
         return float("nan")
     return e / b - 1.0

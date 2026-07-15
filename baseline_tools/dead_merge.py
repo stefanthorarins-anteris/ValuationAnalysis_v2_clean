@@ -1,0 +1,375 @@
+"""
+Dead-name MERGE into the scored universe  (survivorship-clean scoring, OFFLINE).
+
+PURPOSE
+-------
+The scoring pickle (`Boresults_dic-...`) is SURVIVOR-ONLY: its `cdx_df` /
+`BoMetric_df` contain only names still traded at the snapshot date, so a name that
+delisted before the snapshot can never enter the PIT top-20 -- survivorship bias on
+the project's core axis.  The delisted-fundamentals pickle (`dead_fundamentals_*.pickle`,
+7,194 entities) carries the raw FMP statement frames (km/fr/inc/bs/cf) for those dead
+names.  This module transforms each dead entity's raw frames into the SAME
+`cdx_df` / `BoMetric_df` schema the scorer consumes -- reusing the PRODUCTION transform
+(getData_fmp.fillPreReqdf + calcMetrics + createDicts dicts, AND the production
+fixAfterGetData/forceNumOnDf inf-scrub) so dead names are scored apples-to-apples with
+survivors -- and unions them into the scoring frames under survivorship-safe
+point-in-time (PIT) membership (universe_pit.build_universe / entity_id.alive_as_of).
+
+NO network I/O.  Pure function of the two pickles + the delisted registry CSV.
+
+LOOKAHEAD POLICY (CEO-SETTLED: symmetric, option A)
+---------------------------------------------------
+A PIT score as-of D must use only statements available at D.  The LIVE frames carry no
+fillingDate/acceptedDate; the dead pickle's fillingDate is a lag-0 placeholder
+(`filing_date_source == 'fixed_lag'` for all 7,194 entities).  The SETTLED decision is
+the SYMMETRIC one: dead rows are stamped to the quarter START by the SAME production
+`utils.setDatesToQuarterly` as live, and the scorer slices BOTH cohorts by the SAME
+`date <= D` cut (stage2_pit.reproduce_pit_top).  There is therefore NO per-cohort
+availability switch in this module -- that would be inert decorative machinery implying
+a guarantee it does not deliver.  If delisted_ingest ever emits REAL dead filing dates,
+the asymmetry MUST be re-litigated explicitly (do not silently start using them here).
+
+WHAT IS DECIDED HERE
+--------------------
+  * JOIN KEY = entity_id (registry `entity_id`; == bare symbol except recycled
+    tickers).  Dead rows enter with source = entity_id.
+  * PIT MEMBERSHIP = universe_pit.build_universe(as_of=D, registry) -- a dead name is
+    in the as-of-D universe only if alive_as_of D (ipoDate<=D<delistedDate).
+  * EXCHANGE SCOPE = the merged universe is exchange-matched to the na1_only baseline:
+    {NA1 live survivors} UNION {NA1 dead-but-alive-at-D}, nothing else, so a top-20
+    delta reflects SURVIVORSHIP alone, not universe expansion (see pit_universe).
+  * COLLISION handling: 273 dead entity_ids also appear as LIVE sources (names that
+    delisted 2025-26, still in the Jan-2026 survivor snapshot -- SAME entity, not
+    recycled tickers).  Default `collision='prefer_live'` skips the dead copy.
+  * INF PARITY: dead frames go through gdg.fixAfterGetData (=> forceNumOnDf, inf->NaN,
+    getData_gen.py:317) BEFORE the concat, exactly as every live row does, so a
+    zero-denominator inf in a distressed dead name cannot corrupt the Stage-1 pool
+    median (getAves2 does not scrub inf, calcScore.py:137).
+
+DRIFT NOTE (for the reviewer): the per-entity build loop below is a faithful replica
+of getData_fmp.get_fundamentals_fmp:53-146 (the ONLY duplication -- all arithmetic
+still lives in calcMetrics/createDicts/getData_gen, called here).  It is duplicated
+rather than extracted because getData_fmp.py is imported by a file under concurrent
+edit; a follow-up could extract getData_fmp `_build_entity_frames` and have both
+call it.
+"""
+
+import os
+import sys
+
+import numpy as np
+import pandas as pd
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import calcMetrics as cm
+import createDicts as cdic
+import getData_gen as gdg
+import utils as utils
+import entity_id as eid
+import universe_pit as up
+
+# NA1 exchange set -- the na1_only scoring baseline (stage2_pit.NA1_EXCHANGES).
+# Duplicated as a module constant to avoid importing stage2_pit (which pulls in
+# postBoRank -> requests/matplotlib) at merge-module import time; kept in lockstep.
+NA1_EXCHANGES = ("NYSE", "NASDAQ", "TSX")
+
+
+# --------------------------------------------------------------------------- #
+#  Per-entity transform  (replica of get_fundamentals_fmp:53-146, offline)    #
+# --------------------------------------------------------------------------- #
+_ID_COLS = ("date", "symbol")
+
+
+def _floatify(df):
+    """Coerce every non-identifier column to numeric float -- matching the LIVE frames'
+    representation.  Live statement frames arrive float-typed; the dead pickle stores
+    raw FMP frames whose numeric columns can be int64 OR object-with-python-ints (e.g.
+    priceEarningsToGrowthRatio carries an exact 0 as int64 for PMA/MSW and as an object
+    0 for CDIX).  production calcMetrics.calc_special computes 1/priceEarningsToGrowthRatio
+    BEFORE np.where masks it; on an int/object 0 pandas takes a Python scalar path and
+    raises ZeroDivisionError, whereas float 0.0 yields inf and IS masked.  Coercing to
+    float (int 0 -> 0.0, object 0 -> 0.0) reproduces the live path exactly.  This is a
+    DTYPE fix applied BEFORE the calc -- deliberately distinct from (and in addition to)
+    the forceNumOnDf inf->NaN scrub applied AFTER concat.  `date`/`symbol` are preserved
+    (date is the cross-statement join key in fillPreReqdf); other string columns
+    (cik/period/link/...) are not consumed by the transform and coerce harmlessly.
+    """
+    d = df.copy()
+    for c in d.columns:
+        if c in _ID_COLS:
+            continue
+        # to_numeric alone PRESERVES int64 for a pure-integer column; force float64 so
+        # int 0 -> 0.0 (the numpy inf path), matching live exactly.
+        d[c] = pd.to_numeric(d[c], errors="coerce").astype("float64")
+    return d
+
+
+def _build_entity_frames(entity, source, cdx_cols, bm_cols, n=1):
+    """Transform one dead entity's raw statements into (cdx_row_df, bm_row_df).
+
+    entity : the dead-pickle value dict with 'km','fr','inc','bs','cf' DataFrames.
+    source : the entity_id to stamp as `source` (join key).
+    Mirrors the production per-ticker body EXACTLY (initTempMets -> fillPreReqdf ->
+    calc loop -> tail(4) trim), calling the real calcMetrics/createDicts functions.
+    Returns (None, None) if the price gate (checkIfValidFS) fails, as production does.
+    NOTE: the inf->NaN scrub (fixAfterGetData/forceNumOnDf) is applied ONCE on the
+    concatenated frames in dead_to_scoring_frames, exactly as production applies it
+    once at the end of the ingest loop (getData_fmp.py:146).
+    """
+    km, fr, inc, bs, cf = entity["km"], entity["fr"], entity["inc"], entity["bs"], entity["cf"]
+    if any(not isinstance(x, pd.DataFrame) or x.empty for x in (km, fr, inc, bs, cf)):
+        return None, None
+    # DTYPE fix (int 0 -> 0.0) BEFORE the calc, so the whole transform behaves exactly
+    # like the live float path -- see _floatify.
+    km, fr, inc, bs, cf = (_floatify(x) for x in (km, fr, inc, bs, cf))
+
+    (preReq_dict, _calc, BoMetric_base_dict, BoMetric_mean_dict,
+     BoMetric_diff_dict, BoMetric_unity_dict, BoMetric_special_dict) = cdic.getDicts()
+
+    # initTempMets(BoMetric_df.columns, cdx_df.columns, bs['date'], source)
+    tempMetric_df = pd.DataFrame(columns=bm_cols)
+    tempfund = pd.DataFrame(columns=cdx_cols)
+    tempfund["date"] = bs["date"].values
+    tempfund["source"] = source
+    tempMetric_df["date"] = bs["date"].values
+    tempMetric_df["source"] = source
+
+    try:
+        import getData_fmp as gdf
+        tempfund, _hcy = gdf.fillPreReqdf(tempfund, preReq_dict, bs, inc, cf, km, fr)
+    except Exception:
+        return None, None
+    tempMetric_df = utils.setDatesToQuarterly(tempMetric_df)
+
+    if not gdg.checkIfValidFS(tempfund):
+        return None, None
+
+    tempdf = pd.DataFrame()
+    tempdf["date"] = tempfund["date"]
+    ratioOpCalcDicts = {**BoMetric_base_dict, **BoMetric_mean_dict,
+                        **BoMetric_unity_dict, **BoMetric_diff_dict}
+    for key in ratioOpCalcDicts:
+        restr = key
+        strUp = ratioOpCalcDicts[key]["Upper"]
+        strDn = ratioOpCalcDicts[key]["Lower"]
+        tf = cm.calc_simpleRatio(tempfund, strUp, strDn)
+        if key in BoMetric_base_dict:
+            tempMetric_df[restr] = tf
+        if key in BoMetric_mean_dict:
+            tempMetric_df["m" + restr[0].upper() + restr[1:]] = tf
+        if key in BoMetric_unity_dict:
+            tempMetric_df["u" + restr[0].upper() + restr[1:]] = tf
+        if key in BoMetric_diff_dict:
+            tempdf["forDiff"] = tf
+            tf = cm.calc_diff(tempdf, "forDiff", n)
+            tempMetric_df["d" + restr[0].upper() + restr[1:]] = tf
+    for key1 in BoMetric_special_dict.keys():
+        tempMetric_df[key1] = cm.calc_special(tempfund, key1, n)
+
+    tempMetric_df_trimmed = tempMetric_df.drop(tempMetric_df.tail(4).index)
+    return tempfund, tempMetric_df_trimmed
+
+
+# --------------------------------------------------------------------------- #
+#  Registry + universe helpers                                                #
+# --------------------------------------------------------------------------- #
+def load_registry(path):
+    """Load the delisted registry CSV (entity_id, symbol, ipoDate, delistedDate,
+    exchange, ...).  Dates coerced to Timestamp."""
+    reg = pd.read_csv(path)
+    for c in ("ipoDate", "delistedDate"):
+        if c in reg.columns:
+            reg[c] = pd.to_datetime(reg[c], errors="coerce")
+    return reg
+
+
+def _live_na1(dmdic, exch):
+    """Live survivors restricted to the `exch` exchange set, exactly as the na1_only
+    scoring baseline does (Tickers_df.exchangeShortName in exch), intersected with the
+    actual cdx sources so the set is scoring-meaningful."""
+    tk = dmdic["Tickers_df"]
+    live_syms = set(tk.loc[tk["exchangeShortName"].isin(exch), "symbol"])
+    cdx_sources = set(dmdic["cdx_df"]["source"].dropna().unique())
+    return live_syms & cdx_sources
+
+
+def pit_universe(dmdic, registry, as_of, exchange_filter=None):
+    """As-of-D universe, EXCHANGE-MATCHED to the na1_only baseline:
+
+        {live survivors on `exch`}  UNION  {dead-registry entities on `exch` alive@D}
+
+    `exchange_filter` defaults to the NA1 set (NYSE/NASDAQ/TSX) so the merged run scores
+    the SAME exchange scope as the baseline -- the top-20 delta then isolates
+    survivorship, not universe expansion.  The SAME `exch` set is applied to BOTH the
+    live survivors (via Tickers_df) and the dead names (via build_universe's
+    exchange_filter), closing the two-variables-at-once confound.
+
+    as_of=None returns the live NA1 survivors unchanged (live invariant)."""
+    exch = set(NA1_EXCHANGES) if exchange_filter is None else set(exchange_filter)
+    live = _live_na1(dmdic, exch)
+    if as_of is None:
+        return sorted(live)
+    # Dead side: registry entities alive@D on `exch`.  Empty live_symbols -> the union
+    # inside build_universe adds nothing from live; the exchange_filter is applied to
+    # the registry rows (which DO carry `exchange`).
+    dead = set(up.build_universe([], registry=registry, as_of=as_of,
+                                 exchange_filter=exch))
+    return sorted(live | dead)
+
+
+# --------------------------------------------------------------------------- #
+#  The merge                                                                  #
+# --------------------------------------------------------------------------- #
+def _resolve_registry_row(reg_by_sym, sym):
+    """Return (entity_id, in_registry, ambiguous) for a dead symbol.
+
+    Recycled/duplicate symbols can have >1 registry row; pick DETERMINISTICALLY the
+    most-recent delistedDate (matching the 'most-recent occupant keeps the bare symbol'
+    convention, entity_id.py) and flag the ambiguity so it is never silent."""
+    if reg_by_sym is None or sym not in reg_by_sym.index:
+        return sym, False, False
+    row = reg_by_sym.loc[sym]
+    ambiguous = False
+    if isinstance(row, pd.DataFrame):
+        ambiguous = True
+        if "delistedDate" in row.columns:
+            row = row.sort_values("delistedDate").iloc[-1]
+        else:
+            row = row.iloc[0]
+    ent = row.get("entity_id", sym)
+    return (ent if isinstance(ent, str) and ent else sym), True, ambiguous
+
+
+def dead_to_scoring_frames(dead, registry, cdx_cols, bm_cols,
+                           entities=None, live_sources=None,
+                           collision="prefer_live", n=1, verbose=False):
+    """Build (cdx_dead, bm_dead) -- dead-name rows in cdx_df / BoMetric_df schema,
+    inf-scrubbed to live parity via gdg.fixAfterGetData.
+
+    dead        : the dead-fundamentals pickle dict {symbol -> entity dict}.
+    registry    : delisted-registry DataFrame (for entity_id join + collision test).
+    cdx_cols/bm_cols : the live-frame columns (schema template).
+    entities    : optional iterable of dead symbols to build (default: all).
+    live_sources: set of live `source` values (for collision detection).
+    collision   : 'prefer_live' (skip dead copy of a source already live) |
+                  'keep_both' (append with a '_dead' suffix on the entity_id) |
+                  'prefer_dead' (append bare -- NOT recommended; can double-count).
+    Returns (cdx_dead, bm_dead); build stats attached to .attrs['build_stats'].
+    """
+    reg_by_sym = registry.set_index("symbol") if "symbol" in registry.columns else None
+    live_sources = set(live_sources or set())
+    syms = list(entities) if entities is not None else list(dead.keys())
+
+    cdx_parts, bm_parts = [], []
+    built = skipped_collision = gate_fail = not_in_registry = ambiguous_registry = 0
+    for sym in syms:
+        entity = dead.get(sym)
+        if entity is None:
+            continue
+        entity_id, in_reg, ambiguous = _resolve_registry_row(reg_by_sym, sym)
+        if not in_reg:
+            not_in_registry += 1
+        if ambiguous:
+            ambiguous_registry += 1
+
+        source = entity_id
+        if entity_id in live_sources:
+            if collision == "prefer_live":
+                skipped_collision += 1
+                continue
+            if collision == "keep_both":
+                source = f"{entity_id}_dead"
+            # prefer_dead -> keep bare source (may double-count; caller warned)
+
+        cdx_row, bm_row = _build_entity_frames(entity, source, cdx_cols, bm_cols, n=n)
+        if cdx_row is None:
+            gate_fail += 1
+            continue
+        cdx_parts.append(cdx_row)
+        bm_parts.append(bm_row)
+        built += 1
+
+    cdx_dead = (pd.concat(cdx_parts, ignore_index=True)
+                if cdx_parts else pd.DataFrame(columns=cdx_cols))
+    bm_dead = (pd.concat(bm_parts, ignore_index=True)
+               if bm_parts else pd.DataFrame(columns=bm_cols))
+
+    # INF->NaN parity with the live pipeline: run BOTH frames through the SAME
+    # post-ingest fixup production applies once (getData_fmp.py:146).  Guards the
+    # Stage-1 pool median against a zero-denominator inf in a distressed dead name.
+    if not cdx_dead.empty or not bm_dead.empty:
+        bm_dead, cdx_dead = gdg.fixAfterGetData(bm_dead, cdx_dead)
+
+    stats = {"requested": len(syms), "built": built,
+             "skipped_collision": skipped_collision, "gate_fail": gate_fail,
+             "not_in_registry": not_in_registry,
+             "ambiguous_registry": ambiguous_registry}
+    cdx_dead.attrs["build_stats"] = stats
+    bm_dead.attrs["build_stats"] = stats
+    if verbose:
+        print("dead_to_scoring_frames:", stats, flush=True)
+    return cdx_dead, bm_dead
+
+
+def merge_dead_into_dmdic(dmdic, dead, registry, as_of=None,
+                          collision="prefer_live", exchange_filter=None,
+                          entities=None, n=1, verbose=False):
+    """Return a NEW dmdic whose cdx_df / BoMetric_df include the dead names, plus the
+    exchange-matched as-of-D PIT union universe.
+
+    as_of=None -> returns dmdic UNCHANGED (live invariant): no dead names, exactly the
+    survivor-only behaviour of today.  Only a real D triggers the merge.
+
+    exchange_filter -> exchange scope for BOTH cohorts (default NA1 = baseline match).
+
+    Returns (new_dmdic, stats).  new_dmdic adds:
+        'pit_universe'     : sorted entity_ids in the as-of-D universe (exchange-matched)
+        'dead_merge_stats' : build + universe stats (incl. residual-survivorship drops)
+    Live keys are shallow-copied; cdx_df / BoMetric_df are replaced with unioned copies.
+    """
+    if as_of is None:
+        return dmdic, {"merged": False, "reason": "as_of=None (live invariant)"}
+
+    cdx_cols = list(dmdic["cdx_df"].columns)
+    bm_cols = list(dmdic["BoMetric_df"].columns)
+    live_sources = set(dmdic["cdx_df"]["source"].dropna().unique())
+
+    cdx_dead, bm_dead = dead_to_scoring_frames(
+        dead, registry, cdx_cols, bm_cols, entities=entities,
+        live_sources=live_sources, collision=collision, n=n, verbose=verbose)
+
+    universe = pit_universe(dmdic, registry, as_of, exchange_filter=exchange_filter)
+
+    # M-3: dead-pickle entities ABSENT from the registry cannot get PIT membership
+    # (no delistedDate -> excluded from the universe) -> residual survivorship.  Count
+    # and surface LOUDLY; never a silent drop.
+    reg_syms = set(registry["symbol"]) if "symbol" in registry.columns else set()
+    considered = set(entities) if entities is not None else set(dead.keys())
+    dropped_no_registry = sorted(considered - reg_syms)
+
+    new = dict(dmdic)  # shallow copy of the container
+    new["cdx_df"] = pd.concat([dmdic["cdx_df"], cdx_dead], ignore_index=True)
+    new["BoMetric_df"] = pd.concat([dmdic["BoMetric_df"], bm_dead], ignore_index=True)
+    new["pit_universe"] = universe
+
+    stats = dict(cdx_dead.attrs.get("build_stats", {}))
+    stats.update({
+        "merged": True, "as_of": str(pd.Timestamp(as_of).date()),
+        "universe_size": len(universe),
+        "exchange_scope": sorted(set(NA1_EXCHANGES) if exchange_filter is None
+                                 else set(exchange_filter)),
+        "dead_dropped_not_in_registry": len(dropped_no_registry),
+    })
+    new["dead_merge_stats"] = stats
+    if stats["dead_dropped_not_in_registry"]:
+        print(f"WARNING [dead_merge M-3]: {stats['dead_dropped_not_in_registry']} dead "
+              f"entities absent from the registry -> excluded from the PIT universe "
+              f"(residual survivorship). e.g. {dropped_no_registry[:10]}", flush=True)
+    if stats.get("ambiguous_registry"):
+        print(f"NOTE [dead_merge]: {stats['ambiguous_registry']} dead symbols had >1 "
+              f"registry row -> resolved by most-recent delistedDate (not silent).",
+              flush=True)
+    if verbose:
+        print("merge_dead_into_dmdic:", stats, flush=True)
+    return new, stats

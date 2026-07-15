@@ -14,9 +14,12 @@ results/
 AggScoreTop*.csv
 PresentationTop*.xlsx
 ForensicFlagsTop*.csv
+# Generated tune/backtest result dumps (regenerated every run; never commit).
+*.out
 # Real price data (moves via Google Drive only, never git). price_data/ already
-# covered above; this also guards a root-level copy.
+# covered above; these also guard root-level copies.
 real_prices.csv
+real_prices_2025.csv
 
 # Delisted-entity ingestion DATA artifacts (multi-GB, move via Google Drive only,
 # never git): registry parquet, dead fundamentals pickle, bulk prices, death

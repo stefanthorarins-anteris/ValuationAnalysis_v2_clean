@@ -1,3 +1,14 @@
+"""
+Rolling backtest harness.
+
+NOT THE LIVE SCORER.  This harness ranks by an EQUAL-WEIGHT z-average of
+BoMetric_df fields per rebalance date -- it does NOT run the deployed two-stage
+AggScore filter (Stage-1 BoScore -> Stage-2 AggScore with the mu weights,
+carve/dedup).  Its returns therefore measure a DIFFERENT, cruder strategy and
+MUST NOT be read as validating the shipped filter.  The faithful offline
+reproduction of the deployed scorer is baseline_tools/stage2_pit.reproduce_pit_top.
+"""
+
 import pandas as pd
 import numpy as np
 import configuration as cf

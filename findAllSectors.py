@@ -9,10 +9,19 @@ def findAllSectorsViaProfile(baseurl,api_key):
     #resp_assets = requests.get(f'{baseurl}v3/stock/list?apikey={api_key}')
     ass_df = pd.DataFrame(resp_assets.json())
     sectordic = {}
+    industrydic = {}  # symbol -> industry (captured free from the same profile call)
     pbar = tqdm(total=len(ass_df['symbol'].unique()))
     for symbol in ass_df['symbol'].unique():
         resp_profile = requests.get(f'{baseurl}v3/profile/{symbol}?apikey={api_key}')
-        symb_sector = resp_profile.json()[0]['sector']
+        prof = resp_profile.json()
+        symb_sector = prof[0]['sector']
+        # INGESTION CAPTURE (future runs, zero extra calls): the profile response
+        # already carries `industry`; persist it so Phase-2 can refine Mining to
+        # mining-only (vs all Basic Materials) and improve vehicle detection.
+        try:
+            industrydic[symbol] = prof[0].get('industry')
+        except Exception:
+            industrydic[symbol] = None
 
         if symb_sector not in sectordic:
             sectordic[symb_sector] = []
@@ -43,6 +52,13 @@ def findAllSectorsViaProfile(baseurl,api_key):
             newsectordic[newkey] = newsectordic[newkey] + sectordic[key]
 
     pd.to_pickle(newsectordic, sectordicfn)
+
+    # Persist the captured symbol->industry map alongside the sector pickle
+    # (best-effort; enables Phase-2 mining-only refinement + better vehicle detection).
+    try:
+        pd.to_pickle(industrydic, f'industrydic_fmp_{fidag}.pickle')
+    except Exception as _e:
+        print(f'WARNING: industry map persist skipped ({_e})')
 
     return newsectordic
 

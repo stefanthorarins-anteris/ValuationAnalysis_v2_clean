@@ -45,11 +45,6 @@ def get_fundamentals_fmp(Tickers_df, cdx_df, BoMetric_df, baseurl,
                                                                                          api_key, compyear, tickersfailed,
                                                                                          lenfail, datefail,emptyfail)
         if not (isinstance(km, int) and km == -37707):
-            #fs = inc.merge(bs, on='date', how='inner').merge(cf, on='date', how='inner').merge(km, on='date', how='inner').merge(fr, on='date', how='inner')
-            #tempfund, tempMetric_df, tempMetric_sum, temptckr_count = initTempMets(BoMetric_df.columns,
-            #                                                                       BoMetric_sum.columns,
-            #                                                                       BoTckr_count.columns, cdx_df.columns,
-            #                                                                       bs['date'], ticker)
             tempfund, tempMetric_df = initTempMets(BoMetric_df.columns, cdx_df.columns,
                                                                                    bs['date'], ticker)
 
@@ -92,15 +87,6 @@ def get_fundamentals_fmp(Tickers_df, cdx_df, BoMetric_df, baseurl,
                     tempMetric_df[key1] = tf
 
                 tempMetric_df_trimmed = tempMetric_df.drop(tempMetric_df.tail(4).index)
-                #for i in tempMetric_df_trimmed.columns:
-                #    if i == 'date':
-                #        tempMetric_sum[i] = tempfund[i]
-                #    else:
-                #        tf = tempMetric_df_trimmed[i]
-                #        tf_bool = pd.to_numeric(tf, errors='coerce')
-                #        if not any(pd.isnull(tf_bool)):
-                #            tempMetric_sum[i] = tf
-                #            temptckr_count[i] = temptckr_count[i] + 1
 
                 # align schemas (preserve all columns) before concatenation to avoid losing columns
                 cols_union = BoMetric_df.columns.union(tempMetric_df_trimmed.columns)
@@ -115,11 +101,6 @@ def get_fundamentals_fmp(Tickers_df, cdx_df, BoMetric_df, baseurl,
                         message="The behavior of DataFrame concatenation with empty or all-NA entries is deprecated"
                     )
                     BoMetric_df = pd.concat([BoMetric_df, tempMetric_df_trimmed], ignore_index=True)
-                #if BoMetric_sum.empty:
-                #    BoMetric_sum.set_index('date')
-                #BoMetric_sum = BoMetric_sum.add(tempMetric_sum.set_index('date'), fill_value=0)
-                #BoTckr_count = BoTckr_count + temptckr_count
-                #BoMetric_mean = BoMetric_sum/BoTckr_count
                 # align schemas for cdx as well
                 cols_union_cdx = cdx_df.columns.union(tempfund.columns)
                 cdx_df = cdx_df.reindex(columns=cols_union_cdx)
@@ -131,9 +112,6 @@ def get_fundamentals_fmp(Tickers_df, cdx_df, BoMetric_df, baseurl,
                         message="The behavior of DataFrame concatenation with empty or all-NA entries is deprecated"
                     )
                     cdx_df = pd.concat([cdx_df, tempfund], ignore_index=True)
-                if row.symbol == 'CF':
-                    print('This is tempMetric_df_trimmed from CF')
-                    print(tempMetric_df_trimmed)
 
         if nrTaT > 0 and cntr == nrTaT:
             break
@@ -144,9 +122,6 @@ def get_fundamentals_fmp(Tickers_df, cdx_df, BoMetric_df, baseurl,
 
     #BoMetric_df = utils.setDatesToQuarterly(BoMetric_df)
     BoMetric_df, cdx_df = gdg.fixAfterGetData(BoMetric_df, cdx_df)
-    #resfunddic = {'BoMetric_df':BoMetric_df, 'BoMetric_sum':BoMetric_sum, 'BoTckr_count' : BoTckr_count,
-    #              'cdx_df': cdx_df, 'tickersfailed': tickersfailed, 'lenfail': lenfail,
-    #              'datefail': datefail, 'emptyfail': emptyfail, 'cind': cntr}
     resfunddic = {'BoMetric_df':BoMetric_df,
                   'cdx_df': cdx_df, 'tickersfailed': tickersfailed, 'lenfail': lenfail, 'pricefail': pricefail,
                   'datefail': datefail, 'emptyfail': emptyfail, 'cind': cntr, 'hasCurrentYear': hasCurrentYear}
@@ -321,14 +296,10 @@ def symbchRestock(tckrs_df,baseurl,period,limit,api_key,compyear,timdir='old2new
 
 def initTempMets(dfcols,cdxcols,datevec,ticker):
     tempMetric_df = pd.DataFrame(columns=dfcols)
-    #tempMetric_sum = pd.DataFrame(columns=sumcols)
     tempfund = pd.DataFrame(columns=cdxcols)
-    #temptckr_count = pd.DataFrame({string: [0] for string in countcols})
     tempfund['date'] = datevec
     tempfund['source'] = ticker
     tempMetric_df['date'] = datevec
     tempMetric_df['source'] = ticker
-    #tempMetric_sum['date'] = datevec
 
-    #return tempfund, tempMetric_df, tempMetric_sum, temptckr_count
     return tempfund, tempMetric_df
