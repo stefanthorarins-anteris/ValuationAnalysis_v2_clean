@@ -1,5 +1,6 @@
 from datetime import datetime
 import csv
+import os
 import utils
 
 def getDataFetchConfiguration(args):
@@ -292,16 +293,69 @@ def getDataFetchConfiguration(args):
     else:
         run_estimation = 0
 
-    # Transfer directory for end-of-run copy to Google-Drive-synced folder
-    # Default None (off). When set, the pipeline copies the output allowlist there at
-    # end-of-run, after ALL outputs are written and after ingestion completes.
+    # ---- Drive transfer target resolution (OPT-OUT, default ON) -------------
+    # Transfer now runs BY DEFAULT (opt-out).  The pipeline copies the output
+    # allowlist to the Google-Drive-synced folder at end-of-run so run outputs
+    # reach the house automatically.  The previous behaviour was OPT-IN via
+    # -transfer_dir, and omitting the flag silently did NO transfer -- last
+    # night's run lost its outputs that way (2026-07-16 fix: never silently
+    # not-transfer).
+    #
+    # Enable / disable -- ONLY an EXPLICIT opt-out turns transfer off.  The point
+    # of opt-out is that you must DELIBERATELY opt out; an accidentally-empty env
+    # var is a mistake, not an intent to disable, so it falls through to ON:
+    #   (default, no flag)          -> transfer ON  (default target)
+    #   -no_transfer                -> transfer OFF (explicit toggle)
+    #   value == 'none' (flag/env)  -> transfer OFF (explicit token; case/space-insensitive)
+    #   -transfer_dir <path>        -> transfer ON, target overridden to <path>
+    #   empty / whitespace / unset  -> transfer ON, falls through to default (NEVER off)
+    #
+    # Target resolution order when transfer is ON and no explicit -transfer_dir
+    # <path> is given:
+    #   1. env var VALUATION_TRANSFER_DIR, if set to a real (non-empty) value
+    #   2. documented operator-runbook default: E:\drive\valuationTransfer
+    #
+    # configdic carries:
+    #   'transfer_dir'             -> resolved target path (str) when ON, else None
+    #   'transfer_disabled_reason' -> None when ON; the disabling flag string when OFF
+    DEFAULT_TRANSFER_DIR = r'E:\drive\valuationTransfer'
+    transfer_dir = None
+    transfer_disabled_reason = None
+
+    explicit_transfer_dir = None
     if '-transfer_dir' in args:
         itd = args.index('-transfer_dir')
         if itd + 1 >= len(args):
             raise Exception('-transfer_dir requires a directory path argument')
-        transfer_dir = args[itd + 1]
+        explicit_transfer_dir = args[itd + 1]
+
+    # 'none' (after strip+lowercase) is the ONLY explicit disable token -- applied
+    # IDENTICALLY to the flag AND the env var.  Empty/whitespace is NOT a disable:
+    # it falls through so an accidentally-blank value can never silently turn
+    # transfer off (never-miss intent).
+    if '-no_transfer' in args:
+        transfer_disabled_reason = '-no_transfer'
+    elif explicit_transfer_dir is not None and explicit_transfer_dir.strip().lower() == 'none':
+        transfer_disabled_reason = '-transfer_dir none'
+    elif explicit_transfer_dir is not None and explicit_transfer_dir.strip():
+        transfer_dir = explicit_transfer_dir.strip()
     else:
-        transfer_dir = None
+        # No usable -transfer_dir (unset, or empty/whitespace) -> env, then default.
+        env_dir = os.environ.get('VALUATION_TRANSFER_DIR')
+        if env_dir is not None and env_dir.strip().lower() == 'none':
+            transfer_disabled_reason = 'VALUATION_TRANSFER_DIR=none'
+        elif env_dir is not None and env_dir.strip():
+            transfer_dir = env_dir.strip()
+        else:
+            transfer_dir = DEFAULT_TRANSFER_DIR
+
+    # Sanity guard: a resolved target that is NOT an absolute path would create a
+    # stray junk dir under the run's cwd and could falsely look like success.
+    # Warn loudly here (the launch probe additionally refuses to create it).
+    if transfer_dir is not None and not os.path.isabs(transfer_dir):
+        print("[TRANSFER] WARNING: resolved transfer target %r is NOT an absolute "
+              "path -- this could create a stray directory under the run's working "
+              "dir. Check VALUATION_TRANSFER_DIR / -transfer_dir." % transfer_dir)
 
     # Skip loading manual elimination CSV when loading metrics (it's already in the pickle file)
     if loadBoMetric:
@@ -341,6 +395,7 @@ def getDataFetchConfiguration(args):
                  'as_of': as_of, 'ingest_delisted': ingest_delisted,
                  'delisted_max_pages': delisted_max_pages,
                  'startfromlastindex': startfromlastindex, 'transfer_dir': transfer_dir,
+                 'transfer_disabled_reason': transfer_disabled_reason,
                  'run_estimation': run_estimation}
 
     return configdic

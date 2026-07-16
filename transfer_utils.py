@@ -72,6 +72,52 @@ def assert_no_key_file(transfer_path, verbose=True):
     return clean
 
 
+def probe_transfer_target(transfer_dir):
+    """Non-destructive launch-time probe of the transfer target, used to surface
+    an unusable Drive path BEFORE the ~12h fetch begins (rather than discovering
+    it only at end-of-run).  Returns a dict:
+        {'ok': bool, 'exists': bool, 'writable': bool, 'detail': str}
+    'ok' is True only when the target's parent exists, the target dir is
+    creatable, AND a probe file can be written+deleted there.  Mirrors the
+    parent-must-exist contract of _ensure_transfer_dir / transfer_outputs_to_drive
+    so the launch verdict matches what the actual copy will do.  NEVER raises."""
+    info = {'ok': False, 'exists': False, 'writable': False, 'detail': ''}
+    try:
+        if not transfer_dir:
+            info['detail'] = 'no target resolved'
+            return info
+        transfer_path = Path(transfer_dir)
+        if not transfer_path.is_absolute():
+            # Refuse to create a stray junk dir under the run's cwd.
+            info['detail'] = (f'target is not an absolute path ({transfer_dir}) '
+                              f'-- refusing to probe/create under cwd')
+            return info
+        parent = transfer_path.parent
+        if not parent.exists():
+            info['detail'] = f'parent dir missing ({parent}) -- Drive not mounted?'
+            return info
+        try:
+            transfer_path.mkdir(parents=False, exist_ok=True)
+            info['exists'] = True
+        except Exception as e:
+            info['detail'] = f'cannot create target dir: {e}'
+            return info
+        probe = transfer_path / '.transfer_write_probe'
+        try:
+            with open(probe, 'w') as fh:
+                fh.write('probe')
+            probe.unlink()
+            info['writable'] = True
+            info['ok'] = True
+            info['detail'] = 'target exists and is writable'
+        except Exception as e:
+            info['detail'] = f'target exists but is NOT writable: {e}'
+        return info
+    except Exception as e:
+        info['detail'] = f'probe error: {e}'
+        return info
+
+
 def _ensure_transfer_dir(transfer_dir, verbose=True):
     """Resolve/create the transfer dir.  Returns a Path on success, or None on any
     failure (warn + continue -- never raises).  Mirrors the end-of-run function's

@@ -133,11 +133,17 @@ def transfer_outputs_to_drive(transfer_dir, configdic, verbose=True):
             try:
                 dest = transfer_path / Path(fpath).name
                 shutil.copy2(fpath, str(dest))
-                size = os.path.getsize(str(dest)) / (1024 * 1024)  # MB
-                total_size += size
                 copied_files.append(fpath)
-                if verbose:
-                    print(f"[TRANSFER] Copied: {fpath} ({size:.2f} MB)")
+                # Size tally is BEST-EFFORT: a stat error must never crash the run
+                # nor mislabel a copy that already succeeded (graceful-continue).
+                try:
+                    size = os.path.getsize(str(dest)) / (1024 * 1024)  # MB
+                    total_size += size
+                    if verbose:
+                        print(f"[TRANSFER] Copied: {fpath} ({size:.2f} MB)")
+                except Exception as se:
+                    if verbose:
+                        print(f"[TRANSFER] Copied: {fpath} (size tally failed: {se})")
             except Exception as e:
                 if verbose:
                     print(f"[TRANSFER] ERROR copying {fpath}: {e}")
@@ -168,17 +174,23 @@ def transfer_outputs_to_drive(transfer_dir, configdic, verbose=True):
                 shutil.rmtree(str(dest_dir))
 
             shutil.copytree(dirpat, str(dest_dir))
-
-            # Calculate total size
-            for root, dirs, files in os.walk(str(dest_dir)):
-                for fname in files:
-                    fpath = os.path.join(root, fname)
-                    size = os.path.getsize(fpath) / (1024 * 1024)  # MB
-                    total_size += size
-
             copied_files.append(dirpat)
             if verbose:
                 print(f"[TRANSFER] Copied directory: {dirpat}/")
+
+            # Size tally is BEST-EFFORT (see file loop): a file vanishing
+            # mid-walk or any stat error must never crash the run nor un-count a
+            # directory that already copied successfully.
+            try:
+                for root, dirs, files in os.walk(str(dest_dir)):
+                    for fname in files:
+                        try:
+                            total_size += os.path.getsize(os.path.join(root, fname)) / (1024 * 1024)  # MB
+                        except Exception:
+                            pass
+            except Exception as se:
+                if verbose:
+                    print(f"[TRANSFER] WARNING: size tally failed for {dirpat}/: {se}")
         except Exception as e:
             if verbose:
                 print(f"[TRANSFER] ERROR copying directory {dirpat}: {e}")
@@ -200,6 +212,49 @@ def transfer_outputs_to_drive(transfer_dir, configdic, verbose=True):
         print(f"[TRANSFER] Destination: {transfer_dir}")
 
     return result
+
+def print_transfer_launch_status(configdic, verbose=True):
+    """LOUD launch-time banner (printed BEFORE the long fetch begins) stating
+    whether the Drive transfer is ON or OFF, the resolved target, and whether
+    that target exists and is writable.
+
+    If transfer is ON but the target is NOT usable (Drive unmounted / bad path /
+    not writable), emit a LOUD warning RIGHT HERE so the operator can fix the
+    mount before spending ~12h -- this is the highest-value guard against the
+    silent-miss that lost last night's outputs.  Never raises.
+
+    Returns {'enabled': bool, 'ok': bool, 'detail': str}.
+    """
+    line = "=" * 70
+    transfer_dir = configdic.get('transfer_dir')
+    disabled_reason = configdic.get('transfer_disabled_reason')
+
+    if not transfer_dir:
+        reason = disabled_reason or 'no target resolved'
+        if verbose:
+            print("\n" + line)
+            print("  DRIVE TRANSFER: OFF (disabled)")
+            print(f"  reason : {reason}")
+            print(line + "\n")
+        return {'enabled': False, 'ok': True, 'detail': reason}
+
+    probe = tu.probe_transfer_target(transfer_dir)
+    if verbose:
+        print("\n" + line)
+        print("  DRIVE TRANSFER: ON")
+        print(f"  target : {transfer_dir}")
+        print(f"  exists : {probe['exists']}   writable: {probe['writable']}")
+        print(f"  detail : {probe['detail']}")
+        print(line)
+        if not probe['ok']:
+            print("!" * 70)
+            print("  !!! WARNING: transfer is ON but the target is NOT usable !!!")
+            print("  !!! Outputs will NOT reach the Drive unless you fix this NOW !!!")
+            print(f"  !!! ({probe['detail']}) !!!")
+            print("!" * 70)
+        print("")
+    return {'enabled': True, 'ok': probe['ok'], 'detail': probe['detail']}
+
 
 def main():
     import sys
@@ -226,6 +281,11 @@ def main():
     # Restores original streams in the finally block below.
     api_key = configdic.get('api_key', None)
     log_path, log_file = rl.start_run_logging(api_key=api_key)
+
+    # ---- LOUD Drive-transfer launch status (BEFORE the ~12h fetch) ----------
+    # Surface ON/OFF, resolved target, and target usability NOW so an unmounted
+    # Drive or bad path is caught at launch, not discovered 12h later.
+    print_transfer_launch_status(configdic, verbose=True)
 
     try:
         # Point-in-time as-of date D (default None = today / live; reproduces current
@@ -444,19 +504,30 @@ def main():
                 save_results=True
             )
 
-        # ---- End-of-run transfer to Google-Drive-synced folder (GATED, default OFF) ----
-        # When -transfer_dir is set, copy the output allowlist there after ALL outputs
-        # are written and AFTER ingestion completes. Gracefully skip if path doesn't exist.
+        # ---- End-of-run transfer to Google-Drive-synced folder (OPT-OUT, default ON) ----
+        # Transfer runs by default; disabled only by -no_transfer / -transfer_dir none.
+        # Copy the output allowlist after ALL outputs are written and AFTER ingestion.
+        # If transfer was ON but the copy did NOT happen (target absent/unwritable at
+        # copy time), emit a LOUD warning -- never the old quiet skip.
         transfer_dir = configdic.get('transfer_dir')
+        disabled_reason = configdic.get('transfer_disabled_reason')
         if transfer_dir:
             print("\n" + "="*70)
             print("END-OF-RUN TRANSFER TO GOOGLE DRIVE")
             print("="*70)
             transfer_result = transfer_outputs_to_drive(transfer_dir, configdic, verbose=True)
             print(f"Transfer result: {transfer_result['message']}")
-            # Log the transfer result into a summary line if desired
+            if transfer_result['status'] != 'success':
+                print("\n" + "!"*70)
+                print("!!! DRIVE TRANSFER DID NOT COMPLETE -- OUTPUTS DID NOT REACH THE DRIVE !!!")
+                print(f"!!! status = {transfer_result['status']}")
+                print(f"!!! detail = {transfer_result['message']}")
+                print(f"!!! target = {transfer_dir}")
+                print("!!! ACTION: copy the run outputs to the Drive MANUALLY.")
+                print("!"*70 + "\n")
         else:
-            transfer_dir = None  # Explicitly set for consistency
+            # Explicit disabled case -- never a silent skip.
+            print(f"\nDrive transfer DISABLED by {disabled_reason or '-transfer_dir none'}")
 
     except BaseException:
         # ---- EXCEPTION HANDLING: write traceback to log before closing ----
