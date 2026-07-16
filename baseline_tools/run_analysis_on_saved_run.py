@@ -168,10 +168,22 @@ def main():
         results["skill_baseline"] = "FAIL " + type(e).__name__ + ": " + str(e)
         traceback.print_exc()
 
+    print("\n" + hashbar + "\n# STAGE 5: review-reference DATA artifacts (raw metrics + cohort stats)\n"
+          + hashbar, flush=True)
+    try:
+        if _REPO not in sys.path:
+            sys.path.insert(0, _REPO)
+        import reviewReference as rr
+        rr_res = rr.emit_from_saved(dmdic, out_dir=_REPO)
+        results["review_ref"] = "OK (case %d)" % rr_res["case"]
+    except Exception as e:
+        results["review_ref"] = "FAIL " + type(e).__name__ + ": " + str(e)
+        traceback.print_exc()
+
     print("\n" + bar)
     print("SUITE SUMMARY (wall-clock " + format(time.time() - t0, ".1f") + "s)")
     print(bar)
-    for k in ("real_ic", "depth_grid", "beat_rate", "skill_baseline"):
+    for k in ("real_ic", "depth_grid", "beat_rate", "skill_baseline", "review_ref"):
         print("  " + k.ljust(16) + " -> " + str(results.get(k, "NOT RUN")))
     print(bar, flush=True)
 

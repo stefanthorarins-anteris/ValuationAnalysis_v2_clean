@@ -224,8 +224,17 @@ def postBoWrapper(dmdic, as_of=None):
         resdic['carveout_sidelists'] = carveout_sidelists
         resdic['carveout_labels'] = carve['labels']
         resdic['carveout_diagnostics'] = carve['diagnostics']
+        # FULL carved + size-floored membership per cohort (source lists, BEFORE the
+        # head(25)/head(100) selection).  Data-only: consumed by the READ-ONLY
+        # review-reference artifacts (reviewReference) to build cohort distribution
+        # stats / percentiles over EVERY peer, not just the Stage-2-scored subset.
+        # Never read back into scoring.
+        resdic['carve_full_membership'] = {
+            'general': list(general_scores['source']),
+            **{lab: list(cs['source']) for lab, cs in carve['cohorts'].items()}}
     else:
         resdic['carveout_sidelists'] = {}
+        resdic['carve_full_membership'] = None
 
     return resdic
 
@@ -308,11 +317,26 @@ def writeResWrapper(resdic):
     except Exception as _e:
         print(f'WARNING: carve-out side-list writing skipped ({_e})')
 
+    # READ-ONLY review-reference DATA artifacts (RawMetricsTop100 + CohortMetricStats).
+    # Computed AFTER scoring from the RAW metrics captured before normalizeAndDropNA
+    # (postBoRank -> rankdic['postScoreMetric_raw']); NEVER read back into scoring or the
+    # ranking (see reviewReference module docstring -- feeding cohort stats into the score
+    # would be cross-sectional sector-neutralization, CEO-ratified OFF). Gated internally
+    # on carve labels present (pre-carve run -> skipped with a note) and fully guarded so
+    # it can never crash the deliverables. Filenames travel with the other deliverables.
+    reviewref_fnames = []
+    try:
+        import reviewReference as rr
+        reviewref_fnames = rr.emit_live(resdic, fidag, datasource, tickerfilter)
+    except Exception as _e:
+        print(f'WARNING: review-reference artifacts skipped ({type(_e).__name__}: {_e})')
+
     # Return the human-readable top-N deliverables just written (same pattern as
     # utils.saveWrapper returning its pickle name) so Sbocker.main can copy them to
     # the Drive-synced transfer dir at the pre-ingestion phase boundary. Data-only:
     # nothing here changes scoring/ranking/forensic output.
-    return [fname_AggScoretop, fname_presentationtop, fname_forensic] + sidelist_fnames
+    return ([fname_AggScoretop, fname_presentationtop, fname_forensic]
+            + sidelist_fnames + reviewref_fnames)
 
 def writeBoAggToCSV(fb_df, mscore, cscore, baseurl, api_key, ntopagg, fname_AggScoretop, flag_df=None):
     fbdf_tocsv = fb_df.head(ntopagg)

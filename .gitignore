@@ -45,3 +45,6 @@ logs/
 .DS_Store
 Thumbs.db
 .~lock.*#
+RawMetricsTop100*.csv
+CohortMetricStats*.csv
+SideList_*.csv
