@@ -213,243 +213,300 @@ def main():
     import portfolio as pf
     import backtest_unified as bt
     import data_quality as dq
+    import run_logger as rl
     #import warnings
     #warnings.filterwarnings("ignore", category=FutureWarning)
     args = sys.argv[1:]
 
     # Assign parameters
     configdic = cf.getDataFetchConfiguration(args)
-    # Point-in-time as-of date D (default None = today / live; reproduces current
-    # behaviour bit-for-bit).  Threaded into the universe build and the scorer.
-    as_of = configdic.get('as_of', None)
-    loadBoMetricbool = configdic['loadBoMetric']
-    loadBoResultbool = configdic['loadBoResults']
-    saveBoMetricbool = configdic['saveBoMetric']
-    saveBoResultbool = configdic['saveBoResults']
-    # for test
-    if 'portfoliotestyear' not in configdic.keys():
-        portfoliotestyear = -1
-    else:
-        portfoliotestyear = configdic['portfoliotestyear']
 
-    #configdic['nrTaT'] = 50
-    #loadBoMetricbool = 1
-    #loadBoResultbool = 1
+    # ---- START RUN LOGGING ----
+    # Install stdout/stderr tee to log file with api_key scrubbing for file writes only.
+    # Restores original streams in the finally block below.
+    api_key = configdic.get('api_key', None)
+    log_path, log_file = rl.start_run_logging(api_key=api_key)
 
-    # Initialize? Metric, Results and set manual eliminition of tickers list
-    loadmetricdic = {'loadBoMetric': loadBoMetricbool, 'loadBoMetricfname': configdic['loadBoMetricfname']}
-    datandmetricdic = utils.loadWrapper('metric', loadmetricdic)
+    try:
+        # Point-in-time as-of date D (default None = today / live; reproduces current
+        # behaviour bit-for-bit).  Threaded into the universe build and the scorer.
+        as_of = configdic.get('as_of', None)
+        loadBoMetricbool = configdic['loadBoMetric']
+        loadBoResultbool = configdic['loadBoResults']
+        saveBoMetricbool = configdic['saveBoMetric']
+        saveBoResultbool = configdic['saveBoResults']
+        # for test
+        if 'portfoliotestyear' not in configdic.keys():
+            portfoliotestyear = -1
+        else:
+            portfoliotestyear = configdic['portfoliotestyear']
 
-    # Either load or get fundamental data from API, as well as the averages
-    if not loadBoMetricbool:
-        # Assign variables and get Tickers info and dataframe
-        datasource, api_key, tickerfilter = configdic['datasource'], configdic['api_key'],  configdic['tickerfilter']
-        manualelimtickers, baseurl = configdic['manualelimtickers'], configdic['baseurl']
-        manualelimtickers = []
-        Tickers_df = gdg.get_tickers(datasource, baseurl, api_key, manualelimtickers, tickerfilter,
-                                     sfilt ='all', mcapf = -1, fn = '', as_of=as_of)
-        # Assign variables and get financial data and calculate relevant metrics
-        cdx_df, BoMetric_df, nrTaT = datandmetricdic['cdx_df'], datandmetricdic['BoMetric_df'], configdic['nrTaT']
-        getfunddic = gdf.get_fundamentals_fmp(Tickers_df, cdx_df, BoMetric_df, baseurl, api_key, configdic['compyear'],
-                                              configdic['fsMAnumber'], configdic['nrTaT'], configdic['startindex'],
-                                              configdic['period'], configdic['nrperiods'])
-        newmanelimtckrs = list(set(manualelimtickers + list(set(getfunddic['tickersfailed']) - set(getfunddic['lenfail']))))
-        datandmetricdic.update(getfunddic)
-        datandmetricdic['manualelimtickers'] = newmanelimtckrs
+        #configdic['nrTaT'] = 50
+        #loadBoMetricbool = 1
+        #loadBoResultbool = 1
 
-        lenhcy = len(datandmetricdic['hasCurrentYear'])
-        if lenhcy > 0 and lenhcy < 3/4 * (len(Tickers_df) - len(datandmetricdic['tickersfailed'])):
-            datandmetricdic['BoMetric_df'] = datandmetricdic['BoMetric_df'].iloc[1:,:]
-            datandmetricdic['cdx_df'] = datandmetricdic['cdx_df'].iloc[1:,:]
-
-        meandic = csf.getAves2(getfunddic['BoMetric_df'])
-        # Note that **getfunddic should overwrite key-value combinations in datandmetricdic
-        datandmetricdic = {**datandmetricdic, **{'Tickers_df': Tickers_df}, **getfunddic, **meandic, **configdic}
-
-        # Apply data quality filter to freshly fetched data
-        datandmetricdic = dq.apply_data_quality_filter(datandmetricdic, verbose=True, save_log=True)
-
-        #write to info to file
-        utils.write_lastIndexRead(configdic['lastindex_fn'], getfunddic['cind'])
-        utils.writeManElimToFile(datandmetricdic,newmanelimtckrs)
-        # Save results if saveBoMetric == 1
-        if saveBoMetricbool:
-            metric_fname = utils.saveWrapper('metric', datandmetricdic)
-            # PHASE 1 boundary: sync the freshly-written metric pickle to Drive so a
-            # later crash still leaves phase-1 output on Drive.  No-op if transfer_dir
-            # unset; never raises.
-            tu.copy_artifacts_to_transfer_dir(
-                configdic.get('transfer_dir'), [metric_fname], verbose=True)
-    else:
+        # Initialize? Metric, Results and set manual eliminition of tickers list
         loadmetricdic = {'loadBoMetric': loadBoMetricbool, 'loadBoMetricfname': configdic['loadBoMetricfname']}
         datandmetricdic = utils.loadWrapper('metric', loadmetricdic)
 
-    # Apply data quality filter (remove corrupted/invalid price data)
-    # This must happen BEFORE any scoring to prevent garbage from affecting calculations
-    datandmetricdic = dq.apply_data_quality_filter(datandmetricdic, verbose=True, save_log=True)
+        # Either load or get fundamental data from API, as well as the averages
+        if not loadBoMetricbool:
+            # Assign variables and get Tickers info and dataframe
+            datasource, api_key, tickerfilter = configdic['datasource'], configdic['api_key'],  configdic['tickerfilter']
+            manualelimtickers, baseurl = configdic['manualelimtickers'], configdic['baseurl']
+            manualelimtickers = []
+            Tickers_df = gdg.get_tickers(datasource, baseurl, api_key, manualelimtickers, tickerfilter,
+                                         sfilt ='all', mcapf = -1, fn = '', as_of=as_of)
+            # Assign variables and get financial data and calculate relevant metrics
+            cdx_df, BoMetric_df, nrTaT = datandmetricdic['cdx_df'], datandmetricdic['BoMetric_df'], configdic['nrTaT']
+            getfunddic = gdf.get_fundamentals_fmp(Tickers_df, cdx_df, BoMetric_df, baseurl, api_key, configdic['compyear'],
+                                                  configdic['fsMAnumber'], configdic['nrTaT'], configdic['startindex'],
+                                                  configdic['period'], configdic['nrperiods'])
+            newmanelimtckrs = list(set(manualelimtickers + list(set(getfunddic['tickersfailed']) - set(getfunddic['lenfail']))))
+            datandmetricdic.update(getfunddic)
+            datandmetricdic['manualelimtickers'] = newmanelimtckrs
 
-    if portfoliotestyear > 0:
-        datandmetricdic = pf.portfolioBacktestWrapper(portfoliotestyear,datandmetricdic)
+            lenhcy = len(datandmetricdic['hasCurrentYear'])
+            if lenhcy > 0 and lenhcy < 3/4 * (len(Tickers_df) - len(datandmetricdic['tickersfailed'])):
+                datandmetricdic['BoMetric_df'] = datandmetricdic['BoMetric_df'].iloc[1:,:]
+                datandmetricdic['cdx_df'] = datandmetricdic['cdx_df'].iloc[1:,:]
 
-    else:
-        if not loadBoResultbool:
-            resdic = pb.postBoWrapper(datandmetricdic, as_of=as_of)
-            resdic = {**resdic, **datandmetricdic}
+            meandic = csf.getAves2(getfunddic['BoMetric_df'])
+            # Note that **getfunddic should overwrite key-value combinations in datandmetricdic
+            datandmetricdic = {**datandmetricdic, **{'Tickers_df': Tickers_df}, **getfunddic, **meandic, **configdic}
 
-            # save results according to boolean. Note that saveBoResults = 0 if loadBoResults = 1
-            if saveBoResultbool:
-                results_fname = utils.saveWrapper('results',resdic)
-                # PHASE 2 boundary: sync the results pickle to Drive incrementally.
+            # Apply data quality filter to freshly fetched data
+            datandmetricdic = dq.apply_data_quality_filter(datandmetricdic, verbose=True, save_log=True)
+
+            #write to info to file
+            utils.write_lastIndexRead(configdic['lastindex_fn'], getfunddic['cind'])
+            utils.writeManElimToFile(datandmetricdic,newmanelimtckrs)
+            # Save results if saveBoMetric == 1
+            if saveBoMetricbool:
+                metric_fname = utils.saveWrapper('metric', datandmetricdic)
+                # PHASE 1 boundary: sync the freshly-written metric pickle to Drive so a
+                # later crash still leaves phase-1 output on Drive.  No-op if transfer_dir
+                # unset; never raises.
                 tu.copy_artifacts_to_transfer_dir(
-                    configdic.get('transfer_dir'), [results_fname], verbose=True)
+                    configdic.get('transfer_dir'), [metric_fname], verbose=True)
         else:
-            loadresdic = {'loadBoResults': loadBoResultbool, 'loadBoResultsfname': configdic['loadBoResultsfname']}
-            resdic = utils.loadWrapper('results', loadresdic)
+            loadmetricdic = {'loadBoMetric': loadBoMetricbool, 'loadBoMetricfname': configdic['loadBoMetricfname']}
+            datandmetricdic = utils.loadWrapper('metric', loadmetricdic)
 
-    resdic = pb.findHighestOfEachSector(resdic)
+        # Apply data quality filter (remove corrupted/invalid price data)
+        # This must happen BEFORE any scoring to prevent garbage from affecting calculations
+        datandmetricdic = dq.apply_data_quality_filter(datandmetricdic, verbose=True, save_log=True)
 
-    moatdf = pb.moatIdentifier(resdic['BoScore_df']['source'],resdic['cdx_df'])
-    resdic.update({'moatdf': moatdf})
+        if portfoliotestyear > 0:
+            datandmetricdic = pf.portfolioBacktestWrapper(portfoliotestyear,datandmetricdic)
 
-    # Merge moatScore into postRank
-    if 'postRank' in resdic and not moatdf.empty:
-        moat_merge = moatdf[['source', 'moatScore']].copy()
-        resdic['postRank'] = resdic['postRank'].merge(moat_merge, on='source', how='left')
+        else:
+            if not loadBoResultbool:
+                resdic = pb.postBoWrapper(datandmetricdic, as_of=as_of)
+                resdic = {**resdic, **datandmetricdic}
 
-    detmandic = dm.detectManipulationWrapper(resdic)
-    resdic = {**resdic, **detmandic}
+                # save results according to boolean. Note that saveBoResults = 0 if loadBoResults = 1
+                if saveBoResultbool:
+                    results_fname = utils.saveWrapper('results',resdic)
+                    # PHASE 2 boundary: sync the results pickle to Drive incrementally.
+                    tu.copy_artifacts_to_transfer_dir(
+                        configdic.get('transfer_dir'), [results_fname], verbose=True)
+            else:
+                loadresdic = {'loadBoResults': loadBoResultbool, 'loadBoResultsfname': configdic['loadBoResultsfname']}
+                resdic = utils.loadWrapper('results', loadresdic)
 
-    print(resdic['postRank'].head(50))
+        resdic = pb.findHighestOfEachSector(resdic)
 
-    deliverable_fnames = pb.writeResWrapper(resdic)
+        moatdf = pb.moatIdentifier(resdic['BoScore_df']['source'],resdic['cdx_df'])
+        resdic.update({'moatdf': moatdf})
 
-    # PHASE 3 boundary (deliverables): the human-readable top-N deliverables
-    # (AggScoreTop*.csv, PresentationTop*.xlsx, ForensicFlagsTop*.csv) are written
-    # by writeResWrapper ABOVE, before the postRank pickle and the (optional,
-    # multi-hour) delisted ingestion below.  Sync them to Drive as soon as they are
-    # written so an ingestion-phase crash can't lose them.  Same helper + denylist as
-    # the other phase copies; no-op when transfer_dir is unset; never raises.
-    tu.copy_artifacts_to_transfer_dir(
-        configdic.get('transfer_dir'), deliverable_fnames, verbose=True)
+        # Merge moatScore into postRank
+        if 'postRank' in resdic and not moatdf.empty:
+            moat_merge = moatdf[['source', 'moatScore']].copy()
+            resdic['postRank'] = resdic['postRank'].merge(moat_merge, on='source', how='left')
 
-    # Save postRank to pickle for backtesting
-    from datetime import datetime
-    postrank_fname = f"postRank_{datetime.today().strftime('%Y-%m-%d')}_{configdic['datasource']}_{configdic['tickerfilter']}.pickle"
-    postrank_data = {
-        'postRank': resdic['postRank'],
-        'cdx_df': resdic['cdx_df'],
-        'moatdf': moatdf,
-        'date_created': datetime.today().strftime('%Y-%m-%d'),
-        'datasource': configdic['datasource'],
-        'tickerfilter': configdic['tickerfilter']
-    }
-    import pandas as pd
-    pd.to_pickle(postrank_data, postrank_fname)
-    print(f"PostRank saved to: {postrank_fname}")
+        detmandic = dm.detectManipulationWrapper(resdic)
+        resdic = {**resdic, **detmandic}
 
-    # PHASE 3 boundary: sync the postRank pickle to Drive incrementally, so the
-    # ranked output is on Drive before the (optional, long) delisted ingestion runs.
-    tu.copy_artifacts_to_transfer_dir(
-        configdic.get('transfer_dir'), [postrank_fname], verbose=True)
+        print(resdic['postRank'].head(50))
 
-    # ---- PROSPECTIVE PICK-LOG stage (append-only forward track record) --------
-    # Append this run's GENERAL top-N + the five cohort side-lists as NEW, immutable
-    # rows to pick_log.csv -- one row per (run, list, stock), stamped with the run's
-    # as_of date BEFORE any outcome exists (survivorship-free, un-gameable). Runs AFTER
-    # the deliverables are emitted (writeResWrapper above) so it logs exactly the frames
-    # that shipped. Fully isolated + guarded: a failure logs LOUDLY but never crashes the
-    # run, and it only writes the LOCAL file (no auto-commit/push -- public repo, per CEO).
-    # The import itself is inside this guard too: run_pick_log_stage is self-guarded and
-    # never raises, so this outer try only catches an IMPORT failure -- degrading it
-    # loud-but-safe rather than letting a pick-log module problem crash the deliverable.
-    try:
-        import pick_log as plog
-        plog.run_pick_log_stage(resdic, as_of=as_of)
-    except Exception:
-        import traceback as _tb
-        _pl_banner = ("\n" + "!" * 78 + "\n"
-                      "!!! PICK-LOG STAGE COULD NOT BE IMPORTED/STARTED -- RUN CONTINUES !!!\n"
-                      "!!! The forward pick-log was NOT written this run; deliverables above  !!!\n"
-                      "!!! are UNAFFECTED. Investigate the pick_log module import.            !!!\n"
-                      + "!" * 78 + "\n")
-        print(_pl_banner, file=sys.stderr, flush=True)
-        _tb.print_exc(file=sys.stderr)
-        print(_pl_banner, flush=True)
+        deliverable_fnames = pb.writeResWrapper(resdic)
 
-    # ---- POST-PICK ANALYSIS SUITE (strictly additive, guarded) -----------------
-    # Promote the offline baseline_tools/ diagnostics into pipeline stages so a single
-    # overnight run also emits the analysis.  Runs AFTER the pick-log (picks + pickle +
-    # pick-log already written above => pick path is DONE and UNAFFECTED) and BEFORE the
-    # optional delisted ingestion.  Each analysis is a SEPARATELY-guarded stage inside
-    # run_analysis_suite; a stage failure banners loudly + never crashes the run or the
-    # picks.  The outer try here only guards the IMPORT (baseline_tools is a sys.path dir,
-    # not a package), mirroring the pick-log stage's import guard.  NO commit/push; heavy
-    # ESTIMATION sub-block is OFF unless -run_estimation 1.
-    try:
-        _bt_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'baseline_tools')
-        if _bt_dir not in sys.path:
-            sys.path.insert(0, _bt_dir)
-        import pipeline_analysis as _pa
-        _pa.run_analysis_suite(resdic, configdic)
-    except Exception:
-        import traceback as _tb
-        _pa_banner = ("\n" + "!" * 78 + "\n"
-                      "!!! ANALYSIS SUITE COULD NOT BE IMPORTED/STARTED -- RUN CONTINUES !!!\n"
-                      "!!! The post-pick analysis readouts were NOT produced this run;       !!!\n"
-                      "!!! the deliverables + pick-log above are UNAFFECTED. Investigate the  !!!\n"
-                      "!!! pipeline_analysis import.                                          !!!\n"
-                      + "!" * 78 + "\n")
-        print(_pa_banner, file=sys.stderr, flush=True)
-        _tb.print_exc(file=sys.stderr)
-        print(_pa_banner, flush=True)
+        # PHASE 3 boundary (deliverables): the human-readable top-N deliverables
+        # (AggScoreTop*.csv, PresentationTop*.xlsx, ForensicFlagsTop*.csv) are written
+        # by writeResWrapper ABOVE, before the postRank pickle and the (optional,
+        # multi-hour) delisted ingestion below.  Sync them to Drive as soon as they are
+        # written so an ingestion-phase crash can't lose them.  Same helper + denylist as
+        # the other phase copies; no-op when transfer_dir is unset; never raises.
+        tu.copy_artifacts_to_transfer_dir(
+            configdic.get('transfer_dir'), deliverable_fnames, verbose=True)
 
-    # ---- Delisted-entity (survivorship) ingestion -- GATED, default OFF ----
-    # ACQUIRES survivorship data (registry + dead fundamentals + dead prices) and
-    # stores it for later point-in-time analysis.  It runs AFTER the live results
-    # are saved above, so the live top-20 is delivered first and is NEVER affected
-    # by (or delayed-into) the ingestion.  When -ingest_delisted is OFF the module
-    # is not even imported -> the live path is bit-for-bit unchanged.
-    if configdic.get('ingest_delisted'):
-        import delisted_ingest as di
-        # reuse the already-built live universe symbols when available (avoids a
-        # duplicate universe fetch); else run_ingest builds it itself.
-        live_syms = None
+        # Save postRank to pickle for backtesting
+        from datetime import datetime
+        postrank_fname = f"postRank_{datetime.today().strftime('%Y-%m-%d')}_{configdic['datasource']}_{configdic['tickerfilter']}.pickle"
+        postrank_data = {
+            'postRank': resdic['postRank'],
+            'cdx_df': resdic['cdx_df'],
+            'moatdf': moatdf,
+            'date_created': datetime.today().strftime('%Y-%m-%d'),
+            'datasource': configdic['datasource'],
+            'tickerfilter': configdic['tickerfilter']
+        }
+        import pandas as pd
+        pd.to_pickle(postrank_data, postrank_fname)
+        print(f"PostRank saved to: {postrank_fname}")
+
+        # PHASE 3 boundary: sync the postRank pickle to Drive incrementally, so the
+        # ranked output is on Drive before the (optional, long) delisted ingestion runs.
+        tu.copy_artifacts_to_transfer_dir(
+            configdic.get('transfer_dir'), [postrank_fname], verbose=True)
+
+        # ---- PROSPECTIVE PICK-LOG stage (append-only forward track record) --------
+        # Append this run's GENERAL top-N + the five cohort side-lists as NEW, immutable
+        # rows to pick_log.csv -- one row per (run, list, stock), stamped with the run's
+        # as_of date BEFORE any outcome exists (survivorship-free, un-gameable). Runs AFTER
+        # the deliverables are emitted (writeResWrapper above) so it logs exactly the frames
+        # that shipped. Fully isolated + guarded: a failure logs LOUDLY but never crashes the
+        # run, and it only writes the LOCAL file (no auto-commit/push -- public repo, per CEO).
+        # The import itself is inside this guard too: run_pick_log_stage is self-guarded and
+        # never raises, so this outer try only catches an IMPORT failure -- degrading it
+        # loud-but-safe rather than letting a pick-log module problem crash the deliverable.
         try:
-            live_syms = list(resdic['Tickers_df']['symbol'])
+            import pick_log as plog
+            plog.run_pick_log_stage(resdic, as_of=as_of)
         except Exception:
+            import traceback as _tb
+            _pl_banner = ("\n" + "!" * 78 + "\n"
+                          "!!! PICK-LOG STAGE COULD NOT BE IMPORTED/STARTED -- RUN CONTINUES !!!\n"
+                          "!!! The forward pick-log was NOT written this run; deliverables above  !!!\n"
+                          "!!! are UNAFFECTED. Investigate the pick_log module import.            !!!\n"
+                          + "!" * 78 + "\n")
+            print(_pl_banner, file=sys.stderr, flush=True)
+            _tb.print_exc(file=sys.stderr)
+            print(_pl_banner, flush=True)
+
+        # ---- POST-PICK ANALYSIS SUITE (strictly additive, guarded) -----------------
+        # Promote the offline baseline_tools/ diagnostics into pipeline stages so a single
+        # overnight run also emits the analysis.  Runs AFTER the pick-log (picks + pickle +
+        # pick-log already written above => pick path is DONE and UNAFFECTED) and BEFORE the
+        # optional delisted ingestion.  Each analysis is a SEPARATELY-guarded stage inside
+        # run_analysis_suite; a stage failure banners loudly + never crashes the run or the
+        # picks.  The outer try here only guards the IMPORT (baseline_tools is a sys.path dir,
+        # not a package), mirroring the pick-log stage's import guard.  NO commit/push; heavy
+        # ESTIMATION sub-block is OFF unless -run_estimation 1.
+        try:
+            _bt_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'baseline_tools')
+            if _bt_dir not in sys.path:
+                sys.path.insert(0, _bt_dir)
+            import pipeline_analysis as _pa
+            _pa.run_analysis_suite(resdic, configdic)
+        except Exception:
+            import traceback as _tb
+            _pa_banner = ("\n" + "!" * 78 + "\n"
+                          "!!! ANALYSIS SUITE COULD NOT BE IMPORTED/STARTED -- RUN CONTINUES !!!\n"
+                          "!!! The post-pick analysis readouts were NOT produced this run;       !!!\n"
+                          "!!! the deliverables + pick-log above are UNAFFECTED. Investigate the  !!!\n"
+                          "!!! pipeline_analysis import.                                          !!!\n"
+                          + "!" * 78 + "\n")
+            print(_pa_banner, file=sys.stderr, flush=True)
+            _tb.print_exc(file=sys.stderr)
+            print(_pa_banner, flush=True)
+
+        # ---- Delisted-entity (survivorship) ingestion -- GATED, default OFF ----
+        # ACQUIRES survivorship data (registry + dead fundamentals + dead prices) and
+        # stores it for later point-in-time analysis.  It runs AFTER the live results
+        # are saved above, so the live top-20 is delivered first and is NEVER affected
+        # by (or delayed-into) the ingestion.  When -ingest_delisted is OFF the module
+        # is not even imported -> the live path is bit-for-bit unchanged.
+        if configdic.get('ingest_delisted'):
+            import delisted_ingest as di
+            # reuse the already-built live universe symbols when available (avoids a
+            # duplicate universe fetch); else run_ingest builds it itself.
             live_syms = None
-        di.run_ingest(configdic, live_symbols=live_syms)
+            try:
+                live_syms = list(resdic['Tickers_df']['symbol'])
+            except Exception:
+                live_syms = None
+            di.run_ingest(configdic, live_symbols=live_syms)
 
-    # Optional: Run unified backtesting if flag is set
-    run_backtest = configdic.get('runbacktest', 0)
-    if run_backtest:
-        print("\n" + "="*70)
-        print("RUNNING UNIFIED BACKTESTING")
-        print("="*70)
-        bt.run_all(
-            dmdic=resdic,
-            buy_years=configdic.get('backtest_buy_years', None),
-            eval_years_list=configdic.get('backtest_eval_years', None),
-            topn=configdic.get('backtest_topn', 100),
-            verbose=True,
-            save_results=True
-        )
+        # Optional: Run unified backtesting if flag is set
+        run_backtest = configdic.get('runbacktest', 0)
+        if run_backtest:
+            print("\n" + "="*70)
+            print("RUNNING UNIFIED BACKTESTING")
+            print("="*70)
+            bt.run_all(
+                dmdic=resdic,
+                buy_years=configdic.get('backtest_buy_years', None),
+                eval_years_list=configdic.get('backtest_eval_years', None),
+                topn=configdic.get('backtest_topn', 100),
+                verbose=True,
+                save_results=True
+            )
 
-    # ---- End-of-run transfer to Google-Drive-synced folder (GATED, default OFF) ----
-    # When -transfer_dir is set, copy the output allowlist there after ALL outputs
-    # are written and AFTER ingestion completes. Gracefully skip if path doesn't exist.
-    transfer_dir = configdic.get('transfer_dir')
-    if transfer_dir:
-        print("\n" + "="*70)
-        print("END-OF-RUN TRANSFER TO GOOGLE DRIVE")
-        print("="*70)
-        transfer_result = transfer_outputs_to_drive(transfer_dir, configdic, verbose=True)
-        print(f"Transfer result: {transfer_result['message']}")
-        # Log the transfer result into a summary line if desired
-    else:
-        transfer_dir = None  # Explicitly set for consistency
+        # ---- End-of-run transfer to Google-Drive-synced folder (GATED, default OFF) ----
+        # When -transfer_dir is set, copy the output allowlist there after ALL outputs
+        # are written and AFTER ingestion completes. Gracefully skip if path doesn't exist.
+        transfer_dir = configdic.get('transfer_dir')
+        if transfer_dir:
+            print("\n" + "="*70)
+            print("END-OF-RUN TRANSFER TO GOOGLE DRIVE")
+            print("="*70)
+            transfer_result = transfer_outputs_to_drive(transfer_dir, configdic, verbose=True)
+            print(f"Transfer result: {transfer_result['message']}")
+            # Log the transfer result into a summary line if desired
+        else:
+            transfer_dir = None  # Explicitly set for consistency
 
-    return None
+    except BaseException:
+        # ---- EXCEPTION HANDLING: write traceback to log before closing ----
+        # Capture the full traceback and write it to the log file so a mid-run
+        # crash (including KeyboardInterrupt on a hung run) leaves a complete log
+        # ending in the error. Then re-raise so the interpreter's default handler
+        # prints it to console. Catches BaseException (not just Exception) to handle
+        # KeyboardInterrupt (Ctrl-C) and abnormal exits (exit codes != 0).
+        import traceback as _tb_module
+        import sys as _sys_module
+
+        # Guard: SystemExit (intentional exit, any code) should NOT write a failure banner.
+        # Only write the banner for unhandled exceptions (KeyboardInterrupt, etc).
+        _exc_info = _sys_module.exc_info()
+        _is_system_exit = isinstance(_exc_info[1], SystemExit)
+
+        # Write traceback to log UNLESS it's a sys.exit (intentional exit).
+        if not _is_system_exit:
+            _tb_text = _tb_module.format_exc()
+            # Scrub the traceback (may contain apikey=... in exception message)
+            _tb_text_scrubbed = rl.scrub(_tb_text, api_key)
+            try:
+                log_file.write("\n" + "=" * 78 + "\n")
+                log_file.write("UNHANDLED EXCEPTION:\n")
+                log_file.write("=" * 78 + "\n")
+                log_file.write(_tb_text_scrubbed)
+                log_file.write("=" * 78 + "\n")
+                log_file.flush()
+            except Exception:
+                # If I/O error during traceback write, preserve the original exception
+                # (traceback is already in the log before this write, so it's not lost).
+                pass
+
+        # Close log and restore streams, then re-raise so exception propagates.
+        # Guard the close against I/O errors so the original exception surfaces.
+        try:
+            rl.end_run_logging(log_path, log_file)
+        except Exception:
+            # If close fails, don't replace the original exception.
+            pass
+        raise
+    finally:
+        # ---- CLOSE RUN LOGGING (success case) ----
+        # If we get here without an exception, close the log normally.
+        # (Exception case is handled in the except block above.)
+        try:
+            rl.end_run_logging(log_path, log_file)
+        except Exception:
+            # Log file already closed in except block; ignore
+            pass
 
 if __name__ == '__main__':
     main()

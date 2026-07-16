@@ -223,6 +223,14 @@ def run_price_fetch_stage(resdic, configdic, log):
         syms |= set(resdic["cdx_df"]["source"].dropna().astype(str))
     except Exception:
         syms = None  # no filter -> save everything (still one call per date)
+    # The benchmark ETF (URTH) is NOT a name in tonight's stock universe, so the
+    # allow-list above would DROP it -- yet the bulk EOD dump DOES return it and the
+    # downstream benchmark stages (beat-rate vs URTH, depth-grid, skill_baseline) fail
+    # hard without it.  Force-keep the benchmark symbol so PriceSource.benchmark_series
+    # resolves on every fresh fetch.  (No-op when syms is None: everything is saved.)
+    if syms is not None:
+        import returns_core as rc
+        syms.add(rc.BENCHMARK_SYMBOL)
 
     # D1 boundary mask: run the ENTIRE fetch with BOTH stdout+stderr scrubbed, and mask
     # any exception message, so the key cannot surface even on a network/HTTP error path
