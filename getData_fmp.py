@@ -208,8 +208,21 @@ def getFsData_fmp(ticker, period, limit, baseurl, api_key,compyear, tickersfaile
         ingestion path it BYPASSES the datefail gate (F-A) and RELAXES the >=16q
         lenfail gate (F-B) so dead names are not silently dropped.  Default False
         keeps the live path bit-for-bit.
-    http_get : optional injected HTTP getter for offline testing.
+    http_get : optional injected HTTP getter for offline testing.  When None (the
+        LIVE overnight fetch path), it defaults to gdg.safe_http_get -- a bounded
+        (timeout + retry/backoff) getter -- so a single stalled/hung FMP endpoint
+        cannot hang the ~12h run.  This is BEHAVIOUR-PRESERVING on the happy path:
+        safe_http_get returns the SAME requests.Response for a healthy 200 (only a
+        10s timeout is added, which a healthy endpoint never trips), so parsed
+        fundamentals are byte-identical to the old bare requests.get.  On a
+        persistent timeout/connection-error or a retryable 5xx/429 that survives
+        retries, safe_http_get hands back a FAILING Response (status_code in the
+        400-599 failcodes, or a _FailedResponse(599)); the existing failcode gate
+        then records the ticker as a normal fetch failure (tickersfailed) and the
+        loop CONTINUES to the next ticker -- it never raises/aborts the run.
     """
+    if http_get is None:
+        http_get = gdg.safe_http_get
     failcodes = list(range(400, 600))
     failbool, whyfail, outdic = ft.testForAPIFaults_fmp(failcodes,compyear,ticker,period,limit,baseurl,api_key,
                                                         dead_path=dead_path, http_get=http_get)

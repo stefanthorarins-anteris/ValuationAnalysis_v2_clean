@@ -76,6 +76,18 @@ def postBoScoreRanking(bmtop, bstop, cdxtop, baseurl, api_key, period='quarter',
 
     _diagnose_pre_normalize(postScoreMetric_df)
 
+    # --- REVIEW-REFERENCE capture (READ-ONLY; must NOT perturb scoring) ----------
+    # Snapshot the RAW per-ticker metrics BEFORE normalizeAndDropNA z-scores them IN
+    # PLACE (and before its >4-std outlier drop below), so the human-review reference
+    # artifacts (reviewReference.py) reflect true RAW values and the full pre-drop pool
+    # membership.  This is a COPY only: it is returned in rankdic['postScoreMetric_raw']
+    # and is NEVER read back into scoring / normalization / ranking.  Feeding cohort
+    # means or percentiles derived from this back into the score would be cross-sectional
+    # sector-neutralization, which is CEO-ratified OFF -- so the capture must stay a pure
+    # side-channel.  Because postBoScoreRanking runs once per pool (general + each cohort
+    # via postBo), this single line yields raw metrics for every pool automatically.
+    postScoreMetric_raw = postScoreMetric_df.copy()
+
     postScoreMetric_df, outlierlist = normalizeAndDropNA(postScoreMetric_df)
 
     # Apply weights using the stable weight_series mapping; if a weight is missing,
@@ -102,6 +114,7 @@ def postBoScoreRanking(bmtop, bstop, cdxtop, baseurl, api_key, period='quarter',
         postRank, cdxtop, names, dedup_issuers)
 
     rankdic = {'postRank': postRank, 'postScoreMetric': postScoreMetric_df,
+               'postScoreMetric_raw': postScoreMetric_raw,
                'psmdf_normalized': psmdf_normalized, 'BoAggCorr': BoAggCorr, 'outlierlist': outlierlist,
                'postRank_predupe': postRank_predupe, 'issuer_dupes_dropped': issuer_dupes_dropped}
 

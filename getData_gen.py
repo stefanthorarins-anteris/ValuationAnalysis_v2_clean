@@ -142,6 +142,23 @@ def get_tickers(ds, baseurl, api_key, manual_elim=None, tfilt='stock_NA1',sfilt=
 
         df = tickerfilterWrapper(tickersAT_df, tfilt, sfilt, mcapf, baseurl, api_key)
 
+        # GENERATE-IF-MISSING (self-heal the carve-out's sector + industry maps).
+        # A fresh git checkout ships neither pickle (both gitignored) and the producer
+        # is an orphan, so the carve degrades (industry -> weak keyword fallback) or,
+        # on a truly fresh machine, hits carveOut's catastrophic sector-abort. carveOut
+        # is credential-less by design and cannot self-heal, so the ingestion layer --
+        # which already holds baseurl/api_key and the filtered universe -- is the right
+        # home. If BOTH maps are already in CWD this is a no-op (cached pickles reused,
+        # no rebuild, no API calls); otherwise both are built ONCE from the filtered
+        # universe via batched profile calls. Best-effort: a fetch failure logs a masked
+        # warning and falls through to carveOut's existing degrade path -- it never
+        # aborts the universe build.
+        try:
+            from findAllSectors import ensure_sector_industry_maps
+            ensure_sector_industry_maps(list(df['symbol']), baseurl, api_key, pace=15)
+        except Exception as _e:
+            print(f"WARNING: sector/industry map self-heal hook error (non-fatal): {_e}")
+
     else:
         raise Exception('Not a valid tickers source')
 

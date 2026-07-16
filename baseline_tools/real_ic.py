@@ -54,7 +54,7 @@ def ic_table(panel, real, buy_eval_pairs, horizon_label):
         # real fwd return
         rb = real[buy] if buy in real.columns else None
         re = real[ev] if ev in real.columns else None
-        real_ret = (re / rb - 1).replace([np.inf, -np.inf], np.nan) if rb is not None else None
+        real_ret = (re / rb - 1).replace([np.inf, -np.inf], np.nan) if (rb is not None and re is not None) else None
 
         # composite = cross-sectional weighted z-sum
         z = pd.DataFrame(index=xs.index)

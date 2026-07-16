@@ -34,6 +34,7 @@ __pycache__/
 *.pyd
 
 # ---- Logs ----
+logs/
 *.log
 
 # ---- IDE ----
@@ -44,3 +45,6 @@ __pycache__/
 .DS_Store
 Thumbs.db
 .~lock.*#
+RawMetricsTop100*.csv
+CohortMetricStats*.csv
+SideList_*.csv
