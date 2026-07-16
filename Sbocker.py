@@ -78,7 +78,10 @@ def transfer_outputs_to_drive(transfer_dir, configdic, verbose=True):
         'AggScoreTop*.csv',
         'PresentationTop*.xlsx',
         'ForensicFlagsTop*.csv',
-        'real_prices.csv'
+        'real_prices.csv',
+        'SideList_*.csv',
+        'RawMetricsTop100*.csv',
+        'CohortMetricStats*.csv'
     ]
 
     # Always include run_logs and price_data directories
