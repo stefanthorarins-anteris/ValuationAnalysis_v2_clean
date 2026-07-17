@@ -397,8 +397,13 @@ def create_sparkline_svg(values, width=200, height=30, label=""):
     return svg
 
 
-def create_distribution_bar(value, p10, p50, p90, width=150, height=15):
-    """Create a distribution bar showing value against p10-p50-p90 spread."""
+def create_distribution_bar(value, p10, p50, p90, width=150, height=15, benchmark=None):
+    """Create a distribution bar showing value against p10-p50-p90 spread.
+
+    `benchmark` (optional): a RAW threshold value in the same units as `value`. When given
+    (and finite), a thin solid reference tick is drawn on the EXISTING bar at the threshold's
+    normalized position (clamped to the bar). This is PURELY ADDITIVE -- when benchmark is
+    None the SVG is byte-identical to the pre-benchmark output, so no existing bar moves."""
     if np.isnan(p10) or np.isnan(p50) or np.isnan(p90) or p10 == p90:
         return '<span style="color:#999;">—</span>'
 
@@ -411,10 +416,19 @@ def create_distribution_bar(value, p10, p50, p90, width=150, height=15):
     marker_x = width * val_norm
     p50_x = width * p50_norm
 
+    # Optional benchmark tick (drawn before the marker so the value dot sits on top).
+    bench_svg = ''
+    bm = safe_float(benchmark)
+    if benchmark is not None and not np.isnan(bm) and p90 > p10:
+        bm_norm = max(0, min(1, (bm - p10) / (p90 - p10)))
+        bm_x = width * bm_norm
+        bench_svg = (f'<line x1="{2 + bm_x}" y1="0" x2="{2 + bm_x}" y2="{height + 4}" '
+                     f'stroke="#c0392b" stroke-width="1.5"/>')
+
     svg = f'''<svg width="{width + 20}" height="{height + 4}" style="display:inline-block;">
       <rect x="2" y="2" width="{width}" height="{height}" fill="#f0f0f0" stroke="#ccc" stroke-width="0.5"/>
       <line x1="{2 + p50_x}" y1="1" x2="{2 + p50_x}" y2="{height + 3}" stroke="#999" stroke-width="1" stroke-dasharray="2,2"/>
-      <circle cx="{2 + marker_x}" cy="{2 + height/2}" r="3" fill="#0066cc"/>
+      {bench_svg}<circle cx="{2 + marker_x}" cy="{2 + height/2}" r="3" fill="#0066cc"/>
     </svg>'''
     return svg
 
@@ -467,6 +481,171 @@ _EXT_CDX_COLS = ['date', 'revenue', 'operatingIncome', 'freeCashFlow', 'netIncom
                  'netCashProvidedByOperatingActivities', 'totalAssets',
                  'weightedAverageShsOut', 'marketCap', 'depreciationAndAmortization',
                  'dividendsPaid', 'longTermDebt']
+
+
+# ============================================================================
+# ORIENTATION + BENCHMARK STATIC TABLES  (additive presentation layer)
+# ============================================================================
+# Two decoupled, data-driven tables read verbatim from the build spec
+# (benchmarks-orientation-spec.md). Rendering is driven ENTIRELY from these dicts so the
+# layer stays maintainable and every direction is stated once, in one place. This is PURELY
+# ADDITIVE: it renders chips/ticks alongside existing values and never changes a displayed
+# number, bar, or chart.
+#
+# ORIENTATION -- one chip per index/score: scale + which way is good + a one-line meaning
+# (shown as a tooltip). Keys match how each metric is referenced at its render site:
+#   * raw-level metrics (Sections C/F/G)  -> keyed by the pool_metric / cdx name;
+#   * moat components (Section E)          -> namespaced 'moat:<Component>' so the
+#                                            threshold-relative orientation never collides
+#                                            with a same-named raw metric (e.g. RoA).
+# CRITICAL (see spec SIGN-FLIP): the four moat components SGAtoGP/DeptoGP/CapExtoEarnings/
+# TLtoEquity are stored as (threshold - ratio), so a HIGHER value is GOOD -> '↑ better'.
+ORIENTATION = {
+    # -- Composites --
+    'AggScore':   ('unbounded (emp −0.47…0.40)', '↑ better',
+                   'Stage-2 weighted sum of z-scored metrics'),
+    'moatScore':  ('0–11 (emp 2–6 in top-100)', '↑ better',
+                   'count of 11 quality boxes ticked'),
+    # -- Forensic (Sections F / G) --
+    'M-Score':      ('stored Beneish+1.78', '↓ better (>0 flags)',
+                     'earnings-manipulation index'),
+    'C-Score':      ('0–6', '↓ better (≥4 flag, 0 clean)',
+                     'count of 6 accounting red flags'),
+    'sloanAccruals':('ratio', '↓ better (low/neg = cash-backed)',
+                     'balance-sheet accruals; pipeline flag = worst quintile in-run, not absolute'),
+    'incomeQuality':('≈1 neutral (emp −13.8…8.0)', '↑ better (≈>1 good)',
+                     'CFO/NI; noisy near NI≈0'),
+    'Altman-Z':     ('<1.8 distress / >3.0 safe', '↑ better',
+                     'bankruptcy distance'),
+    'Piotroski':    ('0–9 (≥7 strong, ≤3 weak)', '↑ better',
+                     'count of 9 fundamental-improvement tests'),
+    'CycleHeat':    ('[−3,3]', '↓ better (penalized, w=−0.080)',
+                     'EPS heat vs the stock’s own history; high = late-cycle risk'),
+    # -- Stage-2 valuation/quality (raw-level, Sections C / G) --
+    'currentRatio': ('≥1.5 healthy', '↑ better',
+                     'current assets / current liabilities — short-term liquidity'),
+    'returnOnCapitalEmployed': ('ratio', '↑ better', 'return on capital employed (raw level)'),
+    'returnOnEquity':          ('ratio', '↑ better', 'return on equity (raw level)'),
+    'RoA':                     ('ratio', '↑ better', 'return on assets (raw level)'),
+    'grossProfitMargin':       ('ratio', '↑ better', 'gross margin (raw level)'),
+    'bVpRatio':   ('Book/Price (emp 0.09–3.75)', '↑ better (cheaper)', 'inverse P/B'),
+    'tbVpRatio':  ('Tangible Book/Price (can be neg)', '↑ better (cheaper)', 'tangible inverse P/B'),
+    'earnYield':  ('E/P (emp −0.02–0.12)', '↑ better (cheaper)', 'earnings yield'),
+    'freeCashFlowYield':          ('TTM FCF/mcap', '↑ better', 'free-cash-flow yield'),
+    'revenueGrowth':              ('mean YoY', '↑ better', 'revenue growth'),
+    'freeCashFlowPerShareGrowth': ('mean YoY (unstable)', '↑ better', 'FCF/share growth'),
+    # -- Moat components (Section E) -- ALL ↑ better; >0 = passes its threshold --
+    'moat:FCFyield':    ('mean−thr (>10%)', '↑ better (>0 passes)', 'FCF yield vs 10% threshold'),
+    'moat:GrossMargin': ('mean−thr (>30%)', '↑ better (>0 passes)', 'gross margin vs 30%'),
+    'moat:RevtoASS':    ('mean−thr (>0.75)', '↑ better (>0 passes)', 'asset turnover vs 0.75'),
+    'moat:RoE':         ('mean−thr (>15%)', '↑ better (>0 passes)', 'ROE vs 15%'),
+    'moat:RoA':         ('mean−thr (>10%)', '↑ better (>0 passes)', 'ROA vs 10%'),
+    'moat:ROIC':        ('mean−thr (>15%)', '↑ better (>0 passes)', 'ROIC vs 15%'),
+    'moat:NetMargin':   ('mean−thr (>20%)', '↑ better (>0 passes)', 'net margin vs 20%'),
+    'moat:SGAtoGP':     ('thr−ratio (SGA/GP<15%)', '↑ better (threshold−ratio; +=passes)',
+                         'SG&A/gross-profit; stored as threshold−ratio, so higher = leaner'),
+    'moat:DeptoGP':     ('thr−ratio (D&A/GP<10%)', '↑ better (threshold−ratio; +=passes)',
+                         'D&A/gross-profit; stored as threshold−ratio'),
+    'moat:CapExtoEarnings': ('thr−ratio (capex/earn<20%)', '↑ better (threshold−ratio; +=passes)',
+                             'capex/earnings; stored as threshold−ratio'),
+    'moat:TLtoEquity':  ('thr−ratio (TL/eq<0.8)', '↑ better (threshold−ratio; +=passes)',
+                         'total-liabilities/equity; stored as threshold−ratio'),
+}
+
+# BENCHMARKS -- only metrics the spec marks `universal: yes` get a static tick + verdict chip.
+# 'tick' is the reference line drawn on the peer bar (raw units == the bar marker's units);
+# 'warn'/'good' are (op, value) predicates for the ⚠ / ✓ verdict (a metric with only 'warn'
+# is binary: not-warned => ✓; with both, the middle band is neutral). 'suppress' names the
+# cohorts where the rule is invalid (financials, REITs) -> no tick, no verdict there.
+_FIN = FIN_COHORTS  # {'FinManager', 'BalanceSheetFin'}
+BENCHMARKS = {
+    'currentRatio': dict(tick=1.5, warn=('<', 1.5),
+                         note='rule-of-thumb: <1.5 caution · <1.0 flag (non-financial)',
+                         suppress=_FIN | {'REIT'}),
+    'returnOnCapitalEmployed': dict(tick=0.10, warn=('<', 0.10), good=('>', 0.15),
+                         note='rule-of-thumb: <10% weak · >15% strong (non-financial)',
+                         suppress=_FIN),
+    'interest_coverage': dict(tick=3.0, warn=('<', 3.0),
+                         note='rule-of-thumb: <3× flag · <1.5× serious (non-financial)',
+                         suppress=_FIN),
+    'fcf_margin': dict(tick=0.0, warn=('<', 0.0),
+                         note='rule-of-thumb: <0 caution (floor only; magnitude peer-only)',
+                         suppress=_FIN),
+    'sloan': dict(tick=0.10, warn=('>', 0.10),
+                         note='rule-of-thumb: > 0.10 flag (high accruals); low/neg = cash-backed (non-financial)',
+                         suppress=_FIN),
+    'Altman-Z': dict(tick=1.8, warn=('<', 1.8), good=('>', 3.0),
+                         note='rule-of-thumb: <1.8 distress · >3.0 safe (industrials; invalid financials)',
+                         suppress=_FIN),
+    'Piotroski': dict(tick=3, warn=('<=', 3), good=('>=', 7),
+                         note='rule-of-thumb: ≤3 weak · ≥7 strong'),
+    # No peer bar for these -> inline verdict chip only (tick=None).
+    'M-Score': dict(tick=None, warn=('>', 0.0),
+                         note='rule-of-thumb: stored >0 flags (Beneish>−1.78); invalid financials',
+                         suppress=_FIN),
+    'C-Score': dict(tick=None, warn=('>=', 4),
+                         note='rule-of-thumb: ≥4 flag · 0 clean; invalid financials',
+                         suppress=_FIN),
+}
+
+
+def orient_chip(key):
+    """Compact orientation pill for an index/score: 'scale · direction' with the one-line
+    meaning as a tooltip. Returns '' for an unknown key (metric not in the spec table)."""
+    o = ORIENTATION.get(key)
+    if not o:
+        return ''
+    scale, direction, meaning = o
+    return (f'<span class="orient-chip" title="{escape(meaning)}">'
+            f'{escape(scale)} · {escape(direction)}</span>')
+
+
+def _bench_cmp(v, cond):
+    op, t = cond
+    if op == '<':
+        return v < t
+    if op == '<=':
+        return v <= t
+    if op == '>':
+        return v > t
+    if op == '>=':
+        return v >= t
+    return False
+
+
+def benchmark_tick(bkey, cohort_label=None):
+    """The raw threshold to draw on the peer bar, or None when the metric has no universal
+    benchmark / no tick / is suppressed for this cohort."""
+    b = BENCHMARKS.get(bkey)
+    if not b:
+        return None
+    if cohort_label is not None and cohort_label in b.get('suppress', set()):
+        return None
+    return b.get('tick')
+
+
+def benchmark_verdict(bkey, value, cohort_label=None):
+    """A small ✓ / ⚠ / • verdict chip comparing `value` to its universal benchmark, or '' when
+    there is no universal benchmark, the value is missing, or it's suppressed for this cohort.
+    ✓ = good side, ⚠ = flag side, • = neutral middle band."""
+    b = BENCHMARKS.get(bkey)
+    if not b:
+        return ''
+    if cohort_label is not None and cohort_label in b.get('suppress', set()):
+        return ''
+    v = safe_float(value)
+    if np.isnan(v):
+        return ''
+    warn, good = b.get('warn'), b.get('good')
+    if warn and _bench_cmp(v, warn):
+        state, sym = 'warn', '⚠'
+    elif good and _bench_cmp(v, good):
+        state, sym = 'pass', '✓'
+    elif good is None:
+        state, sym = 'pass', '✓'          # binary rule (warn only): not warned => good side
+    else:
+        state, sym = 'neutral', '•'       # between weak and strong bands
+    return (f'<span class="verdict-chip {state}" title="{escape(b["note"])}">{sym}</span>')
 
 
 def _clip01(v):
@@ -876,8 +1055,11 @@ class PresentationBuilder:
         if marker is None or np.isnan(safe_float(marker)):
             return ''
         pct = get_percentile_marker(safe_float(marker), st['arr'])
-        bar = create_distribution_bar(safe_float(marker), st['p10'], st['p50'], st['p90'])
-        return f'<span class="pctile">({pctile_format(pct)} pct)</span> {bar}'
+        tick = benchmark_tick(metric, cohort_label)
+        bar = create_distribution_bar(safe_float(marker), st['p10'], st['p50'], st['p90'],
+                                      benchmark=tick)
+        verdict = benchmark_verdict(metric, marker, cohort_label)
+        return f'<span class="pctile">({pctile_format(pct)} pct)</span> {bar} {verdict}'.rstrip()
 
     def _page_tickers(self):
         """Ordered, de-duplicated list of every ticker that gets a page (general top-20 +
@@ -965,7 +1147,10 @@ class PresentationBuilder:
         if marker is None or np.isnan(safe_float(marker)):
             return ""
         p10, p50, p90 = stats
-        return create_distribution_bar(safe_float(marker), p10, p50, p90)
+        tick = benchmark_tick(pool_metric, cohort_label)
+        bar = create_distribution_bar(safe_float(marker), p10, p50, p90, benchmark=tick)
+        verdict = benchmark_verdict(pool_metric, marker, cohort_label)
+        return f'{bar} {verdict}'.rstrip() if verdict else bar
 
     def get_ticker_info(self, ticker):
         """Get name, exchange, sector for a ticker."""
@@ -1072,8 +1257,8 @@ class PresentationBuilder:
                 <span><strong>Market Cap:</strong> {mktcap_str}</span>
             </div>
             <div class="meta-row">
-                <span><strong>AggScore:</strong> {ratio_format(agg_score, 1)}</span>
-                <span><strong>Rank:</strong> {rank}</span>
+                <span><strong>AggScore:</strong> {ratio_format(agg_score, 1)} {orient_chip('AggScore')}</span>
+                <span><strong>Rank:</strong> {rank} <span class="pctile">(1 = top pick)</span></span>
                 <span><strong>Nav Bucket:</strong> {nav_bucket}</span>
                 <span><strong>FMP Rating:</strong> {rating}</span>
             </div>
@@ -1105,8 +1290,8 @@ class PresentationBuilder:
         html = f"""
         <div class="section-b banner">
             <div class="score-banner">
-                <span class="score-item"><strong>AggScore:</strong> {ratio_format(agg_score, 1)}</span>
-                <span class="score-item"><strong>MoatScore:</strong> {ratio_format(moat_score, 1)}</span>
+                <span class="score-item"><strong>AggScore:</strong> {ratio_format(agg_score, 1)} {orient_chip('AggScore')}</span>
+                <span class="score-item"><strong>MoatScore:</strong> {ratio_format(moat_score, 1)} {orient_chip('moatScore')}</span>
                 <span class="score-item forensic"><strong>Forensic:</strong> {forensic_tag}</span>
             </div>
             <div class="flags">
@@ -1175,7 +1360,7 @@ class PresentationBuilder:
                 <table class="metrics-table">
                     <tr><td><strong>Net Debt/EBITDA</strong></td><td>{ratio_format(net_debt_ebitda)} {nde_bar}</td><td>latest · trailing EBITDA distorts cyclicals</td></tr>
                     <tr><td><strong>Free Cash Flow</strong></td><td>{ratio_format(fcf)}</td><td>latest Q (currency, no bar)</td></tr>
-                    <tr><td><strong>CycleHeat</strong></td><td>{ratio_format(cycleheat)} {ch_bar}</td><td>strong signal</td></tr>
+                    <tr><td><strong>CycleHeat</strong> {orient_chip('CycleHeat')}</td><td>{ratio_format(cycleheat)} {ch_bar}</td><td>strong signal</td></tr>
                 </table>
                 <div class="gap-note">[AISC, cost-curve, reserve-life not obtainable from filter data]</div>
             </div>
@@ -1201,8 +1386,8 @@ class PresentationBuilder:
                 <h3>Valuation Ratios ({'Bank' if cohort_label == 'BalanceSheetFin' else 'FinManager'})</h3>
                 <table class="metrics-table">
                     <tr><td><strong>P/B</strong></td><td>{ratio_format(pb)}</td><td>latest (see B/P bar, §G)</td></tr>
-                    <tr><td><strong>ROE</strong></td><td>{pct_format(roe)} {roe_bar}</td><td>latest</td></tr>
-                    <tr><td><strong>ROA</strong></td><td>{pct_format(roa)} {roa_bar}</td><td>latest</td></tr>
+                    <tr><td><strong>ROE</strong> {orient_chip('returnOnEquity')}</td><td>{pct_format(roe)} {roe_bar}</td><td>latest</td></tr>
+                    <tr><td><strong>ROA</strong> {orient_chip('RoA')}</td><td>{pct_format(roa)} {roa_bar}</td><td>latest</td></tr>
                     <tr><td><strong>Op Margin</strong></td><td>{pct_format(op_margin)} {opm_bar}</td><td>TTM</td></tr>
                     <tr><td><strong>Effective Tax</strong></td><td>{pct_format(eff_tax)} {efftax_bar}</td><td>latest, clip[0,1]</td></tr>
                 </table>
@@ -1225,8 +1410,8 @@ class PresentationBuilder:
                 <h3>Valuation Ratios (InvestmentVehicle)</h3>
                 <table class="metrics-table">
                     <tr><td><strong>P/B (NAV proxy)</strong></td><td>{ratio_format(pb)}</td><td>disc to NAV</td></tr>
-                    <tr><td><strong>ROE</strong></td><td>{pct_format(roe)} {roe_bar}</td><td>latest</td></tr>
-                    <tr><td><strong>ROIC</strong></td><td>{ratio_format(roic)} {roic_bar}</td><td>latest</td></tr>
+                    <tr><td><strong>ROE</strong> {orient_chip('returnOnEquity')}</td><td>{pct_format(roe)} {roe_bar}</td><td>latest</td></tr>
+                    <tr><td><strong>ROIC</strong> {orient_chip('returnOnCapitalEmployed')}</td><td>{ratio_format(roic)} {roic_bar}</td><td>latest</td></tr>
                 </table>
                 <div class="gap-note">[NAV/holdings composition not obtainable from filter data]</div>
             </div>
@@ -1279,19 +1464,19 @@ class PresentationBuilder:
             <div class="section-c valuation">
                 <h3>Valuation Ratios</h3>
                 <table class="metrics-table">
-                    <tr><td><strong>ROIC/ROCE</strong></td><td>{ratio_format(roic)} {roic_bar}</td><td>proxy</td></tr>
-                    <tr><td><strong>Gross Margin</strong></td><td>{pct_format(gm)} {gm_bar}</td><td>latest</td></tr>
+                    <tr><td><strong>ROIC/ROCE</strong> {orient_chip('returnOnCapitalEmployed')}</td><td>{ratio_format(roic)} {roic_bar}</td><td>proxy</td></tr>
+                    <tr><td><strong>Gross Margin</strong> {orient_chip('grossProfitMargin')}</td><td>{pct_format(gm)} {gm_bar}</td><td>latest</td></tr>
                     <tr><td><strong>Op Margin</strong></td><td>{pct_format(op_margin)} {opm_bar}</td><td>TTM</td></tr>
                     <tr><td><strong>FCF Margin</strong></td><td>{pct_format(fcf_margin)} {fcfm_bar}</td><td>TTM</td></tr>
                     <tr><td><strong>Cash Conversion</strong></td><td>{ratio_format(cash_conv)}</td><td>TTM FCF / NI</td></tr>
-                    <tr><td><strong>Income Quality</strong></td><td>{ratio_format(income_qual)} {iq_bar}</td><td>audit</td></tr>
+                    <tr><td><strong>Income Quality</strong> {orient_chip('incomeQuality')}</td><td>{ratio_format(income_qual)} {iq_bar}</td><td>audit</td></tr>
                     <tr><td><strong>Net Debt/EBITDA</strong></td><td>{ratio_format(net_debt_ebitda)} {nde_bar}</td><td>latest</td></tr>
                     <tr><td><strong>Interest Coverage</strong></td><td>{ratio_format(int_cov)} {intcov_bar}</td><td>op inc / int exp</td></tr>
                     <tr><td><strong>Effective Tax</strong></td><td>{pct_format(eff_tax)} {efftax_bar}</td><td>latest, clip[0,1]</td></tr>
                     <tr><td><strong>Days Sales Outstanding</strong></td><td>{ratio_format(dso)} {dso_bar}</td><td>latest</td></tr>
                     <tr><td><strong>Inventory Days</strong></td><td>{ratio_format(inv_days)} {invd_bar}</td><td>goods cohorts</td></tr>
                     <tr><td><strong>P/E</strong></td><td>{ratio_format(pe_ratio)}</td><td>traded or yield inv</td></tr>
-                    <tr><td><strong>FCF Yield</strong></td><td>{pct_format(fcf_yield)} {fcfy_bar}</td><td>reviewRef raw (TTM)</td></tr>
+                    <tr><td><strong>FCF Yield</strong> {orient_chip('freeCashFlowYield')}</td><td>{pct_format(fcf_yield)} {fcfy_bar}</td><td>reviewRef raw (TTM)</td></tr>
                 </table>
                 <div class="gap-note">[WACC, EV/EBIT not obtainable from filter data; P/E withheld from peer bar — use earnings-yield bar in Section G]</div>
             </div>
@@ -1385,7 +1570,7 @@ class PresentationBuilder:
         html = f"""
         <div class="section-e moat">
             <h3>Moat Checklist</h3>
-            <p><strong>Moat Score:</strong> {ratio_format(moat_score)}</p>
+            <p><strong>Moat Score:</strong> {ratio_format(moat_score)} {orient_chip('moatScore')}</p>
             <table class="moat-components">
         """
 
@@ -1395,12 +1580,13 @@ class PresentationBuilder:
         for metric in ['FCFyield', 'GrossMargin', 'RevtoASS', 'RoE', 'RoA', 'ROIC',
                        'SGAtoGP', 'DeptoGP', 'NetMargin', 'CapExtoEarnings', 'TLtoEquity']:
             val = moat_comp.get(metric, np.nan)
+            chip = orient_chip('moat:' + metric)
             if metric in EXT_MOAT_COLS:
                 bar = self.ext_bar(cohort_label, metric, val)
-                html += f"<tr><td>{metric}:</td><td>{ratio_format(val)} {bar}</td></tr>"
+                html += f"<tr><td>{metric}: {chip}</td><td>{ratio_format(val)} {bar}</td></tr>"
             else:
                 note = ' <span class="pctile">(see §G/C bar)</span>' if metric in dedup else ''
-                html += f"<tr><td>{metric}:</td><td>{ratio_format(val)}{note}</td></tr>"
+                html += f"<tr><td>{metric}: {chip}</td><td>{ratio_format(val)}{note}</td></tr>"
 
         html += f"""
             </table>
@@ -1445,15 +1631,19 @@ class PresentationBuilder:
         sloan_cohort = self.ext_val(ticker, 'sloan')
         sloan_bar = self.ext_bar(cohort_label, 'sloan', sloan_cohort)
 
+        # Inline verdict chips for indices that have a universal rule but no peer bar here.
+        mscore_v = benchmark_verdict('M-Score', m_score, cohort_label)
+        cscore_v = benchmark_verdict('C-Score', c_score, cohort_label)
+
         html = f"""
         <div class="section-f forensic">
             <h3>Forensic / Accounting Quality</h3>
             <table class="forensic-table">
-                <tr><td><strong>M-Score</strong></td><td>{m_score}</td></tr>
-                <tr><td><strong>C-Score</strong></td><td>{c_score}</td></tr>
-                <tr><td><strong>Sloan Accruals (shortlist CSV)</strong></td><td>{sloan}</td></tr>
-                <tr><td><strong>Sloan Accruals (cohort peer)</strong></td><td>{ratio_format(sloan_cohort)} {sloan_bar}</td></tr>
-                <tr><td><strong>Income Quality</strong></td><td>{ratio_format(income_qual)}</td></tr>
+                <tr><td><strong>M-Score</strong> {orient_chip('M-Score')}</td><td>{m_score} {mscore_v}</td></tr>
+                <tr><td><strong>C-Score</strong> {orient_chip('C-Score')}</td><td>{c_score} {cscore_v}</td></tr>
+                <tr><td><strong>Sloan Accruals (shortlist CSV)</strong> {orient_chip('sloanAccruals')}</td><td>{sloan}</td></tr>
+                <tr><td><strong>Sloan Accruals (cohort peer)</strong> {orient_chip('sloanAccruals')}</td><td>{ratio_format(sloan_cohort)} {sloan_bar}</td></tr>
+                <tr><td><strong>Income Quality</strong> {orient_chip('incomeQuality')}</td><td>{ratio_format(income_qual)}</td></tr>
                 <tr><td><strong>FCF vs Net Income (TTM)</strong></td><td>FCF: {ratio_format(fcf_ttm)} / NI: {ratio_format(ni_ttm)}</td></tr>
                 <tr><td><strong>Forensic Tag</strong></td><td>{forensic_tag}</td></tr>
             </table>
@@ -1483,15 +1673,16 @@ class PresentationBuilder:
         for label, _cdx_col, pool_metric, fmt in SECTION_G_METRICS:
             marker = ticker_markers.get(pool_metric, np.nan)
             val_str = pct_format(marker) if fmt == 'pct' else ratio_format(marker)
+            chip = orient_chip(pool_metric)
             # Financial-cohort suppression (rule 3): gross margin is meaningless for
             # banks/asset managers -> show the value, drop the bar/percentile.
             if pool_metric == 'grossProfitMargin' and cohort_label in FIN_COHORTS:
-                html += (f'<div><strong>{label}:</strong> {val_str} '
+                html += (f'<div><strong>{label}:</strong> {val_str} {chip} '
                          f'<span class="gap-inline">n/a for financials</span></div>')
                 continue
             pct = ticker_percentiles.get(pool_metric, np.nan)
             bar = self.dist_bar(ticker, cohort_label, pool_metric, marker=marker)
-            html += (f'<div><strong>{label}:</strong> {val_str} '
+            html += (f'<div><strong>{label}:</strong> {val_str} {chip} '
                      f'<span class="pctile">({pctile_format(pct)} pct)</span> {bar}</div>')
 
         html += f"""
@@ -1951,6 +2142,49 @@ nav.sidebar {
 .pctile {
     color: #666;
     font-size: 0.85em;
+}
+
+/* Additive orientation + benchmark-verdict chips (no existing number/bar affected). */
+.orient-chip {
+    display: inline-block;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    font-size: 0.72em;
+    font-weight: normal;
+    color: #555;
+    background: #eef1f5;
+    border: 1px solid #d6dbe2;
+    border-radius: 10px;
+    padding: 0 7px;
+    margin-left: 6px;
+    white-space: nowrap;
+    vertical-align: middle;
+    cursor: help;
+}
+
+.verdict-chip {
+    display: inline-block;
+    font-size: 0.8em;
+    font-weight: bold;
+    border-radius: 8px;
+    padding: 0 5px;
+    margin-left: 4px;
+    vertical-align: middle;
+    cursor: help;
+}
+
+.verdict-chip.pass {
+    color: #155724;
+    background: #d4edda;
+}
+
+.verdict-chip.warn {
+    color: #721c24;
+    background: #f8d7da;
+}
+
+.verdict-chip.neutral {
+    color: #555;
+    background: #e9e9e9;
 }
 
 .trends {
