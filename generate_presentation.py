@@ -19,11 +19,14 @@ Output:
 import os
 import sys
 import glob
+import json
+import time
 import pickle
 import pandas as pd
 import numpy as np
 from datetime import datetime
 from pathlib import Path
+from html import escape
 import argparse
 import logging
 
@@ -36,6 +39,14 @@ log = logging.getLogger(__name__)
 # ============================================================================
 VALUATION_REPO = Path(r"C:\Users\stefanthorarinsson\Documents\Projects\ValuationAnalysis_v2_clean")
 DEFAULT_RUN_DIR = Path(r"C:\Users\stefanthorarinsson\Documents\HomeGDrive")
+
+# Persistent, TRACKED (committed) per-ticker Yahoo info store. No time expiry: an entry,
+# once fetched, is reused forever unless --refresh-yahoo forces a re-fetch. Travels with
+# the repo so it accumulates across runs/machines and a fresh clone never re-fetches all.
+YAHOO_STORE_PATH = VALUATION_REPO / "yahoo_info.json"
+YAHOO_FIELDS = ['longName', 'longBusinessSummary', 'sector', 'industry', 'website',
+                'fullTimeEmployees', 'city', 'country', 'marketCap']
+YAHOO_FETCH_SPACING_S = 0.6
 
 PLAYBOOK_METRICS = [
     'returnOnCapitalEmployed', 'returnOnEquity', 'RoA', 'grossProfitMargin',
@@ -241,6 +252,95 @@ def get_percentile_marker(value, dist):
         weak = np.count_nonzero(dist <= value)
         return 100.0 * (strict + weak) / (2.0 * len(dist))
     return np.nan
+
+
+# ============================================================================
+# YAHOO FINANCE AUGMENT (persistent per-ticker store; no time expiry)
+# ============================================================================
+def _fetch_one_yahoo(yf, ticker):
+    """Fetch one ticker's Yahoo info. NEVER raises -- on any failure or an unresolved
+    ticker (empty info) it returns an entry carrying an 'error' string so the caller can
+    gap-tag. yfinance needs no API key."""
+    entry = {'fetched_date': datetime.now().strftime('%Y-%m-%d')}
+    try:
+        info = yf.Ticker(ticker).info or {}
+        got = {k: info.get(k) for k in YAHOO_FIELDS}
+        if not any(v not in (None, '', []) for v in got.values()):
+            entry['error'] = 'no data (ticker unresolved on Yahoo)'
+        else:
+            entry.update(got)
+            entry['error'] = None
+    except Exception as e:
+        entry['error'] = f"{type(e).__name__}: {str(e)[:180]}"
+    return entry
+
+
+def load_yahoo_data(tickers, augment, store_path=None, refresh=None):
+    """Return {ticker: {yahoo fields + fetched_date + error}} from the persistent store,
+    fetching ONLY the tickers that need it.
+
+    tickers   : the page names (fetch order).
+    augment   : if False, never hit the network -- use whatever is already stored, gap the
+                rest (offline-safe).
+    refresh   : None            -> fetch only tickers absent from the store (default);
+                True            -> force re-fetch ALL requested tickers;
+                set/list of tk  -> force re-fetch just those (plus any missing).
+    store_path: JSON store location (default YAHOO_STORE_PATH, tracked/committed).
+    """
+    store_path = str(store_path or YAHOO_STORE_PATH)
+    store = {}
+    if os.path.exists(store_path):
+        try:
+            with open(store_path, 'r', encoding='utf-8') as f:
+                store = json.load(f)
+        except Exception as e:
+            log.warning(f"Yahoo store unreadable ({e}); starting a fresh store.")
+            store = {}
+
+    # Decide what to fetch.
+    if refresh is True:
+        to_fetch = list(tickers)
+    else:
+        forced = set(refresh) if isinstance(refresh, (set, list, tuple)) else set()
+        to_fetch = [t for t in tickers if t not in store or t in forced]
+
+    if not augment:
+        if to_fetch:
+            log.info(f"Yahoo augment OFF: skipping {len(to_fetch)} fetch(es); "
+                     f"using {len(tickers) - len(to_fetch)} stored, gap-tagging the rest.")
+        return store
+
+    if not to_fetch:
+        log.info(f"Yahoo: 0 fetched (all {len(tickers)} page names already in store).")
+        return store
+
+    yf = None
+    try:
+        import yfinance as yf_mod
+        yf = yf_mod
+    except Exception as e:
+        log.warning(f"yfinance import failed ({e}); Yahoo augment unavailable -> gap tags.")
+        return store
+
+    fetched = 0
+    for t in to_fetch:
+        if fetched > 0:
+            time.sleep(YAHOO_FETCH_SPACING_S)
+        store[t] = _fetch_one_yahoo(yf, t)
+        fetched += 1
+        tag = 'ok' if not store[t].get('error') else f"gap ({store[t]['error']})"
+        log.info(f"  Yahoo fetch {fetched}/{len(to_fetch)}: {t} -> {tag}")
+
+    try:
+        os.makedirs(os.path.dirname(store_path) or '.', exist_ok=True)
+        with open(store_path, 'w', encoding='utf-8') as f:
+            json.dump(store, f, indent=2, ensure_ascii=False, sort_keys=True)
+        log.info(f"Yahoo store written: {store_path} ({len(store)} tickers, "
+                 f"{fetched} newly fetched this run).")
+    except Exception as e:
+        log.warning(f"Failed to write Yahoo store: {e}")
+
+    return store
 
 
 # ============================================================================
@@ -485,7 +585,7 @@ def compute_cohort_percentiles(data):
 class PresentationBuilder:
     """Builds self-contained HTML presentation."""
 
-    def __init__(self, data, augment=False):
+    def __init__(self, data, augment=False, refresh_yahoo=None):
         self.data = data
         self.augment = augment
         bundle = compute_cohort_percentiles(data)
@@ -493,7 +593,77 @@ class PresentationBuilder:
         self.markers = bundle.get('markers', {})            # {ticker:{metric:raw_marker}}
         self.cohort_stats = bundle.get('stats', {})         # {(cohort,metric):(p10,p50,p90)}
         self.raw_all = bundle.get('raw_all')                # source-indexed raw playbook df
+        # Yahoo augment (Section A only): persistent per-ticker store, fetch-missing-only.
+        self.yahoo = load_yahoo_data(self._page_tickers(), augment, refresh=refresh_yahoo)
         self.html_parts = []
+
+    def _page_tickers(self):
+        """Ordered, de-duplicated list of every ticker that gets a page (general top-20 +
+        top-5 per cohort). Single source of truth for both the Yahoo fetch set and build."""
+        postrank_df = self.data['postrank_df']
+        names = list(postrank_df.head(20)['source'])
+        carveout = self.data.get('carveout_sidelists', {})
+        for cohort_label in COHORTS:
+            cp = carveout.get(cohort_label, {}).get('postRank', pd.DataFrame())
+            if cp is not None and not cp.empty:
+                names += list(cp.head(5)['source'])
+        seen, out = set(), []
+        for n in names:
+            if n not in seen:
+                seen.add(n)
+                out.append(n)
+        return out
+
+    def _yahoo_block(self, ticker):
+        """Section-A Yahoo block: business summary + company basics, every field gap-tagged
+        on absence/failure and clearly labeled as Yahoo-sourced (not pipeline data)."""
+        gap = '<span class="gap-inline">not available from Yahoo</span>'
+        y = self.yahoo.get(ticker) or {}
+
+        def f(key):
+            v = y.get(key)
+            if v is None or (isinstance(v, str) and not v.strip()) or v == []:
+                return None
+            return v
+
+        summary = f('longBusinessSummary')
+        if summary:
+            summary_e = escape(summary)
+            if len(summary) > 400:
+                head = summary[:300].rsplit('.', 1)[0].strip()
+                head = (head + '.') if head else (summary[:300].strip() + '…')
+                desc = (f'<details><summary>{escape(head)}</summary>'
+                        f'<p>{summary_e}</p></details>')
+            else:
+                desc = f'<p>{summary_e}</p>'
+        else:
+            desc = f'<p>business summary {gap}</p>'
+
+        sector_industry = ' / '.join([x for x in [f('sector'), f('industry')] if x]) or gap
+        hq = ', '.join([str(x) for x in [f('city'), f('country')] if x]) or gap
+        emp = f('fullTimeEmployees')
+        try:
+            emp_str = f"{int(emp):,}" if emp is not None else gap
+        except (ValueError, TypeError):
+            emp_str = gap
+        web = f('website')
+        web_str = (f'<a href="{escape(str(web))}" target="_blank" rel="noopener">'
+                   f'{escape(str(web))}</a>') if web else gap
+
+        basics = (
+            '<div class="yahoo-basics">'
+            f'<span><strong>Yahoo sector/industry:</strong> {sector_industry}</span>'
+            f'<span><strong>HQ:</strong> {hq}</span>'
+            f'<span><strong>Employees:</strong> {emp_str}</span>'
+            f'<span><strong>Website:</strong> {web_str}</span>'
+            '</div>'
+        )
+        return (
+            '<div class="description yahoo">'
+            '<div class="yahoo-tag">source: Yahoo Finance (not pipeline data)</div>'
+            f'{desc}{basics}'
+            '</div>'
+        )
 
     def raw_metric(self, ticker, metric):
         """Raw reviewReference playbook value for a ticker (Altman-Z, FCF yield, ...)."""
@@ -625,9 +795,7 @@ class PresentationBuilder:
                 <span><strong>Nav Bucket:</strong> {nav_bucket}</span>
                 <span><strong>FMP Rating:</strong> {rating}</span>
             </div>
-            <div class="description">
-                <p><em>Business description</em> [augment placeholder]</p>
-            </div>
+            {self._yahoo_block(ticker)}
             <div class="editable">
                 <label>Why is this cheap? ____________________________________________</label>
             </div>
@@ -1301,6 +1469,41 @@ nav.sidebar {
     border-left: 3px solid #0066cc;
 }
 
+.description.yahoo {
+    border-left-color: #6f42c1;
+}
+
+.yahoo-tag {
+    font-size: 0.75em;
+    color: #6f42c1;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    margin-bottom: 8px;
+}
+
+.description.yahoo details summary {
+    cursor: pointer;
+    color: #333;
+}
+
+.description.yahoo details p {
+    margin-top: 8px;
+    color: #444;
+}
+
+.yahoo-basics {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 24px;
+    margin-top: 12px;
+    font-size: 0.9em;
+}
+
+.gap-inline {
+    color: #b0b0b0;
+    font-style: italic;
+}
+
 .editable label {
     display: block;
     margin-top: 15px;
@@ -1470,10 +1673,27 @@ def main():
     parser.add_argument('--out', type=str, default=None,
                        help='Output HTML file path override (default: '
                             '<VALUATION_REPO>/presentations/presentation_<date>.html)')
-    parser.add_argument('--augment', type=str, choices=['on', 'off'], default='off',
-                       help='Enable online augmentation from FMP (default: off)')
+    parser.add_argument('--augment', type=str, choices=['on', 'off'], default='on',
+                       help='Online Yahoo Finance augmentation of Section A (default: ON). '
+                            'Use "off" (or --no-augment) for a fully offline run; missing '
+                            'Yahoo data degrades to gap tags.')
+    parser.add_argument('--no-augment', action='store_true',
+                       help='Shortcut for --augment off (offline run).')
+    parser.add_argument('--refresh-yahoo', nargs='?', const='__ALL__', default=None,
+                       metavar='TICKERS',
+                       help='Force re-fetch of Yahoo info (default is fetch-missing-only). '
+                            'Bare flag = refresh ALL page names; or pass a comma-separated '
+                            'ticker list to refresh just those.')
 
     args = parser.parse_args()
+
+    augment = (args.augment == 'on') and not args.no_augment
+    if args.refresh_yahoo is None:
+        refresh_yahoo = None
+    elif args.refresh_yahoo == '__ALL__':
+        refresh_yahoo = True
+    else:
+        refresh_yahoo = {t.strip() for t in args.refresh_yahoo.split(',') if t.strip()}
 
     try:
         # Load data
@@ -1481,7 +1701,7 @@ def main():
         log.info(f"Loaded run data for {len(data['postrank_df'])} names")
 
         # Build presentation
-        builder = PresentationBuilder(data, augment=(args.augment == 'on'))
+        builder = PresentationBuilder(data, augment=augment, refresh_yahoo=refresh_yahoo)
         html = builder.build_html()
 
         # Determine output path.
@@ -1502,16 +1722,21 @@ def main():
         log.info(f"Presentation written to {out_path}")
         log.info(f"File size: {os.path.getsize(out_path) / 1024:.1f} KB")
 
-        # Verify self-contained (check for actual external URLs, not anchor links)
+        # Verify self-contained: flag external RESOURCE LOADS (src=, stylesheet <link>,
+        # @import, CSS url()) -- these break offline opening. Outbound <a href> links (the
+        # Yahoo website links) and text URLs inside business summaries are fine: they do not
+        # load anything to render, so they don't affect self-containment.
         with open(out_path, 'r', encoding='utf-8') as f:
             content = f.read()
             import re
-            has_http = bool(re.search(r'https?://', content))
             has_external_src = bool(re.search(r'src\s*=\s*["\'](?!data:)', content))
-            if has_http or has_external_src:
-                log.warning("HTML contains external references (may not be fully self-contained)")
+            has_ext_css = bool(re.search(r'<link[^>]+rel\s*=\s*["\']?stylesheet', content)) \
+                or '@import' in content or bool(re.search(r'url\(\s*https?://', content))
+            if has_external_src or has_ext_css:
+                log.warning("HTML loads an external resource (may not be fully self-contained)")
             else:
-                log.info("HTML is self-contained (no external HTTP/HTTPS refs, all SVG inlined)")
+                log.info("HTML is self-contained (no external resource loads; SVG inlined; "
+                         "outbound <a> links only)")
 
         return 0
 
