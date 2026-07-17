@@ -67,13 +67,29 @@ COHORTS = ['REIT', 'Mining', 'InvestmentVehicle', 'FinManager', 'BalanceSheetFin
 #                 (note the cdx column and the pool column can differ: cdx 'returnOnAssets'
 #                 vs pool 'RoA').
 #   fmt         : 'ratio' or 'pct' for the raw-value display.
+# All 16 PLAYBOOK_METRICS, each rendered as raw value + dot-on-p10-p90 bar + percentile
+# against the name's OWN cohort pool. Marker rule (RAW, never a z-score): use the cdx_df
+# latest value when the metric has a native cdx column; otherwise the reviewReference raw
+# pool value (freeCashFlowYield / revenueGrowth / Altman-Z / Piotroski / bVpRatio /
+# tbVpRatio / freeCashFlowPerShareGrowth / moatScore / CycleHeat have no clean cdx column).
+# The first six are kept first and unchanged so their confirmed values do not move.
 SECTION_G_METRICS = [
-    ('ROIC',          'returnOnCapitalEmployed', 'returnOnCapitalEmployed', 'ratio'),
-    ('ROE',           'returnOnEquity',          'returnOnEquity',          'ratio'),
-    ('ROA',           'returnOnAssets',          'RoA',                     'ratio'),
-    ('Gross Margin',  'grossProfitMargin',       'grossProfitMargin',       'pct'),
-    ('FCF Yield',     None,                      'freeCashFlowYield',       'pct'),
-    ('Current Ratio', 'currentRatio',            'currentRatio',            'ratio'),
+    ('ROIC',                'returnOnCapitalEmployed', 'returnOnCapitalEmployed',    'ratio'),
+    ('ROE',                 'returnOnEquity',          'returnOnEquity',             'ratio'),
+    ('ROA',                 'returnOnAssets',          'RoA',                        'ratio'),
+    ('Gross Margin',        'grossProfitMargin',       'grossProfitMargin',          'pct'),
+    ('FCF Yield',           None,                      'freeCashFlowYield',          'pct'),
+    ('Current Ratio',       'currentRatio',            'currentRatio',               'ratio'),
+    ('Earnings Yield',      'earningsYield',           'earnYield',                  'pct'),
+    ('Revenue Growth',      None,                      'revenueGrowth',              'pct'),
+    ('Income Quality',      'incomeQuality',           'incomeQuality',              'ratio'),
+    ('Altman-Z',            None,                      'Altman-Z',                   'ratio'),
+    ('Piotroski',           None,                      'Piotroski',                  'ratio'),
+    ('Book/Price (B/P)',    None,                      'bVpRatio',                   'ratio'),
+    ('Tangible Book/Price', None,                      'tbVpRatio',                  'ratio'),
+    ('FCF/Share Growth',    None,                      'freeCashFlowPerShareGrowth', 'pct'),
+    ('Moat Score',          None,                      'moatScore',                  'ratio'),
+    ('CycleHeat',           None,                      'CycleHeat',                  'ratio'),
 ]
 
 # ============================================================================
@@ -873,7 +889,11 @@ class PresentationBuilder:
             # Mining-specific metrics (raw values from cdx_df, not z-scores)
             net_debt_ebitda = latest_row_value(cdx_df, 'netDebtToEBITDA')
             fcf = latest_row_value(cdx_df, 'freeCashFlow')
-            cycleheat = row.get('CycleHeat', np.nan)
+            # CycleHeat IS a poolable playbook metric -> use its RAW reviewReference value
+            # (the rank row carries a z-score, not the raw value) so the number matches
+            # Section G and the dot-on-bar is a fair peer comparison.
+            cycleheat = self.raw_metric(ticker, 'CycleHeat')
+            ch_bar = self.dist_bar(ticker, cohort_label, 'CycleHeat', marker=cycleheat)
 
             html = f"""
             <div class="section-c valuation">
@@ -881,7 +901,7 @@ class PresentationBuilder:
                 <table class="metrics-table">
                     <tr><td><strong>Net Debt/EBITDA</strong></td><td>{ratio_format(net_debt_ebitda)}</td><td>latest</td></tr>
                     <tr><td><strong>Free Cash Flow</strong></td><td>{ratio_format(fcf)}</td><td>latest Q</td></tr>
-                    <tr><td><strong>CycleHeat</strong></td><td>{ratio_format(cycleheat)}</td><td>strong signal</td></tr>
+                    <tr><td><strong>CycleHeat</strong></td><td>{ratio_format(cycleheat)} {ch_bar}</td><td>strong signal</td></tr>
                 </table>
                 <div class="gap-note">[AISC, cost-curve, reserve-life not obtainable from filter data]</div>
             </div>
