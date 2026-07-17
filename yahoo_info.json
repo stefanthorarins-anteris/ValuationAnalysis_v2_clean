@@ -1,4 +1,30 @@
 {
+  "0OPJ.L": {
+    "city": "Paris",
+    "country": "France",
+    "error": null,
+    "fetched_date": "2026-07-17",
+    "fullTimeEmployees": 108,
+    "industry": "",
+    "longBusinessSummary": "ABC arbitrage SA, together with its subsidiaries, develops arbitrage strategies for liquid assets in Europe, North America, Asia, and internationally. It offers liquidity, statistical, risk, and derivatives arbitrage strategies; portfolio management services for financial instruments; and investment strategy advisory services for investors and professional clients. The company was incorporated in 1995 and is headquartered in Paris, France.",
+    "longName": "ABC arbitrage SA",
+    "marketCap": null,
+    "sector": "",
+    "website": "https://www.abc-arbitrage.com"
+  },
+  "0Q76.L": {
+    "city": "Sainte-Marie",
+    "country": "France",
+    "error": null,
+    "fetched_date": "2026-07-17",
+    "fullTimeEmployees": 39,
+    "industry": "",
+    "longBusinessSummary": "CBo Territoria SA operates as a real estate company in France. It operates through three segments: Land, Promotion, and Other. The company invests in commercial assets, such as retail, offices, and industrial premises; and develops housing properties, including social housing, affordable housing, and serviced residences, as well as provides land planning services. It also manages leisure activities through Le Jardin d'Eden which offers private and corporate events; Bassin Bleu Golf Club, a golf course area which accepts corporate events, such as conference room and catering services; and Beauséjour SportClub for sporting activities. In addition, the company involved in the coworking centers business. CBo Territoria SA was incorporated in 2004 and is headquartered in Sainte-Marie, France.",
+    "longName": "CBo Territoria SA",
+    "marketCap": null,
+    "sector": "",
+    "website": "https://www.cboterritoria.com"
+  },
   "ACRI-A.ST": {
     "city": "Malmö",
     "country": "Sweden",
@@ -77,6 +103,19 @@
     "sector": "Industrials",
     "website": "https://www.andrews-sykes.com"
   },
+  "ATLC": {
+    "city": "Atlanta",
+    "country": "United States",
+    "error": null,
+    "fetched_date": "2026-07-17",
+    "fullTimeEmployees": 576,
+    "industry": "Credit Services",
+    "longBusinessSummary": "Atlanticus Holdings Corporation, a financial technology company, provides products and services to lenders in the United States. The company operates in two segments, Credit as a Service (CaaS) and Auto Finance. Its CaaS segment offers private label credit products associated with the healthcare space under the Curae brand, as well as consumer electronics, furniture, elective medical procedures, and home-improvement under the Fortiva brand and its retail partners' brands; and general-purpose credit cards under the Aspire, Imagine, Mercury, and Fortiva brand names. The company's private label and general-purpose credit cards originated from its bank partners through various channels, including retail and healthcare point-of-sale locations, direct mail solicitation, and digital marketing and partnerships with third parties. This segment also offers loan servicing, such as risk management and customer service outsourcing for third parties, as well as engages in other product testing and investments. The Auto Finance segment purchases and/or services loans secured by automobiles from or for a pre-qualified network of independent automotive dealers and automotive finance companies in the buy-here and pay-here used car business. This segment also provides floor plan financing and installment lending products. The company was founded in 1996 and is headquartered in Atlanta, Georgia.",
+    "longName": "Atlanticus Holdings Corporation",
+    "marketCap": 1560781952,
+    "sector": "Financial Services",
+    "website": "https://www.atlanticus.com"
+  },
   "AUDC": {
     "city": "Or Yehuda",
     "country": "Israel",
@@ -102,6 +141,19 @@
     "marketCap": 346187040,
     "sector": "Consumer Cyclical",
     "website": "https://www.group.bijou-brigitte.com"
+  },
+  "BPCR.L": {
+    "city": null,
+    "country": null,
+    "error": null,
+    "fetched_date": "2026-07-17",
+    "fullTimeEmployees": null,
+    "industry": null,
+    "longBusinessSummary": null,
+    "longName": "BioPharma Credit Ord",
+    "marketCap": 1079549440,
+    "sector": null,
+    "website": null
   },
   "BRK.L": {
     "city": "London",
@@ -181,6 +233,32 @@
     "sector": "Real Estate",
     "website": "https://comstock.com"
   },
+  "CLIG.L": {
+    "city": "London",
+    "country": "United Kingdom",
+    "error": null,
+    "fetched_date": "2026-07-17",
+    "fullTimeEmployees": 110,
+    "industry": "Asset Management",
+    "longBusinessSummary": "City of London Investment Group PLC is a publically owned investment manager. The firm provides client focused equity portfolios. It invests in public equity markets across the globe. The firm invests in small cap companies in emerging markets to create its portfolios. It uses combination of macroeconomic, qualitative, and top down company analysis to make its investments. The firm uses in house research to make its investments. It benchmarks the performance of its portfolios with S&P EM Frontier Super Comp., MSCI Emerging Markets Index, HSBC Global Mining Index, and MSCI ACWI ex US Index. City of London Investment Group PLC was founded in 1991 and is based in London, United Kingdom with additional offices in Dubai, United Arab Emirates, Singapore, Coatesville, Pennsylvania, Bellevue, Washington.",
+    "longName": "City of London Investment Group Plc",
+    "marketCap": 238818208,
+    "sector": "Financial Services",
+    "website": "https://www.citlon.co.uk"
+  },
+  "DC-A.TO": {
+    "city": "Toronto",
+    "country": "Canada",
+    "error": null,
+    "fetched_date": "2026-07-17",
+    "fullTimeEmployees": 14,
+    "industry": "Other Precious Metals & Mining",
+    "longBusinessSummary": "Dundee Corporation engages in acquiring mineral resource assets. It primarily explores gold deposits. Dundee Corporation was formerly known as Dundee Bancorp, Inc. Dundee Corporation was founded in 1991 is based in Toronto, Canada.",
+    "longName": "Dundee Corporation",
+    "marketCap": 336001696,
+    "sector": "Basic Materials",
+    "website": "https://www.dundeecorporation.com"
+  },
   "DLNG": {
     "city": "Athens",
     "country": "Greece",
@@ -193,6 +271,19 @@
     "marketCap": 120788280,
     "sector": "Energy",
     "website": "https://www.dynagaspartners.com"
+  },
+  "DPM.TO": {
+    "city": "Toronto",
+    "country": "Canada",
+    "error": null,
+    "fetched_date": "2026-07-17",
+    "fullTimeEmployees": null,
+    "industry": "Gold",
+    "longBusinessSummary": "DPM Metals Inc., a gold mining company, engages in the acquisition, exploration, development, mining, and processing of precious metals. It primarily explores gold, copper, and silver deposits. The company holds a portfolio of projects located in Bulgaria, Bosnia and Herzegovina, Serbia, and Ecuador. The company was formerly known as Dundee Precious Metals Inc. and changed its name to DPM Metals Inc. in September 2025. DPM Metals Inc. is based in Toronto, Canada.",
+    "longName": "DPM Metals Inc.",
+    "marketCap": 10209927168,
+    "sector": "Basic Materials",
+    "website": "https://www.dpmmetals.com"
   },
   "EVER": {
     "city": "Cambridge",
@@ -337,6 +428,19 @@
     "sector": "Basic Materials",
     "website": "https://lundingold.com"
   },
+  "MOV": {
+    "city": "Paramus",
+    "country": "United States",
+    "error": null,
+    "fetched_date": "2026-07-17",
+    "fullTimeEmployees": 991,
+    "industry": "Luxury Goods",
+    "longBusinessSummary": "Movado Group, Inc. designs, sources, markets, and distributes watches worldwide. It operates in two segments, Watch and Accessory Brands, and Company Stores. The company offers its watches under the Movado, Concord, Ebel, Olivia Burton, and MVMT brands, as well as licensed brands comprising Coach, Tommy Hilfiger, HUGO BOSS, Lacoste, Calvin Klein, and KATE SPADE NEW YORK. It also designs, sources, markets, and distributes jewelry and other accessories; and provides after-sales and shipping services. The company's customers include jewelry store chains, department stores, independent regional jewelers, network of independent distributors, online marketplaces, licensors' retail stores, and third-party e-commerce retailers. It sells directly to consumers through its e-commerce platforms. The company was formerly known as North American Watch Corporation and changed its name to Movado Group, Inc. in 1996. Movado Group, Inc. was founded in 1881 and is headquartered in Paramus, New Jersey.",
+    "longName": "Movado Group, Inc.",
+    "marketCap": 884199232,
+    "sector": "Consumer Cyclical",
+    "website": "https://www.movadogroup.com"
+  },
   "MPCK.DE": {
     "city": "Hamburg",
     "country": "Germany",
@@ -362,6 +466,19 @@
     "marketCap": 576707200,
     "sector": "Real Estate",
     "website": "https://www.melcor.ca"
+  },
+  "NIVI-B.ST": {
+    "city": "Värnamo",
+    "country": "Sweden",
+    "error": null,
+    "fetched_date": "2026-07-17",
+    "fullTimeEmployees": 60,
+    "industry": "Real Estate Services",
+    "longBusinessSummary": "Nivika Fastigheter AB (publ), a property company, owns, manages, and develops residential and commercial premises and rentals in Sweden. Its property portfolio consists of apartment building, student housing, industrial, warehouse, office, school/preschool, and community service properties, as well as plots. Nivika Fastigheter AB (publ) was founded in 2000 and is headquartered in Värnamo, Sweden.",
+    "longName": "Nivika Fastigheter AB (publ)",
+    "marketCap": 3384213248,
+    "sector": "Real Estate",
+    "website": "https://nivika.se"
   },
   "ONEX.TO": {
     "city": "Toronto",
@@ -441,6 +558,32 @@
     "sector": "Financial Services",
     "website": "https://www.polarcapital.co.uk"
   },
+  "QFIN": {
+    "city": "Shanghai",
+    "country": "China",
+    "error": null,
+    "fetched_date": "2026-07-17",
+    "fullTimeEmployees": 3557,
+    "industry": "Credit Services",
+    "longBusinessSummary": "Qfin Holdings, Inc., together with its subsidiaries, operate AI- driven credit-tech platform under the Qifu Jietiao brand in the People's Republic of China. The company provides credit-driven services that match borrowers with financial institutions to conduct borrower acquisition, credit assessment, fund matching, and post-facilitation services; and platform services, including loan and post-facilitation services to financial institution partners under capital light model, intelligence credit engine, referral services, and other technology solutions. It serves financial institutions, consumers, and small and micro-enterprises. The company was formerly known as Qifu Technology, Inc. and changed its name to Qfin Holdings, Inc. in July 2025. Qfin Holdings, Inc. was founded in 2016 and is headquartered in Shanghai, the People's Republic of China.",
+    "longName": "Qfin Holdings, Inc.",
+    "marketCap": 1564511744,
+    "sector": "Financial Services",
+    "website": "https://www.qfin.com"
+  },
+  "QLT.L": {
+    "city": "London",
+    "country": "United Kingdom",
+    "error": null,
+    "fetched_date": "2026-07-17",
+    "fullTimeEmployees": 3207,
+    "industry": "Asset Management",
+    "longBusinessSummary": "Quilter plc provides advice-led investment solutions in the United Kingdom and internationally. It operates through High Net Worth and Affluent segments. The High Net Worth segment provides discretionary investment management services to high-net worth clients, charities, companies, and institutions through a network of branches; and financial advice services for protection, mortgages, savings, investment, and pensions primarily to high-net-worth clients. Its Affluent segment comprises Quilter Investment Platform, an investment platform for advice-based wealth management products and services; Quilter Investor, which offers investment solutions in the form of funds for the group and third-party clients; and Quilter Financial planning, a restricted and independent financial adviser network that provides mortgage and financial planning advice, and solution for individuals and business through a network of intermediaries. The company was incorporated in 2007 and is based in London, the United Kingdom.",
+    "longName": "Quilter plc",
+    "marketCap": 2764470016,
+    "sector": "Financial Services",
+    "website": "https://plc.quilter.com"
+  },
   "RAVE": {
     "city": "The Colony",
     "country": "United States",
@@ -480,6 +623,19 @@
     "sector": "Energy",
     "website": "https://sandridgeenergy.com"
   },
+  "SFE.DE": {
+    "city": "Stamford",
+    "country": "United States",
+    "error": null,
+    "fetched_date": "2026-07-17",
+    "fullTimeEmployees": 20000,
+    "industry": "Credit Services",
+    "longBusinessSummary": "Synchrony Financial, together with its subsidiaries, operates as a consumer financial services company in the United States. The company provides credit products, such as credit cards, commercial credit products, and consumer installment loans. It also offers private label credit cards, dual and general purpose co-branded cards, short- and long-term installment loans, and consumer banking products; and deposit products, including certificates of deposit, individual retirement accounts, money market accounts, savings accounts, and sweep and affinity deposits, as well as accepts deposits through third-party firms. In addition, the company provides debt cancellation products to its credit card customers through online and mobile channels; and healthcare payments and financing solutions under the CareCredit and Walgreens brands; payments and financing solutions in the apparel, specialty retail, outdoor, music, and luxury industries, such as American Eagle, Dick's Sporting Goods, Guitar Center, Pandora, Polaris, Suzuki, and Sweetwater. It offers its credit products through programs established with a group of national and regional retailers, local merchants, manufacturers, buying groups, industry associations, and healthcare service providers; and deposit products through various channels, such as digital and print. It serves digital, health and wellness, retail, home, auto, telecommunications, pet, outdoor, and other industries. The company was founded in 1932 and is headquartered in Stamford, Connecticut.",
+    "longName": "Synchrony Financial",
+    "marketCap": 21877520384,
+    "sector": "Financial Services",
+    "website": "https://www.synchrony.com"
+  },
   "SLP.L": {
     "city": "Hamilton",
     "country": "Bermuda",
@@ -506,6 +662,19 @@
     "sector": "Basic Materials",
     "website": "https://www.serabigold.com"
   },
+  "STNG": {
+    "city": "Monaco",
+    "country": "Monaco",
+    "error": null,
+    "fetched_date": "2026-07-17",
+    "fullTimeEmployees": 24,
+    "industry": "Oil & Gas Midstream",
+    "longBusinessSummary": "Scorpio Tankers Inc., together with its subsidiaries, engages in the seaborne transportation of crude oil and refined petroleum products worldwide. As of March 19, 2026, its fleet consisted of 90 wholly owned tankers, including 34 LR2, 42MR, and 14 Handymax. Scorpio Tankers Inc. was incorporated in 2009 and is headquartered in Monaco.",
+    "longName": "Scorpio Tankers Inc.",
+    "marketCap": 3879458560,
+    "sector": "Energy",
+    "website": "https://www.scorpiotankers.com"
+  },
   "STO3.DE": {
     "city": "Stühlingen",
     "country": "Germany",
@@ -531,6 +700,19 @@
     "marketCap": 42889068,
     "sector": "Communication Services",
     "website": "https://system1group.com"
+  },
+  "TFPM": {
+    "city": "Toronto",
+    "country": "Canada",
+    "error": null,
+    "fetched_date": "2026-07-17",
+    "fullTimeEmployees": null,
+    "industry": "Other Precious Metals & Mining",
+    "longBusinessSummary": "Triple Flag Precious Metals Corp., a precious metals streaming and royalty company, engages in acquiring and managing precious metals, streams, royalties, and other mineral interests in Australia, Canada, Colombia, Cote d'Ivoire, Mexico, Mongolia, Peru, South Africa, and the United States. The company has a portfolio of streams and royalties providing exposure to copper, gold, silver, nickel, lead, lithium, and zinc. The company was founded in 2016 and is based in Toronto, Canada.",
+    "longName": "Triple Flag Precious Metals Corp.",
+    "marketCap": 5611361792,
+    "sector": "Basic Materials",
+    "website": "https://www.tripleflagpm.com"
   },
   "TFPM.TO": {
     "city": "Toronto",

@@ -17,6 +17,7 @@ Output:
 """
 
 import os
+import re
 import sys
 import glob
 import json
@@ -418,30 +419,264 @@ def create_distribution_bar(value, p10, p50, p90, width=150, height=15):
     return svg
 
 
+def quarter_label(ts):
+    """Compact calendar-quarter label for a Timestamp, e.g. 'Q2 2020'."""
+    try:
+        q = (ts.month - 1) // 3 + 1
+        return f"Q{q} {ts.year}"
+    except Exception:
+        return "?"
+
+
+def span_caption(dates):
+    """Rough length of a date span for a sparkline: '~6y' (>= ~9 months) or '~5q'
+    (shorter). `dates` is oldest->newest. Returns '' when the span can't be computed."""
+    if not dates or len(dates) < 2:
+        return ""
+    try:
+        yrs = (dates[-1] - dates[0]).days / 365.25
+    except Exception:
+        return ""
+    if yrs >= 0.75:
+        return f"~{yrs:.0f}y"
+    return f"~{len(dates)}q"
+
+
+# ============================================================================
+# EXTENDED PEER-BAR POOLS (metrics beyond the 16 playbook set)
+# ============================================================================
+# Global rules (per the bars-expansion build spec):
+#  1. winsorize every extended pool at p1/p99 before spread/percentile;
+#  2. draw a bar only if the metric has >= MIN_POOL_N non-NaN cohort members, else
+#     "pool too small (n=X)";
+#  3. financial-cohort suppression for metrics meaningless to banks/asset managers;
+#  4. de-dup vs the canonical cdx/Section-G bars (only non-overlapping moat comps added).
+# This is a SEPARATE, additive system from the 16-playbook machinery (self.cohort_stats),
+# so no existing displayed number moves. Pools are winsorized here; the original 16 are NOT.
+MIN_POOL_N = 30
+FIN_COHORTS = {'FinManager', 'BalanceSheetFin'}
+# Extended metrics suppressed on financial cohorts (economically meaningless there).
+FIN_SUPPRESS = {'op_margin', 'fcf_margin', 'interest_coverage', 'inv_days', 'dso',
+                'net_debt_ebitda', 'SGAtoGP', 'DeptoGP'}
+# Non-duplicate moat components pooled straight from moatdf (rule 4).
+EXT_MOAT_COLS = ['RevtoASS', 'SGAtoGP', 'DeptoGP', 'NetMargin', 'CapExtoEarnings', 'TLtoEquity']
+# cdx columns the reducer needs.
+_EXT_CDX_COLS = ['date', 'revenue', 'operatingIncome', 'freeCashFlow', 'netIncome',
+                 'interestExpense', 'netDebtToEBITDA', 'effectiveTaxRate',
+                 'daysSalesOutstanding', 'daysOfInventoryOutstanding',
+                 'netCashProvidedByOperatingActivities', 'totalAssets',
+                 'weightedAverageShsOut', 'marketCap', 'depreciationAndAmortization',
+                 'dividendsPaid', 'longTermDebt']
+
+
+def _clip01(v):
+    v = safe_float(v)
+    if np.isnan(v):
+        return np.nan
+    return min(max(v, 0.0), 1.0)
+
+
+def _winsorize(arr, p=1.0):
+    """Clip a 1-D array to its [p, 100-p] percentiles (NaNs already dropped)."""
+    if arr.size == 0:
+        return arr
+    lo, hi = np.percentile(arr, [p, 100.0 - p])
+    return np.clip(arr, lo, hi)
+
+
+def _sloan_recomputed(g):
+    """Sloan accruals over cdx_df: (TTM netIncome - TTM operating cash flow)/latest assets."""
+    ni = ttm_sum(g, 'netIncome')
+    cfo = ttm_sum(g, 'netCashProvidedByOperatingActivities')
+    ta = latest_row_value(g, 'totalAssets')
+    if np.isnan(ni) or np.isnan(cfo) or np.isnan(ta) or ta == 0:
+        return np.nan
+    return (ni - cfo) / ta
+
+
+def _p_ffo_reducer(g):
+    ffo_ps = compute_ffo_per_share(g)
+    shares = latest_row_value(g, 'weightedAverageShsOut')
+    mktcap = latest_row_value(g, 'marketCap')
+    if np.isnan(ffo_ps) or np.isnan(shares) or np.isnan(mktcap) or ffo_ps * shares == 0:
+        return np.nan
+    return mktcap / (ffo_ps * shares)
+
+
+def _affo_payout_reducer(g):
+    div = abs(ttm_sum(g, 'dividendsPaid'))
+    ffo = ttm_sum(g, 'netIncome') + ttm_sum(g, 'depreciationAndAmortization')
+    capex = ttm_sum(g, 'netCashProvidedByOperatingActivities') - ttm_sum(g, 'freeCashFlow')
+    denom = ffo - capex
+    if np.isnan(div) or np.isnan(denom) or denom <= 0:
+        return np.nan
+    return div / denom
+
+
+def _ext_reducer(g):
+    """Per-source extended metrics, using the SAME helpers as the per-name markers so the
+    pool value and the displayed marker are identical."""
+    return pd.Series({
+        'op_margin': compute_operating_margin(g),
+        'fcf_margin': compute_fcf_margin_ttm(g),
+        'interest_coverage': compute_interest_coverage(g),
+        'net_debt_ebitda': latest_row_value(g, 'netDebtToEBITDA'),
+        'effective_tax': _clip01(latest_row_value(g, 'effectiveTaxRate')),
+        'dso': latest_row_value(g, 'daysSalesOutstanding'),
+        'inv_days': latest_row_value(g, 'daysOfInventoryOutstanding'),
+        'sloan': _sloan_recomputed(g),
+        'p_ffo': _p_ffo_reducer(g),
+        'affo_payout': _affo_payout_reducer(g),
+        'ltv': compute_ltv_proxy(g),
+    })
+
+
+def build_cohort_membership(data):
+    """Full carved + size-floored membership per cohort, reconstructed from carveout_labels
+    (source->cohort) and the mcap floor. Reproduces the pipeline's n_<cohort> counts."""
+    labels = data.get('carveout_labels')
+    cdx = data.get('cdx_df')
+    if labels is None or cdx is None or cdx.empty:
+        # Graceful fallback: the shortlist membership (pools will be tiny -> min-N suppresses).
+        carveout = data.get('carveout_sidelists', {})
+        mem = {'general': list(data['postrank_df']['source'].unique())}
+        for coh in COHORTS:
+            cp = carveout.get(coh, {}).get('postRank', pd.DataFrame())
+            if cp is not None and not cp.empty:
+                mem[coh] = list(cp['source'].unique())
+        return mem
+    diag = data.get('carveout_diagnostics') or {}
+    floor = diag.get('mcap_floor') or 0
+    c = cdx[['source', 'date', 'marketCap']].copy()
+    c['date'] = pd.to_datetime(c['date'], errors='coerce')
+    c = c.sort_values(['source', 'date'], ascending=[True, False])
+    latest_mcap = c.groupby('source', sort=False)['marketCap'].first()
+    mem = {}
+    for coh in ['general'] + COHORTS:
+        names = labels[labels == coh].index.tolist()
+        mem[coh] = [n for n in names if n in latest_mcap.index
+                    and pd.notna(latest_mcap[n]) and latest_mcap[n] >= floor]
+    return mem
+
+
+def build_extended_pools(data):
+    """Return (ext_per_src, ext_stats, membership).
+
+    ext_per_src : DataFrame (source-indexed) of extended metrics for every cohort member
+                  (cdx-derived + the non-dup moat components). Supplies markers.
+    ext_stats   : {(cohort, metric): {n, p10, p50, p90, arr}} over the winsorized pool;
+                  entries with n < MIN_POOL_N carry only {n} (render suppresses them).
+    """
+    try:
+        membership = build_cohort_membership(data)
+        cdx = data['cdx_df']
+        cols = [c for c in _EXT_CDX_COLS if c in cdx.columns] + ['source']
+        c = cdx[cols].copy()
+        c['date'] = pd.to_datetime(c['date'], errors='coerce')
+        c = c.sort_values(['source', 'date'], ascending=[True, False])
+        all_members = set()
+        for lst in membership.values():
+            all_members |= set(lst)
+        sub = c[c['source'].isin(all_members)]
+        value_cols = [x for x in cols if x != 'source']
+        per = sub.groupby('source', sort=False)[value_cols].apply(_ext_reducer)
+
+        # Merge the non-dup moat components (markers + pools) from moatdf.
+        moatdf = data.get('moatdf')
+        if moatdf is not None and not moatdf.empty:
+            mcols = [x for x in EXT_MOAT_COLS if x in moatdf.columns]
+            mm = moatdf[['source'] + mcols].drop_duplicates('source').set_index('source')
+            per = per.join(mm, how='left')
+
+        metrics = list(per.columns)
+        stats = {}
+        for coh, members in membership.items():
+            idx = [m for m in members if m in per.index]
+            if not idx:
+                continue
+            block = per.loc[idx]
+            for metric in metrics:
+                arr = pd.to_numeric(block[metric], errors='coerce').replace(
+                    [np.inf, -np.inf], np.nan).to_numpy(dtype='float64')
+                nonnan = arr[~np.isnan(arr)]
+                n = int(nonnan.size)
+                if n == 0:
+                    stats[(coh, metric)] = {'n': 0}
+                    continue
+                wins = _winsorize(nonnan)
+                p10, p50, p90 = np.percentile(wins, [10, 50, 90])
+                stats[(coh, metric)] = {'n': n, 'p10': float(p10), 'p50': float(p50),
+                                        'p90': float(p90), 'arr': wins}
+        return per, stats, membership
+    except Exception as e:
+        log.warning(f"Failed to build extended pools: {e}")
+        import traceback
+        traceback.print_exc()
+        return None, {}, {}
+
+
 # ============================================================================
 # DATA LOADING & PROCESSING
 # ============================================================================
-def load_run_data(run_dir, valuation_repo):
-    """Load all run data from pickles and CSVs."""
+def resolve_run_artifacts(run_dir, run_date=None):
+    """Resolve ONE self-consistent run: pick a run-date from the postRank filename (the
+    source of truth -- NOT mtime, which races during a Drive sync), then require the
+    Boresults pickle and CSVs for that SAME date. Missing same-date artifact -> hard error,
+    never a silent fall-back to another date's file (that mixing was the publish-blocker).
+
+    Returns (run_date, postrank_file, boresults_file, aggscore_file, forensic_file).
+    """
+    run_dir = str(run_dir)
+    postrank_by_date = {}
+    for f in glob.glob(os.path.join(run_dir, "postRank_*.pickle")):
+        m = re.search(r'postRank_(\d{4}-\d{2}-\d{2})_', os.path.basename(f))
+        if m:
+            postrank_by_date[m.group(1)] = f
+    if not postrank_by_date:
+        raise FileNotFoundError(f"No postRank_<date>_*.pickle found in {run_dir}")
+
+    if run_date:
+        if run_date not in postrank_by_date:
+            raise FileNotFoundError(
+                f"--run-date {run_date}: no postRank pickle for that date in {run_dir}. "
+                f"Available run-dates: {sorted(postrank_by_date)}")
+        chosen = run_date
+    else:
+        # Latest by the DATE IN THE FILENAME (ISO dates sort lexicographically), not mtime.
+        chosen = max(postrank_by_date)
+    postrank_file = postrank_by_date[chosen]
+
+    def require(pattern, label):
+        matches = glob.glob(os.path.join(run_dir, pattern.format(d=chosen)))
+        if not matches:
+            raise FileNotFoundError(
+                f"Run-date {chosen}: required {label} not found "
+                f"(pattern '{pattern.format(d=chosen)}'). Refusing to fall back to a "
+                f"different date's file (prevents cross-run mixing). Ensure the {chosen} run "
+                f"is fully synced to {run_dir}, or pass --run-date for a complete run.")
+        return max(matches, key=os.path.getmtime)
+
+    boresults_file = require("Boresults_dic-*_{d}_*.pickle", "Boresults pickle")
+    aggscore_file = require("AggScoreTop100-{d}_*.csv", "AggScoreTop100 CSV")
+    forensic_file = require("ForensicFlagsTop100-{d}_*.csv", "ForensicFlagsTop100 CSV")
+    return chosen, postrank_file, boresults_file, aggscore_file, forensic_file
+
+
+def load_run_data(run_dir, valuation_repo, run_date=None):
+    """Load all run data from ONE date-consistent run (see resolve_run_artifacts)."""
     run_dir = Path(run_dir)
 
     log.info(f"Loading run artifacts from {run_dir}...")
 
-    # Find latest files by glob
-    postrank_file = find_latest_pickle(str(run_dir), "postRank_*.pickle")
-    boresults_file = find_latest_pickle(str(run_dir), "Boresults_dic-*.pickle")
-    aggscore_file = find_latest_pickle(str(run_dir), "AggScoreTop100-*.csv")
-    forensic_file = find_latest_pickle(str(run_dir), "ForensicFlagsTop100-*.csv")
+    run_date, postrank_file, boresults_file, aggscore_file, forensic_file = \
+        resolve_run_artifacts(run_dir, run_date=run_date)
 
-    if not postrank_file:
-        raise FileNotFoundError("No postRank_*.pickle found")
-    if not boresults_file:
-        raise FileNotFoundError("No Boresults_dic-*.pickle found")
-
-    # Extract date from filename
-    run_date = postrank_file.split('_')[1] if '_' in postrank_file else datetime.now().strftime('%Y-%m-%d')
-
-    log.info(f"Run date: {run_date}")
+    # One-line provenance log: single resolved run-date + exactly which files were loaded,
+    # so any cross-run mixing would be visible and loud.
+    log.info(f"Resolved run-date {run_date}; loading a single date-consistent run:")
+    for label, f in [('postRank', postrank_file), ('Boresults', boresults_file),
+                     ('AggScore', aggscore_file), ('ForensicFlags', forensic_file)]:
+        log.info(f"    {label}: {os.path.basename(f)}")
 
     # Load pickles
     postrank_dic = load_pickle(postrank_file)
@@ -455,6 +690,8 @@ def load_run_data(run_dir, valuation_repo):
     moatdf = postrank_dic.get('moatdf')
     tickers_df = boresults_dic.get('Tickers_df')
     carveout_sidelists = boresults_dic.get('carveout_sidelists')
+    carveout_labels = boresults_dic.get('carveout_labels')
+    carveout_diagnostics = boresults_dic.get('carveout_diagnostics')
 
     # Load CSVs
     aggscore_df = None
@@ -481,6 +718,8 @@ def load_run_data(run_dir, valuation_repo):
         'moatdf': moatdf,
         'tickers_df': tickers_df,
         'carveout_sidelists': carveout_sidelists,
+        'carveout_labels': carveout_labels,
+        'carveout_diagnostics': carveout_diagnostics,
         'aggscore_df': aggscore_df,
         'forensic_df': forensic_df,
         'get_industry': get_industry,
@@ -611,7 +850,34 @@ class PresentationBuilder:
         self.raw_all = bundle.get('raw_all')                # source-indexed raw playbook df
         # Yahoo augment (Section A only): persistent per-ticker store, fetch-missing-only.
         self.yahoo = load_yahoo_data(self._page_tickers(), augment, refresh=refresh_yahoo)
+        # Extended peer-bar pools (metrics beyond the 16 playbook set), winsorized + min-N
+        # gated + fin-suppressed. Separate from the 16-playbook machinery above.
+        self.ext_per_src, self.ext_stats, self.ext_membership = build_extended_pools(data)
         self.html_parts = []
+
+    def ext_val(self, ticker, metric):
+        """Raw extended-metric value for a ticker (marker for its own bar)."""
+        p = self.ext_per_src
+        if p is None or ticker not in p.index or metric not in p.columns:
+            return np.nan
+        return safe_float(p.loc[ticker, metric])
+
+    def ext_bar(self, cohort_label, metric, marker):
+        """Trailing HTML for an extended-metric bar: percentile + dot-on-p10-p90 bar, or a
+        gap tag (financial-suppressed / pool-too-small). Winsorized pool; percentile 0-100.
+        `marker` is the RAW displayed value so the dot matches the number shown."""
+        if cohort_label in FIN_COHORTS and metric in FIN_SUPPRESS:
+            return '<span class="gap-inline">n/a for financials</span>'
+        st = self.ext_stats.get((cohort_label, metric))
+        if st is None:
+            return '<span class="gap-inline">no cohort pool</span>'
+        if st.get('n', 0) < MIN_POOL_N:
+            return f'<span class="gap-inline">pool too small (n={st.get("n", 0)})</span>'
+        if marker is None or np.isnan(safe_float(marker)):
+            return ''
+        pct = get_percentile_marker(safe_float(marker), st['arr'])
+        bar = create_distribution_bar(safe_float(marker), st['p10'], st['p50'], st['p90'])
+        return f'<span class="pctile">({pctile_format(pct)} pct)</span> {bar}'
 
     def _page_tickers(self):
         """Ordered, de-duplicated list of every ticker that gets a page (general top-20 +
@@ -870,17 +1136,24 @@ class PresentationBuilder:
             p_ffo = mktcap / ffo_total if mktcap and ffo_total and not np.isnan(mktcap) and not np.isnan(ffo_total) else np.nan
             ltv = compute_ltv_proxy(cdx_df)
             pb_ratio = latest_row_value(cdx_df, 'pbRatio')
+            # REIT-cohort peer bars (winsorized, min-N; REIT n=245). FFO/share is per-share
+            # currency -> no bar; NAV/P-B uses the canonical bVpRatio bar in Section G (rule 4).
+            pffo_bar = self.ext_bar(cohort_label, 'p_ffo', p_ffo)
+            ltv_bar = self.ext_bar(cohort_label, 'ltv', ltv)
+            affo = self.ext_val(ticker, 'affo_payout')
+            affo_bar = self.ext_bar(cohort_label, 'affo_payout', affo)
 
             html = f"""
             <div class="section-c valuation">
                 <h3>Valuation Ratios (REIT)</h3>
                 <table class="metrics-table">
-                    <tr><td><strong>FFO/Share (proxy)</strong></td><td>{ratio_format(ffo_per_share)}</td><td>TTM</td></tr>
-                    <tr><td><strong>P/FFO</strong></td><td>{ratio_format(p_ffo)}</td><td>(proxy)</td></tr>
-                    <tr><td><strong>LTV (proxy)</strong></td><td>{pct_format(ltv)}</td><td>debt/assets</td></tr>
-                    <tr><td><strong>NAV Disc/Prem (proxy)</strong></td><td>{ratio_format(pb_ratio)}</td><td>P/B proxy</td></tr>
+                    <tr><td><strong>FFO/Share (proxy)</strong></td><td>{ratio_format(ffo_per_share)}</td><td>TTM (per-share, no bar)</td></tr>
+                    <tr><td><strong>P/FFO</strong></td><td>{ratio_format(p_ffo)} {pffo_bar}</td><td>(proxy)</td></tr>
+                    <tr><td><strong>AFFO Payout (proxy)</strong></td><td>{pct_format(affo)} {affo_bar}</td><td>|div|/(FFO−capex)</td></tr>
+                    <tr><td><strong>LTV (proxy)</strong></td><td>{pct_format(ltv)} {ltv_bar}</td><td>debt/assets</td></tr>
+                    <tr><td><strong>NAV Disc/Prem (proxy)</strong></td><td>{ratio_format(pb_ratio)}</td><td>P/B proxy (see B/P bar, §G)</td></tr>
                 </table>
-                <div class="gap-note">[cap-rate, occupancy, WALE, AFFO not obtainable from filter data]</div>
+                <div class="gap-note">[cap-rate, occupancy, WALE not obtainable from filter data]</div>
             </div>
             """
             return html
@@ -894,13 +1167,14 @@ class PresentationBuilder:
             # Section G and the dot-on-bar is a fair peer comparison.
             cycleheat = self.raw_metric(ticker, 'CycleHeat')
             ch_bar = self.dist_bar(ticker, cohort_label, 'CycleHeat', marker=cycleheat)
+            nde_bar = self.ext_bar(cohort_label, 'net_debt_ebitda', net_debt_ebitda)
 
             html = f"""
             <div class="section-c valuation">
                 <h3>Valuation Ratios (Mining)</h3>
                 <table class="metrics-table">
-                    <tr><td><strong>Net Debt/EBITDA</strong></td><td>{ratio_format(net_debt_ebitda)}</td><td>latest</td></tr>
-                    <tr><td><strong>Free Cash Flow</strong></td><td>{ratio_format(fcf)}</td><td>latest Q</td></tr>
+                    <tr><td><strong>Net Debt/EBITDA</strong></td><td>{ratio_format(net_debt_ebitda)} {nde_bar}</td><td>latest · trailing EBITDA distorts cyclicals</td></tr>
+                    <tr><td><strong>Free Cash Flow</strong></td><td>{ratio_format(fcf)}</td><td>latest Q (currency, no bar)</td></tr>
                     <tr><td><strong>CycleHeat</strong></td><td>{ratio_format(cycleheat)} {ch_bar}</td><td>strong signal</td></tr>
                 </table>
                 <div class="gap-note">[AISC, cost-curve, reserve-life not obtainable from filter data]</div>
@@ -918,15 +1192,19 @@ class PresentationBuilder:
 
             roe_bar = self.dist_bar(ticker, cohort_label, 'returnOnEquity', marker=roe)
             roa_bar = self.dist_bar(ticker, cohort_label, 'RoA', marker=roa)
+            opm_bar = self.ext_bar(cohort_label, 'op_margin', op_margin)  # -> n/a for financials
+            eff_tax = self.ext_val(ticker, 'effective_tax')
+            efftax_bar = self.ext_bar(cohort_label, 'effective_tax', eff_tax)
 
             html = f"""
             <div class="section-c valuation">
                 <h3>Valuation Ratios ({'Bank' if cohort_label == 'BalanceSheetFin' else 'FinManager'})</h3>
                 <table class="metrics-table">
-                    <tr><td><strong>P/B</strong></td><td>{ratio_format(pb)}</td><td>latest</td></tr>
+                    <tr><td><strong>P/B</strong></td><td>{ratio_format(pb)}</td><td>latest (see B/P bar, §G)</td></tr>
                     <tr><td><strong>ROE</strong></td><td>{pct_format(roe)} {roe_bar}</td><td>latest</td></tr>
                     <tr><td><strong>ROA</strong></td><td>{pct_format(roa)} {roa_bar}</td><td>latest</td></tr>
-                    <tr><td><strong>Op Margin</strong></td><td>{pct_format(op_margin)}</td><td>TTM</td></tr>
+                    <tr><td><strong>Op Margin</strong></td><td>{pct_format(op_margin)} {opm_bar}</td><td>TTM</td></tr>
+                    <tr><td><strong>Effective Tax</strong></td><td>{pct_format(eff_tax)} {efftax_bar}</td><td>latest, clip[0,1]</td></tr>
                 </table>
                 <div class="gap-note">[NIM, efficiency ratio, NPL, CET1, AUM, fee-margin not obtainable from filter data]</div>
             </div>
@@ -985,6 +1263,17 @@ class PresentationBuilder:
             gm_bar = self.dist_bar(ticker, cohort_label, 'grossProfitMargin', marker=gm)
             iq_bar = self.dist_bar(ticker, cohort_label, 'incomeQuality', marker=income_qual)
             fcfy_bar = self.dist_bar(ticker, cohort_label, 'freeCashFlowYield', marker=fcf_yield)
+            # Extended peer bars (winsorized pool, min-N gated, fin-suppressed).
+            opm_bar = self.ext_bar(cohort_label, 'op_margin', op_margin)
+            fcfm_bar = self.ext_bar(cohort_label, 'fcf_margin', fcf_margin)
+            intcov_bar = self.ext_bar(cohort_label, 'interest_coverage', int_cov)
+            nde_bar = self.ext_bar(cohort_label, 'net_debt_ebitda', net_debt_ebitda)
+            eff_tax = self.ext_val(ticker, 'effective_tax')
+            dso = self.ext_val(ticker, 'dso')
+            inv_days = self.ext_val(ticker, 'inv_days')
+            efftax_bar = self.ext_bar(cohort_label, 'effective_tax', eff_tax)
+            dso_bar = self.ext_bar(cohort_label, 'dso', dso)
+            invd_bar = self.ext_bar(cohort_label, 'inv_days', inv_days)
 
             html = f"""
             <div class="section-c valuation">
@@ -992,16 +1281,19 @@ class PresentationBuilder:
                 <table class="metrics-table">
                     <tr><td><strong>ROIC/ROCE</strong></td><td>{ratio_format(roic)} {roic_bar}</td><td>proxy</td></tr>
                     <tr><td><strong>Gross Margin</strong></td><td>{pct_format(gm)} {gm_bar}</td><td>latest</td></tr>
-                    <tr><td><strong>Op Margin</strong></td><td>{pct_format(op_margin)}</td><td>TTM</td></tr>
-                    <tr><td><strong>FCF Margin</strong></td><td>{pct_format(fcf_margin)}</td><td>TTM</td></tr>
+                    <tr><td><strong>Op Margin</strong></td><td>{pct_format(op_margin)} {opm_bar}</td><td>TTM</td></tr>
+                    <tr><td><strong>FCF Margin</strong></td><td>{pct_format(fcf_margin)} {fcfm_bar}</td><td>TTM</td></tr>
                     <tr><td><strong>Cash Conversion</strong></td><td>{ratio_format(cash_conv)}</td><td>TTM FCF / NI</td></tr>
                     <tr><td><strong>Income Quality</strong></td><td>{ratio_format(income_qual)} {iq_bar}</td><td>audit</td></tr>
-                    <tr><td><strong>Net Debt/EBITDA</strong></td><td>{ratio_format(net_debt_ebitda)}</td><td>latest</td></tr>
-                    <tr><td><strong>Interest Coverage</strong></td><td>{ratio_format(int_cov)}</td><td>op inc / int exp</td></tr>
+                    <tr><td><strong>Net Debt/EBITDA</strong></td><td>{ratio_format(net_debt_ebitda)} {nde_bar}</td><td>latest</td></tr>
+                    <tr><td><strong>Interest Coverage</strong></td><td>{ratio_format(int_cov)} {intcov_bar}</td><td>op inc / int exp</td></tr>
+                    <tr><td><strong>Effective Tax</strong></td><td>{pct_format(eff_tax)} {efftax_bar}</td><td>latest, clip[0,1]</td></tr>
+                    <tr><td><strong>Days Sales Outstanding</strong></td><td>{ratio_format(dso)} {dso_bar}</td><td>latest</td></tr>
+                    <tr><td><strong>Inventory Days</strong></td><td>{ratio_format(inv_days)} {invd_bar}</td><td>goods cohorts</td></tr>
                     <tr><td><strong>P/E</strong></td><td>{ratio_format(pe_ratio)}</td><td>traded or yield inv</td></tr>
                     <tr><td><strong>FCF Yield</strong></td><td>{pct_format(fcf_yield)} {fcfy_bar}</td><td>reviewRef raw (TTM)</td></tr>
                 </table>
-                <div class="gap-note">[WACC, EV/EBIT not obtainable from filter data]</div>
+                <div class="gap-note">[WACC, EV/EBIT not obtainable from filter data; P/E withheld from peer bar — use earnings-yield bar in Section G]</div>
             </div>
             """
             return html
@@ -1012,22 +1304,32 @@ class PresentationBuilder:
         if cdx.empty:
             return '<div class="section-d"><p>[No quarterly data available]</p></div>'
 
-        # Get time-series data (newest-first, so reverse for display)
+        # Get time-series data (oldest -> newest for charting)
         cdx = cdx.sort_values('date') if 'date' in cdx.columns else cdx
+        has_dates = 'date' in cdx.columns
 
-        # Helper to get trend series (oldest to newest for charting)
+        # Helper to get a trend series AND its per-quarter dates (only the rows where the
+        # metric is present), oldest->newest. The dates drive each chart's x-axis span.
         def get_trend(col):
+            if col not in cdx.columns:
+                return None
+            if has_dates:
+                sub = cdx[['date', col]].dropna(subset=[col])
+                if sub.empty:
+                    return None
+                return sub[col].values.tolist(), sub['date'].tolist()
             vals = cdx[col].dropna().values.tolist()
-            return vals if vals else None
+            return (vals, []) if vals else None
 
-        # Compute operating margin trend
-        op_margin_trend = []
-        for _, row in cdx.iterrows():
-            if pd.notna(row.get('revenue')) and pd.notna(row.get('operatingIncome')) and row.get('revenue') != 0:
-                op_margin_trend.append(row['operatingIncome'] / row['revenue'])
-        op_margin_trend = op_margin_trend if op_margin_trend else None
+        # Computed operating-margin trend, with its own dates.
+        om_vals, om_dates = [], []
+        for _, r in cdx.iterrows():
+            if pd.notna(r.get('revenue')) and pd.notna(r.get('operatingIncome')) and r.get('revenue') != 0:
+                om_vals.append(r['operatingIncome'] / r['revenue'])
+                if has_dates:
+                    om_dates.append(r['date'])
+        op_margin_trend = (om_vals, om_dates) if om_vals else None
 
-        sparklines = []
         metrics = [
             ('Revenue', get_trend('revenue')),
             ('Net Income', get_trend('netIncome')),
@@ -1043,9 +1345,22 @@ class PresentationBuilder:
             ('Days Inventory Outstanding', get_trend('daysOfInventoryOutstanding')),
         ]
 
-        for name, values in metrics:
-            if values:
-                sparklines.append(f"<div><strong>{name}:</strong> {create_sparkline_svg(values)}</div>")
+        sparklines = []
+        for name, trend in metrics:
+            if not trend:
+                continue
+            values, dates = trend
+            spark = create_sparkline_svg(values)
+            if dates:
+                start = f'<span class="axis-start">{quarter_label(dates[0])}</span>'
+                end = f'<span class="axis-end">{quarter_label(dates[-1])}</span>'
+                span = span_caption(dates)
+                span_html = f'<span class="axis-span">{span}</span>' if span else ''
+            else:
+                start = end = span_html = ''
+            sparklines.append(
+                f'<div class="trend-row"><span class="trend-label"><strong>{name}:</strong></span>'
+                f'{start}{spark}{end}{span_html}</div>')
 
         html = f"""
         <div class="section-d trends">
@@ -1055,8 +1370,9 @@ class PresentationBuilder:
         """
         return html
 
-    def section_e_moat(self, ticker):
-        """Section E: Moat checklist."""
+    def section_e_moat(self, ticker, cohort_label='general'):
+        """Section E: Moat checklist. Adds peer bars for the NON-duplicate moat components
+        (rule 4); the duplicate ones are covered by canonical cdx/Section-G bars."""
         moat_comp = self.get_moat_components(ticker)
         postrank_df = self.data['postrank_df']
 
@@ -1073,10 +1389,18 @@ class PresentationBuilder:
             <table class="moat-components">
         """
 
+        # Duplicate-of-canonical components (rule 4) render as plain values (bars live on the
+        # cdx/Section-G side); the 6 non-dup components get peer bars.
+        dedup = {'FCFyield', 'GrossMargin', 'RoE', 'RoA', 'ROIC'}
         for metric in ['FCFyield', 'GrossMargin', 'RevtoASS', 'RoE', 'RoA', 'ROIC',
                        'SGAtoGP', 'DeptoGP', 'NetMargin', 'CapExtoEarnings', 'TLtoEquity']:
             val = moat_comp.get(metric, np.nan)
-            html += f"<tr><td>{metric}:</td><td>{ratio_format(val)}</td></tr>"
+            if metric in EXT_MOAT_COLS:
+                bar = self.ext_bar(cohort_label, metric, val)
+                html += f"<tr><td>{metric}:</td><td>{ratio_format(val)} {bar}</td></tr>"
+            else:
+                note = ' <span class="pctile">(see §G/C bar)</span>' if metric in dedup else ''
+                html += f"<tr><td>{metric}:</td><td>{ratio_format(val)}{note}</td></tr>"
 
         html += f"""
             </table>
@@ -1087,7 +1411,7 @@ class PresentationBuilder:
         """
         return html
 
-    def section_f_forensic(self, ticker):
+    def section_f_forensic(self, ticker, cohort_label='general'):
         """Section F: Forensic / accounting quality."""
         aggscore_df = self.data.get('aggscore_df')
         forensic_df = self.data.get('forensic_df')
@@ -1116,13 +1440,19 @@ class PresentationBuilder:
                 sloan = ag_row.iloc[0].get('sloanAccruals', '—')
                 forensic_tag = ag_row.iloc[0].get('forensicTag', '—')
 
+        # Sloan accruals RECOMPUTED over the full cohort membership (the as-saved CSV value
+        # above pools only the shortlist, so it gets no bar). Winsorized, min-N gated.
+        sloan_cohort = self.ext_val(ticker, 'sloan')
+        sloan_bar = self.ext_bar(cohort_label, 'sloan', sloan_cohort)
+
         html = f"""
         <div class="section-f forensic">
             <h3>Forensic / Accounting Quality</h3>
             <table class="forensic-table">
                 <tr><td><strong>M-Score</strong></td><td>{m_score}</td></tr>
                 <tr><td><strong>C-Score</strong></td><td>{c_score}</td></tr>
-                <tr><td><strong>Sloan Accruals</strong></td><td>{sloan}</td></tr>
+                <tr><td><strong>Sloan Accruals (shortlist CSV)</strong></td><td>{sloan}</td></tr>
+                <tr><td><strong>Sloan Accruals (cohort peer)</strong></td><td>{ratio_format(sloan_cohort)} {sloan_bar}</td></tr>
                 <tr><td><strong>Income Quality</strong></td><td>{ratio_format(income_qual)}</td></tr>
                 <tr><td><strong>FCF vs Net Income (TTM)</strong></td><td>FCF: {ratio_format(fcf_ttm)} / NI: {ratio_format(ni_ttm)}</td></tr>
                 <tr><td><strong>Forensic Tag</strong></td><td>{forensic_tag}</td></tr>
@@ -1152,8 +1482,14 @@ class PresentationBuilder:
         # within the cohort's raw distribution + p10-p50-p90 spread bar.
         for label, _cdx_col, pool_metric, fmt in SECTION_G_METRICS:
             marker = ticker_markers.get(pool_metric, np.nan)
-            pct = ticker_percentiles.get(pool_metric, np.nan)
             val_str = pct_format(marker) if fmt == 'pct' else ratio_format(marker)
+            # Financial-cohort suppression (rule 3): gross margin is meaningless for
+            # banks/asset managers -> show the value, drop the bar/percentile.
+            if pool_metric == 'grossProfitMargin' and cohort_label in FIN_COHORTS:
+                html += (f'<div><strong>{label}:</strong> {val_str} '
+                         f'<span class="gap-inline">n/a for financials</span></div>')
+                continue
+            pct = ticker_percentiles.get(pool_metric, np.nan)
             bar = self.dist_bar(ticker, cohort_label, pool_metric, marker=marker)
             html += (f'<div><strong>{label}:</strong> {val_str} '
                      f'<span class="pctile">({pctile_format(pct)} pct)</span> {bar}</div>')
@@ -1239,8 +1575,8 @@ class PresentationBuilder:
         html += self.section_b_flags(ticker)
         html += self.section_c_valuation(ticker, cohort_label)
         html += self.section_d_trends(ticker)
-        html += self.section_e_moat(ticker)
-        html += self.section_f_forensic(ticker)
+        html += self.section_e_moat(ticker, cohort_label)
+        html += self.section_f_forensic(ticker, cohort_label)
         html += self.section_g_cohort(ticker, cohort_label)
         html += self.section_h_flags(ticker)
 
@@ -1620,7 +1956,41 @@ nav.sidebar {
 .trends {
     display: flex;
     flex-direction: column;
-    gap: 15px;
+    gap: 12px;
+}
+
+.trend-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.trend-label {
+    min-width: 180px;
+    flex: 0 0 auto;
+}
+
+.axis-start,
+.axis-end,
+.axis-span {
+    font-size: 0.75em;
+    color: #999;
+    font-family: monospace;
+    white-space: nowrap;
+}
+
+.axis-start {
+    text-align: right;
+    min-width: 58px;
+}
+
+.axis-end {
+    min-width: 58px;
+}
+
+.axis-span {
+    color: #0066cc;
+    font-weight: bold;
 }
 
 .flag-strip {
@@ -1704,6 +2074,10 @@ def main():
                        help='Force re-fetch of Yahoo info (default is fetch-missing-only). '
                             'Bare flag = refresh ALL page names; or pass a comma-separated '
                             'ticker list to refresh just those.')
+    parser.add_argument('--run-date', type=str, default=None, metavar='YYYY-MM-DD',
+                       help='Pin a specific run-date. Default: the latest postRank date on '
+                            'disk. All artifacts (Boresults + CSVs) are loaded for this same '
+                            'date; a missing same-date file is a hard error (no cross-run mix).')
 
     args = parser.parse_args()
 
@@ -1716,8 +2090,8 @@ def main():
         refresh_yahoo = {t.strip() for t in args.refresh_yahoo.split(',') if t.strip()}
 
     try:
-        # Load data
-        data = load_run_data(args.run_dir, VALUATION_REPO)
+        # Load data (single date-consistent run; hard error on any same-date file missing)
+        data = load_run_data(args.run_dir, VALUATION_REPO, run_date=args.run_date)
         log.info(f"Loaded run data for {len(data['postrank_df'])} names")
 
         # Build presentation
