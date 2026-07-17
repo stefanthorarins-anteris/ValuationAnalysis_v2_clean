@@ -9,6 +9,8 @@ baseline_tools/price_data/
 # ---- Generated output / results ----
 output/
 results/
+# NOTE: the presentations/ HTML (the CEO's picks) is DELIBERATELY TRACKED per CEO
+# decision 2026-07-17 — it travels with the pipeline. Do NOT re-add an ignore for it.
 # Root-level result artifacts emitted by a pipeline run (NEVER commit — they are
 # regenerated every run and can leak the ranked output). Dated variants match too.
 AggScoreTop*.csv
