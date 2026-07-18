@@ -233,6 +233,136 @@ COHORT_WEIGHTS = {
     },
 }
 
+# --- market-cap band segmentation (ADDITIVE size axis over the GENERAL pool) ---
+# SINGLE SOURCE OF TRUTH for BOTH band SELECTION (partition_by_marketcap) and per-
+# band GRADING (baseline_tools/pipeline_analysis.beat_rate_vs_urth). Each tuple is
+# (label, lo_usd, hi_usd, head_N): a company sits in exactly ONE band by its USD
+# market cap in the half-open interval [lo, hi). The bands are ORTHOGONAL to the 5
+# sector carve-cohorts and apply ONLY to the general pool. The existing universe-
+# wide ranking is GROUPED, never re-scored or re-ranked -- each band takes its top-N
+# in the existing order (CEO 2026-07-17: group, do NOT re-rank within band).
+MCAP_BANDS = [
+    ("General",       300e6, float('inf'), 20),
+    ("Mid_150_300M",  150e6, 300e6,         5),
+    ("Small_50_150M",  50e6, 150e6,         5),
+    ("Micro_lt_50M",    0.0,  50e6,         5),
+]
+
+# --- approximate FX -> USD (coarse buckets; banding only needs the RIGHT band) ---
+# cdx_df['marketCap'] is stored in each company's REPORTING currency, MIXED across the
+# universe (verified: DORO.ST in SEK ~962M ~= $92M USD; FRES.L reports USD), so banding
+# on the raw field would misband every non-USD name. We convert to USD via the captured
+# reportedCurrency + this table. Rates are approximate mid-2020s spot; the cutoffs
+# (50/150/300M) are coarse so exact FX is unnecessary. Unknown currency -> None -> the
+# name's USD market cap is unknown -> routed to General, NEVER misbanded, NEVER dropped.
+# TODO: wire a live/dated FX source (an FMP forex endpoint or a stored dated rate file)
+# to replace this hardcoded snapshot. Do NOT build a bespoke FX-fetch subsystem for it.
+FX_TO_USD = {
+    'USD': 1.0, 'EUR': 1.08, 'GBP': 1.27, 'GBp': 0.0127, 'GBX': 0.0127,
+    'CHF': 1.12, 'JPY': 0.0067, 'SEK': 0.095, 'NOK': 0.093, 'DKK': 0.145,
+    'CAD': 0.73, 'AUD': 0.66, 'NZD': 0.61, 'HKD': 0.128, 'SGD': 0.74,
+    'CNY': 0.138, 'CNH': 0.138, 'INR': 0.012, 'KRW': 0.00073, 'TWD': 0.031,
+    'ZAR': 0.054, 'BRL': 0.185, 'MXN': 0.055, 'PLN': 0.25, 'ILS': 0.27,
+    'AED': 0.272, 'SAR': 0.267, 'THB': 0.028, 'IDR': 0.000063, 'TRY': 0.030,
+    'RUB': 0.011, 'CZK': 0.043, 'HUF': 0.0028, 'PHP': 0.017, 'MYR': 0.22,
+}
+
+
+def _fx_to_usd(currency):
+    """USD-per-unit for a reportedCurrency code, or None if missing / unknown code."""
+    if not isinstance(currency, str):
+        return None
+    return FX_TO_USD.get(currency.strip())
+
+
+def marketcap_usd_series(cdx_df):
+    """Row-aligned USD market cap for cdx_df: marketCap * FX(reportedCurrency).
+
+    THE single currency-conversion path -- shared by partition_by_marketcap, the
+    presentation, and the PIT beat-rate grading, so all three key off the SAME field.
+    DEGRADES GRACEFULLY when reportedCurrency has not yet flowed (the pre-fetch saved
+    pickles): returns all-NaN so every name reads as unknown-mcap (-> General), i.e.
+    NOTHING is misbanded. NaN wherever marketCap is missing or the currency is unknown.
+    Prefers a live reportedCurrency recompute over any materialized marketCap_usd column
+    (so a stale FX snapshot on disk can never override the current table)."""
+    cols = getattr(cdx_df, 'columns', [])
+    if cdx_df is None or 'marketCap' not in cols:
+        return pd.Series(np.nan, index=getattr(cdx_df, 'index', None))
+    mc = pd.to_numeric(cdx_df['marketCap'], errors='coerce')
+    if 'reportedCurrency' in cols:
+        rate = cdx_df['reportedCurrency'].map(_fx_to_usd).astype('float64')
+        return mc * rate
+    if 'marketCap_usd' in cols:          # materialized at ingest (belt-and-suspenders)
+        return pd.to_numeric(cdx_df['marketCap_usd'], errors='coerce')
+    return pd.Series(np.nan, index=cdx_df.index)
+
+
+def currency_data_present(cdx_df):
+    """True only when currency data is actually USABLE -- i.e. reportedCurrency resolves
+    to a known FX rate for at least one row, or a materialized marketCap_usd carries at
+    least one finite value. Column PRESENCE alone is NOT enough: an all-NaN column (e.g.
+    reportedCurrency coerced to NaN by a numeric-cast, or an empty materialization) would
+    otherwise masquerade as 'present' and suppress the pending banners while every name
+    silently routes to General. This is the backstop that keeps 'nothing wrong ships'
+    true even if the ingest string-preservation regresses (CEO 2026-07-17)."""
+    cols = getattr(cdx_df, 'columns', [])
+    if cdx_df is None:
+        return False
+    if 'reportedCurrency' in cols:
+        try:
+            if cdx_df['reportedCurrency'].map(_fx_to_usd).notna().any():
+                return True
+        except Exception:
+            pass
+    if 'marketCap_usd' in cols:
+        try:
+            if pd.to_numeric(cdx_df['marketCap_usd'], errors='coerce').notna().any():
+                return True
+        except Exception:
+            pass
+    return False
+
+
+def marketcap_usd_by_source(cdx_df, as_of=None):
+    """source -> latest USD market cap (latest non-NaN row). If `as_of` is given,
+    restrict to date <= as_of, i.e. the POINT-IN-TIME market cap as-of that date.
+    Returns {} when the frame is unusable. Used by partition_by_marketcap (latest) and
+    by the PIT beat-rate grading (as_of=buy)."""
+    cols = getattr(cdx_df, 'columns', [])
+    if cdx_df is None or 'source' not in cols or 'marketCap' not in cols:
+        return {}
+    keep = ['source', 'date', 'marketCap']
+    for extra in ('reportedCurrency', 'marketCap_usd'):
+        if extra in cols:
+            keep.append(extra)
+    df = cdx_df[keep].copy()
+    df['date'] = pd.to_datetime(df['date'], errors='coerce')
+    if as_of is not None:
+        df = df[df['date'] <= pd.Timestamp(as_of)]
+    df['_mcap_usd'] = marketcap_usd_series(df).values
+    df = df.dropna(subset=['_mcap_usd']).sort_values(['source', 'date'])
+    if df.empty:
+        return {}
+    return df.groupby('source')['_mcap_usd'].last().to_dict()
+
+
+def band_for_marketcap_usd(v):
+    """Band label for a USD market cap; None if unknown (caller routes to General).
+    Bands are contiguous half-open [lo, hi), so every finite non-negative value maps to
+    EXACTLY one band."""
+    if v is None:
+        return None
+    try:
+        if pd.isna(v):
+            return None
+    except (TypeError, ValueError):
+        return None
+    for label, lo, hi, _N in MCAP_BANDS:
+        if lo <= v < hi:
+            return label
+    return None
+
+
 # FMP no-sector sentinels -- treat as UNKNOWN, NOT a legitimate sector. 'Unspecified'
 # is the single most common map value (~9,300 names). If it counted as "known" it
 # would win the dedup sector-propagation vote (tie -> insertion order) and overwrite a
@@ -567,6 +697,75 @@ def dedup_ranked(ranked_sources, cdx_df, names):
             first_of[r] = s
             kept.append(s)
     return kept, dropped
+
+
+def partition_by_marketcap(ranked_df, cdx_df, names=None):
+    """GROUP the existing general-pool ranking into market-cap bands (USD). ADDITIVE
+    size axis: NO re-score, NO re-rank -- it only PARTITIONS the given ordering.
+
+    Steps (CEO 2026-07-17 + valuation-specialist build spec):
+      1. FIRST apply dedup_ranked to the rank-ordered sources (collapse same-issuer
+         lines, keep the highest-ranked, order-preserving) so each band has DISTINCT
+         issuers;
+      2. take each survivor's LATEST USD market cap (marketcap_usd_series);
+      3. assign it to exactly ONE band by the MCAP_BANDS cutoff -- unknown-mcap -> General,
+         counted separately, NEVER dropped (mirrors the carve keep-unknown stance);
+      4. return {label: band_rows.head(N)} in the EXISTING order (no re-sort).
+
+    Args:
+      ranked_df : the general-pool ranking (a DataFrame with a 'source' column in rank
+                  order, e.g. resdic['postRank']).
+      cdx_df    : the fundamentals frame carrying marketCap (+ reportedCurrency once the
+                  next full fetch has run) used for both dedup and USD market cap.
+      names     : optional {symbol: name} for the dedup name+shares edge (edges A/C work
+                  without it).
+
+    Returns dict:
+      bands            {label: DataFrame (<= head_N rows, existing order)}
+      band_counts      {label: full member count BEFORE head(N)}
+      unknown_mcap     # survivors with no USD market cap (routed to General)
+      currency_pending True on pre-fetch data (reportedCurrency not yet flowed) -> the
+                       USD banding is NOT trustworthy; consumers must LABEL or SKIP it.
+      dropped_dupes    dedup_ranked audit trail [(dropped, survivor), ...]
+    """
+    labels = [lab for lab, *_ in MCAP_BANDS]
+    if not isinstance(ranked_df, pd.DataFrame) or 'source' not in getattr(ranked_df, 'columns', []) \
+            or ranked_df.empty:
+        empty = ranked_df.iloc[0:0] if isinstance(ranked_df, pd.DataFrame) else None
+        return {'bands': {lab: empty for lab in labels},
+                'band_counts': {lab: 0 for lab in labels},
+                'unknown_mcap': 0, 'currency_pending': True, 'dropped_dupes': []}
+
+    names = names or {}
+    ranked_sources = list(ranked_df['source'])
+    kept, dropped = dedup_ranked(ranked_sources, cdx_df, names)
+
+    # Order-preserving reduce of ranked_df to the deduped survivors (kept is already
+    # rank-ordered and unique). drop_duplicates guards any accidental repeat source row.
+    base = ranked_df.drop_duplicates('source', keep='first')
+    df = base.set_index('source').reindex(kept).reset_index()
+
+    mcu = marketcap_usd_by_source(cdx_df)            # source -> latest USD market cap
+    pending = not currency_data_present(cdx_df)
+    general_label = MCAP_BANDS[0][0]
+
+    members = {lab: [] for lab in labels}
+    unknown = 0
+    for s in df['source']:
+        lab = band_for_marketcap_usd(mcu.get(s))
+        if lab is None:                               # unknown mcap -> General, counted
+            lab = general_label
+            unknown += 1
+        members[lab].append(s)
+
+    bands, band_counts = {}, {}
+    for label, lo, hi, N in MCAP_BANDS:
+        rows = df[df['source'].isin(set(members[label]))]   # preserves df (rank) order
+        band_counts[label] = int(len(rows))
+        bands[label] = rows.head(N).reset_index(drop=True)
+
+    return {'bands': bands, 'band_counts': band_counts, 'unknown_mcap': int(unknown),
+            'currency_pending': bool(pending), 'dropped_dupes': dropped}
 
 
 def dedup_to_issuers(BoScore_df, cdx_df, sector_map, names):

@@ -332,7 +332,7 @@ def _build_pit_inputs(dmdic, configdic, log):
 #  Stage: beat-rate vs URTH (operational-target proxy) -- reuses per_anchor    #
 # --------------------------------------------------------------------------- #
 def beat_rate_vs_urth(per_anchor, price_source, log, depths=(10, 20),
-                      horizon_m=36, threshold=0.10):
+                      horizon_m=36, threshold=0.10, merged=None):
     """The operational-target readout on the DEPLOYED FILTER: share of the shipped
     top-N that beat URTH (MSCI World TR proxy) by >= threshold over a `horizon_m` hold,
     on the CLEAN buy anchors.
@@ -400,7 +400,100 @@ def beat_rate_vs_urth(per_anchor, price_source, log, depths=(10, 20),
         print(f"  POOLED top-{N}: beat_rate={rs} (n={len(flags)})")
     print("  CAVEAT: 2 heavily-overlapping windows = ONE regime; count-based (magnitude-")
     print("          blind); missing-eval counts as NOT beating (missing='fail').")
-    return {"per_window": rows, "pooled": pooled}
+
+    # ================= ADDITIVE: per-market-cap-band beat-rate ==================
+    # GROUP the deployed general ranking into USD market-cap bands and grade each band
+    # SEPARATELY (CEO 2026-07-17): General -> top-20, Mid/Small/Micro -> top-5. Market cap
+    # is POINT-IN-TIME as-of buy (latest marketCap_usd <= buy from merged['cdx_df'];
+    # historical, NOT today's). Reuses carveOut.MCAP_BANDS + the shared FX/USD path, so
+    # selection (production) and grading (here) key off the SAME cutoffs and USD field.
+    # Prints each band's member count n. Small bands (<$150M, esp <$50M) are labelled
+    # DIRECTIONAL-ONLY -- too few names for a meaningful 60% pass/fail. The existing
+    # combined top-20 pooled rate above is UNCHANGED (this is strictly additive).
+    band_rows, band_pending = _per_band_beat_rate(
+        per_anchor, price_source, merged, horizon_m, threshold)
+    return {"per_window": rows, "pooled": pooled,
+            "bands": band_rows, "band_pending": band_pending}
+
+
+# --------------------------------------------------------------------------- #
+#  Per-market-cap-band beat-rate (ADDITIVE; PIT USD mcap as-of buy)            #
+# --------------------------------------------------------------------------- #
+def _per_band_beat_rate(per_anchor, price_source, merged, horizon_m, threshold):
+    """Pooled per-band beat-rate over the CLEAN windows. Returns (band_rows, pending).
+    band_rows: [{band, depth_N, beat_rate, n, directional_only}]. Never raises on the
+    banding-specific work -- degrades to a pending/empty read on missing inputs."""
+    import numpy as np
+    import returns_core as rc
+    import depth_horizon_grid as dhg
+    import carveOut as co
+
+    merged_cdx = merged.get("cdx_df") if isinstance(merged, dict) else None
+    _tdf = merged.get("Tickers_df") if isinstance(merged, dict) else None
+    _cols = getattr(_tdf, "columns", [])
+    band_names = (dict(zip(_tdf["symbol"], _tdf["name"]))
+                  if _tdf is not None and "symbol" in _cols and "name" in _cols else {})
+    band_pending = (merged_cdx is None) or (not co.currency_data_present(merged_cdx))
+    DIRECTIONAL_MAX_USD = 150e6   # a band whose TOP is <= $150M is directional-only
+
+    print("\n" + "#" * 72)
+    print("# PER-BAND BEAT-RATE  --  general ranking GROUPED by USD market cap")
+    print("#   General -> top-20 ; Mid/Small/Micro -> top-5 ; PIT mcap as-of buy")
+    if band_pending:
+        print("#   !!! CURRENCY DATA PENDING (reportedCurrency not yet in this data):   !!!")
+        print("#   !!! bands NOT meaningful -> every name reads as General; sub-bands    !!!")
+        print("#   !!! empty. Corrects automatically from the next full fetch.          !!!")
+    print("#" * 72)
+
+    band_pooled = {lab: [] for lab, *_ in co.MCAP_BANDS}
+    for wid, buy in dhg.BUY_ANCHORS:
+        if wid not in per_anchor or wid not in dhg.CLEAN_BUY_IDS:
+            continue
+        buy_idx = dhg.ANCHOR_IDX[buy]
+        eval_idx = buy_idx + horizon_m // 12
+        if eval_idx >= len(dhg.ANCHORS):
+            continue
+        ev = dhg.ANCHORS[eval_idx]
+        bench = rc.benchmark_return(price_source, buy, ev, require_exact=True)
+        ranking = per_anchor[wid].get("ranking") or []
+        # FULL deduped general ranking (deep enough to fill the sub-bands), then band it.
+        if merged_cdx is not None:
+            deduped, _drp = co.dedup_ranked(ranking, merged_cdx, band_names)
+        else:
+            deduped = list(ranking)
+        pit_mcu = co.marketcap_usd_by_source(merged_cdx, as_of=buy) if merged_cdx is not None else {}
+        band_seq = {lab: [] for lab, *_ in co.MCAP_BANDS}
+        for s in deduped:
+            lab = co.band_for_marketcap_usd(pit_mcu.get(s))
+            if lab is None:                            # unknown mcap -> General
+                lab = co.MCAP_BANDS[0][0]
+            band_seq[lab].append(s)
+        for label, lo, hi, N in co.MCAP_BANDS:
+            top = band_seq[label][:N]
+            if not top:
+                continue
+            rdf = rc.compute_returns(top, buy, ev, price_source)
+            for _, r in rc.included(rdf).iterrows():
+                if r["terminal_flag"]:
+                    band_pooled[label].append(False)   # missing eval = NOT beating
+                else:
+                    band_pooled[label].append((r["total_return"] - bench) >= threshold)
+
+    print("  --- POOLED across clean windows (per band) ---")
+    band_rows = []
+    for label, lo, hi, N in co.MCAP_BANDS:
+        flags = band_pooled[label]
+        rate = float(np.mean(flags)) if flags else float("nan")
+        directional = hi <= DIRECTIONAL_MAX_USD
+        tag = "DIRECTIONAL-ONLY" if directional else "pass/fail"
+        rs = f"{rate*100:.1f}%" if rate == rate else "n/a"
+        note = "  [PENDING CURRENCY]" if band_pending and label != co.MCAP_BANDS[0][0] else ""
+        print(f"  {label:16} depth<={N:<3} beat_rate={rs:>7} (n={len(flags):>3})  {tag}{note}")
+        band_rows.append({"band": label, "depth_N": N, "beat_rate": rate,
+                          "n": len(flags), "directional_only": directional})
+    print("  CAVEAT: same 2 overlapping windows (one regime); missing-eval = NOT beating.")
+    print("          Small bands (<$150M) are thin -> DIRECTIONAL-ONLY, not a 60% pass/fail.")
+    return band_rows, band_pending
 
 
 # --------------------------------------------------------------------------- #
@@ -516,7 +609,7 @@ def run_analysis_suite(resdic, configdic):
     def _beat():
         if per_anchor is None or price_source is None:
             raise RuntimeError("beat-rate stage skipped: per_anchor/price_source missing")
-        return beat_rate_vs_urth(per_anchor, price_source, log)
+        return beat_rate_vs_urth(per_anchor, price_source, log, merged=merged)
     _run_stage("beat-rate vs URTH (DEPLOYED filter: deduped, carve-ON)", _beat)
 
     # ---- Stage 6: oracle-best-N + random baseline + decomposition ladder ----

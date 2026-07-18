@@ -307,6 +307,13 @@ def forceNumOnDf(df):
         preserve.add('date')
     if 'source' in dftemp.columns:
         preserve.add('source')
+    # reportedCurrency is a STRING reporting-currency code (USD/SEK/EUR/...), captured for
+    # market-cap USD banding (carveOut.marketcap_usd_series). It MUST survive ingest --
+    # without this it is coerced to all-NaN, silently killing the banding (every name reads
+    # as unknown-mcap -> General). It never reaches BoMetric_df and downstream numeric ops
+    # select numeric dtypes / explicit metric lists, so preserving the string here is safe.
+    if 'reportedCurrency' in dftemp.columns:
+        preserve.add('reportedCurrency')
 
     for col in dftemp.columns:
         if col in preserve:

@@ -890,12 +890,30 @@ def load_run_data(run_dir, valuation_repo, run_date=None):
             return industrydic.get(ticker, "Unknown")
         return "Unknown"
 
+    # Market-cap band partition (ADDITIVE size axis over the general pool). Recomputed
+    # here from postrank_df + cdx_df so the offline presentation is SELF-CONTAINED and
+    # does not depend on the pipeline having materialized it. Keys off the SAME
+    # carveOut.MCAP_BANDS + shared FX/USD path as production selection and grading, so the
+    # three consumers agree. Degrades gracefully: currency_pending -> all names read as
+    # General, sub-bands empty (the render then labels/skips rather than misbanding).
+    marketcap_bands_info = None
+    try:
+        sys.path.insert(0, str(valuation_repo))
+        import carveOut as _co
+        _bnames = (dict(zip(tickers_df['symbol'], tickers_df['name']))
+                   if tickers_df is not None and 'symbol' in getattr(tickers_df, 'columns', [])
+                      and 'name' in getattr(tickers_df, 'columns', []) else {})
+        marketcap_bands_info = _co.partition_by_marketcap(postrank_df, cdx_df, _bnames)
+    except Exception as _e:
+        log.info(f"market-cap bands skipped: {type(_e).__name__}: {_e}")
+
     return {
         'run_date': run_date,
         'postrank_df': postrank_df,
         'cdx_df': cdx_df,
         'moatdf': moatdf,
         'tickers_df': tickers_df,
+        'marketcap_bands_info': marketcap_bands_info,
         'carveout_sidelists': carveout_sidelists,
         'carveout_labels': carveout_labels,
         'carveout_diagnostics': carveout_diagnostics,
@@ -1810,6 +1828,32 @@ class PresentationBuilder:
             content += f'<div class="cohort-section"><h1>Cohort: {cohort_label}</h1></div>\n'
             for i, ticker in enumerate(tickers, 1):
                 content += self.build_name_page(ticker, i, cohort_label)
+
+        # Market-cap band sections (ADDITIVE, parallel to the cohort loop). Groups the
+        # SAME global ranking by USD market cap: General(20) + Mid/Small/Micro(5). No
+        # re-score/re-rank. Degrades gracefully: on pre-fetch data (no reportedCurrency)
+        # the section is labelled "pending currency data" and the misbanded sub-bands are
+        # SKIPPED (only General renders) so nothing wrong ships.
+        band_info = self.data.get('marketcap_bands_info')
+        if band_info and band_info.get('bands'):
+            try:
+                import carveOut as _co
+                band_defs = _co.MCAP_BANDS
+            except Exception:
+                band_defs = []
+            pending = band_info.get('currency_pending', True)
+            pend_txt = ' — PENDING CURRENCY DATA (correct from next full run)' if pending else ''
+            content += f'<div class="cohort-section"><h1>Market-cap bands{pend_txt}</h1></div>\n'
+            for label, lo, hi, N in band_defs:
+                if pending and label != 'General':
+                    continue  # never render misbanded sub-bands on pre-fetch data
+                bdf = band_info['bands'].get(label)
+                if bdf is None or bdf.empty:
+                    continue
+                tickers = bdf.head(N)['source'].tolist()
+                content += f'<div class="cohort-section"><h2>Band: {label} (top-{N})</h2></div>\n'
+                for i, ticker in enumerate(tickers, 1):
+                    content += self.build_name_page(ticker, i, label)
 
         content += "</div>"
 

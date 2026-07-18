@@ -20,7 +20,13 @@ def getDicts():
     preReq_dict = {'bs': ['totalAssets', 'longTermDebt', 'inventory', 'totalStockholdersEquity', 'totalLiabilities',
                           'totalCurrentAssets', 'totalCurrentLiabilities','propertyPlantEquipmentNet', 'otherCurrentAssets'],
                    'inc': ['netIncome', 'grossProfit', 'revenue', 'weightedAverageShsOut', 'weightedAverageShsOutDil', 'depreciationAndAmortization',
-                           'sellingGeneralAndAdministrativeExpenses', 'operatingIncome','interestExpense'],
+                           'sellingGeneralAndAdministrativeExpenses', 'operatingIncome','interestExpense',
+                           # reportedCurrency: the statement's reporting currency (USD/SEK/EUR/...).
+                           # Captured (was discarded at ingest) so marketCap -- stored in this same
+                           # reporting currency -- can be converted to USD for market-cap banding
+                           # (carveOut.marketcap_usd_series). A string column; rides through unused by
+                           # every ratio calc. Populates on the next full fetch; absent on saved pickles.
+                           'reportedCurrency'],
                    'cf': ['freeCashFlow', 'netCashProvidedByOperatingActivities','netCashUsedProvidedByFinancingActivities',
                           'dividendsPaid'],
                    'km': ['netIncomePerShare', 'pbRatio', 'earningsYield', 'pfcfRatio', 'grahamNumber', 'grahamNetNet',

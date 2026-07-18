@@ -122,6 +122,18 @@ def get_fundamentals_fmp(Tickers_df, cdx_df, BoMetric_df, baseurl,
 
     #BoMetric_df = utils.setDatesToQuarterly(BoMetric_df)
     BoMetric_df, cdx_df = gdg.fixAfterGetData(BoMetric_df, cdx_df)
+
+    # Materialize a USD market-cap column from the just-captured reportedCurrency, so the
+    # saved cdx_df is self-describing for market-cap banding (carveOut.MCAP_BANDS). This
+    # is the SAME shared FX path the band selection / grading use, so nothing can drift.
+    # Guarded + best-effort: never blocks the fetch. No-op (all-NaN) on data lacking
+    # reportedCurrency -- consumers then read every name as unknown-mcap (never misbanded).
+    try:
+        import carveOut as _co
+        cdx_df['marketCap_usd'] = _co.marketcap_usd_series(cdx_df).values
+    except Exception as _e:
+        print(f'WARNING: marketCap_usd materialization skipped ({type(_e).__name__}: {_e})')
+
     resfunddic = {'BoMetric_df':BoMetric_df,
                   'cdx_df': cdx_df, 'tickersfailed': tickersfailed, 'lenfail': lenfail, 'pricefail': pricefail,
                   'datefail': datefail, 'emptyfail': emptyfail, 'cind': cntr, 'hasCurrentYear': hasCurrentYear}

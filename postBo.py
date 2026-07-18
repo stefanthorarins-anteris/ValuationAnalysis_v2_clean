@@ -267,6 +267,35 @@ def writeResWrapper(resdic):
     ntopxlsx = resdic['ntopxlsx']
     fidag = datetime.today().strftime('%Y-%m-%d')
     fb_df = resdic['postRank']
+
+    # --- market-cap band segmentation (ADDITIVE size axis over the general pool) ---
+    # GROUP the existing general ranking (postRank) by USD market cap: General (>$300M)
+    # -> top-20; Mid ($150-300M)/Small ($50-150M)/Micro (<$50M) -> top-5 each. No re-score,
+    # no re-rank -- the ordering is only PARTITIONED. Best-effort + fully guarded so it can
+    # NEVER touch the main deliverables. Degrades gracefully when reportedCurrency has not
+    # yet flowed (currency_pending): sub-band CSVs are then SKIPPED rather than emitting
+    # misbanded output (CEO 2026-07-17: nothing wrong ships now).
+    marketcap_bands = None
+    try:
+        import carveOut as co
+        _tdf_b = resdic.get('Tickers_df')
+        _cols_b = getattr(_tdf_b, 'columns', [])
+        _names_b = (dict(zip(_tdf_b['symbol'], _tdf_b['name']))
+                    if _tdf_b is not None and 'symbol' in _cols_b and 'name' in _cols_b else {})
+        marketcap_bands = co.partition_by_marketcap(fb_df, resdic.get('cdx_df'), _names_b)
+        resdic['marketcap_bands'] = marketcap_bands['bands']
+        resdic['marketcap_band_counts'] = marketcap_bands['band_counts']
+        resdic['marketcap_currency_pending'] = marketcap_bands['currency_pending']
+        _pend = marketcap_bands['currency_pending']
+        print("MARKET-CAP BANDS: " + ("CURRENCY PENDING (sub-bands suppressed this run) -- " if _pend else "")
+              + ", ".join(f"{lab}={marketcap_bands['band_counts'].get(lab, 0)}"
+                          for lab, *_ in co.MCAP_BANDS)
+              + f" (unknown_mcap->General={marketcap_bands['unknown_mcap']})", flush=True)
+    except Exception as _be:
+        print(f"WARNING: market-cap banding skipped ({type(_be).__name__}: {_be}); "
+              f"main deliverables unaffected.", flush=True)
+        marketcap_bands = None
+
     mscore = resdic['SLmeanMscore']
     cscore = resdic['SLmeanCscore']
     baseurl = resdic['baseurl']
@@ -294,9 +323,11 @@ def writeResWrapper(resdic):
     ff.writeForensicFlagsCSV(flag_df, fname_forensic)
     print(f'Forensic-flag table written to: {fname_forensic}')
 
-    # create presentation xlsx of ntopxlsx stocks
+    # create presentation xlsx of ntopxlsx stocks. When currency data is present the
+    # general top-N is drawn from the General band (>$300M); pending currency -> unchanged.
     fname_presentationtop= f'PresentationTop{ntopxlsx}-{fidag}_{datasource}_{tickerfilter}.xlsx'
-    createPresentation(fb_df, mscore, cscore, baseurl, api_key, ntopxlsx, fname_presentationtop, years, flag_df)
+    createPresentation(fb_df, mscore, cscore, baseurl, api_key, ntopxlsx, fname_presentationtop, years, flag_df,
+                       bands=marketcap_bands)
 
     # Phase-1 carve-out: write each labeled side-list (REIT / Mining / investment
     # vehicles) as its own compact CSV alongside the main deliverables. Best-effort
@@ -317,6 +348,29 @@ def writeResWrapper(resdic):
     except Exception as _e:
         print(f'WARNING: carve-out side-list writing skipped ({_e})')
 
+    # Market-cap band CSVs -- one compact CSV per band, MIRRORING the SideList block
+    # above. General (>$300M) top-20 + Mid/Small/Micro top-5. Best-effort + self-
+    # contained (never raises; no-op when banding was skipped or absent). SKIPPED
+    # entirely when currency data is pending, so no misbanded file ever ships (the
+    # General-band CSV would just duplicate the top-20 and the sub-bands would be
+    # misbanded) -- the feature becomes correct automatically once reportedCurrency flows.
+    band_fnames = []
+    try:
+        if marketcap_bands and not marketcap_bands.get('currency_pending', True):
+            for label, band_df in (marketcap_bands.get('bands') or {}).items():
+                if band_df is None or band_df.empty:
+                    continue
+                keep = [c for c in ['source', 'AggScore', 'rankOfRanks'] if c in band_df.columns]
+                fname_band = f'MarketCapBand_{label}-{fidag}_{datasource}_{tickerfilter}.csv'
+                band_df[keep].to_csv(fname_band, index=False)
+                band_fnames.append(fname_band)
+                print(f'Market-cap band CSV written to: {fname_band}')
+        elif marketcap_bands and marketcap_bands.get('currency_pending', True):
+            print('Market-cap band CSVs SKIPPED this run: reportedCurrency not yet in the '
+                  'data (correct automatically from the next full fetch).', flush=True)
+    except Exception as _e:
+        print(f'WARNING: market-cap band CSV writing skipped ({_e})')
+
     # READ-ONLY review-reference DATA artifacts (RawMetricsTop100 + CohortMetricStats).
     # Computed AFTER scoring from the RAW metrics captured before normalizeAndDropNA
     # (postBoRank -> rankdic['postScoreMetric_raw']); NEVER read back into scoring or the
@@ -336,7 +390,7 @@ def writeResWrapper(resdic):
     # the Drive-synced transfer dir at the pre-ingestion phase boundary. Data-only:
     # nothing here changes scoring/ranking/forensic output.
     return ([fname_AggScoretop, fname_presentationtop, fname_forensic]
-            + sidelist_fnames + reviewref_fnames)
+            + sidelist_fnames + band_fnames + reviewref_fnames)
 
 def writeBoAggToCSV(fb_df, mscore, cscore, baseurl, api_key, ntopagg, fname_AggScoretop, flag_df=None):
     fbdf_tocsv = fb_df.head(ntopagg)
@@ -564,12 +618,35 @@ def writeBoAggToCSV(fb_df, mscore, cscore, baseurl, api_key, ntopagg, fname_AggS
     pbar.close()
     return flag_df
 
-def createPresentation(finalBoRank_df, mscore, cscore, baseurl, api_key, topn, fname, years, flag_df=None):
+def createPresentation(finalBoRank_df, mscore, cscore, baseurl, api_key, topn, fname, years, flag_df=None,
+                       bands=None):
     #test
     #fname = fname_spreadSheet
     #topn = 20
     #years = 10
-    symblist = list(finalBoRank_df['source'].head(topn))
+    # Market-cap banding (ADDITIVE): when currency data is present, the general top-N is
+    # the General band (>$300M) head(topn) -- i.e. postRank[marketCap_usd>300e6].head(topn) --
+    # so the xlsx general list matches the banded partition. When banding is absent OR
+    # currency is still pending, behaviour is UNCHANGED (byte-identical to before): the
+    # general top-N stays postRank.head(topn), so nothing wrong ships before the field flows.
+    # TODO: emit each sub-band's top-5 as its own labelled sheet block once the field flows
+    # (deferred: the HTML presentation already carries the full banded view; adding sheets
+    # here multiplies the per-symbol live API calls).
+    _general_df = finalBoRank_df
+    if bands and not bands.get('currency_pending', True):
+        _gb = (bands.get('bands') or {}).get('General')
+        if _gb is not None and not _gb.empty:
+            # The General band is pre-capped at the MCAP_BANDS General head_N (=20). If a
+            # caller ever requests MORE than that (ntopxlsx > 20), keying the xlsx off the
+            # band would SILENTLY shrink the general list -- so fall back to the unbanded
+            # head(topn) and warn LOUDLY instead. No effect today (ntopxlsx == 20 == cap).
+            if topn > len(_gb):
+                print(f"WARNING: createPresentation topn={topn} exceeds General-band size "
+                      f"{len(_gb)} (MCAP_BANDS General cap); using unbanded postRank.head({topn}) "
+                      f"to avoid silently shrinking the general list.", flush=True)
+            else:
+                _general_df = _gb
+    symblist = list(_general_df['source'].head(topn))
     #eyVec = []
     #quote_full = pd.DataFrame(requests.get(f'{baseurl}v3/quote/{symblist}?&apikey={api_key}').json())
 
