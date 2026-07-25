@@ -88,7 +88,13 @@ def postBoScoreRanking(bmtop, bstop, cdxtop, baseurl, api_key, period='quarter',
     # via postBo), this single line yields raw metrics for every pool automatically.
     postScoreMetric_raw = postScoreMetric_df.copy()
 
-    postScoreMetric_df, outlierlist = normalizeAndDropNA(postScoreMetric_df)
+    # weight_series is passed so the outlier guard can EXEMPT zero-weight metrics: a
+    # w=0 diagnostic column must not clamp (and, pre-fix, must not eject) a name that
+    # contributes to no part of the AggScore.  This is the SAME weight_series -- incl.
+    # any cohort weight_override -- that weights the columns below, so a metric the
+    # cohort zeroed is exempt in that cohort's pool too.
+    postScoreMetric_df, outlierlist = normalizeAndDropNA(postScoreMetric_df,
+                                                         weight_series=weight_series)
 
     # Apply weights using the stable weight_series mapping; if a weight is missing,
     # default to 1.
@@ -392,7 +398,12 @@ def _dedup_issuers_in_ranking(postRank, cdxtop, names, dedup_issuers):
     try:
         import carveOut as _co
         ranked_srcs = postRank['source'].tolist()
-        kept, issuer_dupes_dropped = _co.dedup_ranked(ranked_srcs, cdxtop, names or {})
+        # AggScore in: an issuer's clone lines score EXACTLY equal, so which one the
+        # sort happened to emit first was arbitrary -- resolve those ties by
+        # investability rather than by sort stability (carveOut.dedup_ranked TIE-BREAK).
+        _sc = postRank['AggScore'] if 'AggScore' in postRank.columns else None
+        kept, issuer_dupes_dropped = _co.dedup_ranked(ranked_srcs, cdxtop,
+                                                      names or {}, scores=_sc)
         if issuer_dupes_dropped:
             keptset = set(kept)
             postRank = postRank[postRank['source'].isin(keptset)].reset_index(drop=True)
@@ -425,7 +436,157 @@ def _dedup_issuers_in_ranking(postRank, cdxtop, names, dedup_issuers):
     return postRank, issuer_dupes_dropped
 
 
-def normalizeAndDropNA(df):
+WINSOR_SIGMA = 3.0        # winsorization threshold, in sigmas of the RAW column
+# Safety bound on the mu/sigma <-> clip fixed-point loop.  Set well ABOVE what the real
+# pools need: measured on the shipped 2026-07-17 columns, convergence takes up to 64
+# passes (currentRatio 57, EPStoEPSmean 50, incomeQuality 64) -- a bound of 20 stopped
+# just short of the fixed point and left max|z| = 3.000298 instead of <= 3.  The bound is
+# NOT load-bearing for the result: the set of clipped cells stabilises by ~pass 20 and the
+# remaining passes only settle sigma in the 6th decimal (verified: identical clipped-cell
+# counts and identical AggScore ordering at 200 vs 500 passes).  Each pass is one
+# vectorised op over ~100 rows, so the headroom is free.
+WINSOR_MAX_PASSES = 200
+
+
+WINSOR_Z_EPS = 1e-9       # slack on the max|z| <= WINSOR_SIGMA target test
+
+# Columns that CANNOT have a fat tail because they are BOUNDED or DISCRETE by
+# construction, and are therefore EXEMPT from winsorization entirely (review H3(c);
+# this is the choice made, not just considered):
+#   Piotroski            integer 0..9 (9 binary criteria)
+#   CycleHeat            hard-capped to [-3, +3] in stage2_metrics.cycleheat_zscore
+#   marketCapRevQuants   5 discrete values after fix 16 (-0.5, -1/6, 0, +1/6, +0.5)
+# For a bounded discrete column a large |z| is a property of the SPLIT -- how many names
+# sit on each level -- not of a heavy tail.  Piotroski 20 names at 7 and one at 2 puts
+# the single WORST-F name at |z| = 4.36, and "winsorizing" that moves the worst F-score
+# onto the best, destroying real structure to satisfy a threshold that was never meant
+# for it.  Leaving them alone is strictly more honest than clipping them.
+WINSOR_EXEMPT_BOUNDED = ('Piotroski', 'CycleHeat', 'marketCapRevQuants', 'mcapQuants')
+
+
+def _winsorize_raw(x, n_sigma=WINSOR_SIGMA, max_passes=WINSOR_MAX_PASSES):
+    """Symmetric sigma-winsorization of a RAW metric column, iterated toward max|z| <=
+    n_sigma.  Returns (series, n_cells_changed, n_passes, converged).
+
+    Body of the loop is the specified two-pass move: compute mu/sigma, clip the raw
+    values to mu +- n_sigma*sigma, recompute mu/sigma on the clipped column.  It is
+    REPEATED because ONE pass is not enough, and that is measurable rather than
+    theoretical: sigma of the first pass is itself inflated by the outlier being
+    clipped, so mu1 +- 3*sigma1 lands far out in the tail, and after re-standardising on
+    the (much tighter) clipped column the clipped value can sit at a LARGER |z| than
+    before.  On the shipped 2026-07-17 pool a single two-pass left worst-column
+    max|z| = 9.90 (EPStoEPSmean) -- WORSE than the +-4 z-clamp it replaced -- with
+    sigma1/sigma2 up to 3.23.
+
+    WHAT IS AND IS NOT GUARANTEED (review H3(d) -- the earlier "max|z| <= n_sigma BY
+    CONSTRUCTION" claim was FALSE).  Iterating does NOT always reach the target: for a
+    near-two-point column the clip ratio is constant, so the minority value decays
+    GEOMETRICALLY toward the mode while its z-score -- which is scale-invariant -- never
+    moves.  There is no interior fixed point.  Measured cases: 99x0 + 1x1e6 ends with the
+    outlier at 4.9e-13 (1e-19 of input) and max|z| still 9.900; Piotroski 20x7/1x2 (n=21)
+    burns 74 passes and stays at 4.364; CycleHeat 25x(-3)/2x(+1) (n=27) burns 194 of 200.
+    The old exit test compounded this: `tol = 1e-12 * max(1.0, |mu|+sigma)` is an
+    ABSOLUTE floor, so once a column's own scale fell below ~1e-12 the test passed
+    vacuously and the loop exited OUTSIDE the threshold with no signal at all.
+
+    So the contract is now explicit and two-branched:
+      * converged=True  -> max|z| <= n_sigma + WINSOR_Z_EPS is VERIFIED on the returned
+                           series (the target test is evaluated directly, not inferred
+                           from a proxy).
+      * converged=False -> the target is UNREACHABLE for this column's shape.  The
+                           ORIGINAL raw values are returned UNCHANGED (never the
+                           annihilated ones) and the caller logs it loudly.  A column
+                           whose spread is structural is left at its natural z rather
+                           than mangled.
+    """
+    orig = pd.to_numeric(x, errors='coerce')
+    y = orig
+    for p in range(max_passes):
+        m, s = y.mean(), y.std()
+        if not np.isfinite(m) or not np.isfinite(s) or s <= 0:
+            # constant / all-NaN column: no outlier can exist, target trivially holds
+            return orig, 0, p, True
+        if float(((y - m) / s).abs().max()) <= n_sigma + WINSOR_Z_EPS:
+            changed = int((~np.isclose(orig.to_numpy(dtype='float64'),
+                                       y.to_numpy(dtype='float64'),
+                                       rtol=0, atol=0, equal_nan=True)).sum())
+            return y, changed, p, True
+        y2 = y.clip(m - n_sigma * s, m + n_sigma * s)
+        # NO-PROGRESS test: BIT-EXACT equality.  It must be exact, not a relative
+        # tolerance -- the approach to the target is asymptotic, so a 1e-9 relative test
+        # RACES the target test and loses: a lognormal(0,1.2) n=100 column reaches
+        # max relative change 6.2e-10 at pass 18, one pass BEFORE max|z| first tests
+        # <= 3, so a relative test declared that genuinely-winsorizable column
+        # un-winsorizable and left its real fat tail alone.  Exact equality only fires
+        # when the clip truly cannot move anything, which is what "no progress" means.
+        if np.array_equal(y2.to_numpy(dtype='float64'), y.to_numpy(dtype='float64'),
+                          equal_nan=True):
+            return orig, 0, p + 1, False      # cannot make progress -> un-winsorizable
+        y = y2
+    return orig, 0, max_passes, False         # pass bound exhausted -> un-winsorizable
+
+
+def normalizeAndDropNA(df, weight_series=None, winsor_sigma=WINSOR_SIGMA):
+    """WINSORIZE each weighted RAW metric column at +-winsor_sigma, then
+    cross-sectionally z-score; drop a row only when EVERY metric is NaN.
+
+    OUTLIER HANDLING (audit H1/H2 fix 2026-07-19, upgraded 2026-07-25).  Originally
+    this EJECTED any row with |z| > 4 in ANY metric column.  Three things were wrong:
+
+      (a) ZERO-WEIGHT metrics could eject a name.  The mask ran over every column
+          including the w=0 diagnostics (priceGrowth / DcfToPrice / BoScore), so a
+          metric that contributes NOTHING to AggScore could delete a company from
+          the ranking.  Proven on the shipped 2026-07-17 run: of the 10 names this
+          function ejected, CART was ejected SOLELY on priceGrowth (w = 0.000).
+      (b) EJECTION IS ADVERSE SELECTION.  |z| > 4 on a value/quality metric is
+          usually the name being EXCEPTIONAL on that axis (highest FCF yield,
+          fastest growth, safest balance sheet), i.e. exactly what the score is
+          hunting.  Dropping it also silently shortened every top-100 deliverable
+          to 90 rows (verified: postScoreMetric_raw = 100 rows, shipped
+          postScoreMetric = 90).
+      (c) CLAMPING THE Z IS ONLY HALF A FIX (the 2026-07-19 interim, now replaced).
+          Clamping AFTER mu/sigma are computed leaves mu/sigma CONTAMINATED by the
+          outlier, so every OTHER name's z stays deflated by the sigma the clipped
+          value inflated -- currentRatio delivered sigma(z) ~ 0.5, i.e. about half its
+          intended weight (audit H2).  And +-4 sigma is a don't-crash bound, not a
+          winsorization threshold: a clean n~90 column's true max is |z| ~ 2.6-3.0, so
+          a value clamped to 4 still sat above every legitimate name.
+
+    NOW: the RAW column is winsorized at +-winsor_sigma (see _winsorize_raw), and
+    mu/sigma for the z-score are computed on the WINSORIZED column -- so the outlier
+    neither dominates the score nor distorts anyone else's z.  The NAME IS ALWAYS KEPT.
+
+    WHAT IS GUARANTEED (corrected -- see _winsorize_raw; the earlier "BY CONSTRUCTION"
+    wording was false): for every column the winsorizer REPORTS as converged, max|z| <=
+    winsor_sigma is verified directly on the result.  A column whose shape makes that
+    target unreachable is returned UNTOUCHED at its natural z and named loudly on stdout;
+    it is NOT silently left part-clipped, and its raw values are NOT annihilated.
+
+    THREE exemptions, all deliberate:
+      * ZERO-WEIGHT columns -- a w=0 column can neither dominate the score nor eject
+        anyone, so it stays the honest display-only diagnostic it is;
+      * BOUNDED/DISCRETE columns (WINSOR_EXEMPT_BOUNDED) -- they cannot have a fat tail,
+        so a large |z| there is real structure;
+      * columns the target cannot be reached for (above).
+    With no weight_series supplied (the offline baseline_tools callers) every non-bounded
+    metric column is winsorized.
+
+    INTERIM, by design.  Sigma-winsorization still assumes an approximately symmetric,
+    roughly-Gaussian column.  Several of these metrics are strongly skewed and the
+    weights were mu-tuned on the pipeline as it stood, so the principled end state is
+    RANK-BASED (inverse-normal) normalization plus a weight RE-FIT -- both of which
+    change the weight vector's meaning and therefore need a CEO decision.  This fix
+    removes the demonstrable defects (contaminated mu/sigma, a bound that bounds
+    nothing) without pre-empting that decision.
+
+    NOT renormalized after clamping, deliberately: the production weights were
+    tuned on this pipeline as-is, so rescaling z back to unit variance would
+    silently re-weight the whole vector.
+
+    Returns (frame, outlierlist).  outlierlist now holds ONLY the all-NaN rows
+    that were genuinely dropped -- winsorized names are NOT outliers, they are in
+    the ranking.
+    """
     df.reset_index(inplace=True, drop=True)
 
     # Check if dataframe is empty or has no metric columns
@@ -459,7 +620,64 @@ def normalizeAndDropNA(df):
         return dfnona, list(df['source'])
 
     tempnum = dfnona.drop('source',axis=1).apply(pd.to_numeric, errors='coerce')
-    # calculate the mean and standard deviation of each column (NaN values are skipped by default)
+
+    # --- PASS 1: winsorize the WEIGHTED RAW columns at +-winsor_sigma -------------
+    # Done BEFORE mu/sigma so the z-score below is computed on an UNCONTAMINATED
+    # column. w=0 columns are left completely alone (display-only diagnostics).
+    if weight_series is None:
+        weighted = list(tempnum.columns)                # offline callers: guard all
+    else:
+        weighted = [c for c in tempnum.columns
+                    if float(weight_series.get(c, 1) or 0) != 0]
+    guarded = [c for c in weighted if c not in WINSOR_EXEMPT_BOUNDED]
+    per_col_clipped, affected_rows, total_clipped = {}, pd.Series(False, index=tempnum.index), 0
+    not_converged = {}
+    for col in guarded:
+        clipped, n_changed, n_passes, converged = _winsorize_raw(tempnum[col], winsor_sigma)
+        if not converged:
+            # LEFT AT ITS NATURAL Z, deliberately (see _winsorize_raw): the target is
+            # unreachable for this column's shape, so clipping would annihilate the raw
+            # value without moving a single z-score.
+            s = tempnum[col]
+            mz = float(((s - s.mean()) / s.std()).abs().max()) if s.std() else float('nan')
+            not_converged[col] = (n_passes, mz)
+            continue
+        if n_changed:
+            moved = ~np.isclose(tempnum[col].to_numpy(dtype='float64'),
+                                clipped.to_numpy(dtype='float64'),
+                                rtol=0, atol=0, equal_nan=True)
+            affected_rows |= pd.Series(moved, index=tempnum.index)
+            per_col_clipped[col] = (n_changed, n_passes)
+            total_clipped += n_changed
+        tempnum[col] = clipped
+    if total_clipped:
+        print(f"normalizeAndDropNA: winsorized {total_clipped} RAW metric cell(s) at "
+              f"+-{winsor_sigma} sigma (names KEPT, mu/sigma recomputed after): "
+              + ", ".join(f"{c}={n}(x{p} passes)" for c, (n, p) in per_col_clipped.items())
+              + f" | affected names: {sorted(dfnona['source'][affected_rows.to_numpy()])}",
+              flush=True)
+    if not_converged:
+        # LOUD, per column: a metric whose spread the winsorizer could not tame is a fact
+        # the reader needs, not a silent internal outcome.
+        print("!" * 78, flush=True)
+        print("normalizeAndDropNA: WINSORIZATION NOT APPLIED to %d column(s) -- the "
+              "max|z| <= %s target is UNREACHABLE for their shape (near-two-point /"
+              " discrete), so they are LEFT AT THEIR NATURAL z:"
+              % (len(not_converged), winsor_sigma), flush=True)
+        for c, (p, mz) in not_converged.items():
+            print("    %-28s passes=%-4d natural max|z|=%.4f  (raw values UNCHANGED)"
+                  % (c, p, mz), flush=True)
+        print("!" * 78, flush=True)
+    exempt_bounded = [c for c in weighted if c in WINSOR_EXEMPT_BOUNDED]
+    if exempt_bounded:
+        print("normalizeAndDropNA: bounded/discrete metric(s) EXEMPT from winsorization "
+              f"(cannot have a fat tail): {exempt_bounded}", flush=True)
+    unguarded = [c for c in tempnum.columns if c not in weighted]
+    if unguarded:
+        print("normalizeAndDropNA: zero-weight metric(s) EXEMPT from winsorization "
+              f"(display-only, cannot dominate or eject): {unguarded}", flush=True)
+
+    # --- PASS 2: mu/sigma on the WINSORIZED columns, then z-score -----------------
     colmeans = tempnum.mean()
     colstds = tempnum.std()
     # Handle division by zero: if std is 0 or NaN, set normalized values to 0
@@ -468,17 +686,9 @@ def normalizeAndDropNA(df):
     temp_normpsmdf = (tempnum - colmeans) / colstds
     # Fill remaining NaN values with 0 (for columns that were all NaN)
     temp_normpsmdf = temp_normpsmdf.fillna(0)
-    dfnona[temp_normpsmdf.columns] = temp_normpsmdf
-    mask = abs(temp_normpsmdf) > 4
-    to_keep = (~mask).all(axis=1)  # Keep rows where ALL columns are within 4 std (stricter than original)
-    dfnonanorm = dfnona[to_keep].copy()
-    outlierlist = list(set(outlierlist + list(dfnona['source'][~to_keep])))
 
-    # Guard: if filtering removed all rows, keep at least the top 20% (avoid empty result)
-    if dfnonanorm.empty and len(dfnona) > 0:
-        print(f"Warning: Outlier filtering (>4 std) dropped all {len(dfnona)} rows. Keeping top 20% by row count.")
-        keep_count = max(1, len(dfnona) // 5)
-        dfnonanorm = dfnona.head(keep_count).copy()
+    dfnona[temp_normpsmdf.columns] = temp_normpsmdf
+    dfnonanorm = dfnona.copy()
 
     return dfnonanorm, outlierlist
 
@@ -492,14 +702,40 @@ def getAggScore(df):
 
     return postRank
 
+#  Columns that must never be ranked INSIDE the rank-of-ranks: AggScore is the weighted
+#  SUM of every other column here, so ranking it alongside its own components counts the
+#  whole score a second time (audit M1).
+ROR_EXCLUDE = ['source', 'AggScore', 'rankOfRanks', 'rankOfRanks_diag']
+
+#  DIAGNOSTIC name.  rankOfRanks orders NOTHING that ships (AggScore does), and it is
+#  invariant to weight MAGNITUDE -- only weight SIGNS survive a per-column rank -- so it
+#  is an EQUAL-WEIGHT alternative view, not a competing ranking.  It used to ship
+#  unlabelled beside AggScore in three CSV families with a visibly different top-5
+#  (2026-07-17: AggScore IMPP/RAVE/SYS1.L/INMD/AUDC vs rankOfRanks
+#  IMPP/AJ91.DE/RFX.L/AEP.L/CAPD.L), which invites reading it as a second opinion it is
+#  not entitled to be.  The `_diag` suffix is the label.
+ROR_COLUMN = 'rankOfRanks_diag'
+
+
 def getRankOfRanks(df):
+    """Equal-weight rank-sum DIAGNOSTIC, emitted as ROR_COLUMN.
+
+    Sums each name's per-metric rank and re-ranks the sum.  Because `rank()` discards
+    magnitude, this weights every metric EQUALLY and keeps only the sign of the
+    production weight -- deliberately a different lens from AggScore, never a substitute
+    for it.  AggScore itself is EXCLUDED from the sum (audit M1 fix, 2026-07-19): it was
+    previously included as a 22nd ranked column, i.e. the weighted sum of the other 21
+    counted twice.  Verified against the shipped 2026-07-17 run: including it reproduced
+    the shipped column bit-for-bit, and excluding it moves 80 of 90 names (max 11 rank
+    positions).
+    """
     postRankOfRanks = pd.DataFrame()
     for col in df.columns:
-        if col not in ['source']:
+        if col not in ROR_EXCLUDE:
             postRankOfRanks[col + 'rank'] = df[col].rank(ascending=False,method='dense')
 
     cts = list(set(postRankOfRanks.columns) - set(['source']))
-    df['rankOfRanks'] = postRankOfRanks[cts].sum(1).rank(ascending=True,method='dense')
+    df[ROR_COLUMN] = postRankOfRanks[cts].sum(1).rank(ascending=True,method='dense')
 
     return df
 

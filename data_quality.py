@@ -16,11 +16,62 @@ from datetime import datetime
 import os
 
 
-def check_price_sanity(row, price_col='price', mcap_col='marketCap', 
-                       prev_price=None, prev_mcap=None):
+# --- cross-field plausibility thresholds (see checks 5-7 in check_price_sanity) -----
+# Each is set where the combination becomes ARITHMETICALLY IMPOSSIBLE rather than merely
+# extreme, because the whole point of the score is to find genuine extremes.
+# earnings yield >= 300% (P/E <= 0.33).  NOT set at P/E<=1: a one-off gain (asset sale,
+# debt-for-equity swap) genuinely produces a sub-1 P/E for a quarter, and measurement on
+# the 2026-07-17 panel found real names sitting at earningsYield 1.08-1.20 with an
+# ordinary dividend -- odd but not impossible, so they must NOT be removed.  At >=3x the
+# entire market capitalisation earned in one quarter, no combination of real one-offs and
+# a normal dividend policy holds together.
+_EARNYIELD_IMPOSSIBLE = 3.0
+# >=100x market-cap step in ONE quarter on a flat share count.  100x, not 20x, because a
+# 20x bar removes REAL market events: measured on the 2026-07-17 panel it flagged GME's
+# 2021-01 squeeze (21.6x), SEZL's 2023 rally (28.1x), QUBT (25.6x) and DRUG (48.5x) --
+# all genuine, if violent, re-ratings, and flagging them deletes the name's whole history.
+# 100x matches the bar Check 4 already uses in this module, and with a flat share count it
+# means a >99% collapse or a >9,900% rally in one quarter, which no listed equity does.
+_MCAP_BREAK_RATIO = 100.0
+_SHARES_FLAT_BAND = 1.10       # "share count essentially unchanged" = within +-10%
+# NO reporting-gap bound on the step check -- REMOVED 2026-07-25 (review N2).
+#
+# A `1.5 x the source's own median cadence` gate was briefly added to make the check
+# idempotent across data_quality's two passes.  It was BOTH unnecessary and harmful:
+#
+#   * UNNECESSARY -- idempotency is STRUCTURAL and stronger than any gap bound.  PASS 3
+#     removes every row AT OR BEFORE a source's most-recent corruption date, so what
+#     survives is a contiguous DATE SUFFIX of that source's series.  Every removed row is
+#     therefore OLDER than every kept row, and no two kept rows that were non-adjacent can
+#     become adjacent -- a later pass sees the same interior adjacencies it saw before, so
+#     it cannot invent a break.
+#   * HARMFUL -- it suppressed 1 of 17 real detections, and specifically the one this
+#     module's own comment cites as the motivating example: TAM.L steps 6.99e5 -> 1.06e8
+#     (151.2x) with the share count flat to 3 decimals, but across a 365-day gap against a
+#     184-day median cadence, so the gate vetoed it and all 21 rows were kept.
+#
+# The Sbocker self-heal guard (recompute bm_ave if pass 2 ever removes a row) is retained
+# as belt-and-braces, since "structurally idempotent" still rests on PASS 3 keeping its
+# prefix-removal semantics.
+
+
+def check_price_sanity(row, price_col='price', mcap_col='marketCap',
+                       prev_price=None, prev_mcap=None,
+                       prev_row_mcap=None, prev_row_shares=None):
     """
     Check if a price data point is sane.
-    
+
+    prev_price / prev_mcap : the last VALID row's values (existing semantics, used by
+        check 4).
+    prev_row_mcap / prev_row_shares : the IMMEDIATELY PRECEDING row's values, valid or
+        not.  The market-cap step check (6) must use these, not the last-valid ones: a
+        "step" is by definition an adjacent-period comparison, and because a flagged row
+        does NOT advance the last-valid baseline, keying off prev_mcap makes ONE genuine
+        break flag every row after it.  Measured on the 2026-07-17 panel, that cascade
+        turned a single real break in TAM.L's 2015 quarter into 20 flagged rows and
+        produced 12 spurious flags on SEZL, whose adjacent market-cap steps are all
+        between 0.27x and 2.8x.  Optional, so existing callers keep working.
+
     Returns:
     --------
     tuple: (is_valid, reason) - reason is None if valid
@@ -70,7 +121,74 @@ def check_price_sanity(row, price_col='price', mcap_col='marketCap',
                 # Price down 100x but mcap within 5x = also suspicious
                 if price_change_ratio < 0.01 and 0.2 < mcap_change_ratio < 5:
                     return False, f"price_mcap_mismatch (price {price_change_ratio:.4f}x but mcap {mcap_change_ratio:.2f}x)"
-    
+
+    # =====================================================================
+    # CROSS-FIELD PLAUSIBILITY (2026-07-25).  Checks 1-4 above each look at ONE
+    # field at a time, so a single corrupt marketCap passes them all -- and one bad
+    # market cap makes a name extreme in FOUR COLLINEAR cheapness columns at once
+    # (earnYield <-> grahamNumberToPrice r=0.83, bVpRatio <-> tbVpRatio r=0.79), which
+    # no per-column winsorization can contain: the name is not an outlier in any single
+    # column by enough to be clipped, it is simply "cheap" four times over.
+    #
+    # EXEMPLAR (real, 2026-07-17): BXP.L's newest quarter reports marketCap $307.6M
+    # against $31.2B the quarter before -- a 101x collapse -- while netIncome
+    # ($2.15B), weightedAverageShsOut (446.1M), totalStockholdersEquity ($59.1B) and
+    # revenue ($13.2B) all continue normally.  Because FMP derives earningsYield and
+    # dividendYield FROM that market cap, they come out at 699% and 9.1%, and pbRatio
+    # at 0.0052.  check_price_sanity returned (True, None) on that row: the price/mcap
+    # RATIO is fine (both moved together), no field is individually out of range, and
+    # Check 4's "price moved but mcap didn't" pattern is the exact inverse of this one.
+    #
+    # DELIBERATELY CONSERVATIVE: these fire only on combinations that cannot be true of
+    # any real company, never on merely-extreme values.  Finding extremes is the
+    # SCORE's job; this only removes arithmetic impossibilities.
+    # -----------------------------------------------------------------------------
+    # Check 5: earnings yield >= _EARNYIELD_IMPOSSIBLE (3.0, i.e. P/E <= 0.33) alongside
+    # a positive dividend yield.  A firm cannot earn THREE TIMES its entire market
+    # capitalisation in a quarter; and if the earnings were real, a token dividend
+    # alongside them is incoherent (BXP.L's implied payout ratio is 1.3%).  Requiring
+    # BOTH legs keeps this off genuinely cheap deep-value names, which sit at P/E 3-8.
+    # The threshold is 3.0 and not 1.0 because measurement found real names at
+    # earningsYield 1.08-1.20 with ordinary dividends -- odd, not impossible.
+    ey = row.get('earningsYield', np.nan)
+    dy = row.get('dividendYield', np.nan)
+    if (pd.notna(ey) and pd.notna(dy) and ey >= _EARNYIELD_IMPOSSIBLE
+            and dy > 0):
+        return False, (f"implausible_yield_pair (earningsYield={ey:.3f} => P/E="
+                       f"{1.0/ey:.4f}, dividendYield={dy:.4f})")
+
+    # Check 6: market cap steps by >= _MCAP_BREAK_RATIO between consecutive quarters
+    # while the SHARE COUNT is essentially unchanged.  Market cap = price x shares, so
+    # with shares flat a 100x cap move requires a 100x price move in one quarter --
+    # that is a data break, not a market event.  Guarded on BOTH share counts being
+    # present and close, so a genuine capital raise / reverse split (which moves the
+    # share count too) is NOT caught.
+    #
+    # NO reporting-gap bound -- see the note on _MCAP_BREAK_RATIO above.  The comparison is
+    # simply against the ADJACENT preceding row, whatever the gap: a >=100x move with the
+    # share count flat is a data break at any spacing, and bounding it by cadence vetoed a
+    # real 151x break (TAM.L) while buying no idempotency that the prefix-removal structure
+    # does not already guarantee.
+    shares = row.get('weightedAverageShsOut', np.nan)
+    if (prev_row_mcap is not None and pd.notna(mcap) and pd.notna(prev_row_mcap)
+            and prev_row_mcap > 0 and mcap > 0
+            and pd.notna(shares) and prev_row_shares is not None
+            and pd.notna(prev_row_shares) and prev_row_shares > 0):
+        mcap_ratio = mcap / prev_row_mcap
+        share_ratio = shares / prev_row_shares
+        if ((mcap_ratio >= _MCAP_BREAK_RATIO or mcap_ratio <= 1.0 / _MCAP_BREAK_RATIO)
+                and (1.0 / _SHARES_FLAT_BAND) <= share_ratio <= _SHARES_FLAT_BAND):
+            return False, (f"mcap_step_break (mcap {mcap_ratio:.4g}x with shares "
+                           f"{share_ratio:.3f}x)")
+
+    # NOT IMPLEMENTED -- "implied share count (marketCap/price) vs reported share count".
+    # It was written, measured, and REMOVED: it cannot detect anything real here.  Once
+    # price = marketCap/weightedAverageShsOut (the 2026-07-19 ingest fix) the ratio is
+    # identically 1.0 BY CONSTRUCTION, so the check is vacuous going forward; and on the
+    # pre-fix data it fired on 1,335 rows across 567 sources clustered at 10-18x, which is
+    # the old quarterly-PE price derivation drifting, NOT corrupt data.  A screen that is
+    # either vacuous or a false-positive generator earns no place in the pipeline.
+
     return True, None
 
 
@@ -120,7 +238,8 @@ def filter_invalid_data(cdx_df, price_col='price', mcap_col='marketCap',
     # PASS 1: Identify all corrupt data points
     # =========================================================================
     corrupt_records = []  # (source, date, reason)
-    prev_data = {}  # source -> (prev_price, prev_mcap, prev_date)
+    prev_data = {}  # source -> (prev_price, prev_mcap, prev_date)         [last VALID row]
+    prev_row = {}   # source -> (prev_mcap, prev_shares)                   [ADJACENT row]
     
     for idx, row in df.iterrows():
         source = row.get('source', 'unknown')
@@ -129,11 +248,21 @@ def filter_invalid_data(cdx_df, price_col='price', mcap_col='marketCap',
         date = row.get('date', None)
         
         prev_price, prev_mcap, prev_date = prev_data.get(source, (None, None, None))
-        
+        # The ADJACENT preceding row (valid or not) -- what the market-cap step check
+        # needs.  Tracked separately from prev_data (last VALID row) because a flagged
+        # row must still advance the adjacent-row baseline, or one break cascades into
+        # every later row.  A real capital raise / reverse split moves the share count
+        # too, which is why the step check requires shares to be flat.
+        prev_row_mcap, prev_row_shares = prev_row.get(source, (None, None))
+        shares = row.get('weightedAverageShsOut', np.nan)
+
         is_valid, reason = check_price_sanity(
-            row, price_col, mcap_col, prev_price, prev_mcap
+            row, price_col, mcap_col, prev_price, prev_mcap,
+            prev_row_mcap, prev_row_shares
         )
-        
+
+        prev_row[source] = (mcap, shares)
+
         if not is_valid:
             corrupt_records.append({
                 'source': source,
@@ -344,19 +473,47 @@ def apply_data_quality_filter(dmdic, verbose=True, save_log=True):
     dmdic['cdx_df'] = clean_cdx
     dmdic['removed_data_quality'] = removed_cdx
     
-    # Also filter BoMetric_df to only include sources that have valid price data
+    # Also filter BoMetric_df -- by SOURCE *and* by ROW (audit H-1 fix, 2026-07-19).
+    #
+    # Only the source-level filter existed, so a ticker whose corrupt-era rows were
+    # surgically removed from cdx_df kept those SAME quarters in BoMetric_df -- the
+    # Stage-1 scoring frame.  Measured on the 2026-07-17 run: 3,522 rows across 551
+    # sources that this filter had removed from cdx_df were still being scored (and still
+    # feeding the cross-sectional median every mean-relative Stage-1 test compares
+    # against).  "Partially cleaned" meant cleaned for Stage-2 and untouched for Stage-1.
+    #
+    # Row matching is by (source, date), the pair both frames are keyed on -- they are
+    # built per ticker from the same date vector, and both go through
+    # utils.setDatesToQuarterly.  SUBTRACTIVE by design: only pairs this pass explicitly
+    # recorded in removed_cdx are dropped, so a BoMetric_df row with no cdx counterpart is
+    # never silently deleted, and a second (idempotent) invocation removes nothing.
     if 'BoMetric_df' in dmdic and not clean_cdx.empty:
         valid_sources = set(clean_cdx['source'].unique())
-        original_bm_len = len(dmdic['BoMetric_df'])
-        dmdic['BoMetric_df'] = dmdic['BoMetric_df'][
-            dmdic['BoMetric_df']['source'].isin(valid_sources)
-        ].copy()
-        
+        bm = dmdic['BoMetric_df']
+        original_bm_len = len(bm)
+        bm = bm[bm['source'].isin(valid_sources)].copy()
+        n_after_source = len(bm)
+
+        n_rowdrop = 0
+        if (not removed_cdx.empty and 'date' in removed_cdx.columns
+                and 'date' in bm.columns):
+            rem_pairs = set(zip(removed_cdx['source'],
+                                pd.to_datetime(removed_cdx['date'], errors='coerce')))
+            bm_pairs = zip(bm['source'], pd.to_datetime(bm['date'], errors='coerce'))
+            keep_row = np.fromiter((p not in rem_pairs for p in bm_pairs),
+                                   dtype=bool, count=len(bm))
+            n_rowdrop = int((~keep_row).sum())
+            bm = bm[keep_row].copy()
+
+        dmdic['BoMetric_df'] = bm
+
         if verbose:
-            new_bm_len = len(dmdic['BoMetric_df'])
+            new_bm_len = len(bm)
             if original_bm_len != new_bm_len:
-                print(f"BoMetric_df filtered: {original_bm_len:,} -> {new_bm_len:,} rows")
-    
+                print(f"BoMetric_df filtered: {original_bm_len:,} -> {new_bm_len:,} rows "
+                      f"({original_bm_len - n_after_source:,} by removed SOURCE, "
+                      f"{n_rowdrop:,} by removed ROW (source,date))")
+
     return dmdic
 
 

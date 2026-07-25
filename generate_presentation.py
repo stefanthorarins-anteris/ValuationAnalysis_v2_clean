@@ -76,8 +76,10 @@ COHORTS = ['REIT', 'Mining', 'InvestmentVehicle', 'FinManager', 'BalanceSheetFin
 # The first six are kept first and unchanged so their confirmed values do not move.
 SECTION_G_METRICS = [
     ('ROIC',                'returnOnCapitalEmployed', 'returnOnCapitalEmployed',    'ratio'),
-    ('ROE',                 'returnOnEquity',          'returnOnEquity',             'ratio'),
-    ('ROA',                 'returnOnAssets',          'RoA',                        'ratio'),
+    # ROE/ROA formatted as % here to MATCH Section C's pct_format (reviewer F6: the same
+    # metric must not render twice with inconsistent formatting on a cohort page).
+    ('ROE',                 'returnOnEquity',          'returnOnEquity',             'pct'),
+    ('ROA',                 'returnOnAssets',          'RoA',                        'pct'),
     ('Gross Margin',        'grossProfitMargin',       'grossProfitMargin',          'pct'),
     ('FCF Yield',           None,                      'freeCashFlowYield',          'pct'),
     ('Current Ratio',       'currentRatio',            'currentRatio',               'ratio'),
@@ -164,6 +166,23 @@ def ttm_sum(df, col):
     if len(values) == 0:
         return np.nan
     return float(np.sum(values))
+
+
+def ttm_aligned_sums(df, cols):
+    """Trailing-12-month sums for several columns computed over the SAME set of quarters
+    (the newest 4 rows where EVERY listed column is non-NaN). Unlike calling ttm_sum per
+    column -- which drops NaNs independently and can sum DIFFERENT quarters per column --
+    this keeps a paired sum (e.g. R2's netIncome vs operating cash flow) aligned on one
+    consistent period set. Returns a tuple of floats (np.nan where unavailable), in `cols`
+    order. `df` is assumed newest-first (get_cdx_for_ticker's order)."""
+    n = len(cols)
+    if df is None or df.empty or any(c not in df.columns for c in cols):
+        return tuple(np.nan for _ in cols)
+    sub = df[cols].dropna()          # rows where ALL cols present -> aligned quarters
+    if sub.empty:
+        return tuple(np.nan for _ in cols)
+    sub = sub.head(4)
+    return tuple(float(sub[c].sum()) for c in cols)
 
 
 def latest_row_value(df, col):
@@ -515,8 +534,12 @@ ORIENTATION = {
                      'balance-sheet accruals; pipeline flag = worst quintile in-run, not absolute'),
     'incomeQuality':('≈1 neutral (emp −13.8…8.0)', '↑ better (≈>1 good)',
                      'CFO/NI; noisy near NI≈0'),
-    'Altman-Z':     ('<1.8 distress / >3.0 safe', '↑ better',
-                     'bankruptcy distance'),
+    # 2026-07-19 soundness audit: the pipeline's computed variant DEVIATES from published
+    # Altman-Z (wrong x2 variable, quarter-scale flow terms), so the published 1.8/3.0
+    # thresholds do not apply to the quantity we compute -> no hard verdict, relative-only.
+    'Altman-Z':     ('relative-only (uncalibrated)', '↑ better',
+                     'computed variant deviates from published Altman-Z — thresholds not '
+                     'calibrated; treat as relative-only pending fix'),
     'Piotroski':    ('0–9 (≥7 strong, ≤3 weak)', '↑ better',
                      'count of 9 fundamental-improvement tests'),
     'CycleHeat':    ('[−3,3]', '↓ better (penalized, w=−0.080)',
@@ -574,9 +597,11 @@ BENCHMARKS = {
     'sloan': dict(tick=0.10, warn=('>', 0.10),
                          note='rule-of-thumb: > 0.10 flag (high accruals); low/neg = cash-backed (non-financial)',
                          suppress=_FIN),
-    'Altman-Z': dict(tick=1.8, warn=('<', 1.8), good=('>', 3.0),
-                         note='rule-of-thumb: <1.8 distress · >3.0 safe (industrials; invalid financials)',
-                         suppress=_FIN),
+    # 'Altman-Z' DELIBERATELY ABSENT (2026-07-19 soundness audit): the pipeline's computed
+    # variant deviates from published Altman-Z (wrong x2 variable, quarter-scale flow terms),
+    # so 1.8/3.0 are not calibrated for the quantity we compute. No tick is drawn on its peer
+    # bar and no verdict is derived from it -- the bar shows the PEER DISTRIBUTION ONLY
+    # (relative-only). Do not restore a tick/threshold here without a recalibration decision.
     'Piotroski': dict(tick=3, warn=('<=', 3), good=('>=', 7),
                          note='rule-of-thumb: ≤3 weak · ≥7 strong'),
     # No peer bar for these -> inline verdict chip only (tick=None).
@@ -646,6 +671,115 @@ def benchmark_verdict(bkey, value, cohort_label=None):
     else:
         state, sym = 'neutral', '•'       # between weak and strong bands
     return (f'<span class="verdict-chip {state}" title="{escape(b["note"])}">{sym}</span>')
+
+
+# ============================================================================
+# 4-STATE VERDICT ICONS + CONFIDENCE-TAGGED SUSPICION FLAGS  (metric-icons-spec)
+# ============================================================================
+# 🟢 good · 🟡 tentative/borderline-or-low-confidence · 🔴 clearly bad side of a rule ·
+# ⚪ no honest standalone rule (peer-relative only). Presentation-layer ONLY -- reads
+# already-loaded page data; changes NO score/rank/marketCap/partition/currency value.
+VERDICT_GLYPH = {'good': '🟢', 'neutral': '🟡', 'warn': '🔴', 'gray': '⚪'}
+
+# A.1 dual/single-threshold rules. `good`='high'|'low' (which side is better); a value
+# >= green (high) / <= green (low) is 🟢, past `red` is 🔴, the band between is 🟡. The
+# raw thresholds encode the spec's A.1 table + Yellow-borderline bands directly.
+VERDICT_RULES = {
+    'currentRatio':            dict(good='high', green=1.5,  red=1.0,  note='rule-of-thumb: ≥1.5 healthy · <1.0 flag · 1.0–1.5 borderline (non-financial)', suppress=_FIN | {'REIT'}),
+    'returnOnCapitalEmployed': dict(good='high', green=0.15, red=0.10, note='rule-of-thumb: >15% strong · <10% weak · 10–15% borderline (non-financial)', suppress=_FIN),
+    'interest_coverage':       dict(good='high', green=3.3,  red=2.7,  note='rule-of-thumb: >3× ok · <3× flag · 2.7–3.3 borderline (non-financial)', suppress=_FIN),
+    'sloan':                   dict(good='low',  green=0.09, red=0.11, note='rule-of-thumb: ≤0.10 cash-backed · >0.10 high-accrual flag · 0.09–0.11 borderline (non-financial)', suppress=_FIN),
+    # Altman-Z DELIBERATELY ABSENT (2026-07-19 soundness audit): the computed variant
+    # deviates from published Altman-Z, so 1.8/3.0 are not calibrated for it -> it is listed
+    # in VERDICT_GRAY (⚪, relative-only) until the pipeline metric is fixed. Do not restore
+    # a threshold verdict here without a recalibration decision.
+    'Piotroski':               dict(good='high', green=7,    red=4,    note='rule-of-thumb: ≥7 strong · ≤3 weak · 4–6 middling'),
+    'M-Score':                 dict(good='low',  green=-0.5, red=0.5,  note='rule-of-thumb: stored ≤0 clean · >0 flag · −0.5…+0.5 borderline (invalid financials)', suppress=_FIN),
+    'C-Score':                 dict(good='low',  green=0.5,  red=3.5,  note='rule-of-thumb: 0 clean · ≥4 flag · 1–3 borderline (invalid financials)', suppress=_FIN),
+    'incomeQuality':           dict(good='high', green=0.9,  red=0.7,  note='rule-of-thumb: ≥0.9 cash-backed · <0.7 flag · 0.7–0.9 borderline (non-financial)', suppress=_FIN),
+}
+# A.1 floor rules: 🔴 on the bad side, else ⚪ (no positive standalone rule).
+VERDICT_FLOORS = {
+    'fcf_margin':          dict(floor=0.0, bad='below', note='floor: <0 caution (TTM FCF margin negative)', suppress=_FIN),
+    'freeCashFlowYield':   dict(floor=0.0, bad='below', note='floor: <0 caution (negative FCF yield)'),
+    'earnYield':           dict(floor=0.0, bad='below', note='floor: <0 caution (negative earnings yield)'),
+    'cash_conv':           dict(floor=0.0, bad='below', note='floor: <0 caution (FCF and net income disagree in sign)'),
+    'affo_payout':         dict(floor=1.0, bad='above', note='floor: >1.0 caution (AFFO payout exceeds AFFO)'),
+}
+# A.2 gray metrics -> always ⚪ (no honest standalone rule; can still receive a 🚩).
+VERDICT_GRAY = {
+    # 'Altman-Z': gray by AUDIT DECISION (not because no rule exists in the literature) --
+    # our computed variant is not the published statistic, so its thresholds are meaningless.
+    'Altman-Z',
+    'peRatio', 'pbRatio', 'bVpRatio', 'tbVpRatio', 'grossProfitMargin', 'op_margin',
+    'effective_tax', 'dso', 'inv_days', 'returnOnEquity', 'RoA', 'revenueGrowth',
+    'freeCashFlowPerShareGrowth', 'net_debt_ebitda', 'CycleHeat', 'AggScore', 'moatScore',
+    'p_ffo', 'ffo_per_share', 'ltv', 'nav',
+}
+_MOAT_NEAR_ZERO = 0.02   # |stored (mean−threshold)| below this -> 🟡 "near its bar"
+
+# Suspicion-flag confidence tiers (static per rule; "flag the flag").
+FLAG_TIERS = {'R1': 'M', 'R2': 'H', 'R3': 'H', 'R4': 'M', 'R5': 'L', 'R6': 'M', 'R7': 'L'}
+_TIER_RANK = {'H': 3, 'M': 2, 'L': 1}
+_TIER_NAME = {'H': 'High', 'M': 'Medium', 'L': 'Low'}
+
+
+def _verdict_state_band(rule, v):
+    v = safe_float(v)
+    if np.isnan(v):
+        return None
+    if rule['good'] == 'high':
+        if v >= rule['green']:
+            return 'good'
+        if v < rule['red']:
+            return 'warn'
+        return 'neutral'
+    else:  # lower is better
+        if v <= rule['green']:
+            return 'good'
+        if v >= rule['red']:
+            return 'warn'
+        return 'neutral'
+
+
+def compute_verdict(metric_key, value, cohort_label=None, low_conf=False):
+    """4-state verdict for one metric. Precedence (spec Part C): (1) no rule / suppressed
+    for cohort -> ⚪ 'gray'; (2) else Y2 low-confidence -> 🟡 'neutral'; (3) else value vs
+    rule. Returns (state, note) where state in {good,neutral,warn,gray} or (None, None)
+    when the metric takes NO icon. `low_conf` carries the caller's Y2 determination."""
+    if metric_key in VERDICT_RULES:
+        r = VERDICT_RULES[metric_key]
+        if cohort_label is not None and cohort_label in r.get('suppress', set()):
+            return 'gray', 'no universal rule for this cohort'
+        if low_conf:
+            return 'neutral', 'value present but flagged low-confidence (see 🚩/forensic)'
+        st = _verdict_state_band(r, value)
+        if st is None:
+            return 'gray', 'value unavailable'
+        return st, r['note']
+    if metric_key in VERDICT_FLOORS:
+        f = VERDICT_FLOORS[metric_key]
+        if cohort_label is not None and cohort_label in f.get('suppress', set()):
+            return 'gray', 'no universal rule for this cohort'
+        if low_conf:
+            return 'neutral', 'value present but flagged low-confidence (see 🚩/forensic)'
+        v = safe_float(value)
+        if np.isnan(v):
+            return 'gray', 'value unavailable'
+        bad = (v < f['floor']) if f['bad'] == 'below' else (v > f['floor'])
+        return ('warn', f['note']) if bad else ('gray', 'no positive standalone rule (peer-relative)')
+    if metric_key in VERDICT_GRAY:
+        return 'gray', 'no honest standalone rule — read against the peer bar'
+    if metric_key.startswith('moat:'):
+        v = safe_float(value)
+        if np.isnan(v):
+            return 'gray', 'value unavailable'
+        if v > _MOAT_NEAR_ZERO:
+            return 'good', 'moat component passes its bar (stored mean−threshold > 0)'
+        if v < -_MOAT_NEAR_ZERO:
+            return 'warn', 'moat component fails its bar (stored mean−threshold < 0)'
+        return 'neutral', 'moat component sits right at its bar (stored mean−threshold ≈ 0)'
+    return None, None
 
 
 def _clip01(v):
@@ -1050,6 +1184,7 @@ class PresentationBuilder:
         # Extended peer-bar pools (metrics beyond the 16 playbook set), winsorized + min-N
         # gated + fin-suppressed. Separate from the 16-playbook machinery above.
         self.ext_per_src, self.ext_stats, self.ext_membership = build_extended_pools(data)
+        self._eval_cache = {}   # (ticker,cohort) -> per-page verdict/flag evaluation
         self.html_parts = []
 
     def ext_val(self, ticker, metric):
@@ -1076,8 +1211,9 @@ class PresentationBuilder:
         tick = benchmark_tick(metric, cohort_label)
         bar = create_distribution_bar(safe_float(marker), st['p10'], st['p50'], st['p90'],
                                       benchmark=tick)
-        verdict = benchmark_verdict(metric, marker, cohort_label)
-        return f'<span class="pctile">({pctile_format(pct)} pct)</span> {bar} {verdict}'.rstrip()
+        # verdict now rendered as the 4-state icon at the VALUE (see _vf); bar keeps only
+        # the percentile + spread (the old ✓/•/⚠ trailing chip is replaced there).
+        return f'<span class="pctile">({pctile_format(pct)} pct)</span> {bar}'.rstrip()
 
     def _page_tickers(self):
         """Ordered, de-duplicated list of every ticker that gets a page (general top-20 +
@@ -1167,8 +1303,235 @@ class PresentationBuilder:
         p10, p50, p90 = stats
         tick = benchmark_tick(pool_metric, cohort_label)
         bar = create_distribution_bar(safe_float(marker), p10, p50, p90, benchmark=tick)
-        verdict = benchmark_verdict(pool_metric, marker, cohort_label)
-        return f'{bar} {verdict}'.rstrip() if verdict else bar
+        # verdict now rendered as the 4-state icon at the VALUE (see _vf); the old ✓/•/⚠
+        # trailing chip is replaced there.
+        return bar
+
+    def _page_eval(self, ticker, cohort_label):
+        """Cached per-page verdict/flag evaluation."""
+        k = (ticker, cohort_label)
+        if k not in self._eval_cache:
+            self._eval_cache[k] = self.evaluate_page(ticker, cohort_label)
+        return self._eval_cache[k]
+
+    def _vf(self, ev, key):
+        """Render ` {verdict-icon}{🚩+tier?}` for one metric from the page evaluation.
+        Verdict icon (exactly one 4-state glyph) + an INDEPENDENT confidence-tagged flag.
+        Returns '' when the metric takes neither (A.3 descriptive metrics)."""
+        e = ev.get(key)
+        if not e:
+            return ''
+        glyph, note, flag, tier, reason = e
+        out = ''
+        if glyph:
+            out += (f'<span class="verdict-icon" title="{escape(note or "")}">{glyph}</span>')
+        if flag:
+            out += (f'<span class="flag-icon tier-{tier}" title="{escape(reason or "")}">'
+                    f'🚩<sub>{tier}</sub></span>')
+        return (' ' + out) if out else ''
+
+    def evaluate_page(self, ticker, cohort_label):
+        """Per-page metric evaluator (metric-icons-spec Part C). Returns
+        {metric_key: (glyph, note, flag_bool, tier, reason)} for every metric that takes a
+        verdict icon and/or a suspicion flag. Presentation-layer ONLY: reads already-loaded
+        page data (cdx/aggscore/raw_all/ext/moatdf) and mutates nothing. Tiers static per rule."""
+        from collections import defaultdict
+        cdx = self.get_cdx_for_ticker(ticker)
+        is_fin = cohort_label in FIN_COHORTS
+
+        def L(c):
+            return latest_row_value(cdx, c)
+        # PAIRED TTM sums aligned on the SAME quarters (reviewer F4): R2 compares TTM net
+        # income vs TTM operating cash flow, and Y2 compares TTM net income vs TTM revenue --
+        # each pair must sum the same non-NaN period set, else a NaN quarter in one column
+        # misaligns the comparison. (compute_cash_conversion, a DISPLAYED value, is left
+        # untouched so no shown number moves.)
+        ni_ttm, cfo_ttm = ttm_aligned_sums(cdx, ['netIncome', 'netCashProvidedByOperatingActivities'])
+        ni_ttm_rev, rev_ttm = ttm_aligned_sums(cdx, ['netIncome', 'revenue'])
+        roic = L('returnOnCapitalEmployed'); roe = L('returnOnEquity'); roa = L('returnOnAssets')
+        gm = L('grossProfitMargin'); income_qual = L('incomeQuality')
+        net_debt_ebitda = L('netDebtToEBITDA'); curr_ratio = L('currentRatio')
+        op_margin = compute_operating_margin(cdx)
+        fcf_margin = compute_fcf_margin_ttm(cdx)
+        cash_conv = compute_cash_conversion(cdx)
+        int_cov = compute_interest_coverage(cdx)
+        fcf_yield = self.raw_metric(ticker, 'freeCashFlowYield')
+        earn_yield = self.raw_metric(ticker, 'earnYield')
+        altman_z = self.raw_metric(ticker, 'Altman-Z')
+        rev_growth = self.raw_metric(ticker, 'revenueGrowth')
+        piotroski = self.raw_metric(ticker, 'Piotroski')
+        fcf_share_growth = self.raw_metric(ticker, 'freeCashFlowPerShareGrowth')
+        sloan_val = self.ext_val(ticker, 'sloan')
+        affo = self.ext_val(ticker, 'affo_payout')
+        mk = self.markers.get(ticker, {})
+        bvp = safe_float(mk.get('bVpRatio', np.nan)); tbvp = safe_float(mk.get('tbVpRatio', np.nan))
+        moat = self.get_moat_components(ticker)
+        tl_to_equity = safe_float(moat.get('TLtoEquity', np.nan))
+
+        # aggscore forensic fields (Top-100 CSV; every rendered name is within Top-100).
+        m_score = c_score = np.nan; forensic_valid = True; m_flag = False; m_drivers = ''
+        agg = self.data.get('aggscore_df')
+        if agg is not None and not agg.empty:
+            ar = agg[agg['source'] == ticker]
+            if not ar.empty:
+                r0 = ar.iloc[0]
+                m_score = safe_float(r0.get('M-Score')); c_score = safe_float(r0.get('C-Score'))
+                fv = str(r0.get('forensicValid')).strip().lower()
+                forensic_valid = fv not in ('false', '0', 'no', 'nan', 'none', '')
+                m_flag = str(r0.get('M_flag_gt_-1.78')).strip().lower() in ('true', '1', 'yes')
+                m_drivers = str(r0.get('M_drivers') or '')
+
+        # dilution: shares +>10% over 3y (Section-H computation reused)
+        dilution = False
+        if 'weightedAverageShsOut' in cdx.columns:
+            sh = cdx['weightedAverageShsOut'].dropna().values   # newest-first
+            if len(sh) >= 12 and sh[-1] > 0 and (sh[0] / sh[-1] - 1) > 0.10:
+                dilution = True
+
+        # ---- Y2 low-confidence guards ----
+        low_conf_forensic = not forensic_valid                   # -> M/C/Sloan 🟡
+        denom_weak = False                                       # -> IncomeQuality/CashConv 🟡
+        if not np.isnan(ni_ttm_rev):
+            if ni_ttm_rev <= 0:
+                denom_weak = True
+            elif not np.isnan(rev_ttm) and rev_ttm != 0 and abs(ni_ttm_rev) / abs(rev_ttm) < 0.02:
+                denom_weak = True
+
+        # ---- verdicts (state, note) per metric_key ----
+        verdicts = {
+            'currentRatio':            compute_verdict('currentRatio', curr_ratio, cohort_label),
+            'returnOnCapitalEmployed': compute_verdict('returnOnCapitalEmployed', roic, cohort_label),
+            'interest_coverage':       compute_verdict('interest_coverage', int_cov, cohort_label),
+            'sloan':                   compute_verdict('sloan', sloan_val, cohort_label, low_conf=low_conf_forensic),
+            'Altman-Z':                compute_verdict('Altman-Z', altman_z, cohort_label),
+            'Piotroski':               compute_verdict('Piotroski', piotroski, cohort_label),
+            'M-Score':                 compute_verdict('M-Score', m_score, cohort_label, low_conf=low_conf_forensic),
+            'C-Score':                 compute_verdict('C-Score', c_score, cohort_label, low_conf=low_conf_forensic),
+            'incomeQuality':           compute_verdict('incomeQuality', income_qual, cohort_label, low_conf=denom_weak),
+            'fcf_margin':              compute_verdict('fcf_margin', fcf_margin, cohort_label),
+            'freeCashFlowYield':       compute_verdict('freeCashFlowYield', fcf_yield, cohort_label),
+            'earnYield':               compute_verdict('earnYield', earn_yield, cohort_label),
+            'cash_conv':               compute_verdict('cash_conv', cash_conv, cohort_label, low_conf=denom_weak),
+            'affo_payout':             compute_verdict('affo_payout', affo, cohort_label),
+            # A.2 gray metrics (always ⚪; may still receive a 🚩)
+            'returnOnEquity':          compute_verdict('returnOnEquity', roe, cohort_label),
+            'RoA':                     compute_verdict('RoA', roa, cohort_label),
+            'grossProfitMargin':       compute_verdict('grossProfitMargin', gm, cohort_label),
+            'op_margin':               compute_verdict('op_margin', op_margin, cohort_label),
+            'revenueGrowth':           compute_verdict('revenueGrowth', rev_growth, cohort_label),
+            'freeCashFlowPerShareGrowth': compute_verdict('freeCashFlowPerShareGrowth', fcf_share_growth, cohort_label),
+            'net_debt_ebitda':         compute_verdict('net_debt_ebitda', net_debt_ebitda, cohort_label),
+            'CycleHeat':               compute_verdict('CycleHeat', self.raw_metric(ticker, 'CycleHeat'), cohort_label),
+            'moatScore':               compute_verdict('moatScore', mk.get('moatScore', np.nan), cohort_label),
+            'bVpRatio':                compute_verdict('bVpRatio', bvp, cohort_label),
+            'tbVpRatio':               compute_verdict('tbVpRatio', tbvp, cohort_label),
+            'peRatio':                 compute_verdict('peRatio', np.nan, cohort_label),
+        }
+        for mc in EXT_MOAT_COLS + ['FCFyield', 'GrossMargin', 'RevtoASS', 'RoE', 'RoA', 'ROIC', 'NetMargin']:
+            verdicts['moat:' + mc] = compute_verdict('moat:' + mc, moat.get(mc, np.nan), cohort_label)
+
+        # ---- suspicion flags R1–R7 (all ship). Tier is static per rule EXCEPT R3, whose
+        # tier is conditional on which limb fired (see below) -> `tier` override. ----
+        flags = defaultdict(list)
+        # Valuation metrics carry NO standalone verdict (⚪) but INHERIT earnings-quality /
+        # forensic flags (CEO: a cheap number is suspicious when another is low). Added to
+        # R1/R2/R3 target lists only (not R4/R5/R6).
+        VAL_KEYS = ['peRatio', 'bVpRatio', 'earnYield', 'freeCashFlowYield']
+        def add(rule_id, metrics, reason, tier=None):
+            t = tier or FLAG_TIERS[rule_id]
+            for m in metrics:
+                flags[m].append((rule_id, t, reason))
+
+        # R2 HIGH — profit without cash
+        if (not np.isnan(ni_ttm) and ni_ttm > 0) and (not np.isnan(cfo_ttm) and cfo_ttm < 0):
+            add('R2', ['incomeQuality', 'returnOnCapitalEmployed', 'returnOnEquity', 'grossProfitMargin']
+                + VAL_KEYS,
+                f"Profit without cash: TTM net income {ni_ttm:,.0f} > 0 but TTM operating cash flow "
+                f"{cfo_ttm:,.0f} < 0 — earnings are not turning into cash.")
+        # R3 — forensic contradiction on a pick (suppress FIN). M-Score / C-Score limbs ONLY.
+        # The Altman-Z limb was REMOVED (2026-07-19 soundness audit): our computed Z deviates
+        # from published Altman-Z, so a "<1.8" trip is not calibrated evidence of distress.
+        # Both remaining limbs are HIGH-tier (the earlier Z-only -> Medium path is gone with it).
+        if not is_fin:
+            trips = []
+            if not np.isnan(m_score) and m_score > 0: trips.append(f"M-Score {m_score:.2f} > 0")
+            if not np.isnan(c_score) and c_score >= 4: trips.append(f"C-Score {c_score:.0f} ≥ 4")
+            if trips:
+                add('R3', ['moatScore', 'returnOnCapitalEmployed', 'grossProfitMargin'] + VAL_KEYS,
+                    "Forensic contradiction on a pick: " + "; ".join(trips)
+                    + " — the forensic layer disagrees with this pick.")
+        # R1 MEDIUM — accrual-backed profitability
+        prof_good = ((not np.isnan(roic) and roic > 0.15) or (not np.isnan(roe) and roe > 0.15)
+                     or (not np.isnan(gm) and gm > 0.40) or (not np.isnan(op_margin) and op_margin > 0.20))
+        acc_bits = []
+        if not np.isnan(sloan_val) and sloan_val > 0.10: acc_bits.append(f"Sloan {sloan_val:.2f} > 0.10")
+        if not np.isnan(cash_conv) and cash_conv < 0.5: acc_bits.append(f"cash-conversion {cash_conv:.2f} < 0.5")
+        if m_flag: acc_bits.append("Beneish M-flag fired")
+        if prof_good and acc_bits:
+            add('R1', ['returnOnCapitalEmployed', 'returnOnEquity', 'grossProfitMargin', 'incomeQuality']
+                + VAL_KEYS,
+                "Accrual-backed profitability: strong profitability alongside " + "; ".join(acc_bits)
+                + " — the returns may not be cash-backed.")
+        # R4 MEDIUM — leverage-inflated ROE (suppress FIN)
+        if not is_fin and not np.isnan(roe) and roe > 0.15:
+            lev = []
+            if not np.isnan(tl_to_equity) and tl_to_equity < 0:
+                lev.append(f"TL/Equity fails its 0.8 bar (stored {tl_to_equity:.2f})")
+            if not np.isnan(net_debt_ebitda) and net_debt_ebitda > 4:
+                lev.append(f"Net Debt/EBITDA {net_debt_ebitda:.1f}×")
+            if lev:
+                add('R4', ['returnOnEquity'],
+                    "ROE looks strong but is leverage-inflated: " + " and ".join(lev)
+                    + " — the equity multiplier can inflate ROE without operating quality.")
+        # R6 MEDIUM — dilution-masked per-share strength
+        if dilution and ((not np.isnan(fcf_share_growth) and fcf_share_growth > 0)
+                         or (not np.isnan(bvp) and bvp > 0)):
+            add('R6', ['freeCashFlowPerShareGrowth', 'bVpRatio', 'tbVpRatio'],
+                "Dilution-masked per-share strength: shares up > 10% over 3y, so per-share "
+                "growth/value understates issuance — check totals, not per-share figures.")
+        # R5 LOW — growth–accrual divergence
+        strong_growth = not np.isnan(rev_growth) and rev_growth > 0.15
+        mdriver_hit = any(tok in m_drivers.upper() for tok in ('DSRI', 'SGI', 'AQI'))
+        sloan_hi = not np.isnan(sloan_val) and sloan_val > 0.10
+        if strong_growth and (sloan_hi or mdriver_hit):
+            why = "Sloan > 0.10" if sloan_hi else "Beneish drivers (DSRI/SGI/AQI) elevated"
+            add('R5', ['revenueGrowth', 'freeCashFlowPerShareGrowth'],
+                f"Growth–accrual divergence: strong revenue growth {rev_growth:.0%} with {why} "
+                "— growth may be accrual-driven rather than cash-generative.")
+        # R7 LOW — 'too good' one-off spike vs own history
+        def _spike(col):
+            if col not in cdx.columns:
+                return False
+            s = cdx[col].dropna().values     # newest-first
+            if len(s) < 9:
+                return False
+            latest, prior = s[0], s[1:9]
+            if latest <= np.max(prior):
+                return False
+            hist = s[1:]
+            q1, q3 = np.percentile(hist, [25, 75]); iqr = q3 - q1
+            return iqr > 0 and latest > (np.median(hist) + 3 * iqr)
+        for col, key in [('grossProfitMargin', 'grossProfitMargin'),
+                         ('returnOnCapitalEmployed', 'returnOnCapitalEmployed'),
+                         ('returnOnEquity', 'returnOnEquity'), ('incomeQuality', 'incomeQuality')]:
+            if _spike(col):
+                add('R7', [key],
+                    f"'Too good' one-off spike: latest {key} exceeds both its prior-8-quarter max "
+                    "and median + 3×IQR of its own history — likely non-recurring.")
+
+        # ---- merge verdicts + flags ----
+        result = {}
+        for k in set(verdicts) | set(flags):
+            state, note = verdicts.get(k, (None, None))
+            glyph = VERDICT_GLYPH.get(state) if state else None
+            fl = flags.get(k, [])
+            if fl:
+                tier = max(fl, key=lambda x: _TIER_RANK[x[1]])[1]
+                reason = " · ".join(sorted({f"{rid} [{_TIER_NAME[t]}]: {rs}" for rid, t, rs in fl}))
+                result[k] = (glyph, note, True, tier, reason)
+            else:
+                result[k] = (glyph, note, False, None, None)
+        return result
 
     def get_ticker_info(self, ticker):
         """Get name, exchange, sector for a ticker."""
@@ -1329,6 +1692,7 @@ class PresentationBuilder:
             return ""
 
         mktcap = latest_row_value(cdx_df, 'marketCap')
+        ev = self._page_eval(ticker, cohort_label)
 
         if cohort_label == 'REIT':
             # REIT-specific metrics (all from cdx_df raw values, not z-scores)
@@ -1352,7 +1716,7 @@ class PresentationBuilder:
                 <table class="metrics-table">
                     <tr><td><strong>FFO/Share (proxy)</strong></td><td>{ratio_format(ffo_per_share)}</td><td>TTM (per-share, no bar)</td></tr>
                     <tr><td><strong>P/FFO</strong></td><td>{ratio_format(p_ffo)} {pffo_bar}</td><td>(proxy)</td></tr>
-                    <tr><td><strong>AFFO Payout (proxy)</strong></td><td>{pct_format(affo)} {affo_bar}</td><td>|div|/(FFO−capex)</td></tr>
+                    <tr><td><strong>AFFO Payout (proxy)</strong></td><td>{pct_format(affo)}{self._vf(ev, 'affo_payout')} {affo_bar}</td><td>|div|/(FFO−capex)</td></tr>
                     <tr><td><strong>LTV (proxy)</strong></td><td>{pct_format(ltv)} {ltv_bar}</td><td>debt/assets</td></tr>
                     <tr><td><strong>NAV Disc/Prem (proxy)</strong></td><td>{ratio_format(pb_ratio)}</td><td>P/B proxy (see B/P bar, §G)</td></tr>
                 </table>
@@ -1482,19 +1846,19 @@ class PresentationBuilder:
             <div class="section-c valuation">
                 <h3>Valuation Ratios</h3>
                 <table class="metrics-table">
-                    <tr><td><strong>ROIC/ROCE</strong> {orient_chip('returnOnCapitalEmployed')}</td><td>{ratio_format(roic)} {roic_bar}</td><td>proxy</td></tr>
-                    <tr><td><strong>Gross Margin</strong> {orient_chip('grossProfitMargin')}</td><td>{pct_format(gm)} {gm_bar}</td><td>latest</td></tr>
-                    <tr><td><strong>Op Margin</strong></td><td>{pct_format(op_margin)} {opm_bar}</td><td>TTM</td></tr>
-                    <tr><td><strong>FCF Margin</strong></td><td>{pct_format(fcf_margin)} {fcfm_bar}</td><td>TTM</td></tr>
-                    <tr><td><strong>Cash Conversion</strong></td><td>{ratio_format(cash_conv)}</td><td>TTM FCF / NI</td></tr>
-                    <tr><td><strong>Income Quality</strong> {orient_chip('incomeQuality')}</td><td>{ratio_format(income_qual)} {iq_bar}</td><td>audit</td></tr>
-                    <tr><td><strong>Net Debt/EBITDA</strong></td><td>{ratio_format(net_debt_ebitda)} {nde_bar}</td><td>latest</td></tr>
-                    <tr><td><strong>Interest Coverage</strong></td><td>{ratio_format(int_cov)} {intcov_bar}</td><td>op inc / int exp</td></tr>
+                    <tr><td><strong>ROIC/ROCE</strong> {orient_chip('returnOnCapitalEmployed')}</td><td>{ratio_format(roic)}{self._vf(ev, 'returnOnCapitalEmployed')} {roic_bar}</td><td>proxy</td></tr>
+                    <tr><td><strong>Gross Margin</strong> {orient_chip('grossProfitMargin')}</td><td>{pct_format(gm)}{self._vf(ev, 'grossProfitMargin')} {gm_bar}</td><td>latest</td></tr>
+                    <tr><td><strong>Op Margin</strong></td><td>{pct_format(op_margin)}{self._vf(ev, 'op_margin')} {opm_bar}</td><td>TTM</td></tr>
+                    <tr><td><strong>FCF Margin</strong></td><td>{pct_format(fcf_margin)}{self._vf(ev, 'fcf_margin')} {fcfm_bar}</td><td>TTM</td></tr>
+                    <tr><td><strong>Cash Conversion</strong></td><td>{ratio_format(cash_conv)}{self._vf(ev, 'cash_conv')}</td><td>TTM FCF / NI</td></tr>
+                    <tr><td><strong>Income Quality</strong> {orient_chip('incomeQuality')}</td><td>{ratio_format(income_qual)}{self._vf(ev, 'incomeQuality')} {iq_bar}</td><td>audit</td></tr>
+                    <tr><td><strong>Net Debt/EBITDA</strong></td><td>{ratio_format(net_debt_ebitda)}{self._vf(ev, 'net_debt_ebitda')} {nde_bar}</td><td>latest</td></tr>
+                    <tr><td><strong>Interest Coverage</strong></td><td>{ratio_format(int_cov)}{self._vf(ev, 'interest_coverage')} {intcov_bar}</td><td>op inc / int exp</td></tr>
                     <tr><td><strong>Effective Tax</strong></td><td>{pct_format(eff_tax)} {efftax_bar}</td><td>latest, clip[0,1]</td></tr>
                     <tr><td><strong>Days Sales Outstanding</strong></td><td>{ratio_format(dso)} {dso_bar}</td><td>latest</td></tr>
                     <tr><td><strong>Inventory Days</strong></td><td>{ratio_format(inv_days)} {invd_bar}</td><td>goods cohorts</td></tr>
-                    <tr><td><strong>P/E</strong></td><td>{ratio_format(pe_ratio)}</td><td>traded or yield inv</td></tr>
-                    <tr><td><strong>FCF Yield</strong> {orient_chip('freeCashFlowYield')}</td><td>{pct_format(fcf_yield)} {fcfy_bar}</td><td>reviewRef raw (TTM)</td></tr>
+                    <tr><td><strong>P/E</strong></td><td>{ratio_format(pe_ratio)}{self._vf(ev, 'peRatio')}</td><td>traded or yield inv</td></tr>
+                    <tr><td><strong>FCF Yield</strong> {orient_chip('freeCashFlowYield')}</td><td>{pct_format(fcf_yield)}{self._vf(ev, 'freeCashFlowYield')} {fcfy_bar}</td><td>reviewRef raw (TTM)</td></tr>
                 </table>
                 <div class="gap-note">[WACC, EV/EBIT not obtainable from filter data; P/E withheld from peer bar — use earnings-yield bar in Section G]</div>
             </div>
@@ -1593,18 +1957,21 @@ class PresentationBuilder:
         """
 
         # Duplicate-of-canonical components (rule 4) render as plain values (bars live on the
-        # cdx/Section-G side); the 6 non-dup components get peer bars.
+        # cdx/Section-G side); the 6 non-dup components get peer bars. Each carries a 4-state
+        # verdict icon: moat comps are stored as (mean−threshold), so >0 literally = passed.
+        ev = self._page_eval(ticker, cohort_label)
         dedup = {'FCFyield', 'GrossMargin', 'RoE', 'RoA', 'ROIC'}
         for metric in ['FCFyield', 'GrossMargin', 'RevtoASS', 'RoE', 'RoA', 'ROIC',
                        'SGAtoGP', 'DeptoGP', 'NetMargin', 'CapExtoEarnings', 'TLtoEquity']:
             val = moat_comp.get(metric, np.nan)
             chip = orient_chip('moat:' + metric)
+            vf = self._vf(ev, 'moat:' + metric)
             if metric in EXT_MOAT_COLS:
                 bar = self.ext_bar(cohort_label, metric, val)
-                html += f"<tr><td>{metric}: {chip}</td><td>{ratio_format(val)} {bar}</td></tr>"
+                html += f"<tr><td>{metric}: {chip}</td><td>{ratio_format(val)}{vf} {bar}</td></tr>"
             else:
                 note = ' <span class="pctile">(see §G/C bar)</span>' if metric in dedup else ''
-                html += f"<tr><td>{metric}: {chip}</td><td>{ratio_format(val)}{note}</td></tr>"
+                html += f"<tr><td>{metric}: {chip}</td><td>{ratio_format(val)}{vf}{note}</td></tr>"
 
         html += f"""
             </table>
@@ -1649,19 +2016,23 @@ class PresentationBuilder:
         sloan_cohort = self.ext_val(ticker, 'sloan')
         sloan_bar = self.ext_bar(cohort_label, 'sloan', sloan_cohort)
 
-        # Inline verdict chips for indices that have a universal rule but no peer bar here.
-        mscore_v = benchmark_verdict('M-Score', m_score, cohort_label)
-        cscore_v = benchmark_verdict('C-Score', c_score, cohort_label)
+        # 4-state verdict icons (+ any confidence-tagged flag); Y2 low-confidence (forensicValid
+        # == False) forces M-Score/C-Score/Sloan to 🟡 inside the evaluator.
+        ev = self._page_eval(ticker, cohort_label)
+        mscore_v = self._vf(ev, 'M-Score')
+        cscore_v = self._vf(ev, 'C-Score')
+        sloan_vf = self._vf(ev, 'sloan')
+        iq_vf = self._vf(ev, 'incomeQuality')
 
         html = f"""
         <div class="section-f forensic">
             <h3>Forensic / Accounting Quality</h3>
             <table class="forensic-table">
-                <tr><td><strong>M-Score</strong> {orient_chip('M-Score')}</td><td>{m_score} {mscore_v}</td></tr>
-                <tr><td><strong>C-Score</strong> {orient_chip('C-Score')}</td><td>{c_score} {cscore_v}</td></tr>
+                <tr><td><strong>M-Score</strong> {orient_chip('M-Score')}</td><td>{m_score}{mscore_v}</td></tr>
+                <tr><td><strong>C-Score</strong> {orient_chip('C-Score')}</td><td>{c_score}{cscore_v}</td></tr>
                 <tr><td><strong>Sloan Accruals (shortlist CSV)</strong> {orient_chip('sloanAccruals')}</td><td>{sloan}</td></tr>
-                <tr><td><strong>Sloan Accruals (cohort peer)</strong> {orient_chip('sloanAccruals')}</td><td>{ratio_format(sloan_cohort)} {sloan_bar}</td></tr>
-                <tr><td><strong>Income Quality</strong> {orient_chip('incomeQuality')}</td><td>{ratio_format(income_qual)}</td></tr>
+                <tr><td><strong>Sloan Accruals (cohort peer)</strong> {orient_chip('sloanAccruals')}</td><td>{ratio_format(sloan_cohort)}{sloan_vf} {sloan_bar}</td></tr>
+                <tr><td><strong>Income Quality</strong> {orient_chip('incomeQuality')}</td><td>{ratio_format(income_qual)}{iq_vf}</td></tr>
                 <tr><td><strong>FCF vs Net Income (TTM)</strong></td><td>FCF: {ratio_format(fcf_ttm)} / NI: {ratio_format(ni_ttm)}</td></tr>
                 <tr><td><strong>Forensic Tag</strong></td><td>{forensic_tag}</td></tr>
             </table>
@@ -1679,6 +2050,7 @@ class PresentationBuilder:
         # carve names -> their carve cohort's pool.
         ticker_percentiles = self.percentiles.get((ticker, cohort_label), {})
         ticker_markers = self.markers.get(ticker, {})
+        ev = self._page_eval(ticker, cohort_label)
 
         html = f"""
         <div class="section-g cohort">
@@ -1686,21 +2058,22 @@ class PresentationBuilder:
             <div class="cohort-metrics">
         """
 
-        # Raw marker (cdx-latest, or reviewReference raw pool for FCF yield) + percentile
-        # within the cohort's raw distribution + p10-p50-p90 spread bar.
+        # Raw marker (cdx-latest, or reviewReference raw pool for FCF yield) + 4-state verdict
+        # icon + optional confidence-tagged flag + percentile + p10-p50-p90 spread bar.
         for label, _cdx_col, pool_metric, fmt in SECTION_G_METRICS:
             marker = ticker_markers.get(pool_metric, np.nan)
             val_str = pct_format(marker) if fmt == 'pct' else ratio_format(marker)
+            vf = self._vf(ev, pool_metric)
             chip = orient_chip(pool_metric)
             # Financial-cohort suppression (rule 3): gross margin is meaningless for
             # banks/asset managers -> show the value, drop the bar/percentile.
             if pool_metric == 'grossProfitMargin' and cohort_label in FIN_COHORTS:
-                html += (f'<div><strong>{label}:</strong> {val_str} {chip} '
+                html += (f'<div><strong>{label}:</strong> {val_str}{vf} {chip} '
                          f'<span class="gap-inline">n/a for financials</span></div>')
                 continue
             pct = ticker_percentiles.get(pool_metric, np.nan)
             bar = self.dist_bar(ticker, cohort_label, pool_metric, marker=marker)
-            html += (f'<div><strong>{label}:</strong> {val_str} {chip} '
+            html += (f'<div><strong>{label}:</strong> {val_str}{vf} {chip} '
                      f'<span class="pctile">({pctile_format(pct)} pct)</span> {bar}</div>')
 
         html += f"""
@@ -1720,12 +2093,14 @@ class PresentationBuilder:
 
         flags = []
 
-        # Solvency check - Altman-Z is NOT a cdx_df column (it lives in postRank as a
-        # z-score, and raw in the reviewReference pool). Source the RAW computed value so
-        # a genuinely distressed name actually trips the flag.
-        altman_z = self.raw_metric(ticker, 'Altman-Z')
-        if not np.isnan(safe_float(altman_z)) and safe_float(altman_z) < 1.8:
-            flags.append(('RED', 'Solvency Risk (Z<1.8)'))
+        # Solvency check REMOVED (2026-07-19 soundness audit): it rested on the computed
+        # Altman-Z being < 1.8, but the pipeline's variant deviates from published Altman-Z
+        # (wrong x2 variable, quarter-scale flow terms), so the 1.8 cut is NOT calibrated for
+        # the quantity we compute -- a "Solvency Risk (Z<1.8)" banner was an uncalibrated
+        # verdict. Altman-Z is now presented relative-only (⚪ verdict, no tick on its peer
+        # bar). The interest-coverage and leverage checks below remain as the solvency signals
+        # that do NOT depend on it. Do not reinstate a Z-based solvency flag without a
+        # recalibration decision.
 
         # Interest coverage check
         int_cov = compute_interest_coverage(cdx)
@@ -1795,65 +2170,90 @@ class PresentationBuilder:
         """
         return html
 
+    # Human-readable band titles (USD market-cap size axis over the general pool).
+    _BAND_TITLES = {
+        'General':       'General (>$300M)',
+        'Mid_150_300M':  'Mid ($150–300M)',
+        'Small_50_150M': 'Small ($50–150M)',
+        'Micro_lt_50M':  'Micro (<$50M)',
+    }
+
     def build_html(self):
-        """Build complete HTML document."""
+        """Build complete HTML document.
+
+        LAYOUT (2026-07-18): the market-cap BANDS are the PRIMARY structure -- the main
+        content and the sidebar nav LEAD with General (>$300M) top-20, then Mid / Small /
+        Micro, each name's deep-dive rendered EXACTLY ONCE under its band. There is NO
+        separate flat unbanded top-20 section (that produced a confusing "flat top-20 +
+        appendix bands" shape with duplicated deep-dives). The 5 sector carve cohorts stay
+        orthogonal and unchanged. This is a presentation-layout change ONLY: no score,
+        rank, market-cap value, band partition, or currency handling is touched. When
+        currency data is PENDING (or bands are unavailable), it degrades to the original
+        single flat general top-20 with a pending note -- never the broken half-banded shape.
+        """
         run_date = self.data['run_date']
         postrank_df = self.data['postrank_df']
 
-        # Get top 20 general
-        top_20 = postrank_df.head(20)['source'].tolist()
-
-        # Get top 5 per cohort
+        # Sector carve cohorts (orthogonal size-independent axis; unchanged).
         cohort_names = {}
-        carveout_sidelists = self.data.get('carveout_sidelists', {})
+        carveout_sidelists = self.data.get('carveout_sidelists', {}) or {}
         for cohort_label in COHORTS:
-            cohort_dic = carveout_sidelists.get(cohort_label, {})
+            cohort_dic = carveout_sidelists.get(cohort_label, {}) or {}
             cohort_postrank = cohort_dic.get('postRank', pd.DataFrame())
-            if not cohort_postrank.empty:
-                top_5 = cohort_postrank.head(5)['source'].tolist()
-                cohort_names[cohort_label] = top_5
+            if cohort_postrank is not None and not cohort_postrank.empty:
+                cohort_names[cohort_label] = cohort_postrank.head(5)['source'].tolist()
 
-        # Build nav
-        nav_html = self._build_nav(top_20, cohort_names)
+        # Resolve the band partition (already computed + reviewed upstream).
+        band_info = self.data.get('marketcap_bands_info')
+        try:
+            import carveOut as _co
+            band_defs = _co.MCAP_BANDS
+        except Exception:
+            band_defs = []
+        banded = bool(band_info and band_info.get('bands')
+                      and not band_info.get('currency_pending', True) and band_defs)
 
-        # Build content
-        content = """<div class="content">"""
+        # Per-band rendered rosters (MCAP_BANDS order: General, Mid, Small, Micro).
+        band_names = {}
+        if banded:
+            for label, lo, hi, N in band_defs:
+                bdf = band_info['bands'].get(label)
+                if bdf is not None and not bdf.empty:
+                    band_names[label] = bdf.head(N)['source'].tolist()
 
-        # General top-20
-        for i, ticker in enumerate(top_20, 1):
-            content += self.build_name_page(ticker, i, 'general')
+        content = """<div class="content">""" + self._icon_legend()
+        if banded:
+            # PRIMARY: banded partition. Each general-pool name renders once, under its
+            # band. cohort_label stays 'general' so cohort-percentile / valuation lookups
+            # use the general pool (the band is a size grouping, NOT a scoring cohort).
+            nav_html = self._build_nav_banded(band_names, cohort_names)
+            content += '<div class="cohort-section"><h1>Market-cap bands</h1></div>\n'
+            for label, lo, hi, N in band_defs:
+                tickers = band_names.get(label)
+                if not tickers:
+                    continue
+                title = escape(self._BAND_TITLES.get(label, label))
+                content += (f'<div class="cohort-section"><h2>Band: {title} '
+                            f'(top-{N})</h2></div>\n')
+                for i, ticker in enumerate(tickers, 1):
+                    content += self.build_name_page(ticker, i, 'general')
+        else:
+            # FALLBACK (pending currency / no band data): the original single flat general
+            # top-20, with a note. NEVER the confusing flat-top-20 + appendix-bands shape.
+            top_20 = postrank_df.head(20)['source'].tolist()
+            nav_html = self._build_nav(top_20, cohort_names)
+            pend = band_info.get('currency_pending', True) if band_info else True
+            note = (' — market-cap bands pending currency data (correct from next full run)'
+                    if pend else '')
+            content += f'<div class="cohort-section"><h1>General Top-20{note}</h1></div>\n'
+            for i, ticker in enumerate(top_20, 1):
+                content += self.build_name_page(ticker, i, 'general')
 
-        # Cohort sections
+        # Sector cohort sections (orthogonal; unchanged).
         for cohort_label, tickers in cohort_names.items():
             content += f'<div class="cohort-section"><h1>Cohort: {cohort_label}</h1></div>\n'
             for i, ticker in enumerate(tickers, 1):
                 content += self.build_name_page(ticker, i, cohort_label)
-
-        # Market-cap band sections (ADDITIVE, parallel to the cohort loop). Groups the
-        # SAME global ranking by USD market cap: General(20) + Mid/Small/Micro(5). No
-        # re-score/re-rank. Degrades gracefully: on pre-fetch data (no reportedCurrency)
-        # the section is labelled "pending currency data" and the misbanded sub-bands are
-        # SKIPPED (only General renders) so nothing wrong ships.
-        band_info = self.data.get('marketcap_bands_info')
-        if band_info and band_info.get('bands'):
-            try:
-                import carveOut as _co
-                band_defs = _co.MCAP_BANDS
-            except Exception:
-                band_defs = []
-            pending = band_info.get('currency_pending', True)
-            pend_txt = ' — PENDING CURRENCY DATA (correct from next full run)' if pending else ''
-            content += f'<div class="cohort-section"><h1>Market-cap bands{pend_txt}</h1></div>\n'
-            for label, lo, hi, N in band_defs:
-                if pending and label != 'General':
-                    continue  # never render misbanded sub-bands on pre-fetch data
-                bdf = band_info['bands'].get(label)
-                if bdf is None or bdf.empty:
-                    continue
-                tickers = bdf.head(N)['source'].tolist()
-                content += f'<div class="cohort-section"><h2>Band: {label} (top-{N})</h2></div>\n'
-                for i, ticker in enumerate(tickers, 1):
-                    content += self.build_name_page(ticker, i, label)
 
         content += "</div>"
 
@@ -1915,6 +2315,59 @@ class PresentationBuilder:
                 </div>
             </div>
         """
+
+        for cohort_label, tickers in cohort_tickers.items():
+            nav += f"""
+            <div class="nav-section">
+                <h4>{cohort_label}</h4>
+            """
+            for ticker in tickers:
+                nav += f'<a href="#{ticker}">{ticker}</a>\n'
+            nav += """
+            </div>
+            """
+
+        nav += """</nav>"""
+        return nav
+
+    def _icon_legend(self):
+        """Small self-documenting legend for the verdict icons + flag confidence tiers."""
+        return (
+            '<div class="icon-legend">'
+            '<strong>Legend —</strong> '
+            '<span class="leg">🟢 good</span>'
+            '<span class="leg">🟡 borderline / low-confidence</span>'
+            '<span class="leg">🔴 bad side of a rule</span>'
+            '<span class="leg">⚪ no standalone rule (peer-relative)</span>'
+            '<span class="leg-sep">·</span>'
+            '<span class="leg">🚩<sub>H</sub> High — treat as fact, investigate before buying</span>'
+            '<span class="leg">🚩<sub>M</sub> Medium — real signal, needs business context</span>'
+            '<span class="leg">🚩<sub>L</sub> Low — a prompt to look, not a verdict</span>'
+            '<div class="leg-note">The 🚩 is independent of the verdict icon — a 🟢🚩 or ⚪🚩 '
+            'is valid (a good/no-rule number can still be flagged). Hover any icon for the rule '
+            'and, for a flag, the mechanism + offending metric + values + tier + rule id.</div>'
+            '</div>')
+
+    def _build_nav_banded(self, band_tickers, cohort_tickers):
+        """Sidebar nav with market-cap BANDS as the primary structure (General / Mid /
+        Small / Micro, each listing its members), then the 5 sector cohort sections
+        unchanged. Replaces the old flat "General Top-20" nav block."""
+        nav = """<nav class="sidebar">
+            <div class="nav-header">Investment Filter</div>
+        """
+        for label, tickers in band_tickers.items():
+            if not tickers:
+                continue
+            title = escape(self._BAND_TITLES.get(label, label))
+            nav += f"""
+            <div class="nav-section">
+                <h4>{title}</h4>
+            """
+            for ticker in tickers:
+                nav += f'<a href="#{ticker}">{ticker}</a>\n'
+            nav += """
+            </div>
+            """
 
         for cohort_label, tickers in cohort_tickers.items():
             nav += f"""
@@ -2230,6 +2683,42 @@ nav.sidebar {
     color: #555;
     background: #e9e9e9;
 }
+
+/* 4-state verdict icon + confidence-tagged suspicion flag (metric-icons-spec) */
+.verdict-icon {
+    margin-left: 4px;
+    font-size: 0.85em;
+    vertical-align: middle;
+    cursor: help;
+}
+.flag-icon {
+    margin-left: 2px;
+    font-size: 0.85em;
+    vertical-align: middle;
+    cursor: help;
+    white-space: nowrap;
+}
+.flag-icon sub {
+    font-size: 0.65em;
+    font-weight: bold;
+    vertical-align: sub;
+}
+.flag-icon.tier-H sub { color: #b30000; }   /* High   */
+.flag-icon.tier-M sub { color: #c77800; }   /* Medium */
+.flag-icon.tier-L sub { color: #7a7a00; }   /* Low    */
+
+.icon-legend {
+    background: #f6f8fa;
+    border: 1px solid #e1e4e8;
+    border-radius: 6px;
+    padding: 8px 12px;
+    margin: 0 0 14px 0;
+    font-size: 0.85em;
+    line-height: 1.7;
+}
+.icon-legend .leg { margin-right: 12px; white-space: nowrap; }
+.icon-legend .leg-sep { margin-right: 12px; color: #999; }
+.icon-legend .leg-note { margin-top: 4px; color: #666; font-size: 0.95em; }
 
 .trends {
     display: flex;

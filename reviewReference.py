@@ -6,7 +6,8 @@ They are DECISION-SUPPORT DATA ONLY: nothing here feeds scoring or the ranking.
 
   ARTIFACT 1  RawMetricsTop100-<date>_<datasource>.csv
               One row per shipped general top-100 name (carve-on / deduped general):
-              source, carve_label, AggScore, rankOfRanks, the RAW value of each
+              source, carve_label, AggScore, rankOfRanks_diag (the equal-weight
+              DIAGNOSTIC rank-sum -- NOT a competing ranking), the RAW value of each
               playbook metric (returnOnCapitalEmployed ... CycleHeat), and -- folded
               in as ARTIFACT 3 -- a <metric>_pct column giving that name's percentile
               within its OWN cohort's full distribution.
@@ -225,7 +226,7 @@ def raw_top_table(top_rank_df, labels, dist_pools, top_raw_pool=None,
     """ARTIFACT 1 (+ ARTIFACT 3 folded in as <metric>_pct).
 
     top_rank_df  : the SHIPPED general ranking (postRank head(100)); must carry
-                   'source', 'AggScore', 'rankOfRanks' and optionally 'moatScore'.
+                   'source', 'AggScore', 'rankOfRanks_diag' and optionally 'moatScore'.
     labels       : Series source -> carve_label (carve['labels']); None (pre-carve).
     dist_pools   : dict cohort_label -> FULL-membership raw metric DataFrame.  Used ONLY
                    for the ARTIFACT-3 percentile distributions (every peer).
@@ -248,7 +249,7 @@ def raw_top_table(top_rank_df, labels, dist_pools, top_raw_pool=None,
     # (below) when present, with a top_rank_df fallback, so it never collides in the
     # merge that follows.
     keep = ['source']
-    for c in ('AggScore', 'rankOfRanks'):
+    for c in ('AggScore', 'rankOfRanks_diag', 'rankOfRanks'):
         if c in top_rank_df.columns and c not in keep:
             keep.append(c)
     out = top_rank_df[keep].copy().reset_index(drop=True)

@@ -36,7 +36,8 @@ import warnings
 import numpy as np
 import pandas as pd
 
-from detectManipulation import invrollsumTTM, _toNewestFirst
+from detectManipulation import (invrollsumTTM, _toNewestFirst,
+                                C_FLAG_CUTOFF, C_FLAG_COLS)
 
 # --- Beneish component decomposition constants -------------------------------
 # Coefficients as used in detectManipulation.calcBeneishM (the +1.78 shift there
@@ -56,14 +57,14 @@ M_WINDOW = 4  # matches SLmeanMscore = M_Score.head(4).mean()
 
 # Montier C-score red flags (each column > 0 counts one flag per period in
 # calcMontierC, and C_Score_mean averages those per-period counts over head(2)).
-C_FLAGS = ['NICFOdiv', 'DSOinc', 'DSIinc', 'OCARinc', 'DAPPdec', 'TAgr']
+C_FLAGS = C_FLAG_COLS          # imported: ONE definition of the six flag columns
 C_WINDOW = 2  # matches SLmeanCscore = C_Score.head(2).mean()
-# THE surface-for-review flag is C >= 4 (design intent: a review flag, not an
-# auto-drop, so higher sensitivity is intended). NOTE: the legacy problemlist in
-# detectManipulation uses a STRICTER c > 4; that legacy set is surfaced separately
-# as the `legacyProblemC_strict_gt4` column (a cross-check), so the two never read
-# as an in-row contradiction.
-C_FLAG_CUTOFF = 4  # C >= 4
+# THE surface-for-review flag is C >= C_FLAG_CUTOFF (a review flag, not an auto-drop,
+# so higher sensitivity is intended).  The cutoff is now IMPORTED from
+# detectManipulation, which is also what its own problemlist_Cscore uses -- previously
+# this module used `>= 4` while detectManipulation used a stricter `> 4`, and the
+# resulting `C_flag_ge_4` / `legacyProblemC_strict_gt4` columns CONTRADICTED each other
+# in the same CSV row for every name scoring exactly 4.0 (12 of 90 on 2026-07-17).
 
 # Sectors for which Beneish / Altman / Sloan-accruals are INVALID (business model
 # differs: banks/insurers/REITs). Keys reflect the raw sectorsdic_fmp.pickle AND
@@ -314,7 +315,13 @@ def buildForensicFlagTable(resdic, topn, sector_fallback=None):
             'sloanAccruals': round(sloan_val, 4) if pd.notna(sloan_val) else np.nan,
             'sloan_worstQuintile_inShortlist': sloan_flag,
             'inLegacyProblemlist_M': symb in problem_M,
-            'legacyProblemC_strict_gt4': symb in problem_C,  # legacy STRICT c>4 cross-check
+            # detectManipulation's own problemlist_Cscore.  RENAMED from
+            # 'legacyProblemC_strict_gt4': that header asserted a `> 4` cutoff that no
+            # longer exists (both sides are now C_FLAG_CUTOFF), so the old name would
+            # keep claiming a threshold the code does not use.  It now agrees with
+            # C_flag_ge_4 except where the score is non-finite (which the problemlist
+            # also collects, deliberately -- that is the cross-check it provides).
+            'problemlistC': symb in problem_C,
             'forensicTag': tag,
         })
 

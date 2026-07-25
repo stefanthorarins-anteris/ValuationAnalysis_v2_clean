@@ -944,7 +944,7 @@ def save_stock_picks(output_folder, postrank_df, ols_reranked_df=None):
         return None
     
     # Select key columns for the stock picks output
-    key_cols = ['source', 'BoScore', 'AggScore', 'rankOfRanks', 
+    key_cols = ['source', 'BoScore', 'AggScore', 'rankOfRanks', 'rankOfRanks_diag', 
                 'Altman-Z', 'Piotroski', 'CycleHeat', 'moatScore',
                 'grahamNumberToPrice', 'earnYield', 'returnOnEquity']
     

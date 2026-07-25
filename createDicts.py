@@ -26,7 +26,32 @@ def getDicts():
                            # reporting currency -- can be converted to USD for market-cap banding
                            # (carveOut.marketcap_usd_series). A string column; rides through unused by
                            # every ratio calc. Populates on the next full fetch; absent on saved pickles.
-                           'reportedCurrency'],
+                           'reportedCurrency',
+                           # --- REPORTING-PERIOD PROVENANCE (audit C-1 / H-2, 2026-07-19) ---
+                           # All four are ALREADY in the paid v3/income-statement response and were
+                           # simply discarded at ingest.  Like reportedCurrency they ride through
+                           # every ratio calculation unused (they never reach BoMetric_df, whose
+                           # columns come from the metric dicts, not from preReq_dict) and populate
+                           # from the NEXT full fetch; they are absent on saved pickles.
+                           #
+                           # period       'Q1'..'Q4' / 'FY'.  THE missing field behind the biggest
+                           #              open data defect: FMP labels a SEMI-ANNUAL filer's H1/H2 as
+                           #              Q2/Q4 carrying true 6-MONTH flows, and with no period field
+                           #              nothing downstream can tell a 3-month flow from a 6-month
+                           #              one -- so those names are scored on ~2x flows against
+                           #              quarterly peers, and iloc[4] is 2 years back for them (see
+                           #              stage2_metrics.piotroski).  Capturing it is the
+                           #              precondition for annualising-or-excluding them.
+                           # calendarYear the fiscal year FMP assigns; disambiguates the 52/53-week
+                           #              drift that produces duplicate quarter stamps.
+                           # fillingDate  filing date.  Real for SEC filers (30-51d after period end)
+                           #              but a PLACEHOLDER equal to the period end for ~50% of rows
+                           #              (mostly non-US), so a point-in-time slice must use it only
+                           #              where acceptedDate > period end and fall back to a fixed lag
+                           #              otherwise -- do not treat it as availability truth blindly.
+                           # acceptedDate timestamp the filing was accepted; the discriminator for the
+                           #              fillingDate-placeholder test above.
+                           'period', 'calendarYear', 'fillingDate', 'acceptedDate'],
                    'cf': ['freeCashFlow', 'netCashProvidedByOperatingActivities','netCashUsedProvidedByFinancingActivities',
                           'dividendsPaid'],
                    'km': ['netIncomePerShare', 'pbRatio', 'earningsYield', 'pfcfRatio', 'grahamNumber', 'grahamNetNet',

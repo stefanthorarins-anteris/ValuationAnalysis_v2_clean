@@ -199,13 +199,94 @@ def fillPreReqdf(tempfund,preReq_dict,bs,inc,cf,km,fr):
                 tempfund[i] = aligned['fr'][i].values if used_join else fr[i]
             else:
                 #tempfund['shares'] = inc['revenue'] / km['revenuePerShare']
+                # PRICE = marketCap / weightedAverageShsOut  (audit C-2 fix, 2026-07-19).
+                #
+                # It used to be derived as quarterly-PE * quarterly-EPS:
+                #   fr['priceEarningsRatio'] * (inc['netIncome'] / inc['weightedAverageShsOut'])
+                # but FMP's QUARTERLY priceEarningsRatio is ANNUALISED (price / TTM-ish EPS)
+                # while the EPS factor here is a SINGLE quarter, so the product came out at
+                # ~1/4 of the real share price.  Proven on the 2026-07-17 panel:
+                # marketCap / (price * shares) had median 3.99992 and 69% of all 176,193
+                # usable rows inside +-1% of exactly 4.0.
+                #
+                # The damage was NOT the uniform scale (z-scored metrics are invariant to
+                # it) but the Stage-1 Tier-S UNITY test grahamNumber/price > 1, which is
+                # scale-SENSITIVE: on the same panel it passed 70.6% of rows on the divided
+                # price vs 13.4% on marketCap/shares -- a weight-1.0 criterion that had
+                # degenerated into "almost everyone passes".
+                #
+                # marketCap and weightedAverageShsOut are both already fetched, are in the
+                # company's own reporting currency (so the ratio is currency-consistent) and
+                # are both as-of the statement period end (verified: 24 distinct marketCap
+                # values per source, no lookahead), which is exactly the as-of convention
+                # every price-based metric here assumes.
+                #
+                # +-inf (shares == 0) is normalised to NaN: an undefined price must read as
+                # MISSING to checkIfValidFS, which runs on tempfund before forceNumOnDf's
+                # inf->NaN sweep.
                 if used_join:
-                    _fr, _inc = aligned['fr'], aligned['inc']
-                    tempfund['price'] = (_fr['priceEarningsRatio'].values
-                                         * (_inc['netIncome'].values
-                                            / _inc['weightedAverageShsOut'].values))
+                    _km, _inc = aligned['km'], aligned['inc']
+                    _price = (_km['marketCap'].values
+                              / _inc['weightedAverageShsOut'].values)
                 else:
-                    tempfund['price'] = fr['priceEarningsRatio'] * (inc['netIncome'] / inc['weightedAverageShsOut'])
+                    _price = km['marketCap'] / inc['weightedAverageShsOut']
+                tempfund['price'] = pd.Series(_price).replace([np.inf, -np.inf], np.nan).values
+
+    # GRAHAM NUMBER, computed in-pipeline (review H2 fix, 2026-07-25).
+    #
+    # FMP's quarterly `grahamNumber` is sqrt(22.5 * EPS_QUARTERLY * BVPS), i.e. HALF the
+    # published sqrt(22.5 * EPS_ANNUAL * BVPS) -- proven on the 2026-07-17 panel:
+    #   median( FMP graham / sqrt(22.5 * netIncomePerShare_q * bookValuePerShare) )
+    #     = 1.0000 with 79.5% of 110,264 rows inside 1%, versus 0.5000 against the
+    #     4x-EPS (annualised) form.
+    # With `price` fixed to the real share price, the weight-1.0 Tier-S UNITY test
+    # `grahamNumber/price > 1` therefore went from 2x too LOOSE (70.6% pass on the old
+    # divided price) to 2x too STRICT (13.4%); calibrated is ~42-43%.  Rescaling FMP's
+    # field would work numerically, but computing the number outright is the honest fix
+    # and removes the dependency on an undocumented FMP convention that could change.
+    #
+    # EPS_ttm = netIncome_ttm / weightedAverageShsOut(current row), NOT the sum of four
+    # quarterly netIncomePerShare values: each quarter's per-share figure uses its OWN
+    # share count, so summing them mixes share bases, whereas one TTM earnings total over
+    # the current share count is a single consistent basis -- and it is the SAME basis as
+    # `price` (marketCap/weightedAverageShsOut) that this ratio is compared against.
+    #
+    # TTM sums are taken over the SAME set of rows for both inputs (the ttm_aligned_sums
+    # convention): a row's TTM is NaN unless all 4 of its trailing quarters are present,
+    # so a gap yields "not computable" rather than a 3-quarter sum masquerading as a year.
+    #
+    # Graham is UNDEFINED for negative earnings or negative book value (the sqrt has no
+    # real root and the screen is a value floor for profitable, asset-backed firms), so
+    # EPS_ttm <= 0 or BVPS <= 0 -> NaN.  NaN, not 0: Stage-1 scores NaN as a FAIL of this
+    # criterion, which is the correct reading of "no Graham floor exists here"; a 0 would
+    # be a real computed value that happens to fail.
+    #
+    # SEMI-ANNUAL CAVEAT (audit C-1): FMP labels an H1/H2 filer's halves as Q2/Q4, so a
+    # 4-row trailing window is TWENTY-FOUR months for those names and this EPS_ttm is
+    # correspondingly ~2x. That cannot be resolved until `period` is captured and read
+    # (fix 14 captures it; nothing consumes it yet). Revisit with the Piotroski lag.
+    _ni = pd.to_numeric(tempfund.get('netIncome'), errors='coerce')
+    _sh = pd.to_numeric(tempfund.get('weightedAverageShsOut'), errors='coerce')
+    _bvps = pd.to_numeric(tempfund.get('bookValuePerShare'), errors='coerce')
+    # tempfund is NEWEST-FIRST here (raw FMP order), so a forward-looking rolling sum on
+    # the reversed series gives each row the sum of ITSELF plus the 3 older quarters.
+    _pair = pd.concat([_ni, _sh], axis=1)
+    _pair = _pair.where(_pair.notna().all(axis=1))       # aligned rows only
+    _ni_ttm = _pair.iloc[::-1, 0].rolling(4).sum().iloc[::-1]
+    _eps_ttm = _ni_ttm / _sh
+    _graham = np.sqrt(22.5 * _eps_ttm.where(_eps_ttm > 0)
+                      * _bvps.where(_bvps > 0))
+    tempfund['grahamNumber'] = _graham.replace([np.inf, -np.inf], np.nan).values
+
+    # Keep the RAW fiscal period-end date BEFORE setDatesToQuarterly overwrites `date`
+    # with a quarter-start stamp (audit H-2 fix, 2026-07-19).  `date` is deliberately left
+    # exactly as it is -- every downstream consumer (the cross-statement date join, the
+    # forensic YoY shifts, CycleHeat's restatement tie-break, data_quality's row matching)
+    # keys off the quarterly stamp -- so this is ADDITIVE.  The quarter stamp is lossy in
+    # the two ways that matter: 52/53-week fiscal drift collapses two different period ends
+    # onto ONE quarter (282 sources carry duplicate quarters), and a fiscal year that does
+    # not align to calendar quarters cannot be recovered from it afterwards.
+    tempfund['periodEndDate'] = tempfund['date'].values
     tempfund = utils.setDatesToQuarterly(tempfund)
     if tempfund['date'].iloc[0].year == datetime.today().year:
         hcybool = True

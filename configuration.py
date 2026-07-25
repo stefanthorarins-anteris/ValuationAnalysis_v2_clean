@@ -193,15 +193,32 @@ def getDataFetchConfiguration(args):
     # Assign boolean and filename to manual elimination of ticker symbols before fetching data
     if '-manelimtickers' in args:
         imet = args.index('-manelimtickers')
-        manelimtickersbool = args[imet + 1]
+        if imet + 1 >= len(args):
+            raise Exception('-manelimtickers requires a 0/1 argument')
+        # int(): argv values are STRINGS and the string '0' is TRUTHY, so
+        # `-manelimtickers 0` used to switch the filter ON.  This flag only became
+        # reachable once the -manelimfilename else-branch stopped force-setting it to 1.
+        manelimtickersbool = int(args[imet + 1])
     else:
         manelimtickersbool = 0
 
-    if '-manelimfilename'in args:
+    # THREE bugs fixed here (audit C-3 / L-5, 2026-07-19):
+    #   1. the filename was read from args[ibmfn + 1] -- ibmfn is the
+    #      -bometricfilename index, so -manelimfilename either picked up the WRONG
+    #      argument or raised (imefn was computed and then never used);
+    #   2. no bounds check, so -manelimfilename as the FINAL arg raised an opaque
+    #      IndexError (same pattern as the -asof guard below);
+    #   3. the else branch FORCED manelimtickersbool = 1, so NOT passing the flag
+    #      turned manual elimination ON with a hardcoded 2023 file and silently
+    #      overrode whatever -manelimtickers had said.  That is how the stale 3,692-name
+    #      list came to be loaded on every run.  Omitting the flag now leaves
+    #      -manelimtickers in charge and only supplies the DEFAULT filename.
+    if '-manelimfilename' in args:
         imefn = args.index('-manelimfilename')
-        manelimtick_fname_toget = args[ibmfn + 1]
+        if imefn + 1 >= len(args):
+            raise Exception('-manelimfilename requires a filename argument')
+        manelimtick_fname_toget = args[imefn + 1]
     else:
-        manelimtickersbool = 1
         manelimtick_fname_toget = 'ManualEliminationTickersList_fmp_2023-02-14.csv'
 
     # Point-in-time as-of date D (design 2026-07-12 restructure).  Default None =
@@ -387,6 +404,9 @@ def getDataFetchConfiguration(args):
                  'saveBoMetric': saveBoMetric, 'saveBoResults': saveBoResults, 'loadBoMetric': loadBoMetric,
                  'loadBoResults': loadBoResults, 'symbchRestock': symbchRestock, 'loadBoMetricfname': loadBoMetricfname,
                  'loadBoResultsfname': loadBoResultsfname, 'manualelimtickers': manualelimtickers,
+                 # recorded so the run can STATE which list it loaded (manual-elim provenance)
+                 'manualelimtick_fname_toget': manelimtick_fname_toget,
+                 'manelimtickersbool': manelimtickersbool,
                  'lastindex_fn': lastindex_fn, 'nrScorePeriods': nrScorePeriods, 'ntopagg': ntopagg,
                  'ntopxlsx': ntopxlsx, 'sectorfilter': sectorfilter, 'portfoliotestyear': portfoliotestyear,
                  'sectorlist': sectorlist,

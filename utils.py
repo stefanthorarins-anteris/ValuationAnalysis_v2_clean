@@ -26,7 +26,15 @@ def saveWrapper(type,savedata):
     tf = savedata['tickerfilter']
     sf = savedata['sectorfilter']
     lentdf = savedata['BoMetric_df']['source'].nunique()
-    nrmanelim = len(savedata['manualelimtickers'])
+    # `manelim<N>` in the filename is a PROVENANCE claim about this run, so it must count
+    # the list that was actually APPLIED to the universe -- not the list that happened to
+    # be loaded from disk (audit C-3).  'manualelim_applied' is set by Sbocker AFTER the
+    # configdic spread; the fallback keeps older saved dicts (and any other caller)
+    # working unchanged.
+    if 'manualelim_applied' in savedata:
+        nrmanelim = len(savedata['manualelim_applied'])
+    else:
+        nrmanelim = len(savedata['manualelimtickers'])
     lentfail = len(savedata['tickersfailed'])
     ds = savedata['datasource']
     fname_bmdf = f'Bo{type}_dic-{ds}_{tf}_{sf}_{fidag}_len{lentdf}_manelim{nrmanelim}_fails{lentfail}.pickle'

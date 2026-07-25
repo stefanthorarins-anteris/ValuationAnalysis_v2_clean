@@ -35,18 +35,72 @@ import pandas as pd
 # --------------------------------------------------------------------------- #
 #  Pool-level helper                                                          #
 # --------------------------------------------------------------------------- #
+def _mcap_for_quants(cdxtop):
+    """The market-cap series the size quartiles are cut over: USD where derivable,
+    raw marketCap otherwise (audit H-3/H8 fix, 2026-07-19).
+
+    marketCap is stored in each company's REPORTING currency, mixed across the pool, so
+    cutting quartiles over the raw field ranked companies partly by which currency they
+    report in: a SEK reporter looks ~10x bigger than an equally sized USD reporter and is
+    pushed into a larger-cap quartile, an ISK/KRW/JPY reporter far more.  mcapQuants is
+    the #2 ranking driver (w = 0.080), so this was a live selection effect, not cosmetic:
+    on the 2026-07-17 universe 838 of 7,752 names (10.8%) sit in a DIFFERENT size
+    quartile once the field is converted.
+
+    Conversion uses carveOut.marketcap_usd_series with the coarse exchange-suffix
+    fallback ON, because the quartiles must produce a value for every name in the pool.
+    Unknown suffix -> rate 1.0 = the previous raw behaviour, so no name is lost.  Falls
+    back to the raw column entirely if carveOut is unavailable (offline tooling) or the
+    conversion yields nothing, so this can never make the metric MISSING.
+    """
+    raw = pd.to_numeric(cdxtop["marketCap"], errors="coerce")
+    try:
+        import carveOut as _co
+        usd = _co.marketcap_usd_series(cdxtop, allow_suffix_fallback=True)
+        usd = pd.to_numeric(usd, errors="coerce")
+        if usd.notna().any():
+            return usd.where(usd.notna(), raw)
+    except Exception:
+        pass
+    return raw
+
+
+#  mcapQuants value for a row whose market cap is NOT KNOWN: the NEUTRAL midpoint of the
+#  metric's own [-0.5 .. +0.5] range, matching the Stage-2 missing-data convention used
+#  everywhere else (normalizeAndDropNA maps a NaN metric to z = 0 = pool-neutral).
+MCAP_QUANT_MISSING = 0.0
+
+
 def add_mcap_quants(cdxtop):
     """Pool-level marketCap quartile code, mapped to [-0.5 .. +0.5] with the
     sign flipped so SMALLER caps score HIGHER (postBoRank.py mcapQuants).
 
+    Cut over the USD market cap (see _mcap_for_quants), NOT the mixed-currency raw
+    field.
+
+    A row with NO market cap scores MCAP_QUANT_MISSING = 0.0, i.e. neutral (fix,
+    2026-07-25).  ``pd.qcut`` assigns ``cat.codes == -1`` to NaN, and -1 fell straight
+    through the ``(-1) * (code/3 - 0.5)`` mapping to **+0.8333** -- OUTSIDE the metric's
+    intended range and, because smaller caps score higher, BETTER than the
+    most-rewarded real bucket (the smallest-cap quartile at +0.5) by 0.333.  Missing
+    market cap therefore earned the maximum small-cap reward in a w=0.080 metric (the
+    #2 ranking driver).  Verified on the 2026-07-17 panel: exactly the 746 rows with no
+    market cap carried +0.8333, and `cat.codes == -1` coincided with them one-for-one.
+    It is the same defect class as the EPStoEPSmean `return 0` sentinel and the Montier
+    `fillna(99999)`: absent data scoring as a real, favourable value.
+
     Uses ``duplicates='drop'`` + a 0.0 fallback so a pool with coincident
-    quartile edges degrades gracefully rather than raising.  On any pool with
-    distinct edges (every successful scorer run) this equals the plain
-    ``pd.qcut(marketCap, 4)`` the live scorer historically used.
+    quartile edges degrades gracefully rather than raising.  (NOTE, pre-existing and
+    unchanged: when `duplicates='drop'` collapses the pool to fewer than 4 bins the
+    codes no longer span 0..3, so the mapping does not cover the full [-0.5, +0.5];
+    that path only triggers on a degenerate pool.)
     """
     try:
-        return (-1) * ((pd.qcut(cdxtop["marketCap"], 4,
-                                duplicates="drop").cat.codes / 3) - 0.5)
+        codes = pd.qcut(_mcap_for_quants(cdxtop), 4,
+                        duplicates="drop").cat.codes
+        vals = (-1) * ((codes / 3) - 0.5)
+        # codes < 0 is qcut's NaN sentinel -- NOT a quartile. Neutral, not best-in-pool.
+        return vals.where(codes >= 0, MCAP_QUANT_MISSING)
     except Exception:
         return pd.Series(0.0, index=cdxtop.index)
 
@@ -89,12 +143,39 @@ def tbv_p_ratio(tempcdx, nq):
     return (tempcdx["tangibleBookValuePerShare"] / tempcdx["price"]).head(nq).mean()
 
 
-def eps_to_eps_mean(tempcdx):
-    """Exponentially-weighted recent EPS vs its full-window mean (postBoRank.py:248-256).
+# Minimum |mean EPS| for the EPStoEPSmean denominator, as a FRACTION of the mean
+# ABSOLUTE EPS over the same window.  Below this the mean is a near-cancellation of
+# a swinging EPS series (mean ~ 0 with large |EPS|), so the ratio explodes on
+# arithmetic rather than on economics -> NaN (= neutral) instead of a huge number.
+EPS_MEAN_FLOOR_FRAC = 0.01
 
-    Returns 0 unless the four most-recent quarters are all positive.
+
+def eps_to_eps_mean(tempcdx):
+    """Exponentially-weighted recent EPS vs its full-window mean, expressed as a
+    FRACTION OF THAT MEAN (postBoRank.py:248-256).
+
+      (epsmean - ewma_recent_eps) / |epsmean|
+
+    Positive = the last four quarters sit BELOW the stock's own EPS history (the
+    mean-reversion side the +0.056 weight is betting on); negative = above.
+
+    DIMENSIONLESS (audit C4 fix, 2026-07-19).  The numerator alone is in currency
+    per share, so the metric used to be a mixed-currency PRICE/EPS-LEVEL ranking,
+    not a deviation measure: cross-sectionally z-scoring it ranked a KRW-quoted
+    name (SKHY, ~807,000/share) far above every USD name for arithmetic reasons.
+    Measured on the shipped 2026-07-17 top-100: spearman(|metric|, share price) =
+    0.642 (pearson 1.00, driven by SKHY alone; 0.786 excluding it) BEFORE, and
+    -0.058 after dividing by |epsmean|.  A share split -- which changes nothing
+    economically -- used to move this metric by the split factor; now it does not.
+
+    NaN, NOT 0, when the metric is undefined (audit C4, second limb).  The old
+    `return 0` sentinel was a RAW zero that then z-scored to (0 - poolmean)/std,
+    i.e. a real, pool-dependent, non-neutral score for "not computable".  NaN is
+    the honest answer and normalizeAndDropNA maps it to z = 0 = genuinely neutral,
+    which is the Stage-2 convention for missing data everywhere else.
     """
     eps = tempcdx["netIncome"] / tempcdx["weightedAverageShsOut"]
+    eps = eps.replace([np.inf, -np.inf], np.nan)
     epsmean = eps.mean()
     a = 0.4
     tw = a * (1 + (1 - a) + (1 - a) ** 2 + (1 - a) ** 3)
@@ -103,10 +184,16 @@ def eps_to_eps_mean(tempcdx):
     # whose dead-merged universe includes short-history names -- without it the
     # iloc[3] access below raises on a < 4-quarter name.
     if len(eps) >= 4 and all(eps.iloc[0:4] > 0):
-        return epsmean - (a / tw) * (eps.iloc[0] + eps.iloc[1] * (1 - a) +
-                                     eps.iloc[2] * (1 - a) ** 2 +
-                                     eps.iloc[3] * (1 - a) ** 3)
-    return 0
+        den = abs(epsmean)
+        scale = eps.abs().mean()
+        if (not np.isfinite(den) or not np.isfinite(scale)
+                or den <= EPS_MEAN_FLOOR_FRAC * scale):
+            return np.nan
+        raw = epsmean - (a / tw) * (eps.iloc[0] + eps.iloc[1] * (1 - a) +
+                                    eps.iloc[2] * (1 - a) ** 2 +
+                                    eps.iloc[3] * (1 - a) ** 3)
+        return raw / den
+    return np.nan
 
 
 def price_growth(tempcdx, nq):
@@ -143,14 +230,39 @@ def altman_z(tempcdx):
         return np.nan
 
 
+#  Piotroski's prior-period row: 4 quarters back = the SAME quarter one year
+#  earlier.  tempcdx is NEWEST-FIRST (postBoRank._sort_cdx_newest_first), so row 4
+#  is one year older than row 0.
+_PIOTROSKI_YOY_LAG = 4
+
+
 def piotroski(tempcdx):
-    """Piotroski F-score (9 binary criteria) from fundamentals, current vs prior
-    row (postBoRank.py:353-402).  NaN when unusable.
+    """Piotroski F-score (9 binary criteria) from fundamentals, current vs the
+    SAME QUARTER ONE YEAR EARLIER (postBoRank.py:353-402).  NaN when unusable.
+
+    YEAR-OVER-YEAR, not quarter-over-quarter (audit C2 fix, 2026-07-19).  Six of
+    the nine criteria (p3 dROA, p5 dLeverage, p6 dLiquidity, p7 dilution, p8
+    dMargin, p9 dTurnover) are Piotroski DELTA tests defined against the prior
+    YEAR.  They used to read tempcdx.iloc[1] -- the previous QUARTER -- which
+    makes every delta a seasonal comparison (a retailer's Q4-vs-Q3 margin move is
+    seasonality, not fundamental improvement).  Measured on the 2026-07-17
+    shipped top-100: corr(quarterly version, yearly version) = 0.545 and 33% of
+    the pool crosses the >=7 / <7 "strong F-score" line, so this is a material
+    re-ordering, not a rounding difference.
+
+    SEMI-ANNUAL REPORTERS (accepted limitation, audit C-1): FMP labels H1/H2 as
+    Q2/Q4, so a semi-annual filer has only 2 rows per year and iloc[4] is TWO
+    years back for them, not one.  That is still a like-for-like SAME-HALF
+    comparison (H1 vs H1) and therefore strictly better than the seasonal
+    QoQ/HoH it replaces; it cannot be resolved properly until the `period` field
+    is captured at ingest (fix 14) and the lag can be chosen per reporting
+    frequency.  Revisit this lag once `period` is available.
     """
     try:
-        if len(tempcdx) >= 2:
-            curr = tempcdx.iloc[0]   # Most recent
-            prev = tempcdx.iloc[1]   # Previous period
+        lag = _PIOTROSKI_YOY_LAG
+        if len(tempcdx) >= lag + 1:
+            curr = tempcdx.iloc[0]     # Most recent quarter
+            prev = tempcdx.iloc[lag]   # Same quarter one year earlier (4 rows older)
             ta_curr = curr["totalAssets"]
             ta_prev = prev["totalAssets"]
             if ta_curr > 0 and ta_prev > 0:

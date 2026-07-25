@@ -13,14 +13,18 @@ per-symbol frame to newest-first locally and writes every component in its publi
 direction; head(...) then reads the MOST RECENT quarters.
 
 Published component directions (neutral = 1.0; TATA neutral = 0.0):
-  DSRI = (DSO/Sales)_t / _{t-1}          current/prior   (rising receivables -> >1)
+  DSRI = DSO_t / DSO_{t-1}               current/prior   (rising receivables -> >1)
+         (daysSalesOutstanding IS ALREADY AR/Sales; dividing by Sales again -- which the
+          code did until the 2026-07-19 audit fix -- made DSRI = DSRI_true / SGI)
   GMI  = GrossMargin_{t-1} / _t          PRIOR/current   (margin decline     -> >1)
   AQI  = AssetQuality_t / _{t-1}         current/prior   (asset quality down -> >1)
   SGI  = Sales_t / _{t-1}                current/prior   (sales growth       -> >1)
   DEPI = DepRate_{t-1} / _t              PRIOR/current   (dep-rate decline   -> >1)
   SGAI = (SGA/Sales)_t / _{t-1}          current/prior   (SG&A intensity up  -> >1)
   LVGI = Leverage_t / _{t-1}             current/prior   (leverage up        -> >1)
-  TATA = (NI - CFO)/TA  (level; higher accruals -> more suspicious)
+  TATA = (NI_ttm - CFO_ttm)/TotalAssets  (TA as a LEVEL, not a 4-quarter SUM, and with
+         NO financing-cash-flow term -- both were audit fixes on 2026-07-19; higher
+         accruals -> more suspicious)
 GMI and DEPI use prior/current; the other five use current/prior. A single global
 orientation flip therefore CANNOT make all eight correct at once -- each component
 must compute ITS OWN published direction, which is what is asserted below.
@@ -122,16 +126,27 @@ def test_component_directions_exact_row0():
     row0 = r['mdf'].iloc[0]
 
     # Hand values (dirty year vs baseline year):
-    #  DSRI = (300/1100)/(100/1000) = 2.727272...
+    #  DSRI = 300/100 = 3.0              (published: DSO_t/DSO_{t-1}; daysSalesOutstanding
+    #                                     is already AR/Sales, so there is no second
+    #                                     division by Sales -- the old (300/1100)/(100/1000)
+    #                                     = 2.727 was DSRI_true/SGI)
     #  GMI  = 0.40/0.20 = 2.0            (prior/current: margin fell)
     #  AQI  = (1-200/1000)/(1-600/1000) = 0.8/0.4 = 2.0
     #  SGI  = 1100/1000 = 1.1
     #  DEPI = [20/(20+100)] inverse: rate_prior/rate_cur = 0.25/(1/6) = 1.5
     #  SGAI = (220/1100)/(100/1000) = 0.2/0.1 = 2.0
     #  LVGI = (600/1000)/(300/1000) = 2.0
-    #  TATA = (300-50-0)/1000 = 0.25
-    expect = dict(DSRI=(300/1100)/(100/1000), GMI=2.0, AQI=2.0, SGI=1.1,
-                  DEPI=0.25/(20/120), SGAI=2.0, LVGI=2.0, TATA=0.25)
+    #  TATA = (300-50)/250 = 1.0         (NI_ttm - CFO_ttm over the TA LEVEL. NOTE: this
+    #                                     harness expands every annual level to annual/4
+    #                                     per quarter, INCLUDING balance-sheet stocks, so
+    #                                     here the TA level is 1000/4 = 250 and the old
+    #                                     4-quarter SUM coincidentally equalled the true
+    #                                     annual level -- which is precisely why this
+    #                                     harness could not see the 1/4-scale defect. See
+    #                                     test_tata_uses_asset_LEVEL_not_4q_sum for the
+    #                                     realistic-stock case. No -CFF term any more.)
+    expect = dict(DSRI=300/100, GMI=2.0, AQI=2.0, SGI=1.1,
+                  DEPI=0.25/(20/120), SGAI=2.0, LVGI=2.0, TATA=(300-50)/250)
     for k, v in expect.items():
         assert abs(float(row0[k]) - v) < TOL, (k, float(row0[k]), v)
 
@@ -264,6 +279,114 @@ def test_sloan_accruals_reads_recent_quarter():
     print("PASS test_sloan_accruals_reads_recent_quarter")
 
 
+
+def test_tata_uses_asset_LEVEL_not_4q_sum():
+    """TATA's denominator must be the TotalAssets LEVEL, not invrollsumTTM(TotalAssets).
+
+    The main harness expands annual levels to annual/4 per quarter for EVERY metric
+    including balance-sheet stocks, so there the 4-quarter sum happens to equal the true
+    annual level and the 1/4-scale defect is invisible.  Real FMP data carries the FULL
+    asset level in every quarter, so the sum is ~4x the level.  This fixture builds
+    totalAssets that way (constant 1000 per quarter) and pins TATA to the published scale.
+
+    Hand values: NI_ttm = 4*100 = 400, CFO_ttm = 4*25 = 100, TA level = 1000
+      published TATA = (400 - 100)/1000                 = 0.30
+      old (4q-sum denominator, minus CFF) = (400-100-4*50)/4000 = 0.025  -- 12x too small
+    """
+    nq = 12
+    dates = pd.date_range('2015-03-31', periods=nq, freq='QE').strftime('%Y-%m-%d').tolist()
+    df = pd.DataFrame({
+        'date': dates, 'source': 'LEVELS',
+        'netIncome': [100.0]*nq,
+        'netCashProvidedByOperatingActivities': [25.0]*nq,
+        'netCashUsedProvidedByFinancingActivities': [50.0]*nq,
+        'totalAssets': [1000.0]*nq,            # a STOCK: full level every quarter
+        'totalCurrentAssets': [300.0]*nq, 'propertyPlantEquipmentNet': [300.0]*nq,
+        'daysSalesOutstanding': [100.0]*nq, 'revenue': [250.0]*nq,
+        'grossProfitMargin': [0.4]*nq, 'depreciationAndAmortization': [25.0]*nq,
+        'sellingGeneralAndAdministrativeExpenses': [25.0]*nq,
+        'longTermDebt': [200.0]*nq, 'totalCurrentLiabilities': [100.0]*nq,
+        'daysOfInventoryOutstanding': [100.0]*nq, 'otherCurrentAssets': [20.0]*nq,
+        'capexPerShare': [0.0]*nq, 'weightedAverageShsOut': [4.0]*nq,
+    })
+    resdic = {'cdx_df': df, 'postRank': pd.DataFrame({'source': ['LEVELS']})}
+    mdf, _slm, _pm = dm.calcBeneishM(resdic, ['LEVELS'])
+    got = float(mdf.iloc[0]['TATA'])
+    assert abs(got - 0.30) < TOL, ('TATA must use the TA LEVEL', got)
+    old = (400 - 100 - 4*50) / 4000.0
+    assert abs(got - old) > 0.2, ('fix must change the answer materially', got, old)
+    print("PASS test_tata_uses_asset_LEVEL_not_4q_sum")
+
+
+def test_dsri_is_not_contaminated_by_sales_growth():
+    """DSRI must be the published DSO ratio, so it is INDEPENDENT of sales growth.
+
+    Two firms with the SAME receivables-days path (100 -> 300) but different sales growth
+    (flat vs +10%) must get the SAME DSRI.  Under the old DSO/Sales form the growing firm
+    got DSRI / 1.1, i.e. sales growth partially cancelled the receivables red flag even
+    though SGI enters the M-score with the other large positive coefficient."""
+    flat = _annual([_BASE]*5 + [dict(_DIRTY, revenue=_BASE['revenue'])])
+    grow = _annual([_BASE]*5 + [dict(_DIRTY, revenue=1100)])
+    d_flat = float(_run(flat, 'FLAT')['mdf'].iloc[0]['DSRI'])
+    d_grow = float(_run(grow, 'GROW')['mdf'].iloc[0]['DSRI'])
+    assert abs(d_flat - 3.0) < TOL, d_flat
+    assert abs(d_grow - 3.0) < TOL, d_grow
+    assert abs(d_flat - d_grow) < TOL, ('DSRI must not depend on sales growth',
+                                        d_flat, d_grow)
+    print("PASS test_dsri_is_not_contaminated_by_sales_growth")
+
+
+def test_c_cutoff_is_one_constant_everywhere():
+    """ONE C-score cutoff for the whole pipeline.  detectManipulation's problemlist used a
+    strict `> 4` while forensicFlags/the presentation used `>= 4`, so the two shipped
+    columns contradicted each other for every name scoring exactly 4.0 (12 of 90 on
+    2026-07-17).  A C_Score_mean of exactly the cutoff must now flag on BOTH sides."""
+    assert ff.C_FLAG_CUTOFF == dm.C_FLAG_CUTOFF, (ff.C_FLAG_CUTOFF, dm.C_FLAG_CUTOFF)
+    assert list(ff.C_FLAGS) == list(dm.C_FLAG_COLS)
+    cut = dm.C_FLAG_CUTOFF
+
+    # detectManipulation's own problemlist must use that SAME cutoff, inclusively: for every
+    # finite score, membership == (score >= cut).  Under the old strict `> 4` a score of
+    # exactly 4.0 was excluded here while forensicFlags flagged it, and both columns shipped.
+    fixtures = {'CLEAN': _annual([_BASE]*6),
+                'DIRTY': _annual([_BASE]*5 + [_DIRTY]),
+                'OD_RC': _annual([_DIRTY] + [_BASE]*7)}
+    for sym, annual in fixtures.items():
+        df = _build(annual, sym, oldest_first=True)
+        resdic = {'cdx_df': df, 'postRank': pd.DataFrame({'source': [sym]})}
+        _cdf, slc, pc = dm.calcMontierC(resdic, [sym])
+        score = float(slc['C_Score_mean'].iloc[0])
+        assert (sym in pc) == (score >= cut), (sym, score, cut, sym in pc)
+
+        # forensicFlags derives its flag from the SAME constant, so the two must agree.
+        assert (score >= ff.C_FLAG_CUTOFF) == (score >= cut), (sym, score)
+    print("PASS test_c_cutoff_is_one_constant_everywhere")
+
+
+def test_missing_component_does_not_fire_a_c_flag():
+    """Absent data must NOT manufacture a Montier red flag.
+
+    Every C flag used to end in `.fillna(99999)`, so a period whose YoY change could not be
+    COMPUTED counted as a maximal INCREASE -- the suspicious side.  Here a clean flat firm
+    has its inventory-days field entirely absent (a services company with no inventory
+    line): DSIinc must be NaN and must NOT fire, and the C_Score must DROP relative to the
+    old fill behaviour rather than rise."""
+    annual = _annual([_BASE]*6)
+    df = _build(annual, 'NOINV', oldest_first=True)
+    df['daysOfInventoryOutstanding'] = np.nan
+    resdic = {'cdx_df': df, 'postRank': pd.DataFrame({'source': ['NOINV']})}
+    cdf, slc, pc = dm.calcMontierC(resdic, ['NOINV'])
+    row0 = cdf.iloc[0]
+    assert pd.isna(row0['DSIinc']), ('non-computable flag must stay NaN', row0['DSIinc'])
+    assert not (float(row0['DSIinc']) > 0 if pd.notna(row0['DSIinc']) else False)
+    # and the score counts only the flags that could actually be evaluated
+    fired = [c for c in dm.C_FLAG_COLS
+             if pd.notna(row0[c]) and float(row0[c]) > 0]
+    assert float(row0['C_Score']) == len(fired), (row0['C_Score'], fired)
+    assert 'DSIinc' not in fired
+    print("PASS test_missing_component_does_not_fire_a_c_flag")
+
+
 if __name__ == '__main__':
     test_component_directions_exact_row0()
     test_mscore_fold_and_flag_dirty()
@@ -273,4 +396,8 @@ if __name__ == '__main__':
     test_stored_frames_are_newest_first()
     test_orientation_robust_to_input_order()
     test_sloan_accruals_reads_recent_quarter()
+    test_tata_uses_asset_LEVEL_not_4q_sum()
+    test_dsri_is_not_contaminated_by_sales_growth()
+    test_c_cutoff_is_one_constant_everywhere()
+    test_missing_component_does_not_fire_a_c_flag()
     print("\nALL detectManipulation KNOWN-ANSWER TESTS PASSED")

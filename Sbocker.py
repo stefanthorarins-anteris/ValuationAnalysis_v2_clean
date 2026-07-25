@@ -317,7 +317,16 @@ def main():
             # Assign variables and get Tickers info and dataframe
             datasource, api_key, tickerfilter = configdic['datasource'], configdic['api_key'],  configdic['tickerfilter']
             manualelimtickers, baseurl = configdic['manualelimtickers'], configdic['baseurl']
-            manualelimtickers = []
+            # DELIBERATELY NOT APPLIED (CEO decision, 2026-07-19).  The
+            # ManualEliminationTickersList is a MACHINE-ACCUMULATED FETCH-FAILURE log
+            # (it is rebuilt below as manualelim + tickersfailed - lenfail), NOT CEO
+            # curation -- it contains ordinary companies whose fetch happened to fail
+            # once.  Blanking it deliberately RETRIES names whose coverage may have
+            # improved, which is the wanted behaviour.  Kept as an explicit, named
+            # variable so the provenance stamp can state what actually ran.
+            manualelim_loaded = list(manualelimtickers)
+            manualelim_applied = []
+            manualelimtickers = manualelim_applied
             Tickers_df = gdg.get_tickers(datasource, baseurl, api_key, manualelimtickers, tickerfilter,
                                          sfilt ='all', mcapf = -1, fn = '', as_of=as_of)
             # Assign variables and get financial data and calculate relevant metrics
@@ -334,12 +343,44 @@ def main():
                 datandmetricdic['BoMetric_df'] = datandmetricdic['BoMetric_df'].iloc[1:,:]
                 datandmetricdic['cdx_df'] = datandmetricdic['cdx_df'].iloc[1:,:]
 
-            meandic = csf.getAves2(getfunddic['BoMetric_df'])
             # Note that **getfunddic should overwrite key-value combinations in datandmetricdic
-            datandmetricdic = {**datandmetricdic, **{'Tickers_df': Tickers_df}, **getfunddic, **meandic, **configdic}
+            datandmetricdic = {**datandmetricdic, **{'Tickers_df': Tickers_df}, **getfunddic, **configdic}
+
+            # PROVENANCE (audit C-3 fix, 2026-07-19).  configdic is spread LAST above, so
+            # its 'manualelimtickers' (the list LOADED from disk) overwrote the
+            # newly-accumulated list assigned at :330 -- and utils.saveWrapper stamps the
+            # filename from that key.  The 2026-07-17 run therefore shipped
+            # `...len7752_manelim3692_fails2075.pickle`, asserting a 3,692-name filter that
+            # NEVER RAN, while the pickle carried the stale 2023 list instead of the 759
+            # names this run actually accumulated.  Re-assert AFTER the spread so no merge
+            # order can silence it, and separate the two meanings that were colliding in
+            # one key:
+            #   manualelim_applied -> what filtered THIS run's universe (what the filename
+            #                         must state); [] under the CEO decision above
+            #   manualelimtickers  -> the accumulated fetch-failure log to carry FORWARD
+            datandmetricdic['manualelim_applied'] = manualelim_applied
+            datandmetricdic['manualelim_loaded'] = manualelim_loaded
+            datandmetricdic['manualelimtickers'] = newmanelimtckrs
+            print('MANUAL-ELIM PROVENANCE: loaded %d name(s) from %r, APPLIED %d; '
+                  'accumulated %d fetch-failure name(s) for the next run. Filename will '
+                  'stamp manelim%d.'
+                  % (len(manualelim_loaded), configdic.get('manualelimtick_fname_toget', 'n/a'),
+                     len(manualelim_applied), len(newmanelimtckrs), len(manualelim_applied)),
+                  flush=True)
 
             # Apply data quality filter to freshly fetched data
             datandmetricdic = dq.apply_data_quality_filter(datandmetricdic, verbose=True, save_log=True)
+
+            # bm_ave AFTER the data-quality filter (audit H-1 fix, 2026-07-19).
+            # getAves2 used to run on getfunddic['BoMetric_df'] BEFORE the filter, so the
+            # cross-sectional MEDIAN that every 'm'-prefixed (mean-relative) Stage-1 test
+            # compares each company against was computed over the corrupt-era rows the
+            # filter exists to remove.  Recomputing it on the filtered frame (which now
+            # also has the row-level removals propagated, see data_quality) moves 26 of the
+            # 36 medians by more than 1% on the 2026-07-17 data -- several by 20-190% --
+            # so this changes Stage-1 baselines and therefore the ranking, BY DESIGN.
+            meandic = csf.getAves2(datandmetricdic['BoMetric_df'])
+            datandmetricdic = {**datandmetricdic, **meandic}
 
             #write to info to file
             utils.write_lastIndexRead(configdic['lastindex_fn'], getfunddic['cind'])
@@ -358,7 +399,26 @@ def main():
 
         # Apply data quality filter (remove corrupted/invalid price data)
         # This must happen BEFORE any scoring to prevent garbage from affecting calculations
+        _bm_rows_pre2 = len(datandmetricdic.get('BoMetric_df', []))
         datandmetricdic = dq.apply_data_quality_filter(datandmetricdic, verbose=True, save_log=True)
+
+        # SELF-HEAL the H-1 ordering risk (review M2).  getAves2 runs after the FIRST
+        # data-quality pass; this is the SECOND, so if it ever removed anything, bm_ave
+        # would once again describe a frame that is no longer the one being scored -- the
+        # exact defect fix 13 closed.  The step check is built to be idempotent (its
+        # market-cap step is bounded to one reporting period, so a pair created BY a
+        # removal cannot fire) and measures 0 removals on the real panel across three
+        # passes -- but "measured idempotent" is not "guaranteed idempotent", so recover
+        # rather than trust it, and say so loudly if it ever fires.
+        _bm_rows_post2 = len(datandmetricdic.get('BoMetric_df', []))
+        if _bm_rows_post2 != _bm_rows_pre2:
+            print("!" * 78, flush=True)
+            print("!!! data-quality pass 2 removed %d BoMetric row(s) -- RECOMPUTING "
+                  "bm_ave so the Stage-1 baselines match the frame actually scored "
+                  "(H-1 guard)." % (_bm_rows_pre2 - _bm_rows_post2), flush=True)
+            print("!" * 78, flush=True)
+            datandmetricdic = {**datandmetricdic,
+                               **csf.getAves2(datandmetricdic['BoMetric_df'])}
 
         if portfoliotestyear > 0:
             datandmetricdic = pf.portfolioBacktestWrapper(portfoliotestyear,datandmetricdic)

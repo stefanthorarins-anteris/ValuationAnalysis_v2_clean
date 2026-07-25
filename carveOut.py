@@ -265,6 +265,55 @@ FX_TO_USD = {
     'ZAR': 0.054, 'BRL': 0.185, 'MXN': 0.055, 'PLN': 0.25, 'ILS': 0.27,
     'AED': 0.272, 'SAR': 0.267, 'THB': 0.028, 'IDR': 0.000063, 'TRY': 0.030,
     'RUB': 0.011, 'CZK': 0.043, 'HUF': 0.0028, 'PHP': 0.017, 'MYR': 0.22,
+    'ISK': 0.0072,
+}
+
+
+# --- COARSE exchange-suffix -> reporting-currency fallback --------------------------
+# ONLY for use where the alternative is treating a mixed-currency marketCap AS IF it
+# were USD -- i.e. the $25M universe FLOOR and the mcapQuants size tilt, both of which
+# run unconditionally today and therefore mis-select rather than degrade (audit H-3/H8).
+#
+# It is deliberately NOT used by the market-cap BAND emission: the exchange suffix does
+# NOT determine reporting currency (fmp-specialist, 2026-07-18: FRES.L reports USD;
+# many .L lines are IOB depositary lines of foreign issuers), and the CEO's 2026-07-18
+# decision is that the bands SKIP rather than ship a guess. Bands stay gated on the real
+# reportedCurrency (currency_data_present) and become correct from the next full fetch.
+#
+# THE REAL CONTRACT (corrected, review M1 2026-07-25 -- the previous wording claimed this
+# "can never drop a name it would have kept", which is FALSE and needs stating plainly):
+#
+#   The suffix is a PRIOR on reporting currency, not a fact. It is RIGHT for the typical
+#   domestic issuer on a local exchange and WRONG for a USD- or EUR-reporting issuer
+#   listed there -- and for a wrong-currency name the conversion moves it AWAY from its
+#   true USD size, which CAN push it below the $25M floor and out of the universe.
+#
+# Measured on the 2026-07-17 universe (7,752 names with a market cap):
+#   * 182 names are NEWLY EXCLUDED by the USD floor (168 .ST, 11 .TO, 3 .IC). Correct for
+#     the SEK/CAD/ISK reporters among them; WRONG for any USD reporter on those exchanges,
+#     which is divided by ~10 and drops out.
+#   * 25 names are newly KEPT (23 .L, 2 .DE) on rate>1 inflation.
+#   * 21,800 panel rows change size quartile.
+# RESIDUAL ERROR, accepted: the per-name direction cannot be known without the real
+# reportedCurrency. This is a net improvement over treating a mixed-currency field as USD
+# (a 10-15x error on every non-USD reporter), not a correct conversion, and it goes dormant
+# from the next full fetch as reportedCurrency populates.
+#
+# An UNKNOWN or absent suffix maps to 1.0 = exactly today's raw behaviour; only a KNOWN
+# suffix can move a name, in either direction.
+SUFFIX_TO_CURRENCY = {
+    'L': 'GBP', 'IL': 'USD',
+    'ST': 'SEK', 'OL': 'NOK', 'CO': 'DKK', 'HE': 'EUR', 'IC': 'ISK',
+    'DE': 'EUR', 'F': 'EUR', 'MU': 'EUR', 'SG': 'EUR', 'BE': 'EUR', 'DU': 'EUR',
+    'HM': 'EUR', 'PA': 'EUR', 'AS': 'EUR', 'BR': 'EUR', 'LS': 'EUR', 'MC': 'EUR',
+    'MI': 'EUR', 'VI': 'EUR', 'IR': 'EUR', 'AT': 'EUR', 'SW': 'CHF',
+    'TO': 'CAD', 'V': 'CAD', 'CN': 'CAD', 'NE': 'CAD',
+    'AX': 'AUD', 'NZ': 'NZD', 'HK': 'HKD', 'SI': 'SGD', 'T': 'JPY',
+    'KS': 'KRW', 'KQ': 'KRW', 'TW': 'TWD', 'TWO': 'TWD',
+    'SS': 'CNY', 'SZ': 'CNY', 'NS': 'INR', 'BO': 'INR',
+    'JO': 'ZAR', 'SA': 'BRL', 'MX': 'MXN', 'WA': 'PLN', 'TA': 'ILS',
+    'PR': 'CZK', 'BD': 'HUF', 'IS': 'TRY', 'SR': 'SAR', 'AE': 'AED',
+    'BK': 'THB', 'JK': 'IDR', 'KL': 'MYR', 'PS': 'PHP',
 }
 
 
@@ -275,7 +324,33 @@ def _fx_to_usd(currency):
     return FX_TO_USD.get(currency.strip())
 
 
-def marketcap_usd_series(cdx_df):
+# LSE International Order Book / grey-market DEPOSITARY lines: zero-prefixed .L tickers
+# (0R4M.L, 0HQ7.L, 0A28.L...). These are SECONDARY listings of FOREIGN issuers -- mostly
+# US/EU companies reporting USD or EUR -- so the ".L -> GBP" prior is wrong for the whole
+# family, not occasionally wrong. 886 of the 1,640 .L sources on the 2026-07-17 panel are
+# of this shape (20,666 rows), and 2,742 of them changed size quartile on a 1.27x GBP
+# inflation that does not apply to them. They are therefore EXCLUDED from the suffix
+# fallback and keep their raw market cap (rate 1.0) -- which for a USD reporter is the
+# correct number anyway. This is the same population the audit identified as the
+# "byte-identical clone" cross-listings (M-5).
+_IOB_LSE_SYMBOL_RE = re.compile(r'^0[A-Z0-9]{2,4}\.L$', re.I)
+
+
+def _suffix_fx_to_usd(symbol):
+    """COARSE USD-per-unit rate guessed from a ticker's exchange suffix; 1.0 when the
+    symbol has no suffix, an unrecognised one, or is an LSE IOB depositary line
+    (= today's raw behaviour). See SUFFIX_TO_CURRENCY for the contract and its limits."""
+    if not isinstance(symbol, str) or '.' not in symbol:
+        return 1.0
+    if _IOB_LSE_SYMBOL_RE.match(symbol.strip()):
+        return 1.0
+    cur = SUFFIX_TO_CURRENCY.get(symbol.rsplit('.', 1)[1].strip())
+    if cur is None:
+        return 1.0
+    return FX_TO_USD.get(cur, 1.0)
+
+
+def marketcap_usd_series(cdx_df, allow_suffix_fallback=False):
     """Row-aligned USD market cap for cdx_df: marketCap * FX(reportedCurrency).
 
     THE single currency-conversion path -- shared by partition_by_marketcap, the
@@ -284,17 +359,29 @@ def marketcap_usd_series(cdx_df):
     pickles): returns all-NaN so every name reads as unknown-mcap (-> General), i.e.
     NOTHING is misbanded. NaN wherever marketCap is missing or the currency is unknown.
     Prefers a live reportedCurrency recompute over any materialized marketCap_usd column
-    (so a stale FX snapshot on disk can never override the current table)."""
+    (so a stale FX snapshot on disk can never override the current table).
+
+    allow_suffix_fallback (OPT-IN, default OFF): fill rows the real reportedCurrency
+    cannot resolve using the coarse exchange-suffix guess (SUFFIX_TO_CURRENCY), with an
+    unknown/absent suffix meaning rate 1.0 = raw marketCap. Callers that MUST produce a
+    number for every name -- the universe floor and the mcapQuants size tilt -- pass
+    True; the band emission does NOT (see SUFFIX_TO_CURRENCY note)."""
     cols = getattr(cdx_df, 'columns', [])
     if cdx_df is None or 'marketCap' not in cols:
         return pd.Series(np.nan, index=getattr(cdx_df, 'index', None))
     mc = pd.to_numeric(cdx_df['marketCap'], errors='coerce')
+    out = None
     if 'reportedCurrency' in cols:
         rate = cdx_df['reportedCurrency'].map(_fx_to_usd).astype('float64')
-        return mc * rate
-    if 'marketCap_usd' in cols:          # materialized at ingest (belt-and-suspenders)
-        return pd.to_numeric(cdx_df['marketCap_usd'], errors='coerce')
-    return pd.Series(np.nan, index=cdx_df.index)
+        out = mc * rate
+    elif 'marketCap_usd' in cols:        # materialized at ingest (belt-and-suspenders)
+        out = pd.to_numeric(cdx_df['marketCap_usd'], errors='coerce')
+    else:
+        out = pd.Series(np.nan, index=cdx_df.index)
+    if allow_suffix_fallback and 'source' in cols:
+        srate = cdx_df['source'].map(_suffix_fx_to_usd).astype('float64')
+        out = out.where(out.notna(), mc * srate)
+    return out
 
 
 def currency_data_present(cdx_df):
@@ -323,11 +410,14 @@ def currency_data_present(cdx_df):
     return False
 
 
-def marketcap_usd_by_source(cdx_df, as_of=None):
+def marketcap_usd_by_source(cdx_df, as_of=None, allow_suffix_fallback=False):
     """source -> latest USD market cap (latest non-NaN row). If `as_of` is given,
     restrict to date <= as_of, i.e. the POINT-IN-TIME market cap as-of that date.
-    Returns {} when the frame is unusable. Used by partition_by_marketcap (latest) and
-    by the PIT beat-rate grading (as_of=buy)."""
+    Returns {} when the frame is unusable. Used by partition_by_marketcap (latest,
+    fallback OFF) and by the PIT beat-rate grading (as_of=buy).
+
+    allow_suffix_fallback is forwarded to marketcap_usd_series -- pass True only from
+    the universe floor / size-tilt callers that must produce a number for every name."""
     cols = getattr(cdx_df, 'columns', [])
     if cdx_df is None or 'source' not in cols or 'marketCap' not in cols:
         return {}
@@ -339,7 +429,8 @@ def marketcap_usd_by_source(cdx_df, as_of=None):
     df['date'] = pd.to_datetime(df['date'], errors='coerce')
     if as_of is not None:
         df = df[df['date'] <= pd.Timestamp(as_of)]
-    df['_mcap_usd'] = marketcap_usd_series(df).values
+    df['_mcap_usd'] = marketcap_usd_series(
+        df, allow_suffix_fallback=allow_suffix_fallback).values
     df = df.dropna(subset=['_mcap_usd']).sort_values(['source', 'date'])
     if df.empty:
         return {}
@@ -664,10 +755,57 @@ def _issuer_components(syms, cdx_df, names):
     return comps, latest, _val
 
 
-def dedup_ranked(ranked_sources, cdx_df, names):
+# Decimals at which two AggScores count as TIED for the dedup survivor tie-break.
+# Cross-listed clone lines carry byte-identical fundamentals and therefore produce
+# EXACTLY equal scores, so this is effectively exact equality with last-bit slack.
+_TIE_DECIMALS = 12
+
+
+def _investability_key(sym, val_fn, sector_map=None):
+    """Deterministic "most investable line" ordering key for an issuer's listings.
+
+    Prefer (1) a line the sector map already tags (the recognised primary -- only when
+    a sector_map is supplied), then (2) largest latest market cap (most investable),
+    then (3) a symbol NOT starting with a digit (deprioritise LSE IOB/grey-market
+    depositary lines, e.g. 0R4M.L / 0HQ7.L), then (4) fewest punctuation (bare ticker),
+    shortest, alphabetical (fully deterministic).
+
+    Shared by dedup_to_issuers (which passes sector_map, so criterion 1 is live) and by
+    dedup_ranked's tie-break (no sector_map -> criterion 1 is constant and inert), so
+    "which line of an issuer do we prefer" means ONE thing across the pipeline.
+    """
+    known = 0 if (sector_map is not None
+                  and _is_known_sector(sector_map.get(sym))) else 1
+    mc = val_fn(sym, 'marketCap')
+    mc = mc if mc is not None else -1.0
+    digitpfx = 1 if sym[:1].isdigit() else 0
+    punct = sum(ch in '-.' for ch in sym)
+    return (known, -mc, digitpfx, punct, len(sym), sym)
+
+
+def dedup_ranked(ranked_sources, cdx_df, names, scores=None, sector_map=None):
     """Collapse same-issuer lines in a RANK-ORDERED source list, keeping the
     HIGHEST-RANKED (earliest-appearing) line per issuer and dropping every later
     same-issuer line. Order-preserving.
+
+    TIE-BREAK (audit M3 fix, 2026-07-19).  When `scores` is supplied and an issuer's
+    best-ranked lines are TIED on score, the survivor is picked by
+    _investability_key instead of by SORT STABILITY.  This matters because a
+    cross-listed clone line carries byte-identical fundamentals and therefore an
+    EXACTLY equal AggScore, so which of the two the ranking happened to emit first was
+    arbitrary -- and it decided which ticker the CEO sees.  On the 2026-01-09 pool 18
+    of 87 ranked rows sit in exact-score pairs, and the arbitrary winner was the LSE
+    grey-market depositary line in both cited cases: 0HQ7.L over BKE and 0IJO.L over
+    EXEL, both at identical AggScore.  With the tie-break the bare US ticker wins.
+
+    NOT changed (deliberately): when the scores genuinely DIFFER the highest-RANKED
+    line still survives -- that is the documented survivor rule (see below) and the
+    audit produced no evidence against it.  Concretely, HNNAZ (Hennessy Advisors
+    NOTES) survived over HNNA on the Jan pool at AggScore 0.1159 vs 0.1026, i.e. NOT a
+    tie: the score really did prefer the notes line.  Overriding a real score
+    difference is a survivor-RULE change, not a tie-break, and needs a design decision
+    (the underlying problem there is that a notes line entered the universe as
+    type=='stock' at all -- audit M-5).
 
     CEO standing principle: NO duplicate issuers in the emitted top-N -- a dual-listing
     or share-class must not occupy two slots (the TFPM / TFPM.TO case). This is the
@@ -688,14 +826,47 @@ def dedup_ranked(ranked_sources, cdx_df, names):
     ranked = list(ranked_sources)
     comps, _latest, _val = _issuer_components(ranked, cdx_df, names)
     root_of = {s: r for r, members in comps.items() for s in members}
-    kept, dropped, first_of = [], [], {}
+
+    # --- resolve exact-score ties inside each issuer group -----------------------
+    chosen = {}
+    if scores is not None:
+        sv = {}
+        for s, x in zip(ranked, list(scores)):
+            try:
+                fx = float(x)
+            except (TypeError, ValueError):
+                fx = np.nan
+            sv[s] = round(fx, _TIE_DECIMALS) if np.isfinite(fx) else np.nan
+        by_root = {}
+        for s in ranked:                      # ranked order -> members[0] is best-ranked
+            by_root.setdefault(root_of.get(s, s), []).append(s)
+        for r, members in by_root.items():
+            if len(members) < 2:
+                continue
+            top_score = sv.get(members[0], np.nan)
+            if not np.isfinite(top_score):
+                continue
+            tied = [m for m in members
+                    if np.isfinite(sv.get(m, np.nan)) and sv[m] == top_score]
+            if len(tied) > 1:
+                chosen[r] = sorted(
+                    tied, key=lambda m: _investability_key(m, _val, sector_map))[0]
+
+    kept, dropped, done = [], [], {}
     for s in ranked:
         r = root_of.get(s, s)
-        if r in first_of:
-            dropped.append((s, first_of[r]))
+        if r in done:
+            if s != done[r]:        # never record the survivor as dropped-onto-itself
+                dropped.append((s, done[r]))
         else:
-            first_of[r] = s
-            kept.append(s)
+            # The issuer is represented at its BEST rank position; the surviving TICKER
+            # is the tie-break winner when the best-ranked lines were tied, else the
+            # best-ranked line itself.
+            surv = chosen.get(r, s)
+            done[r] = surv
+            kept.append(surv)
+            if surv != s:
+                dropped.append((s, surv))
     return kept, dropped
 
 
@@ -723,22 +894,36 @@ def partition_by_marketcap(ranked_df, cdx_df, names=None):
     Returns dict:
       bands            {label: DataFrame (<= head_N rows, existing order)}
       band_counts      {label: full member count BEFORE head(N)}
+      band_head_n      {label: the requested top-N for that band}
+      band_selective   {label: bool} -- False when count <= head_N, i.e. the "top-N" is
+                       ALL of the band's members and NOTHING was selected (audit M5). A
+                       4-member Micro band presented as a "top-5" has ZERO selectivity and
+                       must not be read as a shortlist; consumers LABEL or SUPPRESS it.
+      band_note        {label: human-readable selectivity string} -- ships into the CSVs so
+                       the file cannot be read out of context.
       unknown_mcap     # survivors with no USD market cap (routed to General)
       currency_pending True on pre-fetch data (reportedCurrency not yet flowed) -> the
                        USD banding is NOT trustworthy; consumers must LABEL or SKIP it.
       dropped_dupes    dedup_ranked audit trail [(dropped, survivor), ...]
     """
     labels = [lab for lab, *_ in MCAP_BANDS]
+    head_n = {lab: N for lab, _lo, _hi, N in MCAP_BANDS}
     if not isinstance(ranked_df, pd.DataFrame) or 'source' not in getattr(ranked_df, 'columns', []) \
             or ranked_df.empty:
         empty = ranked_df.iloc[0:0] if isinstance(ranked_df, pd.DataFrame) else None
         return {'bands': {lab: empty for lab in labels},
                 'band_counts': {lab: 0 for lab in labels},
+                'band_head_n': head_n,
+                'band_selective': {lab: False for lab in labels},
+                'band_note': {lab: 'EMPTY band -- no members' for lab in labels},
                 'unknown_mcap': 0, 'currency_pending': True, 'dropped_dupes': []}
 
     names = names or {}
     ranked_sources = list(ranked_df['source'])
-    kept, dropped = dedup_ranked(ranked_sources, cdx_df, names)
+    # AggScore is passed so an issuer's tied clone lines resolve by investability
+    # instead of by sort stability (see dedup_ranked TIE-BREAK).
+    _sc = ranked_df['AggScore'] if 'AggScore' in ranked_df.columns else None
+    kept, dropped = dedup_ranked(ranked_sources, cdx_df, names, scores=_sc)
 
     # Order-preserving reduce of ranked_df to the deduped survivors (kept is already
     # rank-ordered and unique). drop_duplicates guards any accidental repeat source row.
@@ -758,13 +943,30 @@ def partition_by_marketcap(ranked_df, cdx_df, names=None):
             unknown += 1
         members[lab].append(s)
 
-    bands, band_counts = {}, {}
+    bands, band_counts, band_selective, band_note = {}, {}, {}, {}
     for label, lo, hi, N in MCAP_BANDS:
         rows = df[df['source'].isin(set(members[label]))]   # preserves df (rank) order
-        band_counts[label] = int(len(rows))
+        cnt = int(len(rows))
+        band_counts[label] = cnt
         bands[label] = rows.head(N).reset_index(drop=True)
+        # MIN-N SELECTIVITY LABEL (audit M5, 2026-07-19). head(N) on a band with <= N
+        # members selects NOTHING -- it just re-lists the whole band. Shipping that as a
+        # "top-5" misrepresents zero selectivity as a shortlist, and the thin bands (Micro
+        # especially: only ~4 names under $50M exist in this universe) are exactly where it
+        # bites. The count was already stored; this makes the CONSEQUENCE explicit and
+        # carries it into the emitted files.
+        band_selective[label] = cnt > N
+        if cnt == 0:
+            band_note[label] = 'EMPTY band -- no members'
+        elif cnt <= N:
+            band_note[label] = (f'NOT A SELECTION: all {cnt} member(s) of {label} shown '
+                                f'(top-{N} requested, band has only {cnt})')
+        else:
+            band_note[label] = f'top-{N} of {cnt} member(s) in {label}'
 
-    return {'bands': bands, 'band_counts': band_counts, 'unknown_mcap': int(unknown),
+    return {'bands': bands, 'band_counts': band_counts, 'band_head_n': head_n,
+            'band_selective': band_selective, 'band_note': band_note,
+            'unknown_mcap': int(unknown),
             'currency_pending': bool(pending), 'dropped_dupes': dropped}
 
 
@@ -789,12 +991,9 @@ def dedup_to_issuers(BoScore_df, cdx_df, sector_map, names):
 
     from collections import Counter
     def _key(s):
-        known = 0 if _is_known_sector(sector_map.get(s)) else 1
-        mc = _val(s, 'marketCap')
-        mc = mc if mc is not None else -1.0
-        digitpfx = 1 if s[:1].isdigit() else 0
-        punct = sum(ch in '-.' for ch in s)
-        return (known, -mc, digitpfx, punct, len(s), s)
+        # THE shared "most investable line" key (module-level _investability_key), so
+        # dedup_ranked's tie-break and this survivor rule can never diverge.
+        return _investability_key(s, _val, sector_map)
 
     survivors, member_to_survivor, sector_override = set(), {}, {}
     rows, conflicts = [], []
@@ -910,13 +1109,56 @@ def partition_universe(BoScore_df, cdx_df, tickers_df,
     _ind_cov = sum(1 for s in symbols
                    if industry_map.get(s) and industry_map.get(s) not in _UNKNOWN_SECTORS)
 
-    # --- market-cap floor (uniform); keep unknown-mcap names ------------------
-    mcap = bs['source'].map(fund['marketCap'])
+    # --- market-cap floor, applied in USD; keep unknown-mcap names ------------------
+    # mcap_floor is a USD figure ($25M) but cdx_df['marketCap'] is in each company's
+    # REPORTING currency, mixed across the universe (audit H-3/H8), so comparing the raw
+    # field against it made the floor a different height on every exchange -- SEK ~$2.4M,
+    # KRW ~$18k. Measured on the 2026-07-17 universe (7,752 names with a market cap):
+    # 179 names passed the raw floor while being under $25M USD (31 of them under $5M),
+    # and 25 names above $25M USD were floored OUT (GBP/EUR reporters just under the raw
+    # cutoff). Both directions matter because the score deliberately rewards small caps
+    # (mcapQuants w=0.080), so the leak-ins land where the tilt is strongest.
+    # Suffix fallback ON: this floor runs on every name every run, so it must produce a
+    # number for all of them; an unknown suffix yields rate 1.0 = the previous raw
+    # behaviour, and a name with NO market cap is still KEPT (never dropped on missing).
+    mcap_raw = bs['source'].map(fund['marketCap'])
+    _mcu = marketcap_usd_by_source(cdx_df, allow_suffix_fallback=True)
+    mcap = bs['source'].map(_mcu)
+    mcap = mcap.where(mcap.notna(), mcap_raw)
     below = mcap.notna() & (mcap < mcap_floor)
     n_below = int(below.sum())
     n_unknown_mcap = int(mcap.isna().sum())
     below_sources = set(bs.loc[below, 'source'])
     bs_floored = bs[~below].reset_index(drop=True)
+    # The currency change moves names IN and OUT of the universe, so NAME THEM -- two
+    # integers is not "loud, never silent" for a universe change of this size, and the
+    # suffix prior is wrong for some of them by construction (review M1). Same dated-CSV
+    # treatment the share-class filter gets.
+    _flip_out = bs.loc[below & mcap_raw.notna() & (mcap_raw >= mcap_floor), 'source']
+    _flip_in = bs.loc[~below & mcap_raw.notna() & (mcap_raw < mcap_floor)
+                      & mcap.notna(), 'source']
+    print("carveOut floor: applied in USD (suffix-FX fallback where reportedCurrency "
+          "absent) -- %d name(s) newly excluded that the raw-currency floor kept, "
+          "%d name(s) newly kept that it wrongly excluded"
+          % (len(_flip_out), len(_flip_in)), flush=True)
+    if len(_flip_out):
+        print("  newly EXCLUDED: %s" % ', '.join(sorted(_flip_out)), flush=True)
+    if len(_flip_in):
+        print("  newly KEPT: %s" % ', '.join(sorted(_flip_in)), flush=True)
+    try:
+        _fx_rows = pd.DataFrame({
+            'source': list(_flip_out) + list(_flip_in),
+            'direction': (['newly_excluded'] * len(_flip_out)
+                          + ['newly_kept'] * len(_flip_in))})
+        _fx_rows['marketCap_raw'] = _fx_rows['source'].map(fund['marketCap'])
+        _fx_rows['marketCap_usd'] = _fx_rows['source'].map(_mcu)
+        _fx_rows['suffix_fx_rate'] = _fx_rows['source'].map(_suffix_fx_to_usd)
+        _fn = ('CurrencyFloorFlips_%s.csv'
+               % pd.Timestamp.today().strftime('%Y-%m-%d'))
+        _fx_rows.to_csv(_fn, index=False)
+        print('  currency-floor flip list written to: %s' % _fn, flush=True)
+    except Exception as _e:
+        print('  WARNING: could not write currency-floor flip list (%s)' % _e, flush=True)
 
     general = bs_floored[bs_floored['carve_label'] == 'general'].reset_index(drop=True)
     cohorts = {}

@@ -92,7 +92,23 @@ def testForAPIFaults_fmp(failcodes,compyear,ticker,period,limit,baseurl,api_key,
                     else:
                         raise Exception('Why is period not either quarter or annual?')
             else:
-                raise Exception(f'No column, in dataframe from API, with the name: date')
+                # A 200 response whose income statement carries no `date` column is a
+                # MALFORMED/ERROR BODY, not a programming error (audit H-4 fix,
+                # 2026-07-19).  FMP returns error payloads -- e.g.
+                # [{"Error Message": "Limit Reach ..."}] -- with HTTP 200 in throttle
+                # states, so `resp.status_code in failcodes` misses them and the old
+                # `raise` propagated out of the per-ticker loop and KILLED THE WHOLE ~12h
+                # fundamentals run partway through.  One unlucky throttled ticker must
+                # cost that ticker, not the run.  Treated as emptyfail -- the SAME
+                # graceful skip the dead path already used for this exact case (see F-A /
+                # F-B above) -- so the ticker lands in tickersfailed/emptyfail and is
+                # visible in the run's completeness counters instead of vanishing.
+                failbool = True
+                whyfail = 'emptyfail'
+                print('failTests: %s returned HTTP 200 with no `date` column in the '
+                      'income statement (malformed/error body) -- skipped as emptyfail, '
+                      'run continues. Body head: %.200r'
+                      % (ticker, resplist[2]), flush=True)
 
     outdic = {}
     if failbool == False:

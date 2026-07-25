@@ -4,6 +4,7 @@ import warnings
 import json
 import numpy as np
 import os
+import re
 import time
 
 
@@ -176,6 +177,211 @@ def get_tickers(ds, baseurl, api_key, manual_elim=None, tfilt='stock_NA1',sfilt=
 
     return df
 
+# =========================================================================== #
+#  NON-COMMON-INSTRUMENT FILTER (audit M-5)                                    #
+# =========================================================================== #
+# FMP labels debt, preferred series, warrants, rights and SPAC units as
+# type=='stock', so they enter the universe and are scored ON THE COMMON'S
+# FUNDAMENTALS (the statements belong to the issuer, not the instrument).  They also
+# sit in the Stage-2 z-pool as extra rows, distorting mu/sigma and every percentile
+# BEFORE any dedup runs.  Confirmed on the 2026-07-17 universe: 5 Triton preferred
+# series (TRTN-PA..-PE), HNNAZ (Hennessy Advisors 4.875% NOTES), IMPPP, GSL-PB, SYF-PA.
+#
+# WHAT MUST SURVIVE: dual-class COMMONS (TCL-A.TO/TCL-B.TO, ACRI-A.ST, NIVI-B.ST,
+# GOOGL/GOOG, UAA/UA, FOXA/FOX, NWSA/NWS, WLYB/WLY, LILAK/LILA, UONEK/UONE, METCB),
+# LP/trust UNITS (a partnership's only equity IS units -- DLNG, DMLP, EPD, ET, BIP),
+# and foreign ordinaries.
+#
+# THREE RULES, each validated against this universe rather than assumed:
+#
+#  A. NAME vocabulary -- the instrument is named as one ("... 4.875% Notes due 2026",
+#     "... Warrants", "... Rights", "PERP PFD SER A").  Note bare "Units" is NOT in the
+#     vocabulary: it would delete every LP.  Catches 189 names.
+#  B. `-P<letters>` suffix on the base symbol = preferred series (US `-PA`, TSX `-PFJ`,
+#     Nordic `-PREF`).  Catches 325.  This is the rule the name string CANNOT replace:
+#     TRTN-PA..-PE / GSL-PB / SYF-PA all carry the COMMON's name verbatim ("Triton
+#     International Limited"), and Triton's common is not even in the universe, so
+#     there is no sibling to compare against either.  Safe because the dual-class
+#     convention is `-A`/`-B`/`-C`, never `-P`: of 26 `-<single letter>` symbols only 2
+#     are `-P*`, and no must-survive name matches.
+#  C. SAME-ISSUER SYMBOL EXTENSION -- candidate == a shorter same-name, same-exchange
+#     sibling's symbol plus an instrument code, with NO separator (IMPPP = IMPP + P).
+#     The tail is restricted to an EXPLICIT WHITELIST because share classes live in the
+#     same shape and a permissive rule provably eats real commons: GOOGL = GOOG + "L",
+#     UAA = UA + "A", WLYB = WLY + "B", LILAK = LILA + "K", UONEK = UONE + "K",
+#     METCB = METC + "B", FOXA, NWSA, CENTA, ASBA, RDIB, PPLC all have this shape.
+#     Whitelisting P/R/U/W/Z (+ their two-letter combinations) keeps every one of those
+#     -- none of their tails is whitelisted -- while still catching IMPPP and HNNAZ.
+#     KNOWN, ACCEPTED MISSES from this conservatism: tails S and V (APOS, VTAS.L,
+#     TFGS.L, PEYS.L, SKHYV, ECCV, CECV.DE) are left IN.  Leaving a preferred in is the
+#     cheap error; deleting a common is the expensive one.
+# Rule A vocabulary.  Every entry requires INSTRUMENT CONTEXT, never a bare word
+# (review H1, 2026-07-25).  The first version matched `senior`, `preferred`, `perpetual`,
+# `rights`, `notes` and `cumulative` as bare words anywhere in the name and therefore
+# DELETED REAL COMMONS: BKD (Brookdale SENIOR Living), SNDA (Sonida SENIOR Living),
+# SIA.TO (Sienna SENIOR Living), SNR.L (SENIOR plc), PFBC (PREFERRED Bank), NOTE.ST
+# (NOTE AB), LBOW.L (ICG-Longbow SENIOR SECURED UK Property Debt Investments -- a listed
+# debt FUND, which the carve should cohort, not delete).  Deleting a common is the
+# expensive error and this rule was committing it silently.
+#
+# Each pattern below was derived by listing EVERY name in the 2026-07-17 universe
+# containing the risky word and reading them, not by guessing:
+#   senior      23 names -- 20 instruments, ALL of the form "Senior Notes"; the other 3
+#               are trade names.  So `senior` is required to be followed by a debt noun.
+#   preferred    9 names -- 8 instruments, ALL "Preferred Stock"; PFBC is a bank.
+#   perpetual/cumulative -- every instrument use co-occurs with "Preferred Stock", so
+#               both words are DROPPED as redundant (and "Perpetuals.com Ltd" exists).
+#   rights      15 names -- all SPAC rights, all with Right(s) as the FINAL word.
+#   notes       46 names -- NOTE.ST ("NOTE AB (publ)") is a real Swedish common, so
+#               `notes` needs a coupon / maturity / seniority / "Notes -<date>" context.
+#   %           19 names beyond the above -- every one a coupon (Saratoga 8.00%, Duke
+#               5.625%, Bristol Water Cum.Irred.Pref.Shs); zero trade names.  Kept bare.
+#   warrants    67 names -- all instruments.  Kept bare (a future "Warrant Technologies"
+#               would false-positive; accepted, and it would show in the removal CSV).
+_NON_COMMON_NAME_PATTERNS = (
+    ('coupon-rate',      r'\d+(?:\.\d+)?\s*%|\b\d+\s+\d/\d\s*%'),
+    ('maturity',         r'\bdue\s+(?:19|20)\d\d\b|\bexp(?:iring)?\.?\s+\d'),
+    ('senior-debt',      r'\bsenior\s+(?:notes?|debentures?|bonds?|unsecured|sub)'),
+    # `subordinated` needs a DEBT noun after it: "Class B Subordinate Voting Shares"
+    # (XNDU) is COMMON equity, and "The Law Debenture Corporation p.l.c." (LWDB.L) is a
+    # listed investment trust whose trade name contains "Debenture".  Both were removed
+    # by the first draft of this rule.  Real debenture instruments all carry a coupon, so
+    # bare `debenture` is dropped -- coupon-rate covers them.
+    ('subordinated',     r'\bsubordinated\s+(?:notes?|debentures?|bonds?|securit)'
+                         r'|\b(?:jr|junior)\.?\s+subordinat'),
+    ('preferred-class',  r'\bpreferred\s+(?:stock|shares?|securit|units?)|\bpfd\b'
+                         r'|\bpref\.?\s*sh(?:s|ares)?\b|\bcum\.?\s*(?:irred\.?\s*)?pref'),
+    # NO bare `depositary` pattern.  "American Depositary Shares" is how a FOREIGN
+    # COMMON trades in the US -- ARM (Arm Holdings), PONY (Pony AI), LOT (Lotus Tech),
+    # CHA, HDL, and 10 more were all deleted by that pattern, and foreign ordinaries are
+    # explicitly on the must-keep list.  The genuine PREFERRED-depositary lines are
+    # covered without it: RILYL/RILYP/NEWTP/FCNCN carry "Preferred Stock"
+    # (preferred-class) and USB-PS is caught by rule B's `-PS` suffix.
+    ('depositary-pfd',   r'\bdepositary\b[^.]{0,120}?\b(?:preferred|pfd)\b'
+                         r'|\bdep\s*1/'),
+    ('warrant',          r'\bwarrants?\b'),
+    ('rights',           r'\brights?\s*\.?\s*$|\bcontingent\s+value\s+rights?\b'),
+    ('notes-in-context', r'\bnotes?\s*[-–]\s*\d|\bnotes?\s+d(?:ue|ated)\b'
+                         r'|\b(?:fixed|floating)[- ]rate\s+notes?\b'
+                         r'|\b(?:jr|sr)\s*(?:sub\s*)?nt\b|\bnt\s*\d'),
+)
+_NON_COMMON_NAME_RES = tuple((tag, re.compile(pat, re.I))
+                             for tag, pat in _NON_COMMON_NAME_PATTERNS)
+
+
+def _non_common_name_tag(name):
+    """The first instrument-context pattern a company name matches, or '' if none."""
+    if not isinstance(name, str) or not name:
+        return ''
+    for tag, rx in _NON_COMMON_NAME_RES:
+        if rx.search(name):
+            return tag
+    return ''
+
+# base symbol ends in a preferred-series marker: -P, -PA, -PFJ, -PREF
+_PREFERRED_SUFFIX_RE = re.compile(r'-P[A-Z]{0,3}$')
+
+# Whitelisted instrument tails for rule C (see the note above on why this is a whitelist
+# and not "anything short").  EXACTLY what is admitted (the comment used to say
+# "P/R/U/W/Z + their two-letter combinations", which understated the third alternative --
+# review H1 sub-finding):
+#   P            preferred, bare
+#   P<letter>    preferred series (PA, PN, PO, PP...)
+#   R U W Z      rights / units / warrants / misc-debt, bare
+#   <letter>RUWZ any letter FOLLOWED by an instrument code (CW, OW, TW, BU, CZ...) --
+#                the SPAC-instrument shape, e.g. ALFUW, TVACW
+#   [PRUWZ]<letter>  an instrument code followed by any letter (WR, UU, WW...)
+# The share-class letters (A B C D E K L M N O S V) are admitted ONLY in the
+# <letter>+instrument-code position, never alone -- which is what keeps GOOGL (GOOG+L),
+# UAA (UA+A), WLYB, LILAK, UONEK, METCB, FOXA, NWSA, CENTA, ASBA, RDIB and PPLC.
+_INSTRUMENT_TAIL_RE = re.compile(r'^(P[A-Z]?|[A-Z]?[RUWZ]|[PRUWZ][A-Z])$')
+
+
+def _sym_base(s):
+    """Ticker without its exchange suffix ('ACRI-A.ST' -> 'ACRI-A')."""
+    return s.rsplit('.', 1)[0] if '.' in s else s
+
+
+def _sym_exchange_suffix(s):
+    return s.rsplit('.', 1)[1] if '.' in s else ''
+
+
+def filter_non_common_instruments(df, verbose=True, log_csv=True):
+    """Drop debt / preferred / warrant / rights lines that FMP types as 'stock'.
+
+    Returns the filtered frame.  Every removal is logged with the rule that caught it
+    (loud stdout summary + a dated CSV) so the exclusion list is auditable and never
+    silent.  Requires 'symbol'; uses 'name' when present.
+    """
+    if df is None or 'symbol' not in getattr(df, 'columns', []) or df.empty:
+        return df
+    sym = df['symbol'].astype(str)
+    name = df['name'].astype(str) if 'name' in df.columns else pd.Series('', index=df.index)
+    bases = sym.map(_sym_base)
+
+    reason = pd.Series('', index=df.index)
+
+    # rule A -- named as a non-common instrument, with INSTRUMENT CONTEXT required.
+    # The specific pattern is recorded (not just 'name-vocabulary') so the removal CSV
+    # can be audited pattern by pattern -- that is how the false positives in the first
+    # version were found.
+    name_tag = name.map(_non_common_name_tag)
+    hit_a = name_tag != ''
+    reason[hit_a & (reason == '')] = 'name:' + name_tag[hit_a & (reason == '')]
+
+    # rule B -- preferred-series ticker suffix
+    hit_b = bases.str.contains(_PREFERRED_SUFFIX_RE)
+    reason[hit_b & (reason == '')] = 'preferred-suffix'
+
+    # rule C -- same-issuer symbol extension with a whitelisted instrument tail
+    try:
+        import carveOut as _co
+        norm = name.map(_co._norm_issuer_name)
+    except Exception:
+        norm = pd.Series('', index=df.index)
+    groups = {}
+    for s, n, x in zip(sym, norm, sym.map(_sym_exchange_suffix)):
+        if n:
+            groups.setdefault((n, x), []).append(s)
+    ext_hits = set()
+    for members in groups.values():
+        if len(members) < 2:
+            continue
+        for cand in members:
+            cb = _sym_base(cand)
+            for other in members:
+                ob = _sym_base(other)
+                if len(ob) >= len(cb) or not cb.startswith(ob):
+                    continue
+                if _INSTRUMENT_TAIL_RE.match(cb[len(ob):]):
+                    ext_hits.add(cand)
+                    break
+    hit_c = sym.isin(ext_hits)
+    reason[hit_c & (reason == '')] = 'symbol-extension'
+
+    drop = reason != ''
+    if not drop.any():
+        return df
+
+    removed = pd.DataFrame({'symbol': sym[drop], 'name': name[drop],
+                            'rule': reason[drop]}).reset_index(drop=True)
+    if verbose:
+        counts = removed['rule'].value_counts().to_dict()
+        print("SHARE-CLASS FILTER: removed %d non-common instrument line(s) of %d "
+              "(%s)" % (len(removed), len(df), counts), flush=True)
+        print("  removed symbols: %s" % ', '.join(sorted(removed['symbol'])), flush=True)
+    if log_csv:
+        try:
+            fidag = pd.Timestamp.today().strftime('%Y-%m-%d')
+            fn = f'ExcludedShareClasses_{fidag}.csv'
+            removed.to_csv(fn, index=False)
+            print(f'  share-class exclusion list written to: {fn}', flush=True)
+        except Exception as _e:
+            print(f'  WARNING: could not write share-class exclusion list ({_e})', flush=True)
+
+    return df[~drop].reset_index(drop=True)
+
+
 def tickerfilterWrapper(tickdf,tfilt,sfilt,mcapf,baseurl,api_key):
     df = tickdf
     if tfilt == 'stock_US1':
@@ -209,6 +415,13 @@ def tickerfilterWrapper(tickdf,tfilt,sfilt,mcapf,baseurl,api_key):
         tickers_df_stock_US1_EU2 = filter_tickers(tickers_df_stock, 'exchangeShortName',
                                                    ['NYSE', 'NASDAQ', 'EURONEXT'], mcapf, api_key)
         df = tickers_df_stock_US1_EU2
+
+    # Drop debt/preferred/warrant/rights lines that FMP types as 'stock' (audit M-5).
+    # Placed here, AFTER the type+exchange filters and BEFORE the sector filter, so it
+    # applies to every tfilt branch on one code path and so nothing downstream -- the
+    # Stage-2 z-pool, the mean-relative Stage-1 baselines, the carve dedup -- ever sees
+    # an instrument line.
+    df = filter_non_common_instruments(df)
 
     if sfilt != 'all':
         df = filterBySector(df, sfilt)
@@ -307,13 +520,26 @@ def forceNumOnDf(df):
         preserve.add('date')
     if 'source' in dftemp.columns:
         preserve.add('source')
-    # reportedCurrency is a STRING reporting-currency code (USD/SEK/EUR/...), captured for
-    # market-cap USD banding (carveOut.marketcap_usd_series). It MUST survive ingest --
-    # without this it is coerced to all-NaN, silently killing the banding (every name reads
-    # as unknown-mcap -> General). It never reaches BoMetric_df and downstream numeric ops
-    # select numeric dtypes / explicit metric lists, so preserving the string here is safe.
-    if 'reportedCurrency' in dftemp.columns:
-        preserve.add('reportedCurrency')
+    # STRING / DATE passthrough columns that MUST survive ingest -- without being listed
+    # here pd.to_numeric coerces them to all-NaN, silently destroying the field (this is
+    # exactly what happened to reportedCurrency before it was added). None of them reach
+    # BoMetric_df, and downstream numeric ops select numeric dtypes or explicit metric
+    # lists, so carrying the raw strings through is safe.
+    #   reportedCurrency  reporting currency code -> USD market-cap banding
+    #                     (carveOut.marketcap_usd_series)
+    #   period            'Q1'..'Q4'/'FY' -> tells a 3-month flow from a semi-annual
+    #                     filer's 6-month flow (audit C-1)
+    #   fillingDate /     filing + acceptance timestamps -> point-in-time availability
+    #   acceptedDate      (audit H-2); NB fillingDate is a placeholder = period end on
+    #                     ~50% of rows, so acceptedDate is the discriminator
+    #   periodEndDate     the RAW fiscal period end, kept beside the quarter-stamped
+    #                     `date` (utils.setDatesToQuarterly overwrites `date` in place)
+    # calendarYear is deliberately NOT preserved: it is a genuine year and is better off
+    # numeric.
+    for _passthrough in ('reportedCurrency', 'period', 'fillingDate', 'acceptedDate',
+                         'periodEndDate'):
+        if _passthrough in dftemp.columns:
+            preserve.add(_passthrough)
 
     for col in dftemp.columns:
         if col in preserve:

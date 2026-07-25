@@ -239,8 +239,11 @@ def postBoWrapper(dmdic, as_of=None):
     return resdic
 
 def regressMetricsOnROR(rankdic):
-    regressors = list(set(rankdic['postRank'].columns) - set(['rankOfRanks','AggScore','source']))
-    regressant = ['rankOfRanks']
+    # 'rankOfRanks' -> 'rankOfRanks_diag' (postBoRank.ROR_COLUMN): the emitted column was
+    # renamed to mark it a DIAGNOSTIC, not a competing ranking (audit M1).
+    ror = pbr.ROR_COLUMN
+    regressors = list(set(rankdic['postRank'].columns) - set([ror, 'rankOfRanks', 'AggScore', 'source']))
+    regressant = [ror]
     df = rankdic['postRank']
     X = df[regressors]
     y = df[regressant]
@@ -286,11 +289,22 @@ def writeResWrapper(resdic):
         resdic['marketcap_bands'] = marketcap_bands['bands']
         resdic['marketcap_band_counts'] = marketcap_bands['band_counts']
         resdic['marketcap_currency_pending'] = marketcap_bands['currency_pending']
+        resdic['marketcap_band_selective'] = marketcap_bands.get('band_selective', {})
+        resdic['marketcap_band_note'] = marketcap_bands.get('band_note', {})
         _pend = marketcap_bands['currency_pending']
         print("MARKET-CAP BANDS: " + ("CURRENCY PENDING (sub-bands suppressed this run) -- " if _pend else "")
               + ", ".join(f"{lab}={marketcap_bands['band_counts'].get(lab, 0)}"
                           for lab, *_ in co.MCAP_BANDS)
               + f" (unknown_mcap->General={marketcap_bands['unknown_mcap']})", flush=True)
+        # MIN-N: name the bands whose "top-N" selects nothing, so a zero-selectivity list
+        # is never read as a shortlist (audit M5).
+        _nonsel = [lab for lab, sel in (marketcap_bands.get('band_selective') or {}).items()
+                   if not sel and marketcap_bands['band_counts'].get(lab, 0) > 0]
+        if _nonsel:
+            print("MARKET-CAP BANDS -- NOT A SELECTION (band size <= requested top-N, "
+                  "every member is listed): "
+                  + "; ".join(marketcap_bands['band_note'][lab] for lab in _nonsel),
+                  flush=True)
     except Exception as _be:
         print(f"WARNING: market-cap banding skipped ({type(_be).__name__}: {_be}); "
               f"main deliverables unaffected.", flush=True)
@@ -340,7 +354,7 @@ def writeResWrapper(resdic):
             if not sdic or 'postRank' not in sdic:
                 continue
             sl_df = sdic['postRank'].head(ntopagg).copy()
-            keep = [c for c in ['source', 'AggScore', 'rankOfRanks'] if c in sl_df.columns]
+            keep = [c for c in ['source', 'AggScore', pbr.ROR_COLUMN] if c in sl_df.columns]
             fname_sidelist = f'SideList_{label}_Top{ntopagg}-{fidag}_{datasource}_{tickerfilter}.csv'
             sl_df[keep].to_csv(fname_sidelist, index=False)
             sidelist_fnames.append(fname_sidelist)
@@ -357,14 +371,27 @@ def writeResWrapper(resdic):
     band_fnames = []
     try:
         if marketcap_bands and not marketcap_bands.get('currency_pending', True):
+            _sel_map = marketcap_bands.get('band_selective') or {}
+            _note_map = marketcap_bands.get('band_note') or {}
             for label, band_df in (marketcap_bands.get('bands') or {}).items():
                 if band_df is None or band_df.empty:
                     continue
-                keep = [c for c in ['source', 'AggScore', 'rankOfRanks'] if c in band_df.columns]
-                fname_band = f'MarketCapBand_{label}-{fidag}_{datasource}_{tickerfilter}.csv'
-                band_df[keep].to_csv(fname_band, index=False)
+                keep = [c for c in ['source', 'AggScore', pbr.ROR_COLUMN] if c in band_df.columns]
+                out_band = band_df[keep].copy()
+                # MIN-N LABEL (audit M5): carry the selectivity statement INTO the file --
+                # a "top-5" over a 4-member band selected nothing, and a CSV read out of
+                # context gives the reader no way to know that. Also marked in the filename
+                # so it is visible before the file is even opened.
+                _note = _note_map.get(label, '')
+                out_band['band_selection'] = _note
+                _selective = _sel_map.get(label, True)
+                _marker = '' if _selective else '_ALLMEMBERS_NOT_A_SELECTION'
+                fname_band = (f'MarketCapBand_{label}{_marker}-{fidag}_'
+                              f'{datasource}_{tickerfilter}.csv')
+                out_band.to_csv(fname_band, index=False)
                 band_fnames.append(fname_band)
-                print(f'Market-cap band CSV written to: {fname_band}')
+                print(f'Market-cap band CSV written to: {fname_band}'
+                      + (f'   [{_note}]' if _note else ''))
         elif marketcap_bands and marketcap_bands.get('currency_pending', True):
             print('Market-cap band CSVs SKIPPED this run: reportedCurrency not yet in the '
                   'data (correct automatically from the next full fetch).', flush=True)
@@ -863,8 +890,23 @@ def moatIdentifier(symblist, cdx_df, n=20):
                 'RoE': np.nan, 'RoA': np.nan, 'ROIC': np.nan, 'SGAtoGP': np.nan, 'DeptoGP': np.nan,
                 'NetMargin': np.nan, 'CapExtoEarnings': np.nan, 'TLtoEquity': np.nan}
     tempdf_orig = pd.concat([moatdf, pd.DataFrame([nan_dict])], ignore_index=True)
+    # The 11 moat criteria that ARE the score -- each column is already expressed as
+    # (value - threshold), so "> 0" means "passes".  Counting these EXPLICITLY (rather
+    # than every numeric column) is half of the audit M2 fix below.
+    moat_criteria = ['FCFyield', 'GrossMargin', 'RevtoASS', 'RoE', 'RoA', 'ROIC',
+                     'SGAtoGP', 'DeptoGP', 'NetMargin', 'CapExtoEarnings', 'TLtoEquity']
     for symb in symblist:
-        tempdf = tempdf_orig
+        # .copy() -- audit M2 fix (2026-07-19).  `tempdf = tempdf_orig` bound the SAME
+        # one-row frame every iteration, so the PREVIOUS ticker's moatScore was still
+        # sitting in it when `select_dtypes(include='number') > 0` counted the criteria,
+        # and any prior score > 0 was counted as a 12th criterion.  Effect on the shipped
+        # 2026-07-17 universe: moatScore too high by exactly +1 on 7,751 of 7,752 names
+        # (only the first-processed ticker, whose carried value was still NaN, was right),
+        # and the observed minimum was 1 on an 0-11 scale where 0 must be attainable --
+        # 496 names shown as "1" are really 0.  The number is display-only (moatScore is
+        # merged AFTER Stage-2, so AggScore never saw it), but it reaches the CEO as an
+        # absolute count.
+        tempdf = tempdf_orig.copy()
         cdx_temp = cdx_df[cdx_df['source'] == symb]
         tempdf['source'] = symb
         fcfmask = cdx_temp['pfcfRatio'] != 0
@@ -885,8 +927,10 @@ def moatIdentifier(symblist, cdx_df, n=20):
         ni_filter = cdx_temp['netIncomePerShare'][nimask]
         tempdf['CapExtoEarnings'] = 0.2 - (cdx_temp['capexPerShare'][nimask]/ni_filter).head(n).mean()
         tempdf['TLtoEquity'] = 0.8 - (cdx_temp['totalLiabilities']/cdx_temp['totalStockholdersEquity']).head(n).mean()
-        numeric_df = tempdf.select_dtypes(include='number')
-        mask = numeric_df > 0
+        # Count ONLY the 11 criteria -- never moatScore itself, and never any column that
+        # happens to be numeric.  NaN > 0 is False, so a non-computable criterion does not
+        # pass (an unchanged property of the old code).
+        mask = tempdf[moat_criteria].apply(pd.to_numeric, errors='coerce') > 0
         tempdf['moatScore'] = mask.sum(axis=1)
 
         moatdf = pd.concat([moatdf, tempdf]).reset_index(drop=True)
