@@ -1,5 +1,7 @@
 import calcScore as cs
 import postBoRank as pbr
+import reporting_period as rp
+from detectManipulation import _toNewestFirst
 import forensicFlags as ff
 import pandas as pd
 import requests
@@ -104,7 +106,26 @@ def postBoWrapper(dmdic, as_of=None):
     print("="*60 + "\n", flush=True)
     sys.stdout.flush()
     
-    BoScore_df = cs.simpleScore_fromDict(bmdf, bmav, bmda, n, as_of=as_of)
+    # FREQUENCY MAP FROM cdx_df, not from BoMetric_df (review S3, 2026-07-26).
+    # `period` is the authoritative frequency signal and it lands in cdx_df ONLY --
+    # BoMetric_df never carries it by design (createDicts preReq fields do not reach
+    # it).  Stage-1 was therefore the ONE consumer still deriving frequency from date
+    # cadence while Stage-2, the forensics, the moat and reviewReference all used
+    # `period`: two sources of truth for the same per-ticker decision, already
+    # disagreeing on 2 names (KXIN, OBI.L) and set to diverge properly from the first
+    # fetch that carries the field.  Passing the cdx-derived map makes Stage-1 read the
+    # same answer as everything downstream.
+    # THE UNIVERSE-WIDE FREQUENCY / CONFLICT BANNER (restored, ship-gate item 3, 2026-07-27).
+    # verbose=True is LOAD-BEARING and independent of whether Stage-1 consumes the map:
+    # this is the run's ONLY universe-wide frequency readout and the only place the
+    # period-vs-cadence conflict list + CSV are emitted.  Both pre-ship reads call it "the
+    # first thing to read after the fetch".  It got silenced when the map was threaded into
+    # Stage-1 with verbose defaulted off, and the Q2 ruling then made Stage-1's use of the
+    # map a no-op on the score -- so the wiring's only surviving effect had been to hide
+    # the banner.  Keep the call and keep it loud.
+    _freq_map = rp.frequency_by_source(dmdic.get('cdx_df'), verbose=True)
+    BoScore_df = cs.simpleScore_fromDict(bmdf, bmav, bmda, n, as_of=as_of,
+                                        freq_map=_freq_map)
 
     # --- Phase-1 cohort carve-out (BEFORE the head(100) selection) -------------
     # Partition the full BoScore-ranked universe into a GENERAL pool + three
@@ -869,7 +890,7 @@ def resize_columns(ws):
 def format_num(x):
     return "{:.4f}".format(x)
 
-def moatIdentifier(symblist, cdx_df, n=20):
+def moatIdentifier(symblist, cdx_df, n=20, freq_map=None):
     #moatdf = pd.DataFrame(columns=['source','moatScore'])
     #for symb in symbollist:
     # calculate FCFyield (>5-10%), Gross Margin (GrossProfit/Revenue>30%)
@@ -889,12 +910,20 @@ def moatIdentifier(symblist, cdx_df, n=20):
     nan_dict = {'source': np.nan,  'moatScore': np.nan, 'FCFyield': np.nan, 'GrossMargin': np.nan, 'RevtoASS': np.nan,
                 'RoE': np.nan, 'RoA': np.nan, 'ROIC': np.nan, 'SGAtoGP': np.nan, 'DeptoGP': np.nan,
                 'NetMargin': np.nan, 'CapExtoEarnings': np.nan, 'TLtoEquity': np.nan}
+    # Every criterion below is a head(n) mean over the name's own history, so `n` is
+    # scaled per source to its rows-per-year: n=20 is 5 years of quarters but TEN years
+    # of halves, which graded semi-annual filers on twice the history (row-based site
+    # NOT on the audit's list -- found in the 2026-07-25 sweep). Display-only metric,
+    # but it reaches the CEO as an absolute 0-11 count.
+    if freq_map is None:
+        freq_map = rp.frequency_by_source(cdx_df)
     tempdf_orig = pd.concat([moatdf, pd.DataFrame([nan_dict])], ignore_index=True)
     # The 11 moat criteria that ARE the score -- each column is already expressed as
     # (value - threshold), so "> 0" means "passes".  Counting these EXPLICITLY (rather
     # than every numeric column) is half of the audit M2 fix below.
     moat_criteria = ['FCFyield', 'GrossMargin', 'RevtoASS', 'RoE', 'RoA', 'ROIC',
                      'SGAtoGP', 'DeptoGP', 'NetMargin', 'CapExtoEarnings', 'TLtoEquity']
+    _n_quarterly = n            # the caller's window, expressed in QUARTERS
     for symb in symblist:
         # .copy() -- audit M2 fix (2026-07-19).  `tempdf = tempdf_orig` bound the SAME
         # one-row frame every iteration, so the PREVIOUS ticker's moatScore was still
@@ -907,25 +936,64 @@ def moatIdentifier(symblist, cdx_df, n=20):
         # merged AFTER Stage-2, so AggScore never saw it), but it reaches the CEO as an
         # absolute count.
         tempdf = tempdf_orig.copy()
-        cdx_temp = cdx_df[cdx_df['source'] == symb]
+        # NEWEST-FIRST BEFORE head(n) (ship-gate BLOCKER, fixed 2026-07-27).
+        # Every comparator below is a `.head(n).mean()`, i.e. a RECENCY window -- but
+        # cdx_df arrives OLDEST-first (data_quality sorts ascending; verified 7,752 of
+        # 7,752 sources), so head(n) was reading the name's OLDEST rows.  Median lag of
+        # the window from the newest filing was 1.00 year for a quarterly filer and
+        # 7.00 years for a semi-annual one: the 2026-07-25 window scaling (head(20) ->
+        # head(10) for rpy=2) AMPLIFIED the pre-existing defect by anchoring a shorter
+        # window at the wrong end.  moatScore differed on 50.2% of 400 real names, by up
+        # to +-7 points on an 0-11 scale.
+        # Uses detectManipulation._toNewestFirst -- the same helper every sibling cdx
+        # consumer uses -- rather than a fresh sort, so there is ONE definition of
+        # "newest-first" in the pipeline.  It sorts by PARSED date, so it is robust to
+        # however the rows happen to arrive.
+        cdx_temp = _toNewestFirst(cdx_df[cdx_df['source'] == symb])
+        _rpy = rp.rows_per_year(freq_map, symb)
+        n = rp.scale_window(_n_quarterly, _rpy)
+        # ANNUALIZE the FLOW-over-STOCK comparators (specialist ruling, 2026-07-25).
+        # Every bar below is an ANNUAL rule of thumb -- FCF yield > 10%, sales/assets >
+        # 0.75, RoE > 15%, RoA > 10%, ROIC > 15% -- but the ratios were per-PERIOD, so a
+        # quarterly filer was being asked to earn a full YEAR's return in three months.
+        # Five of the eleven comparators were therefore near-unpassable by construction.
+        # `af` is a TRUE annualisation (x4 quarterly, x2 semi-annual) because these
+        # thresholds are ABSOLUTE; it deliberately changes quarterly names too, and
+        # moatScores rise materially as a result.
+        # NOT annualized (flow/flow or stock/stock -- scale cancels): GrossMargin,
+        # SGAtoGP, DeptoGP, NetMargin, CapExtoEarnings, TLtoEquity.
+        af = rp.annualize_factor(_rpy)
         tempdf['source'] = symb
         fcfmask = cdx_temp['pfcfRatio'] != 0
         fcfyield_filter = cdx_temp['pfcfRatio'][fcfmask]
-        tempdf['FCFyield'] = (1/fcfyield_filter).head(n).mean()-0.1
+        tempdf['FCFyield'] = (1/fcfyield_filter).head(n).mean()*af-0.1
         tempdf['GrossMargin'] = cdx_temp['grossProfitMargin'].head(n).mean()-0.3
-        tempdf['RevtoASS'] = (cdx_temp['revenue']/cdx_temp['totalAssets']).head(n).mean()-0.75
-        tempdf['RoE'] = cdx_temp['returnOnEquity'].head(n).mean()-0.15
-        tempdf['RoA'] = cdx_temp['returnOnAssets'].head(n).mean()-0.1
-        tempdf['ROIC'] = cdx_temp['returnOnCapitalEmployed'].head(n).mean() - 0.15
+        tempdf['RevtoASS'] = (cdx_temp['revenue']/cdx_temp['totalAssets']).head(n).mean()*af-0.75
+        tempdf['RoE'] = cdx_temp['returnOnEquity'].head(n).mean()*af-0.15
+        tempdf['RoA'] = cdx_temp['returnOnAssets'].head(n).mean()*af-0.1
+        tempdf['ROIC'] = cdx_temp['returnOnCapitalEmployed'].head(n).mean()*af - 0.15
         gpmask = cdx_temp['grossProfit'] != 0
         gp_filter = cdx_temp['grossProfit'][gpmask]
         tempdf['SGAtoGP'] = 0.15-(cdx_temp['sellingGeneralAndAdministrativeExpenses'][gpmask]/gp_filter).head(n).mean()
         tempdf['DeptoGP'] = 0.1 - (cdx_temp['depreciationAndAmortization'][gpmask]/gp_filter).head(n).mean()
         #tempdf['InteresttoOI'] = 0.15 - (cdx_df['interestExpense']/cdx_df['operatingIncome']).head(n).mean()
         tempdf['NetMargin'] = cdx_temp['netProfitMargin'].head(n).mean() - 0.2
-        nimask = cdx_temp['netIncomePerShare'] != 0
-        ni_filter = cdx_temp['netIncomePerShare'][nimask]
-        tempdf['CapExtoEarnings'] = 0.2 - (cdx_temp['capexPerShare'][nimask]/ni_filter).head(n).mean()
+        # CapEx/Earnings: |capex| / |NI| < 0.20, GATED ON NI > 0 (domain review S8, fixed
+        # 2026-07-26).  It was `0.2 - mean(capexPerShare/netIncomePerShare)`, which
+        # free-passed 100.0% of loss-makers vs 44.5% of profitable names.
+        # NOTE the audit's stated MECHANISM was wrong and would have produced the wrong fix:
+        # it blamed "FMP capexPerShare negative", but on this panel capexPerShare is POSITIVE
+        # on 86.5% of 176,604 rows and negative on 0.0000% (median +0.084).  The real cause is
+        # the DENOMINATOR -- for NI < 0 the ratio is negative on 83.4% of rows, so
+        # `0.2 - negative > 0` is an automatic tick.
+        # "Capex is a small share of earnings" is UNDEFINED when there are no earnings, so a
+        # loss-making period is NOT-COMPUTABLE (NaN), not a pass: NaN > 0 is False, so it
+        # neither ticks the box nor counts against the other ten comparators.
+        _ni_ps = pd.to_numeric(cdx_temp['netIncomePerShare'], errors='coerce')
+        _cx_ps = pd.to_numeric(cdx_temp['capexPerShare'], errors='coerce')
+        _prof = _ni_ps > 0
+        tempdf['CapExtoEarnings'] = (0.2 - (_cx_ps[_prof].abs()
+                                            / _ni_ps[_prof].abs()).head(n).mean())
         tempdf['TLtoEquity'] = 0.8 - (cdx_temp['totalLiabilities']/cdx_temp['totalStockholdersEquity']).head(n).mean()
         # Count ONLY the 11 criteria -- never moatScore itself, and never any column that
         # happens to be numeric.  NaN > 0 is False, so a non-computable criterion does not

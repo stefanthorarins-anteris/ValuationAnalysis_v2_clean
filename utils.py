@@ -1,8 +1,67 @@
 import pandas as pd
+import sys
 import createDicts as cdic
 import os
 import csv
 from datetime import datetime
+
+PRICE_BASIS_TOL = 0.15
+
+
+def check_panel_basis(dmdic, fname='<unknown>', verbose=True):
+    """Report whether a LOADED panel's price/Graham basis matches the current code.
+
+    Detects by measurement, not by filename: marketCap / (price * shares) is ~1.0 on a
+    panel built with the current ingest (price = marketCap/weightedAverageShsOut) and ~4.0
+    on any panel built before 2026-07-19 (the quarterly-PE derivation divided the price by
+    about four).  Returns 'new' | 'old' | 'unknown'.  Never raises and never blocks -- the
+    reload path is a legitimate developer workflow -- but it must not be SILENT.
+    """
+    basis, med, has_period = 'unknown', float('nan'), False
+    try:
+        cdx = dmdic.get('cdx_df')
+        has_period = 'period' in getattr(cdx, 'columns', [])
+        mc = pd.to_numeric(cdx['marketCap'], errors='coerce')
+        pr = pd.to_numeric(cdx['price'], errors='coerce')
+        sh = pd.to_numeric(cdx['weightedAverageShsOut'], errors='coerce')
+        r = (mc / (pr * sh)).replace([float('inf'), float('-inf')], pd.NA).dropna()
+        if len(r) >= 100:
+            med = float(r.median())
+            if abs(med - 1.0) <= PRICE_BASIS_TOL:
+                basis = 'new'
+            elif abs(med - 4.0) <= 4 * PRICE_BASIS_TOL:
+                basis = 'old'
+    except Exception:
+        pass
+    if not verbose:
+        return basis
+    if basis == 'new':
+        print('PANEL BASIS OK: %s carries the CURRENT price basis '
+              '(marketCap/(price*shares) median %.4f); `period` column %s.'
+              % (fname, med, 'present' if has_period else 'absent'), flush=True)
+        return basis
+    bar = '!' * 78
+    msg = [
+        '', bar,
+        '!!! LOADED PANEL BASIS MISMATCH -- OLD/NEW METRIC BASES WILL BE MIXED.',
+        '!!!   panel : ' + str(fname),
+        '!!!   marketCap/(price*shares) median = %s  (expect ~1.0 for the current basis,'
+        % ('%.4f' % med if med == med else 'n/a'),
+        '!!!           ~4.0 for a pre-2026-07-19 panel)   basis = %s' % basis,
+        '!!!   `period` column: %s' % ('present' if has_period else 'ABSENT -> frequency '
+                                       'falls back to date cadence'),
+        '!!! Consequence: Stage-1 scores this panel on the OLD price/Graham basis while',
+        '!!! Stage-2 applies the CURRENT per-quarter corrections to the same cdx_df.',
+        '!!! uGrahamNumberToPrice runs about 2x loose on an old panel (71.5% vs 38.9% pass).',
+        '!!! Any ranking or beat-rate from this run is a hybrid and is NOT comparable to a',
+        '!!! freshly-fetched one. Re-fetch for anything decisional.',
+        bar, '',
+    ]
+    out = chr(10).join(msg)
+    print(out, file=sys.stderr, flush=True)
+    print(out, flush=True)
+    return basis
+
 
 def loadWrapper(type,loaddic):
     if type == 'metric':

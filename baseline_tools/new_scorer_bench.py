@@ -502,7 +502,7 @@ def check2(panel, dmdic):
     for d in qdates:
         with contextlib.redirect_stdout(io.StringIO()):
             bm, cdx = s2.prepare_pit(dmdic, d, na1_only=False)
-            old_tops[d] = s2.stage2_top(s2.stage1_boscore(bm), cdx)
+            old_tops[d] = s2.stage2_top(s2.stage1_boscore(bm, cdx_pit=cdx), cdx)
 
     print(f"{'q0->q1':22s} {'THEORY':>7s} {'CLUST-CAP':>9s} {'OLD':>7s} {'FAST':>7s} {'CORE':>7s}")
     tch, cch2, och, fch, cch = [], [], [], [], []

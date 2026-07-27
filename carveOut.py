@@ -196,7 +196,7 @@ COHORT_WEIGHTS = {
         'grahamNumberToPrice': 0.25, 'bVpRatio': 0.75, 'tbVpRatio': 1.0, 'freeCashFlowYield': 1.5,
         'freeCashFlowPerShareGrowth': 0.5, 'revenueGrowth': 0.5, 'incomeQuality': 1.25,
         'grossProfitMargin': 0.25, 'Altman-Z': 1.0, 'Piotroski': 0.75, 'currentRatio': 0.75,
-        'DcfToPrice': 0.25, 'EPStoEPSmean': 1.0, 'CycleHeat': -1.5, 'priceGrowth': 0.25,
+        'DcfToPrice': 0, 'EPStoEPSmean': 1.0, 'CycleHeat': -1.5, 'priceGrowth': 0,
         'marketCapRevQuants': 0.25, 'BoScore': 0.1,
     },
     'REIT': {
@@ -204,7 +204,7 @@ COHORT_WEIGHTS = {
         'grahamNumberToPrice': 0, 'bVpRatio': 0.5, 'tbVpRatio': 0.5, 'freeCashFlowYield': 1.0,
         'freeCashFlowPerShareGrowth': 0.75, 'revenueGrowth': 1.0, 'incomeQuality': 1.25,
         'grossProfitMargin': 0, 'Altman-Z': 0, 'Piotroski': 0.25, 'currentRatio': 0,
-        'DcfToPrice': 0.25, 'EPStoEPSmean': 0, 'CycleHeat': -0.25, 'priceGrowth': 0.5,
+        'DcfToPrice': 0, 'EPStoEPSmean': 0, 'CycleHeat': -0.25, 'priceGrowth': 0,
         'marketCapRevQuants': 0.25, 'BoScore': 0.1,
     },
     FIN1_VEHICLE: {   # FIN-1 Investment Vehicles
@@ -212,7 +212,7 @@ COHORT_WEIGHTS = {
         'grahamNumberToPrice': 0, 'bVpRatio': 2.0, 'tbVpRatio': 1.0, 'freeCashFlowYield': 0,
         'freeCashFlowPerShareGrowth': 0, 'revenueGrowth': 0, 'incomeQuality': 0,
         'grossProfitMargin': 0, 'Altman-Z': 0, 'Piotroski': 0, 'currentRatio': 0,
-        'DcfToPrice': 0, 'EPStoEPSmean': 0, 'CycleHeat': 0, 'priceGrowth': 0.25,
+        'DcfToPrice': 0, 'EPStoEPSmean': 0, 'CycleHeat': 0, 'priceGrowth': 0,
         'marketCapRevQuants': 0, 'BoScore': 0.1,
     },
     FIN2_MANAGER: {   # FIN-2 Managers / Brokers / Platforms
@@ -220,7 +220,7 @@ COHORT_WEIGHTS = {
         'grahamNumberToPrice': 0.25, 'bVpRatio': 0.25, 'tbVpRatio': 0.25, 'freeCashFlowYield': 2.0,
         'freeCashFlowPerShareGrowth': 1.5, 'revenueGrowth': 1.5, 'incomeQuality': 1.0,
         'grossProfitMargin': 0, 'Altman-Z': 0.25, 'Piotroski': 0.5, 'currentRatio': 0.25,
-        'DcfToPrice': 0.35, 'EPStoEPSmean': 0.5, 'CycleHeat': -0.5, 'priceGrowth': 0.5,
+        'DcfToPrice': 0, 'EPStoEPSmean': 0.5, 'CycleHeat': -0.5, 'priceGrowth': 0,
         'marketCapRevQuants': 0.25, 'BoScore': 0.1,
     },
     FIN3_BALSHEET: {  # FIN-3 Balance-Sheet Financials (banks / lenders / insurers)
@@ -228,10 +228,44 @@ COHORT_WEIGHTS = {
         'grahamNumberToPrice': 0.75, 'bVpRatio': 1.5, 'tbVpRatio': 1.0, 'freeCashFlowYield': 0,
         'freeCashFlowPerShareGrowth': 0, 'revenueGrowth': 0.75, 'incomeQuality': 0.25,
         'grossProfitMargin': 0, 'Altman-Z': 0, 'Piotroski': 0.25, 'currentRatio': 0,
-        'DcfToPrice': 0, 'EPStoEPSmean': 1.0, 'CycleHeat': -1.0, 'priceGrowth': 0.5,
+        'DcfToPrice': 0, 'EPStoEPSmean': 1.0, 'CycleHeat': -1.0, 'priceGrowth': 0,
         'marketCapRevQuants': 0.25, 'BoScore': 0.1,
     },
 }
+
+# --- priceGrowth / DcfToPrice ZEROED IN EVERY COHORT (domain review S5, 2026-07-26) ---
+# Both were 0.000 in the GENERAL vector and NON-ZERO here -- priceGrowth 0.25 (Mining,
+# FIN-1) / 0.5 (REIT, FIN-2, FIN-3), DcfToPrice 0.25-0.35 in every cohort -- so the
+# stage2_metrics comments that justify leaving their known defects alone "because w=0.000"
+# were false on all five cohort paths.  What they were carrying:
+#   priceGrowth  the ONE Stage-2 metric with an acknowledged, UNCORRECTED semi-annual 2x
+#                LEVEL bias (a 6-month price move scored against a quarterly 3-month one);
+#                the window scaling cannot fix a level.
+#   DcfToPrice   computed from a LIVE DCF call using the CURRENT market price, while every
+#                other metric is as-of period end -- a basis mix inside the cohort score and
+#                the one channel that can import lookahead, which is exactly why the PIT
+#                reproduction drops it (stage2_pit.DROP_METRICS).
+# Zeroed rather than corrected: correcting priceGrowth needs a metric-definition decision
+# and DcfToPrice needs a point-in-time DCF that does not exist.
+#
+# --- COHORT VECTORS NORMALISED TO Sigma|w| = 1 (domain review S7, 2026-07-26) ---
+# The general vector sums to exactly 1.000; Mining summed to ~14.35, so cohort AggScores
+# were ~14x the general scale while shipping SIDE BY SIDE with general values in three CSV
+# families, against a presentation chip whose stated empirical range is general-only.
+# Normalising is RANK-INVARIANT within a cohort (dividing every weight by one positive
+# constant scales the score, never reorders it -- asserted in the proof), so this changes
+# no cohort's ordering and only puts the numbers on a comparable scale.
+def _normalise_cohort_weights(vectors):
+    out = {}
+    for label, vec in vectors.items():
+        tot = sum(abs(float(v)) for v in vec.values())
+        out[label] = ({k: float(v) / tot for k, v in vec.items()} if tot > 0
+                      else dict(vec))
+    return out
+
+
+COHORT_WEIGHTS_RAW = COHORT_WEIGHTS          # kept for provenance / A-B
+COHORT_WEIGHTS = _normalise_cohort_weights(COHORT_WEIGHTS)
 
 # --- market-cap band segmentation (ADDITIVE size axis over the GENERAL pool) ---
 # SINGLE SOURCE OF TRUTH for BOTH band SELECTION (partition_by_marketcap) and per-

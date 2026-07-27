@@ -39,6 +39,7 @@ import createDicts as cdic
 import calcScore as csf
 import postBoRank as pbr
 import stage2_metrics as sm
+import reporting_period as rp
 
 NA1_EXCHANGES = ["NYSE", "NASDAQ", "TSX"]
 DROP_METRICS = ["DcfToPrice"]  # not reconstructable PIT offline
@@ -72,11 +73,19 @@ def _stage2_metric_loop_offline(bstop, cdxtop, nq=16):
     cdxtop = cdxtop.copy()
     # pool-level marketCap quartile code (stage2_metrics.add_mcap_quants)
     cdxtop["mcapQuants"] = sm.add_mcap_quants(cdxtop)
+    # PER-SOURCE REPORTING FREQUENCY -- LOCKSTEP with postBoRank.postBoScoreRanking
+    # (review H4, 2026-07-25).  Without this the PIT reproduction inherited the new
+    # DEFAULTS (Altman full-year sums, Graham EPS_ttm) but NOT the rpy branching, so it
+    # was a HYBRID: neither the old nor the new scorer, and non-comparable to live for
+    # the 14.4% of names that report semi-annually -- on the very path that produces the
+    # charter PRIMARY >=60% beat-rate criterion.
+    freq_map = rp.frequency_by_source(cdxtop)
 
     for ticker in bstop["source"]:
         tempcdx = cdxtop.loc[cdxtop["source"] == ticker]
         if tempcdx.empty:
             continue
+        _rpy = rp.rows_per_year(freq_map, ticker)
         tempfcf = tempcdx.freeCashFlow
         tempshares = tempcdx.weightedAverageShsOut
         tempmcapQuants = tempcdx.mcapQuants.iloc[0]
@@ -86,20 +95,22 @@ def _stage2_metric_loop_offline(bstop, cdxtop, nq=16):
 
         # ---- postBmRankingDict metrics ----
         for key1 in postBm:
-            setv(key1, sm.postbm_metric(key1, postBm[key1]["eqMet"], tempcdx, nq))
+            setv(key1, sm.postbm_metric(key1, postBm[key1]["eqMet"], tempcdx, nq,
+                                        rpy=_rpy))
 
         # ---- postNewRankingDict metrics (shared with production via stage2_metrics) ----
-        setv("freeCashFlowYield", sm.free_cash_flow_yield(tempfcf, tempcdx.marketCap, nq))
+        setv("freeCashFlowYield", sm.free_cash_flow_yield(tempfcf, tempcdx.marketCap,
+                                                         nq, rpy=_rpy))
         setv("freeCashFlowPerShareGrowth",
-             sm.free_cash_flow_per_share_growth(tempfcf, tempshares, nq))
+             sm.free_cash_flow_per_share_growth(tempfcf, tempshares, nq, rpy=_rpy))
         # DcfToPrice: DROPPED offline (no point-in-time DCF; weight 0 in the live vector)
         setv("marketCapRevQuants", tempmcapQuants)
-        setv("tbVpRatio", sm.tbv_p_ratio(tempcdx, nq))
+        setv("tbVpRatio", sm.tbv_p_ratio(tempcdx, nq, rpy=_rpy))
         setv("BoScore", float(bstop.loc[bstop["source"] == ticker, "score"].iloc[0]))
-        setv("EPStoEPSmean", sm.eps_to_eps_mean(tempcdx))
-        setv("priceGrowth", sm.price_growth(tempcdx, nq))
-        setv("Altman-Z", sm.altman_z(tempcdx))
-        setv("Piotroski", sm.piotroski(tempcdx))
+        setv("EPStoEPSmean", sm.eps_to_eps_mean(tempcdx, rpy=_rpy))
+        setv("priceGrowth", sm.price_growth(tempcdx, nq, rpy=_rpy))
+        setv("Altman-Z", sm.altman_z(tempcdx, rpy=_rpy))
+        setv("Piotroski", sm.piotroski(tempcdx, rpy=_rpy))
         # CycleHeat: the SAME shared function the live scorer uses.  Its canonical
         # EPS prep (stage2_metrics.prepare_eps_series) collapses duplicate-dated
         # (restated) quarters to the last-ingested figure, so the live and offline
@@ -189,7 +200,10 @@ def reproduce_pit_top(dmdic, D, na1_only=True, nq_stage1=8, nq_stage2=16,
     # ---- Stage-1: BoScore (production function, offline) ----
     meandic = csf.getAves2(bm_pit)
     bmav, bmda = meandic["BoMetric_ave"], meandic["BoMetric_dateAve"]
-    BoScore_df = csf.simpleScore_fromDict(bm_pit, bmav, bmda, nq_stage1)
+    # LOCKSTEP with live postBo: Stage-1 frequency comes from cdx (the `period` carrier),
+    # never from BoMetric_df (review S3).
+    BoScore_df = csf.simpleScore_fromDict(bm_pit, bmav, bmda, nq_stage1,
+                                         freq_map=rp.frequency_by_source(cdx_pit))
     if boscore_noise > 0:
         BoScore_df = BoScore_df.copy()
         BoScore_df["score"] = (BoScore_df["score"].astype(float)
@@ -269,11 +283,21 @@ def prepare_pit(dmdic, D, na1_only=True):
     return _sort_newest_first(bm[bm["date"] <= D]), _sort_newest_first(cdx[cdx["date"] <= D])
 
 
-def stage1_boscore(bm_pit, nq_stage1=8):
-    """Stage-1 BoScore over the full PIT universe (the EXPENSIVE step; cache it)."""
+def stage1_boscore(bm_pit, nq_stage1=8, cdx_pit=None):
+    """Stage-1 BoScore over the full PIT universe (the EXPENSIVE step; cache it).
+
+    cdx_pit: pass it so Stage-1 reads the `period`-derived frequency map, in LOCKSTEP
+    with live postBo (review S3).  Omitting it falls back to cadence on bm_pit, which is
+    the pre-2026-07-26 behaviour and is flagged rather than silent."""
     meandic = csf.getAves2(bm_pit)
+    if cdx_pit is None:
+        print("stage1_boscore: no cdx_pit passed -- Stage-1 frequency falls back to "
+              "BoMetric cadence, NOT the authoritative `period` field (review S3).",
+              flush=True)
     bs = csf.simpleScore_fromDict(bm_pit, meandic["BoMetric_ave"],
-                                  meandic["BoMetric_dateAve"], nq_stage1)
+                                  meandic["BoMetric_dateAve"], nq_stage1,
+                                  freq_map=(rp.frequency_by_source(cdx_pit)
+                                            if cdx_pit is not None else None))
     return bs.sort_values("score", ascending=False).reset_index(drop=True)
 
 

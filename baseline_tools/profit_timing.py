@@ -35,9 +35,9 @@ def run(D="2021-12-31", D1="2022-12-31", D3="2024-12-31"):
 
     with contextlib.redirect_stdout(io.StringIO()):
         bm0, cdx0 = s2.prepare_pit(dmdic, D, na1_only=False)
-        top0 = s2.stage2_top(s2.stage1_boscore(bm0), cdx0)
+        top0 = s2.stage2_top(s2.stage1_boscore(bm0, cdx_pit=cdx0), cdx0)
         bm1, cdx1 = s2.prepare_pit(dmdic, D1, na1_only=False)
-        top1 = s2.stage2_top(s2.stage1_boscore(bm1), cdx1)
+        top1 = s2.stage2_top(s2.stage1_boscore(bm1, cdx_pit=cdx1), cdx1)
 
     exiters = [s for s in top0 if s not in set(top1)]
     stayers = [s for s in top0 if s in set(top1)]

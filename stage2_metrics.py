@@ -31,6 +31,29 @@ caller's frames.
 import numpy as np
 import pandas as pd
 
+import reporting_period as rp
+
+# Stage-2 metrics whose numerator is a per-period FLOW over a STOCK, so a semi-annual
+# filer reads ~2x a quarterly peer purely from its reporting convention (valuation-
+# specialist annualization ruling, 2026-07-25).  Every one of these is z-scored
+# cross-sectionally in normalizeAndDropNA, which is invariant to multiplying ALL rows by
+# one constant -- so only the SEMI-ANNUAL/QUARTERLY ratio matters and the correction is
+# expressed on a common PER-QUARTER basis (x1 quarterly = exact no-op, x0.5 semi-annual).
+# NOT corrected, per the same ruling: flow/flow ratios (grossProfitMargin,
+# netProfitMargin, incomeQuality) and stock/stock ratios (bVpRatio, tbVpRatio,
+# currentRatio) -- the scale cancels; grahamNumberToPrice (already corrected at ingest via
+# EPS_ttm, and it carries sqrt(2) not 2x, so re-correcting would overshoot); revenueGrowth
+# and freeCashFlowPerShareGrowth (handled by the YoY window); CycleHeat (self-normalised);
+# priceGrowth (a period SPAN, w=0.000).
+STAGE2_FLOW_OVER_STOCK = ('RoA', 'earnYield', 'returnOnEquity',
+                          'returnOnCapitalEmployed')
+
+# EVERY window below is written for QUARTERLY rows and scaled by `rpy` (rows per year:
+# 4 quarterly, 2 semi-annual -- reporting_period).  rpy defaults to 4 everywhere, so a
+# caller that passes nothing is BIT-IDENTICAL to the pre-2026-07-25 behaviour; only a
+# source classified semi-annual takes a different window.  The scaling is always
+# CALENDAR-equivalent: a 4-row YoY becomes 2 rows, a head(16) window becomes head(8).
+
 
 # --------------------------------------------------------------------------- #
 #  Pool-level helper                                                          #
@@ -108,39 +131,61 @@ def add_mcap_quants(cdxtop):
 # --------------------------------------------------------------------------- #
 #  postBmRankingDict metrics                                                  #
 # --------------------------------------------------------------------------- #
-def postbm_metric(key, met, tempcdx, nq):
+def postbm_metric(key, met, tempcdx, nq, rpy=rp.DEFAULT_ROWS_PER_YEAR):
     """One postBmRankingDict metric for a single ticker (postBoRank.py:205-219).
 
     grahamNumberToPrice / bVpRatio / revenueGrowth are special-cased; every
     other key is the head(nq) mean of its ``eqMet`` column.
+
+    `nq` is scaled to `rpy` so the averaging window spans the same CALENDAR time for a
+    semi-annual filer, and revenueGrowth's YoY shift is `rpy` rows (4 quarters OR 2
+    halves) instead of a hard-coded 4 -- on a semi-annual name a 4-row shift measured
+    TWO-year growth and called it annual.
     """
+    w = rp.scale_window(nq, rpy)
+    # Flow/stock keys are put on a common per-quarter basis; everything else is x1.0.
+    ff = rp.per_quarter_factor(rpy) if key in STAGE2_FLOW_OVER_STOCK else 1.0
     if key == "grahamNumberToPrice":
-        return (tempcdx["grahamNumber"] / tempcdx["price"]).head(nq).mean()
+        return (tempcdx["grahamNumber"] / tempcdx["price"]).head(w).mean()
     elif key == "bVpRatio":
-        return (1 / tempcdx[met]).head(nq).mean()
+        return (1 / tempcdx[met]).head(w).mean()
     elif key == "revenueGrowth":
-        return tempcdx[met].pct_change(-4, fill_method=None).head(nq).mean()
+        return tempcdx[met].pct_change(-int(rpy), fill_method=None).head(w).mean()
     else:
-        return tempcdx[met].head(nq).mean()
+        return tempcdx[met].head(w).mean() * ff
 
 
 # --------------------------------------------------------------------------- #
 #  postNewRankingDict metrics                                                 #
 # --------------------------------------------------------------------------- #
-def free_cash_flow_yield(tempfcf, tempmcap, nq):
-    """FCF / marketCap, head(nq) mean (postBoRank.py:234)."""
-    return (tempfcf / tempmcap).head(nq).mean()
+def free_cash_flow_yield(tempfcf, tempmcap, nq, rpy=rp.DEFAULT_ROWS_PER_YEAR):
+    """FCF / marketCap, head(nq) mean (postBoRank.py:234).
+
+    FLOW/STOCK: a semi-annual row's FCF is a 6-month flow over a point-in-time market
+    cap, so the per-row yield reads ~2x a quarterly peer's.  The value is z-scored
+    downstream, so the correction only needs to fix the SEMI-ANNUAL/QUARTERLY ratio and is
+    applied on a common per-quarter basis (x1 quarterly = no-op).  Ruling applied
+    2026-07-25; the previous note here said this was deferred."""
+    return ((tempfcf / tempmcap).head(rp.scale_window(nq, rpy)).mean()
+            * rp.per_quarter_factor(rpy))
 
 
-def free_cash_flow_per_share_growth(tempfcf, tempshares, nq):
-    """YoY (4-quarter) growth of FCF-per-share, head(nq) mean (postBoRank.py:240-242)."""
+def free_cash_flow_per_share_growth(tempfcf, tempshares, nq,
+                                    rpy=rp.DEFAULT_ROWS_PER_YEAR):
+    """YoY growth of FCF-per-share over `rpy` rows, head(nq) mean (postBoRank.py:240-242).
+
+    `rpy` rows back is one YEAR for either frequency; the hard-coded 4 was two years for
+    a semi-annual filer."""
     fcfps = tempfcf / tempshares
-    return fcfps.pct_change(-4, fill_method=None).head(nq).mean()
+    return (fcfps.pct_change(-int(rpy), fill_method=None)
+            .head(rp.scale_window(nq, rpy)).mean())
 
 
-def tbv_p_ratio(tempcdx, nq):
-    """Tangible book value per share / price, head(nq) mean (postBoRank.py:304-306)."""
-    return (tempcdx["tangibleBookValuePerShare"] / tempcdx["price"]).head(nq).mean()
+def tbv_p_ratio(tempcdx, nq, rpy=rp.DEFAULT_ROWS_PER_YEAR):
+    """Tangible book value per share / price, head(nq) mean (postBoRank.py:304-306).
+    Both inputs are point-in-time STOCKS, so only the averaging window scales."""
+    return (tempcdx["tangibleBookValuePerShare"] / tempcdx["price"]
+            ).head(rp.scale_window(nq, rpy)).mean()
 
 
 # Minimum |mean EPS| for the EPStoEPSmean denominator, as a FRACTION of the mean
@@ -150,7 +195,7 @@ def tbv_p_ratio(tempcdx, nq):
 EPS_MEAN_FLOOR_FRAC = 0.01
 
 
-def eps_to_eps_mean(tempcdx):
+def eps_to_eps_mean(tempcdx, rpy=rp.DEFAULT_ROWS_PER_YEAR):
     """Exponentially-weighted recent EPS vs its full-window mean, expressed as a
     FRACTION OF THAT MEAN (postBoRank.py:248-256).
 
@@ -179,24 +224,31 @@ def eps_to_eps_mean(tempcdx):
     epsmean = eps.mean()
     a = 0.4
     tw = a * (1 + (1 - a) + (1 - a) ** 2 + (1 - a) ** 3)
-    # The `len(eps) >= 4` guard is a no-op for the live top-100 pool (always >= 4
-    # quarters) but is load-bearing for the offline survivorship-clean reproduction,
-    # whose dead-merged universe includes short-history names -- without it the
-    # iloc[3] access below raises on a < 4-quarter name.
-    if len(eps) >= 4 and all(eps.iloc[0:4] > 0):
+    # POSITIVITY GATE over the most recent YEAR: `rpy` rows, not a hard-coded 4.  On a
+    # semi-annual filer 4 rows is TWO years, so the gate demanded two straight profitable
+    # years where a quarterly peer only had to show one.
+    # The length guard is a no-op for the live top-100 pool (always >= 4 rows) but is
+    # load-bearing for the offline survivorship-clean reproduction, whose dead-merged
+    # universe includes short-history names -- without it the indexed access below raises.
+    _ny = int(rpy)
+    if len(eps) >= max(4, _ny) and all(eps.iloc[0:_ny] > 0):
         den = abs(epsmean)
         scale = eps.abs().mean()
         if (not np.isfinite(den) or not np.isfinite(scale)
                 or den <= EPS_MEAN_FLOOR_FRAC * scale):
             return np.nan
-        raw = epsmean - (a / tw) * (eps.iloc[0] + eps.iloc[1] * (1 - a) +
-                                    eps.iloc[2] * (1 - a) ** 2 +
-                                    eps.iloc[3] * (1 - a) ** 3)
+        # The exponential weighting spans the most recent YEAR: `rpy` terms with
+        # geometric weights (1-a)^k, renormalised by their own sum so the weights still
+        # total 1 whatever rpy is.  With rpy=4 `tw` and the four terms are unchanged, so a
+        # quarterly name is bit-identical.
+        _w = [(1 - a) ** k for k in range(_ny)]
+        _tw = a * sum(_w)
+        raw = epsmean - (a / _tw) * sum(eps.iloc[k] * _w[k] for k in range(_ny))
         return raw / den
     return np.nan
 
 
-def price_growth(tempcdx, nq):
+def price_growth(tempcdx, nq, rpy=rp.DEFAULT_ROWS_PER_YEAR):
     """Per-period price appreciation, head(nq) mean (postBoRank.py:411-428).
 
     cdx is NEWEST-first, so pct_change(-1) = (newer - older)/older is POSITIVE
@@ -204,16 +256,46 @@ def price_growth(tempcdx, nq):
     lockstep here and offline).  NaN when the price column is missing/empty.
     """
     if "price" in tempcdx.columns and not tempcdx["price"].empty:
-        return tempcdx["price"].pct_change(-1, fill_method=None).head(nq).mean()
+        # pct_change(-1) is ONE REPORTING PERIOD, which is already frequency-relative --
+        # it needs no rescaling. Only the averaging window does, so the mean covers the
+        # same calendar span for both frequencies. (A semi-annual name's per-period price
+        # change is a 6-month move vs a quarterly name's 3-month one -- a LEVEL
+        # difference the window cannot fix; priceGrowth is w=0.000 so nothing rests on
+        # it, but it is noted with freeCashFlowYield in the report.)
+        return (tempcdx["price"].pct_change(-1, fill_method=None)
+                .head(rp.scale_window(nq, rpy)).mean())
     return np.nan
 
 
-def altman_z(tempcdx):
+def altman_z(tempcdx, rpy=rp.DEFAULT_ROWS_PER_YEAR):
     """Altman-Z from fundamentals, most-recent row (postBoRank.py:310-349).
 
     Z = 1.2*x1 + 1.4*x2 + 3.3*x3 + 0.6*x4 + 1.0*x5.  NaN when unusable.
+
+    x3 (EBIT/TA) and x5 (Sales/TA) are FULL-YEAR flows in the published model, and are
+    now computed as TRAILING FULL-YEAR SUMS over `rpy` rows (valuation-specialist
+    annualization ruling, 2026-07-25).  They used to take a SINGLE period's
+    operatingIncome and revenue against total assets, which (a) put both terms at ~1/4
+    of their intended magnitude -- the audit's 1/4-scale defect, which is why the mcap
+    term x4 dominated Z -- and (b) exposed them to the quarter's seasonality.  Summing
+    the trailing year fixes both at once, and does so for BOTH frequencies (4 quarters or
+    2 halves).  x1 / x2 / x4 are STOCK/STOCK and are untouched.
+
+    NOTE this is NOT a no-op for quarterly names: x3 and x5 grow ~4x, so Z rises (median
+    4.369 -> 5.303 on the shipped top-100).  It does NOT make the published 1.8/3.0
+    distress bands usable -- an earlier version of this comment claimed that, wrongly.
+    Those bands are DELIBERATELY UNUSED here: the display is VERDICT_GRAY with no tick and
+    the R3 Z-limb was removed, precisely because this quantity is not the published Z.  It
+    is still ~one term: independently re-derived under the annualized code, 0.6*x4
+    (marketCap/totalLiabilities) is 66.5% of mean |contribution| and correlates +0.997 with
+    Z.  The value of the fix is that the flow terms are now sign-correct and
+    seasonality-free, not that Z became interpretable.
+    Altman's absolute coefficients are why a genuine
+    full-year sum is required here rather than the per-quarter normalisation used for the
+    z-scored metrics.
     """
     try:
+        n = int(rpy)
         if len(tempcdx) >= 1:
             curr = tempcdx.iloc[0]
             ta = curr["totalAssets"]
@@ -221,22 +303,31 @@ def altman_z(tempcdx):
             if ta > 0 and tl > 0:
                 x1 = (curr["totalCurrentAssets"] - curr["totalCurrentLiabilities"]) / ta
                 x2 = curr["totalStockholdersEquity"] / ta
-                x3 = curr["operatingIncome"] / ta
+                # Trailing full-year flow sums (newest-first frame -> head(n)).  NaN when
+                # the year is incomplete, so a short history yields NaN rather than a
+                # silently part-year Z.
+                if len(tempcdx) < n:
+                    return np.nan
+                _oi = pd.to_numeric(tempcdx["operatingIncome"], errors="coerce").head(n)
+                _rev = pd.to_numeric(tempcdx["revenue"], errors="coerce").head(n)
+                if _oi.isna().any() or _rev.isna().any():
+                    return np.nan
+                x3 = _oi.sum() / ta
                 x4 = curr["marketCap"] / tl
-                x5 = curr["revenue"] / ta
+                x5 = _rev.sum() / ta
                 return 1.2 * x1 + 1.4 * x2 + 3.3 * x3 + 0.6 * x4 + 1.0 * x5
         return np.nan
     except Exception:
         return np.nan
 
 
-#  Piotroski's prior-period row: 4 quarters back = the SAME quarter one year
-#  earlier.  tempcdx is NEWEST-FIRST (postBoRank._sort_cdx_newest_first), so row 4
-#  is one year older than row 0.
-_PIOTROSKI_YOY_LAG = 4
+#  Piotroski's prior-period row is ONE YEAR back, which is `rpy` rows: 4 for a quarterly
+#  filer, 2 for a semi-annual one.  tempcdx is NEWEST-FIRST
+#  (postBoRank._sort_cdx_newest_first), so row `rpy` is one year older than row 0.
+_PIOTROSKI_YOY_LAG = 4          # quarterly default; see piotroski(rpy=...)
 
 
-def piotroski(tempcdx):
+def piotroski(tempcdx, rpy=rp.DEFAULT_ROWS_PER_YEAR):
     """Piotroski F-score (9 binary criteria) from fundamentals, current vs the
     SAME QUARTER ONE YEAR EARLIER (postBoRank.py:353-402).  NaN when unusable.
 
@@ -250,16 +341,13 @@ def piotroski(tempcdx):
     the pool crosses the >=7 / <7 "strong F-score" line, so this is a material
     re-ordering, not a rounding difference.
 
-    SEMI-ANNUAL REPORTERS (accepted limitation, audit C-1): FMP labels H1/H2 as
-    Q2/Q4, so a semi-annual filer has only 2 rows per year and iloc[4] is TWO
-    years back for them, not one.  That is still a like-for-like SAME-HALF
-    comparison (H1 vs H1) and therefore strictly better than the seasonal
-    QoQ/HoH it replaces; it cannot be resolved properly until the `period` field
-    is captured at ingest (fix 14) and the lag can be chosen per reporting
-    frequency.  Revisit this lag once `period` is available.
+    SEMI-ANNUAL REPORTERS -- RESOLVED (2026-07-25).  FMP labels H1/H2 as Q2/Q4, so a
+    semi-annual filer has 2 rows per year and a fixed lag of 4 compared against TWO
+    years ago.  The lag is now `rpy` (reporting_period), so a semi-annual name compares
+    H1 against the PRIOR YEAR'S H1 and a quarterly name is unchanged at 4.
     """
     try:
-        lag = _PIOTROSKI_YOY_LAG
+        lag = int(rpy)
         if len(tempcdx) >= lag + 1:
             curr = tempcdx.iloc[0]     # Most recent quarter
             prev = tempcdx.iloc[lag]   # Same quarter one year earlier (4 rows older)

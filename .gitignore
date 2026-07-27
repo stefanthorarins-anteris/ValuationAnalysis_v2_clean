@@ -50,3 +50,12 @@ Thumbs.db
 RawMetricsTop100*.csv
 CohortMetricStats*.csv
 SideList_*.csv
+MarketCapBand_*.csv
+
+# ---- Run-emitted AUDIT CSVs (2026-07-25) ----
+# Dated, regenerated every run, and they name universe members -- same class as the
+# result artifacts above, so the same rule: never commit. They were untracked but NOT
+# ignored, so a `git add -A` would have swept them in (review R-N5).
+ExcludedShareClasses_*.csv
+CurrencyFloorFlips_*.csv
+ReportingFrequencyConflicts_*.csv

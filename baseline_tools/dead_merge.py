@@ -63,6 +63,7 @@ import pandas as pd
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import calcMetrics as cm
+import reporting_period as rp
 import createDicts as cdic
 import getData_gen as gdg
 import utils as utils
@@ -111,7 +112,7 @@ def _build_entity_frames(entity, source, cdx_cols, bm_cols, n=1):
     entity : the dead-pickle value dict with 'km','fr','inc','bs','cf' DataFrames.
     source : the entity_id to stamp as `source` (join key).
     Mirrors the production per-ticker body EXACTLY (initTempMets -> fillPreReqdf ->
-    calc loop -> tail(4) trim), calling the real calcMetrics/createDicts functions.
+    calc loop -> tail(rpy) trim), calling the real calcMetrics/createDicts functions.
     Returns (None, None) if the price gate (checkIfValidFS) fails, as production does.
     NOTE: the inf->NaN scrub (fixAfterGetData/forceNumOnDf) is applied ONCE on the
     concatenated frames in dead_to_scoring_frames, exactly as production applies it
@@ -147,6 +148,16 @@ def _build_entity_frames(entity, source, cdx_cols, bm_cols, n=1):
 
     tempdf = pd.DataFrame()
     tempdf["date"] = tempfund["date"]
+    # LOCKSTEP with the live ingest (review H4, 2026-07-25): this loop is a copy of
+    # getData_fmp's Stage-1 metric construction, so it must carry the SAME per-source
+    # rows-per-year branching and the SAME Stage-1 flow-scale correction.  Without them
+    # the dead-merged panel was a HYBRID and the PIT beat-rate it feeds was
+    # non-comparable to live for every semi-annual name.
+    # READ the one classification stamped by the live fillPreReqdf (review item 9) --
+    # never re-derive it from the already-SNAPPED date column.
+    _rpy = rp.rows_per_year(
+        tempfund[rp.FREQ_COLUMN].iloc[0] if rp.FREQ_COLUMN in tempfund.columns
+        else rp.UNKNOWN)
     ratioOpCalcDicts = {**BoMetric_base_dict, **BoMetric_mean_dict,
                         **BoMetric_unity_dict, **BoMetric_diff_dict}
     for key in ratioOpCalcDicts:
@@ -154,6 +165,9 @@ def _build_entity_frames(entity, source, cdx_cols, bm_cols, n=1):
         strUp = ratioOpCalcDicts[key]["Upper"]
         strDn = ratioOpCalcDicts[key]["Lower"]
         tf = cm.calc_simpleRatio(tempfund, strUp, strDn)
+        _ff = rp.stage1_flow_factor(key, _rpy)
+        if _ff != 1.0:
+            tf = [(v * _ff) if v is not None else v for v in tf]
         if key in BoMetric_base_dict:
             tempMetric_df[restr] = tf
         if key in BoMetric_mean_dict:
@@ -162,12 +176,12 @@ def _build_entity_frames(entity, source, cdx_cols, bm_cols, n=1):
             tempMetric_df["u" + restr[0].upper() + restr[1:]] = tf
         if key in BoMetric_diff_dict:
             tempdf["forDiff"] = tf
-            tf = cm.calc_diff(tempdf, "forDiff", n)
+            tf = cm.calc_diff(tempdf, "forDiff", n, rpy=_rpy)
             tempMetric_df["d" + restr[0].upper() + restr[1:]] = tf
     for key1 in BoMetric_special_dict.keys():
-        tempMetric_df[key1] = cm.calc_special(tempfund, key1, n)
+        tempMetric_df[key1] = cm.calc_special(tempfund, key1, n, rpy=_rpy)
 
-    tempMetric_df_trimmed = tempMetric_df.drop(tempMetric_df.tail(4).index)
+    tempMetric_df_trimmed = tempMetric_df.drop(tempMetric_df.tail(_rpy).index)
     return tempfund, tempMetric_df_trimmed
 
 
@@ -295,6 +309,24 @@ def dead_to_scoring_frames(dead, registry, cdx_cols, bm_cols,
     bm_dead = (pd.concat(bm_parts, ignore_index=True)
                if bm_parts else pd.DataFrame(columns=bm_cols))
 
+    # CONFORM TO THE LIVE SCHEMA EXACTLY (ship-gate, 2026-07-27).  `cdx_cols`/`bm_cols` are
+    # the schema TEMPLATE this function's contract promises to reproduce, but the frames are
+    # built by calling the LIVE fillPreReqdf, which now stamps derived columns the template
+    # may not have (`reportingFrequency`, `periodEndDate`, `grahamUndefinedReason`).  Without
+    # reindexing, a merge against an OLDER live panel produced a frame with columns present
+    # on the dead rows and absent on the live ones -- precisely the generation-mixing the
+    # merge-content gate below refuses.  Reindex, and REPORT the difference rather than
+    # silently dropping it, so a genuinely new live column shows up as a schema drift signal.
+    _extra_cdx = [c for c in cdx_dead.columns if c not in cdx_cols]
+    _extra_bm = [c for c in bm_dead.columns if c not in bm_cols]
+    if _extra_cdx or _extra_bm:
+        print('dead_merge: conforming dead frames to the live schema -- dropping columns the '
+              'live template does not have (cdx: %s ; bm: %s). If the LIVE panel is current '
+              'these should be empty; a non-empty list means the panel predates the live '
+              'ingest.' % (_extra_cdx, _extra_bm), flush=True)
+    cdx_dead = cdx_dead.reindex(columns=cdx_cols)
+    bm_dead = bm_dead.reindex(columns=bm_cols)
+
     # INF->NaN parity with the live pipeline: run BOTH frames through the SAME
     # post-ingest fixup production applies once (getData_fmp.py:146).  Guards the
     # Stage-1 pool median against a zero-denominator inf in a distressed dead name.
@@ -351,6 +383,81 @@ def merge_dead_into_dmdic(dmdic, dead, registry, as_of=None,
     new = dict(dmdic)  # shallow copy of the container
     new["cdx_df"] = pd.concat([dmdic["cdx_df"], cdx_dead], ignore_index=True)
     new["BoMetric_df"] = pd.concat([dmdic["BoMetric_df"], bm_dead], ignore_index=True)
+
+    # MERGE-CONTENT GATE (ship-gate item 2, 2026-07-27).
+    # The Stage-1 schema gate checks column PRESENCE; a merge can satisfy it and still be
+    # scored-but-wrong, because the dead side is built by TODAY's code and the live side by
+    # whatever built the panel.  Two measured cases on a real merge:
+    #   * `CFOlessEarnings` (Tier S, w=1.0) 100.00% NaN on LIVE rows and 3.60% on dead --
+    #     the column exists, so presence passes, and every live name fails a top-weight
+    #     criterion on missing data;
+    #   * `dAssetsToLongTermLiabilities` live rows hold the OLD quantity (totalAssets/LTD)
+    #     scored with the NEW Sign=-1, i.e. the sign is inverted against the data.
+    # So the check has to be on CONTENT, per column, per side of the merge -- the same shape
+    # as the price-basis refusal, which is why it reuses that posture: refuse by default,
+    # explicit override to proceed.
+    # SCOPE = the ACTUAL Stage-1 criterion columns, derived from the same criterion dicts
+    # calcScore's schema gate uses -- NOT every column in the frame.  Scanning all columns
+    # made the gate over-broad and its message untrue: it refused a merge on
+    # `uIncomeQuality`, a criterion RETIRED on 2026-07-26 (replaced by `CFOlessEarnings`),
+    # which lingers in older panels and is read by nothing.  A retired column cannot cause
+    # a scoring error, so refusing on it blocks a valid merge; only a column the scorer
+    # actually reads can make the merged panel scored-wrong.  (Found by
+    # test_skill_baseline::test_integration_determinism_and_ordering, 2026-07-27.)
+    _b, _m, _d, _u, _s = cdic.getBaseMeanDiffUnitySpecialDicts()
+    _crit_cols = set(
+        list(_b)
+        + ['m' + k[0].upper() + k[1:] for k in _m]
+        + ['d' + k[0].upper() + k[1:] for k in _d]
+        + ['u' + k[0].upper() + k[1:] for k in _u]
+        + list(_s))
+    _live_src = set(dmdic["BoMetric_df"]["source"].dropna().unique())
+    _dead_src = set(bm_dead["source"].dropna().unique()) if len(bm_dead) else set()
+    _bad = []
+    if _dead_src:
+        _bmm = new["BoMetric_df"]
+        _is_live = _bmm["source"].isin(_live_src)
+        _is_dead = _bmm["source"].isin(_dead_src)
+        for _c in _bmm.columns:
+            if _c in ("source", "date") or _c not in _crit_cols:
+                continue
+            _lv = pd.to_numeric(_bmm.loc[_is_live, _c], errors="coerce")
+            _dv = pd.to_numeric(_bmm.loc[_is_dead, _c], errors="coerce")
+            if len(_lv) == 0 or len(_dv) == 0:
+                continue
+            _lnan, _dnan = _lv.isna().mean(), _dv.isna().mean()
+            # "present but empty on ONE side only" == the two sides were built by
+            # different generations of the metric set.
+            if _lnan > 0.99 and _dnan < 0.50:
+                _bad.append((_c, "live %.2f%% NaN vs dead %.2f%% NaN" % (100 * _lnan,
+                                                                        100 * _dnan)))
+            elif _dnan > 0.99 and _lnan < 0.50:
+                _bad.append((_c, "dead %.2f%% NaN vs live %.2f%% NaN" % (100 * _dnan,
+                                                                        100 * _lnan)))
+    if _bad:
+        _bar = "!" * 78
+        _msg = chr(10).join(
+            ["", _bar,
+             "!!! DEAD/LIVE MERGE CONTENT MISMATCH -- THE MERGED PANEL WOULD BE SCORED WRONG.",
+             "!!! %d Stage-1 column(s) are populated on ONE side of the merge only, i.e. the"
+             % len(_bad),
+             "!!! live panel and the dead frames were built by DIFFERENT generations of the",
+             "!!! metric set. Column presence passes; the CONTENT does not:"]
+            + ["!!!   %-34s %s" % (c, why) for c, why in _bad[:12]]
+            + ["!!! A Tier-S w=1.0 criterion that is all-NaN on the live side fails every live",
+               "!!! name on missing data, and a renamed/inverted metric scores the OLD quantity",
+               "!!! with the NEW sign. FIX: re-fetch the live panel with the current code.",
+               _bar, ""])
+        print(_msg, file=sys.stderr, flush=True)
+        print(_msg, flush=True)
+        if not os.environ.get("ALLOW_MERGE_CONTENT_MISMATCH"):
+            raise SystemExit(
+                "REFUSING to return a dead/live merged panel whose Stage-1 columns are "
+                "populated on one side only (%d column(s): %s). Re-fetch the live panel, or "
+                "set ALLOW_MERGE_CONTENT_MISMATCH=1 to proceed on a known-invalid basis."
+                % (len(_bad), ", ".join(c for c, _ in _bad[:6])))
+        print("ALLOW_MERGE_CONTENT_MISMATCH set: PROCEEDING on a known-invalid basis.",
+              flush=True)
     new["pit_universe"] = universe
 
     stats = dict(cdx_dead.attrs.get("build_stats", {}))

@@ -95,13 +95,19 @@ _short_history_eps_sources = set()
 
 
 def _guarded_eps_to_eps_mean(orig):
-    def wrapped(tempcdx):
+    # **kwargs is LOAD-BEARING (review R-N1, 2026-07-25): callers now pass rpy= (the
+    # per-source rows-per-year, reporting_period).  A fixed (tempcdx)-only signature made
+    # this guard -- the documented escape hatch for a stage2_metrics regression -- itself
+    # raise TypeError the moment it was enabled, i.e. it would have failed exactly when it
+    # was needed.  Forward everything through untouched so the wrapper stays transparent
+    # to any future signature change too.
+    def wrapped(tempcdx, *args, **kwargs):
         eps = tempcdx["netIncome"] / tempcdx["weightedAverageShsOut"]
         if len(eps) < 4:
             if "source" in getattr(tempcdx, "columns", []) and len(tempcdx):
                 _short_history_eps_sources.add(str(tempcdx["source"].iloc[0]))
             return 0
-        return orig(tempcdx)
+        return orig(tempcdx, *args, **kwargs)
     return wrapped
 
 
@@ -171,7 +177,13 @@ def window_sets(dmdic, merged, registry, buy, nq_stage1=8):
     D = pd.Timestamp(buy)
     universe = dm.pit_universe(dmdic, registry, as_of=buy)
     bm_pit = _pit_bm(merged, set(universe), D)
-    bo = s2.stage1_boscore(bm_pit, nq_stage1=nq_stage1)   # full ranked BoScore (public)
+    # cdx PIT slice passed so Stage-1 reads the `period`-derived frequency map, in
+    # LOCKSTEP with live postBo (review S3): cdx is the only frame that carries `period`.
+    _cdx_pit = merged['cdx_df']
+    _cdx_pit = _cdx_pit[_cdx_pit['source'].isin(set(universe))]
+    _cdx_pit = _cdx_pit[pd.to_datetime(_cdx_pit['date'], errors='coerce') <= D]
+    bo = s2.stage1_boscore(bm_pit, nq_stage1=nq_stage1,
+                           cdx_pit=_cdx_pit)   # full ranked BoScore (public)
     scored = bo["source"].tolist()
     rung_sets = {"universe": scored, "top200": scored[:200], "top100": scored[:100]}
 

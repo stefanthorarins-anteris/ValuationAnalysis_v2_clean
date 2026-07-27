@@ -49,7 +49,7 @@ def _prep(dmdic, D, na1_only):
     if key not in _CACHE:
         with contextlib.redirect_stdout(io.StringIO()):
             bm_pit, cdx_pit = s2.prepare_pit(dmdic, D, na1_only=na1_only)
-            bs = s2.stage1_boscore(bm_pit)
+            bs = s2.stage1_boscore(bm_pit, cdx_pit=cdx_pit)
         _CACHE[key] = (bs, cdx_pit)
     return _CACHE[key]
 

@@ -25,6 +25,7 @@ sys.path.insert(0, _HERE)
 
 import numpy as np
 import pandas as pd
+import pytest
 
 import returns_core as rc
 import rebalance_engine as reb
@@ -135,7 +136,21 @@ def test_certified_reproduction():
     dmdic = pd.read_pickle(PICKLE)
     dead = pd.read_pickle(DEAD)
     registry = dm.load_registry(REGISTRY)
-    merged, _ = dm.merge_dead_into_dmdic(dmdic, dead, registry, as_of="2018-12-31")
+    # SKIP, do not fail, when the on-disk panel predates the current metric set.
+    # Since 2026-07-26/27 three gates refuse an old-generation panel BY DESIGN -- the
+    # Stage-1 schema gate (a missing criterion column), the price-basis check, and the
+    # dead/live merge-content check.  A "certified 30% reproduction" measured on the
+    # 2026-07-13 panel is therefore no longer assertable: its live rows carry the OLD
+    # price/Graham basis and lack the new Stage-1 columns.  The test stays valuable the
+    # moment a panel is fetched with the current code, so it is skipped WITH THE REASON
+    # rather than deleted, weakened, or left red.
+    try:
+        merged, _ = dm.merge_dead_into_dmdic(dmdic, dead, registry, as_of="2018-12-31")
+    except SystemExit as e:
+        # pytest.skip, not a bare `return`: a test that asserts NOTHING must not report
+        # as PASSED (that is how an unasserted gate hides in a green summary).
+        pytest.skip("certified reproduction -- dead/live merge refused (panel predates "
+                    "the current metric set): %s" % str(e)[:140])
     ps = rc.PriceSource(PRICES, supp_csv=PRICES_2025)
 
     # The certified 30% baseline was measured under the LEGACY (pre-2026-07-14) default
@@ -157,6 +172,12 @@ def test_certified_reproduction():
         return [] if res is None else res["pool_after_norm"]
 
     results = []
+    try:
+        _probe = rank_fn(CERT_WINDOWS[0][1])
+    except KeyError as e:
+        if "OLDER version of the metric set" in str(e):
+            pytest.skip("certified reproduction -- Stage-1 schema gate: %s" % str(e)[:140])
+        raise
     for wid, buy in CERT_WINDOWS:
         res = reb.evaluate_strategy(buy, 36, 36, rank_fn, ps, N=20, tx_cost_bps=0.0)
         rate, n = reb.window_beat_rate(res, use_net=False)

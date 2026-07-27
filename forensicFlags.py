@@ -38,6 +38,7 @@ import pandas as pd
 
 from detectManipulation import (invrollsumTTM, _toNewestFirst,
                                 C_FLAG_CUTOFF, C_FLAG_COLS)
+import reporting_period as rp
 
 # --- Beneish component decomposition constants -------------------------------
 # Coefficients as used in detectManipulation.calcBeneishM (the +1.78 shift there
@@ -53,12 +54,15 @@ M_COEF = {'DSRI': 0.92, 'GMI': 0.528, 'AQI': 0.404, 'SGI': 0.892,
           'DEPI': 0.115, 'SGAI': -0.172, 'LVGI': -0.327, 'TATA': 4.679}
 M_NEUTRAL = {'DSRI': 1.0, 'GMI': 1.0, 'AQI': 1.0, 'SGI': 1.0,
              'DEPI': 1.0, 'SGAI': 1.0, 'LVGI': 1.0, 'TATA': 0.0}
-M_WINDOW = 4  # matches SLmeanMscore = M_Score.head(4).mean()
+# Quarterly defaults; both are scaled per source by rp.scale_window(.., rpy) so they
+# cover the same CALENDAR span for a semi-annual filer (2 rows / 1 row) and match the
+# window detectManipulation actually averaged over.
+M_WINDOW = 4  # matches SLmeanMscore = M_Score.head(scale_window(4, rpy)).mean()
 
 # Montier C-score red flags (each column > 0 counts one flag per period in
 # calcMontierC, and C_Score_mean averages those per-period counts over head(2)).
 C_FLAGS = C_FLAG_COLS          # imported: ONE definition of the six flag columns
-C_WINDOW = 2  # matches SLmeanCscore = C_Score.head(2).mean()
+C_WINDOW = 2  # matches SLmeanCscore = C_Score.head(scale_window(2, rpy, min=1)).mean()
 # THE surface-for-review flag is C >= C_FLAG_CUTOFF (a review flag, not an auto-drop,
 # so higher sensitivity is intended).  The cutoff is now IMPORTED from
 # detectManipulation, which is also what its own problemlist_Cscore uses -- previously
@@ -134,7 +138,7 @@ def _summary_tag(is_fin, m_finite, c_finite, m_flag, c_flag, sloan_flag):
     return 'multi-flag: concern'
 
 
-def computeSloanAccruals(cdx_df, symblist):
+def computeSloanAccruals(cdx_df, symblist, freq_map=None):
     """Standalone Sloan accruals = (NI_ttm - CFO_ttm) / avg(TotalAssets).
 
     NI/CFO are TTM flows (trailing-4-quarter sums); TotalAssets is a stock, so the
@@ -145,21 +149,28 @@ def computeSloanAccruals(cdx_df, symblist):
     The upstream cdx_df is oldest-first and is left untouched. Higher (more positive)
     = more accruals = lower earnings quality. Returns DataFrame[source, sloanAccruals]."""
     out = pd.DataFrame({'source': symblist})
+    if freq_map is None:
+        freq_map = rp.frequency_by_source(cdx_df)
     vals = []
     for symb in symblist:
         sub = _toNewestFirst(cdx_df[cdx_df['source'] == symb])
-        if len(sub) < 5:
+        # `rpy` rows span one YEAR: the TTM flow sums, the beginning-of-window asset
+        # level, and the minimum history all follow the source's reporting frequency
+        # (4 quarters OR 2 halves).  A semi-annual filer previously had a 24-month
+        # 'TTM' numerator over a 24-month asset average -- both are now 12 months.
+        _rpy = rp.rows_per_year(freq_map, symb)
+        if len(sub) < _rpy + 1:
             vals.append(np.nan)
             continue
         ni = pd.to_numeric(sub['netIncome'], errors='coerce')
         cfo = pd.to_numeric(sub['netCashProvidedByOperatingActivities'], errors='coerce')
         ta = pd.to_numeric(sub['totalAssets'], errors='coerce')
-        ni_ttm = invrollsumTTM(ni)      # newest-first: iloc[0] = TTM ending at most recent Q
-        cfo_ttm = invrollsumTTM(cfo)
+        ni_ttm = invrollsumTTM(ni, _rpy)   # newest-first: iloc[0] = TTM to most recent period
+        cfo_ttm = invrollsumTTM(cfo, _rpy)
         ni_recent = ni_ttm.iloc[0]
         cfo_recent = cfo_ttm.iloc[0]
-        ta_end = ta.iloc[0]     # most recent
-        ta_begin = ta.iloc[4]   # 4 quarters earlier
+        ta_end = ta.iloc[0]        # most recent
+        ta_begin = ta.iloc[_rpy]   # one YEAR earlier (4 quarters or 2 halves)
         avg_ta = (ta_end + ta_begin) / 2.0
         if pd.isna(ni_recent) or pd.isna(cfo_recent) or pd.isna(avg_ta) or avg_ta == 0:
             vals.append(np.nan)
@@ -169,7 +180,7 @@ def computeSloanAccruals(cdx_df, symblist):
     return out
 
 
-def _mscore_drivers(mscore_df, symb):
+def _mscore_drivers(mscore_df, symb, rpy=rp.DEFAULT_ROWS_PER_YEAR):
     """String of Beneish components driving M upward for one symbol, sorted by
     contribution magnitude, e.g. 'TATA(+2.34, ratio>neut); LVGI(+0.05, ratio<neut)'.
     '' if none/insufficient.
@@ -183,7 +194,7 @@ def _mscore_drivers(mscore_df, symb):
     sub = mscore_df[mscore_df['symbol'] == symb]
     if sub.empty:
         return ''
-    window = sub.head(M_WINDOW)
+    window = sub.head(rp.scale_window(M_WINDOW, rpy))
     drivers = []
     for comp in M_COMPONENTS:
         if comp not in window.columns:
@@ -199,7 +210,7 @@ def _mscore_drivers(mscore_df, symb):
     return '; '.join(f'{c}(+{v:.2f}, {d})' for c, v, d in drivers)
 
 
-def _cscore_fired(cscore_df, symb):
+def _cscore_fired(cscore_df, symb, rpy=rp.DEFAULT_ROWS_PER_YEAR):
     """String of Montier red flags that fired for one symbol, e.g. 'NICFOdiv; TAgr'.
 
     Consistent with the C_Score it sits beside: calcMontierC counts, PER PERIOD, each
@@ -212,7 +223,7 @@ def _cscore_fired(cscore_df, symb):
     sub = cscore_df[cscore_df['symbol'] == symb]
     if sub.empty:
         return ''
-    window = sub.head(C_WINDOW)
+    window = sub.head(rp.scale_window(C_WINDOW, rpy, minimum=1))
     fired = []
     for flag in C_FLAGS:
         if flag not in window.columns:
@@ -260,7 +271,10 @@ def buildForensicFlagTable(resdic, topn, sector_fallback=None):
         print('WARNING: ' + msg)
     fallback = sector_fallback or {}
 
-    sloan = computeSloanAccruals(cdx_df, symblist)
+    # ONE frequency classification for the whole table (same source of truth as the
+    # Stage-2 scorer and detectManipulation, all derived from this cdx_df).
+    freq_map = rp.frequency_by_source(cdx_df)
+    sloan = computeSloanAccruals(cdx_df, symblist, freq_map)
     sloan_map = dict(zip(sloan['source'], sloan['sloanAccruals']))
 
     # Sloan worst-quintile threshold WITHIN the shortlist (financials -- from EITHER
@@ -282,14 +296,17 @@ def buildForensicFlagTable(resdic, topn, sector_fallback=None):
         m_mean = pd.to_numeric(m_row, errors='coerce').iloc[0] if len(m_row) else np.nan
         m_finite = pd.notna(m_mean) and not np.isinf(m_mean)
         m_flag = bool(m_finite and m_mean > 0)  # stored M > 0 == standard M > -1.78
-        m_drivers = _mscore_drivers(mscore_df, symb) if not mscore_df.empty else ''
+        _rpy = rp.rows_per_year(freq_map, symb)
+        m_drivers = (_mscore_drivers(mscore_df, symb, _rpy)
+                     if not mscore_df.empty else '')
 
         # C-score
         c_row = SLmeanCscore[SLmeanCscore['source'] == symb]['C_Score_mean']
         c_mean = pd.to_numeric(c_row, errors='coerce').iloc[0] if len(c_row) else np.nan
         c_finite = pd.notna(c_mean) and not np.isinf(c_mean)
         c_flag = bool(c_finite and c_mean >= C_FLAG_CUTOFF)  # THE flag: C >= 4
-        c_fired = _cscore_fired(cscore_df, symb) if not cscore_df.empty else ''
+        c_fired = (_cscore_fired(cscore_df, symb, _rpy)
+                   if not cscore_df.empty else '')
 
         # Sloan
         sloan_val = sloan_map.get(symb, np.nan)

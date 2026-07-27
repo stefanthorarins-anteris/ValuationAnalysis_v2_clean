@@ -215,10 +215,28 @@ _HAVE_DATA = all(os.path.exists(_P[k]) for k in ("pickle", "dead", "registry", "
 
 @pytest.mark.skipif(not _HAVE_DATA, reason="local pickle/dead/registry/prices absent")
 def test_integration_determinism_and_ordering():
-    dmdic, merged, registry, ps = sb.load_inputs(
-        _P["pickle"], _P["dead"], _P["registry"], _P["prices"], _P["prices_2025"])
+    # SKIP, do not fail, when the on-disk panel predates the current metric set -- the
+    # same posture as test_rebalance_engine::test_certified_reproduction.  Since
+    # 2026-07-26/27 the Stage-1 schema gate refuses a panel missing a criterion column
+    # (here `CFOlessEarnings`, which replaced the retired uIncomeQuality unity test) and
+    # the dead/live merge-content gate refuses a generation-mixed merge.  Both refusals
+    # are CORRECT on the 2026-07-13/17 panels; weakening either to keep this test green
+    # would defeat the gate it is tripping.  Skips with the reason, and starts asserting
+    # again the moment a panel is fetched with the current code.
+    try:
+        dmdic, merged, registry, ps = sb.load_inputs(
+            _P["pickle"], _P["dead"], _P["registry"], _P["prices"], _P["prices_2025"])
+    except SystemExit as e:
+        pytest.skip("dead/live merge refused -- panel predates the current metric "
+                    "set: %s" % str(e)[:160])
     kw = dict(cadence_months=36, pick_n=20, oracle_ns=(3, 20), n_draws=300, seed=0)
-    r1 = sb.run_skill_baseline(dmdic, merged, registry, ps, **kw)
+    try:
+        r1 = sb.run_skill_baseline(dmdic, merged, registry, ps, **kw)
+    except KeyError as e:
+        if "Stage-1 criterion column" not in str(e):
+            raise
+        pytest.skip("Stage-1 schema gate refused the panel (older metric set): %s"
+                    % str(e)[:160])
     r2 = sb.run_skill_baseline(dmdic, merged, registry, ps, **kw)
     # determinism: identical random samples for the same seed
     assert (r1["random"]["universe"]["beat_samples"]

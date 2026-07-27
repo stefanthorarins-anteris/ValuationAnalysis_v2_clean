@@ -100,6 +100,7 @@ def _pool_raw_fast(sources, cdx_df, nq=16):
     """
     import stage2_metrics as sm
     import createDicts as cdic
+    import reporting_period as rp
 
     postBm, _postNew = cdic.getPostDict()
     sub = cdx_df[cdx_df['source'].isin(set(sources))].copy()
@@ -107,17 +108,24 @@ def _pool_raw_fast(sources, cdx_df, nq=16):
         return pd.DataFrame(columns=['source'])
     sub['date'] = pd.to_datetime(sub['date'], errors='coerce')
     sub = sub.sort_values(['source', 'date'], ascending=[True, False])   # newest-first
+    # Period-aware, exactly as the live scorer: these are the RAW values the CEO reads
+    # beside the ranking, so they must be computed on the same windows that produced the
+    # score -- otherwise a semi-annual name's displayed metric would not match its own
+    # AggScore input.
+    freq_map = rp.frequency_by_source(sub)
     rows = []
     for src, t in sub.groupby('source', sort=False):
         r = {'source': src}
+        _rpy = rp.rows_per_year(freq_map, src)
         for k in _CI_BM_KEYS:
-            r[k] = sm.postbm_metric(k, postBm[k]['eqMet'], t, nq)
-        r['freeCashFlowYield'] = sm.free_cash_flow_yield(t.freeCashFlow, t.marketCap, nq)
+            r[k] = sm.postbm_metric(k, postBm[k]['eqMet'], t, nq, rpy=_rpy)
+        r['freeCashFlowYield'] = sm.free_cash_flow_yield(t.freeCashFlow, t.marketCap,
+                                                        nq, rpy=_rpy)
         r['freeCashFlowPerShareGrowth'] = sm.free_cash_flow_per_share_growth(
-            t.freeCashFlow, t.weightedAverageShsOut, nq)
-        r['tbVpRatio'] = sm.tbv_p_ratio(t, nq)
-        r['Altman-Z'] = sm.altman_z(t)
-        r['Piotroski'] = sm.piotroski(t)
+            t.freeCashFlow, t.weightedAverageShsOut, nq, rpy=_rpy)
+        r['tbVpRatio'] = sm.tbv_p_ratio(t, nq, rpy=_rpy)
+        r['Altman-Z'] = sm.altman_z(t, rpy=_rpy)
+        r['Piotroski'] = sm.piotroski(t, rpy=_rpy)
         r['CycleHeat'] = sm.cycleheat(t)
         rows.append(r)
     return pd.DataFrame(rows)
@@ -323,6 +331,90 @@ def build(dist_pools, top_rank_df, labels, top_raw_pool=None, with_percentiles=T
 # --------------------------------------------------------------------------- #
 #  moatScore merge helper                                                     #
 # --------------------------------------------------------------------------- #
+
+# --------------------------------------------------------------------------- #
+#  BASIS MARKER (review R-N4, 2026-07-25)                                     #
+# --------------------------------------------------------------------------- #
+# These CSVs carry the metric values EXACTLY as the scorer computed them: on the
+# source's own REPORTING PERIOD (a quarter, or a half for a semi-annual filer).  The HTML
+# presentation annualizes selected flow metrics for display, so the SAME column name can
+# show a different number in the two artifacts -- e.g. IMPP 0.02706 here vs 0.108243 in
+# the HTML (x4).  Neither is wrong; they are different bases, and until now nothing said
+# so, which is the whole defect: a reader comparing the two silently concludes one is
+# broken.
+#
+# Chosen fix: a `metric_basis` COLUMN appended to every row.  Picked over suffixing the
+# affected column names (`_perQ`) because (a) renaming columns breaks every existing
+# consumer of these CSVs and the backtest harness keys off the names, and (b) it would
+# require me to enumerate exactly which metrics the HTML annualizes -- and that file is
+# under concurrent edit by the presentation dev, so any list I hard-coded here could be
+# stale the moment I wrote it.  A single self-describing column is accurate regardless of
+# what the HTML does, and appending it (rather than inserting) leaves positional readers
+# untouched.  It is also the pattern already used for `band_selection` in the market-cap
+# band CSVs, so it is not a new convention.
+# PER-COLUMN bases (review S6 / domain N2, corrected 2026-07-26).  The first version of
+# this marker made ONE blanket claim -- "per-reporting-period, NOT annualized" -- over a
+# frame that carries THREE different bases, so it mislabelled the very columns it was added
+# to disambiguate.  What is actually true, column by column:
+#
+#   per-QUARTER-equivalent : the five flow/stock metrics are multiplied by
+#       per_quarter_factor(rpy), so EVERY source is on a common per-quarter basis -- a
+#       semi-annual filer's value is NOT per-half.
+#   trailing-FULL-YEAR     : Altman-Z's x3/x5 are trailing-year sums.
+#   annual YoY             : the growth metrics compare against one year earlier.
+#   per-period / unitless  : everything else (stocks, ratios of same-period flows, counts).
+#
+# The HTML presentation annualizes selected flow metrics for display, so a column here can
+# differ from the same-named column there by ~4x.  Emitted as a `metric_basis` LEGEND ROW
+# rather than as a per-row column: one row per artifact, keyed by column name, so it stays
+# accurate as columns change and costs one row instead of one wide column on every row.
+METRIC_BASIS = {
+    'RoA': 'per-quarter-equivalent (x per_quarter_factor)',
+    'earnYield': 'per-quarter-equivalent (x per_quarter_factor)',
+    'returnOnEquity': 'per-quarter-equivalent (x per_quarter_factor)',
+    'returnOnCapitalEmployed': 'per-quarter-equivalent (x per_quarter_factor)',
+    'freeCashFlowYield': 'per-quarter-equivalent (x per_quarter_factor)',
+    'Altman-Z': 'x3/x5 trailing FULL-YEAR sums; x1/x2/x4 point-in-time stocks',
+    'revenueGrowth': 'annual YoY (rpy rows back)',
+    'freeCashFlowPerShareGrowth': 'annual YoY (rpy rows back)',
+    'Piotroski': 'count 0-9 (unitless)',
+    'CycleHeat': 'self-normalised z, capped [-3,3] (unitless)',
+    'grahamNumberToPrice': 'ratio of trailing-year Graham to price (unitless)',
+    'bVpRatio': 'stock/stock ratio (unitless)',
+    'tbVpRatio': 'stock/stock ratio (unitless)',
+    'currentRatio': 'stock/stock ratio (unitless)',
+    'grossProfitMargin': 'same-period flow/flow ratio (unitless)',
+    'incomeQuality': 'same-period flow/flow ratio (unitless)',
+    'moatScore': 'count 0-11 over ANNUALIZED comparators (unitless)',
+    'marketCapRevQuants': 'pool-relative size code (unitless)',
+}
+_METRIC_BASIS_DEFAULT = 'per reporting period / unitless (not annualized)'
+_METRIC_BASIS_HTML_NOTE = ('NOTE: the HTML presentation annualizes selected flow metrics '
+                           'for display, so a column can differ from the same-named HTML '
+                           'value by ~4x.')
+
+
+def _basis_row(df):
+    """A single LEGEND row naming each column's basis, appended under the data."""
+    if df is None or not hasattr(df, 'columns') or df.empty:
+        return df
+    out = df.copy()
+    legend = {}
+    for c in out.columns:
+        if c == 'source':
+            legend[c] = '__METRIC_BASIS__'
+        else:
+            legend[c] = METRIC_BASIS.get(c, _METRIC_BASIS_DEFAULT)
+    legend_row = pd.DataFrame([legend], columns=out.columns)
+    note = {c: ('' if c != 'source' else _METRIC_BASIS_HTML_NOTE) for c in out.columns}
+    return pd.concat([out, legend_row, pd.DataFrame([note], columns=out.columns)],
+                     ignore_index=True)
+
+
+def _stamp_basis(df):
+    """Append the per-column basis legend.  No-op on None/empty."""
+    return _basis_row(df)
+
 def _merge_moat(raw_pools, moatdf):
     """Merge moatScore (full-universe, from moatIdentifier) onto each raw pool so it
     joins the currency-invariant metric set.  No-op if moatdf is missing/empty."""
@@ -392,8 +484,8 @@ def emit_live(resdic, fidag, datasource, tickerfilter, out_dir='.'):
 
     f1 = os.path.join(out_dir, f'RawMetricsTop100-{fidag}_{datasource}.csv')
     f2 = os.path.join(out_dir, f'CohortMetricStats-{fidag}_{datasource}.csv')
-    art1.to_csv(f1, index=False)
-    art2.to_csv(f2, index=False)
+    _stamp_basis(art1).to_csv(f1, index=False)
+    _stamp_basis(art2).to_csv(f2, index=False)
     print(f'Review-reference artifacts written: {os.path.basename(f1)}, '
           f'{os.path.basename(f2)} (READ-ONLY; not fed back into scoring).', flush=True)
     return [f1, f2]
@@ -482,11 +574,11 @@ def emit_from_saved(dmdic, out_dir='.', date_str=None, datasource=None):
         case = 3
 
     f1 = os.path.join(out_dir, f'RawMetricsTop100-{date_str}_{datasource}.csv')
-    art1.to_csv(f1, index=False)
+    _stamp_basis(art1).to_csv(f1, index=False)
     files.append(f1)
     if art2 is not None:
         f2 = os.path.join(out_dir, f'CohortMetricStats-{date_str}_{datasource}.csv')
-        art2.to_csv(f2, index=False)
+        _stamp_basis(art2).to_csv(f2, index=False)
         files.append(f2)
 
     print("reviewReference.emit_from_saved: " + note, flush=True)

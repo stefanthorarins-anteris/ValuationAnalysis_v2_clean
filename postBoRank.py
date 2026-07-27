@@ -7,6 +7,7 @@ import numpy as np
 from tqdm import tqdm
 
 import stage2_metrics as sm
+import reporting_period as rp
 
 
 # --------------------------------------------------------------------------- #
@@ -51,6 +52,12 @@ def postBoScoreRanking(bmtop, bstop, cdxtop, baseurl, api_key, period='quarter',
     cdxtop = _sort_cdx_newest_first(cdxtop)
     cdxtop['mcapQuants'] = sm.add_mcap_quants(cdxtop)
 
+    # PER-SOURCE REPORTING FREQUENCY, computed ONCE for the pool.  Every windowed /
+    # YoY Stage-2 metric below is parameterised by this source's rows-per-year so a
+    # semi-annual filer is not scored on 2-year "YoY" growth and 2-year "TTM" windows
+    # (audit C-1).  unknown -> quarterly, i.e. unchanged.
+    freq_map = rp.frequency_by_source(cdxtop, verbose=True)
+
     # Note: Bulk endpoints require higher subscription tier, using individual API calls only
     dcf_bulk_dict = {}
 
@@ -67,7 +74,8 @@ def postBoScoreRanking(bmtop, bstop, cdxtop, baseurl, api_key, period='quarter',
                                         resp_dcf, tempcdx)
 
         _compute_ticker_metrics(ticker, tempcdx, dcf, bstop, nq, tempcntr,
-                                postBmRankingDict, postNewRankingDict, postScoreMetric_df)
+                                postBmRankingDict, postNewRankingDict, postScoreMetric_df,
+                                rpy=rp.rows_per_year(freq_map, ticker))
 
         if tempcntr == 0:
             _diagnose_first_ticker_metrics(ticker, postScoreMetric_df)
@@ -188,32 +196,40 @@ def _fetch_ticker_dcf(ticker, baseurl, api_key, dcf_bulk_dict):
 
 
 def _compute_ticker_metrics(ticker, tempcdx, dcf, bstop, nq, tempcntr,
-                            postBmRankingDict, postNewRankingDict, postScoreMetric_df):
+                            postBmRankingDict, postNewRankingDict, postScoreMetric_df,
+                            rpy=rp.DEFAULT_ROWS_PER_YEAR):
     """Compute every Stage-2 metric for one ticker and write it into
     postScoreMetric_df.  All formulas come from the shared stage2_metrics module
     (kept in lockstep with the offline reproduction); this function only decides
     which column each result lands in.
+
+    `rpy` is this TICKER's rows-per-year (4 quarterly / 2 semi-annual,
+    reporting_period): it is threaded into every windowed or YoY metric so a
+    semi-annual filer's windows span the same CALENDAR time as a quarterly peer's.
+    rpy=4 is bit-identical to the previous behaviour.
     """
     def setv(col, val):
         postScoreMetric_df.loc[postScoreMetric_df['source'] == ticker, col] = val
 
     # ---- postBmRankingDict metrics ----
     for key1 in postBmRankingDict.keys():
-        setv(key1, sm.postbm_metric(key1, postBmRankingDict[key1]['eqMet'], tempcdx, nq))
+        setv(key1, sm.postbm_metric(key1, postBmRankingDict[key1]['eqMet'], tempcdx, nq,
+                                    rpy=rpy))
 
     # ---- postNewRankingDict metrics ----
     tempfcf = tempcdx.freeCashFlow
     tempshares = tempcdx.weightedAverageShsOut
     tempmcap = tempcdx.marketCap
 
-    setv('freeCashFlowYield', sm.free_cash_flow_yield(tempfcf, tempmcap, nq))
-    setv('freeCashFlowPerShareGrowth', sm.free_cash_flow_per_share_growth(tempfcf, tempshares, nq))
-    setv('EPStoEPSmean', sm.eps_to_eps_mean(tempcdx))
+    setv('freeCashFlowYield', sm.free_cash_flow_yield(tempfcf, tempmcap, nq, rpy=rpy))
+    setv('freeCashFlowPerShareGrowth',
+         sm.free_cash_flow_per_share_growth(tempfcf, tempshares, nq, rpy=rpy))
+    setv('EPStoEPSmean', sm.eps_to_eps_mean(tempcdx, rpy=rpy))
     setv('marketCapRevQuants', tempcdx.mcapQuants.iloc[0])
-    setv('tbVpRatio', sm.tbv_p_ratio(tempcdx, nq))
-    setv('Altman-Z', sm.altman_z(tempcdx))
-    setv('Piotroski', sm.piotroski(tempcdx))
-    setv('priceGrowth', sm.price_growth(tempcdx, nq))
+    setv('tbVpRatio', sm.tbv_p_ratio(tempcdx, nq, rpy=rpy))
+    setv('Altman-Z', sm.altman_z(tempcdx, rpy=rpy))
+    setv('Piotroski', sm.piotroski(tempcdx, rpy=rpy))
+    setv('priceGrowth', sm.price_growth(tempcdx, nq, rpy=rpy))
     setv('CycleHeat', sm.cycleheat(tempcdx))
 
     # DcfToPrice needs the live DCF frame; diagnostic-log missing columns for the

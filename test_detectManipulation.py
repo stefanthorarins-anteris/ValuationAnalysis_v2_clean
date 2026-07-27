@@ -40,6 +40,7 @@ sys.path.insert(0, REPO)
 
 import detectManipulation as dm
 import forensicFlags as ff
+import reporting_period as rp
 from detectManipulation import invrollsumTTM
 
 TOL = 1e-9
@@ -185,15 +186,16 @@ def test_cscore_flags_dirty():
     crow0 = r['cdf'].iloc[0]
     for flag in ('NICFOdiv', 'DSOinc', 'DSIinc', 'OCARinc'):
         assert float(crow0[flag]) > 0, (flag, float(crow0[flag]))
-    assert float(crow0['DAPPdec']) > 0                # dep-rate decline
-    assert r['c_mean'] > 4 and r['c_flagged'], (r['c_mean'], r['c_flagged'])
+    # DAPPdec is GONE (deleted 2026-07-26 -- positive by construction), so the deteriorating
+    # firm now scores at most 5 and the cutoff is >= 4 of 5.
+    assert r['c_mean'] >= dm.C_FLAG_CUTOFF and r['c_flagged'], (r['c_mean'], r['c_flagged'])
     print("PASS test_cscore_flags_dirty")
 
 
 def test_clean_firm_below_thresholds():
     """A perfectly flat firm: every M ratio = neutral 1.0, TATA = 0, M well below 0;
-    C below the >4 cutoff (a small residual DAPP flag from the accumulated-depreciation
-    proxy is expected and stays far below cutoff)."""
+    C below the cutoff (the DAPP flag that used to add a residual here was deleted
+    2026-07-26)."""
     annual = _annual([_BASE]*6)
     r = _run(annual, 'CLEAN')
     row0 = r['mdf'].iloc[0]
@@ -201,7 +203,7 @@ def test_clean_firm_below_thresholds():
         assert abs(float(row0[k]) - 1.0) < TOL, (k, float(row0[k]))
     assert abs(float(row0['TATA'])) < TOL
     assert r['m_mean'] < 0 and not r['m_flagged'], (r['m_mean'], r['m_flagged'])
-    assert r['c_mean'] < 4 and not r['c_flagged'], (r['c_mean'], r['c_flagged'])
+    assert r['c_mean'] < dm.C_FLAG_CUTOFF and not r['c_flagged'], (r['c_mean'], r['c_flagged'])
     print("PASS test_clean_firm_below_thresholds")
 
 
@@ -216,9 +218,11 @@ def test_recency_window_reads_recent_not_oldest():
     r1 = _run(oc_rd, 'OC_RD')
     r2 = _run(od_rc, 'OD_RC')
     assert r1['m_mean'] > 0 and r1['m_flagged'], ('old-clean/recent-dirty', r1['m_mean'])
-    assert r1['c_mean'] > 4, ('old-clean/recent-dirty C', r1['c_mean'])
+    # >= the shared cutoff, not a literal 4: with DAPPdec deleted (2026-07-26) the
+    # deteriorating firm tops out at 5 flags and lands exactly ON the cutoff.
+    assert r1['c_mean'] >= dm.C_FLAG_CUTOFF, ('old-clean/recent-dirty C', r1['c_mean'])
     assert r2['m_mean'] < 0 and not r2['m_flagged'], ('old-dirty/recent-clean', r2['m_mean'])
-    assert r2['c_mean'] < 4, ('old-dirty/recent-clean C', r2['c_mean'])
+    assert r2['c_mean'] < dm.C_FLAG_CUTOFF, ('old-dirty/recent-clean C', r2['c_mean'])
     print("PASS test_recency_window_reads_recent_not_oldest")
 
 
@@ -387,6 +391,120 @@ def test_missing_component_does_not_fire_a_c_flag():
     print("PASS test_missing_component_does_not_fire_a_c_flag")
 
 
+
+def _build_semiannual(annual_by_year, symbol):
+    """Same fixture shape as _build but SEMI-ANNUAL: 2 rows per year, each carrying HALF
+    the annual level (a real 6-month flow), dated at ~183-day spacing so the cadence
+    classifier sees a semi-annual reporter."""
+    nyears = len(next(iter(annual_by_year.values())))
+    dates, data = [], {m: [] for m in annual_by_year}
+    for yi in range(nyears):
+        for half in (0, 1):
+            dates.append('%d-%s' % (2015 + yi, '06-30' if half == 0 else '12-31'))
+            for m, levels in annual_by_year.items():
+                data[m].append(levels[yi] / 2.0)
+    df = pd.DataFrame(data)
+    df['date'] = dates
+    df['source'] = symbol
+    return df
+
+
+def test_semiannual_windows_are_period_aware():
+    """A SEMI-ANNUAL fixture must be classified as such and scored on 2-row windows.
+
+    Built so the ANNUAL economics are identical to the quarterly _BASE/_DIRTY fixture
+    (each half carries half the annual level), so the Beneish components should land on
+    the SAME published values as the quarterly case -- which is the whole point: the same
+    company reporting twice a year instead of four times must not score differently.
+    """
+    annual = _annual([_BASE] * 5 + [_DIRTY])
+    df = _build_semiannual(annual, 'SEMI')
+
+    assert rp.classify_from_cadence(df['date']) == rp.SEMIANNUAL, 'cadence must say semiannual'
+    fmap = rp.frequency_by_source(df)
+    assert fmap['SEMI'] == rp.SEMIANNUAL
+    assert rp.rows_per_year(fmap, 'SEMI') == 2
+
+    resdic = {'cdx_df': df, 'postRank': pd.DataFrame({'source': ['SEMI']})}
+    mdf, slm, pm = dm.calcBeneishM(resdic, ['SEMI'], fmap)
+    row0 = mdf.iloc[0]
+
+    # Same hand values as the quarterly test: 2 half-rows == 1 year of flow.
+    expect = dict(DSRI=300 / 100, GMI=2.0, AQI=2.0, SGI=1.1,
+                  DEPI=0.25 / (20 / 120), SGAI=2.0, LVGI=2.0)
+    for k, v in expect.items():
+        assert abs(float(row0[k]) - v) < TOL, ('semiannual ' + k, float(row0[k]), v)
+    assert float(row0['TATA']) > 0.0
+
+    # And the WRONG (fixed-4-row) path must differ -- otherwise the test proves nothing.
+    mdf4, _s4, _p4 = dm.calcBeneishM(resdic, ['SEMI'], {'SEMI': rp.QUARTERLY})
+    assert abs(float(mdf4.iloc[0]['SGI']) - 1.1) > TOL,         'a 4-row window on semi-annual data must NOT reproduce the 1-year SGI'
+    print("PASS test_semiannual_windows_are_period_aware")
+
+
+def test_quarterly_path_is_bit_identical_under_rpy4():
+    """The branch must be a NO-OP for quarterly data: explicit rpy=4 == the default."""
+    annual = _annual([_BASE] * 5 + [_DIRTY])
+    df = _build(annual, 'Q', oldest_first=True)
+    resdic = {'cdx_df': df, 'postRank': pd.DataFrame({'source': ['Q']})}
+    a_m, a_s, _ = dm.calcBeneishM(resdic, ['Q'])                          # default map
+    b_m, b_s, _ = dm.calcBeneishM(resdic, ['Q'], {'Q': rp.QUARTERLY})     # explicit 4
+    for c in ('DSRI', 'GMI', 'AQI', 'SGI', 'DEPI', 'SGAI', 'LVGI', 'TATA', 'M_Score'):
+        x = pd.to_numeric(a_m[c], errors='coerce').to_numpy(dtype=float)
+        y = pd.to_numeric(b_m[c], errors='coerce').to_numpy(dtype=float)
+        assert np.array_equal(x, y, equal_nan=True), ('quarterly not bit-identical', c)
+    a_c, a_cs, _ = dm.calcMontierC(resdic, ['Q'])
+    b_c, b_cs, _ = dm.calcMontierC(resdic, ['Q'], {'Q': rp.QUARTERLY})
+    assert np.array_equal(pd.to_numeric(a_c['C_Score']).to_numpy(float),
+                          pd.to_numeric(b_c['C_Score']).to_numpy(float), equal_nan=True)
+    print("PASS test_quarterly_path_is_bit_identical_under_rpy4")
+
+
+
+def test_dappdec_is_gone_and_cannot_come_back():
+    """PINS the 2026-07-26 ruling: Montier is scored over FIVE flags and DAPPdec appears
+    NOWHERE in the emitted forensic frame.
+
+    It is a test and not just a comment because the deletion site is exactly where a future
+    reader will "helpfully" restore it -- DAPPdec was positive BY CONSTRUCTION (a
+    since-panel-start cumsum in its denominator), fired on 0.666 of names against
+    0.271-0.472 for the other five, and carried 13 of the 16 C>=4 flags on the 2026-07-17
+    top-100.  Restoring it must break a test.
+    """
+    assert len(dm.C_FLAG_COLS) == 5, ('Montier must be scored over 5 flags',
+                                      dm.C_FLAG_COLS)
+    assert 'DAPPdec' not in dm.C_FLAG_COLS
+    assert dm.C_FLAG_CUTOFF == 4, 'cutoff holds at 4 (of 5) -- NOT rescaled to 3'
+    assert list(ff.C_FLAGS) == list(dm.C_FLAG_COLS), 'consumers must share the constant'
+
+    annual = _annual([_BASE] * 5 + [_DIRTY])
+    r = _run(annual, 'DIRTY')
+    cdf = r['cdf']
+    assert 'DAPPdec' not in cdf.columns, ('DAPPdec must not be emitted at all',
+                                          list(cdf.columns))
+    # C_Score can never exceed the number of scored flags
+    cs = pd.to_numeric(cdf['C_Score'], errors='coerce').dropna()
+    assert (cs <= 5).all(), ('C_Score exceeded 5', cs.max())
+    assert (cs >= 0).all()
+    # and the whole emitted frame is free of the string, not just the score
+    for col in cdf.columns:
+        assert 'DAPP' not in str(col)
+    print("PASS test_dappdec_is_gone_and_cannot_come_back")
+
+
+def test_beneish_depi_is_deliberately_left_alone():
+    """The Beneish DEPI term makes the SAME net-PP&E substitution and is deliberately NOT
+    harmonised with the C-score deletion: it carries the smallest coefficient (0.115) inside
+    a continuous weighted sum, which is tolerable, where DAPPdec was one binary vote of six
+    against a hard cutoff, which was not.  This test exists so a future "consistency" pass
+    does not delete DEPI too."""
+    annual = _annual([_BASE] * 5 + [_DIRTY])
+    r = _run(annual, 'DIRTY')
+    assert 'DEPI' in r['mdf'].columns, 'Beneish DEPI must still be computed'
+    assert pd.to_numeric(r['mdf']['DEPI'], errors='coerce').notna().any()
+    print("PASS test_beneish_depi_is_deliberately_left_alone")
+
+
 if __name__ == '__main__':
     test_component_directions_exact_row0()
     test_mscore_fold_and_flag_dirty()
@@ -400,4 +518,8 @@ if __name__ == '__main__':
     test_dsri_is_not_contaminated_by_sales_growth()
     test_c_cutoff_is_one_constant_everywhere()
     test_missing_component_does_not_fire_a_c_flag()
+    test_semiannual_windows_are_period_aware()
+    test_quarterly_path_is_bit_identical_under_rpy4()
+    test_dappdec_is_gone_and_cannot_come_back()
+    test_beneish_depi_is_deliberately_left_alone()
     print("\nALL detectManipulation KNOWN-ANSWER TESTS PASSED")

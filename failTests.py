@@ -1,6 +1,7 @@
 from datetime import datetime
 import pandas as pd
 import requests
+import reporting_period as rp
 def testForAPIFaults_fmp(failcodes,compyear,ticker,period,limit,baseurl,api_key,
                          dead_path=False, http_get=None):
     """Fetch the 5 statement endpoints and evaluate the accept/reject gates.
@@ -82,7 +83,18 @@ def testForAPIFaults_fmp(failcodes,compyear,ticker,period,limit,baseurl,api_key,
                 else:
                     lentest = [len(resp) for resp in resplist]
                     if period == 'quarter':
-                        if any(j < 16 for j in lentest):
+                        # HISTORY GATE, in CALENDAR terms (2026-07-25).  16 'quarters'
+                        # is 4 years of history -- but a SEMI-ANNUAL filer only issues
+                        # 2 rows a year, so demanding 16 rows demanded EIGHT years and
+                        # rejected perfectly well-covered LSE names for a reporting
+                        # convention.  The bar is now rows-per-year x 4 = 16 quarterly
+                        # or 8 semi-annual, i.e. the same 4 years either way.
+                        _freq = rp.classify_source(
+                            dates=(tempdf['date'] if 'date' in tempdf.columns else None),
+                            period_values=(list(tempdf['period'])
+                                           if 'period' in tempdf.columns else None))
+                        _minrows = rp.rows_per_year(_freq) * 4
+                        if any(j < _minrows for j in lentest):
                             failbool = True
                             whyfail = 'lenfail'
                     elif period == 'annual':

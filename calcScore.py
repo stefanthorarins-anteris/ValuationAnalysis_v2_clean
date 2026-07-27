@@ -2,8 +2,9 @@ import pandas as pd
 import numpy as np
 from tqdm import tqdm
 import createDicts as cdic
+import reporting_period as rp
 
-def simpleScore_fromDict(bm_df,bm_ave,bm_da,n=8,as_of=None):
+def simpleScore_fromDict(bm_df,bm_ave,bm_da,n=8,as_of=None,freq_map=None):
     """Stage-1 per-symbol scoring.
 
     as_of : point-in-time date D (default None).  as_of=None reproduces the live
@@ -37,7 +38,33 @@ def simpleScore_fromDict(bm_df,bm_ave,bm_da,n=8,as_of=None):
     #    bm_ave = datandmetricdic['BoMetric_ave']
     #   BoScore_df['date'] = BoMetric_dateAve.index
     #test
+    # PER-SOURCE REPORTING FREQUENCY -- the head(n) Stage-1 scoring window is scaled by
+    # it so a semi-annual filer is scored over the same CALENDAR span as a quarterly
+    # one.  n=8 rows is 2 years quarterly but FOUR years semi-annual, so without this
+    # the two frequencies were graded on different amounts of history.  BoMetric_df
+    # carries no `period` column (preReq fields never reach it), so the classifier
+    # falls back to date cadence here -- which is the only signal available and is
+    # what the 07-17 validation used.  unknown -> quarterly, i.e. unchanged.
+    if freq_map is None:
+        freq_map = rp.frequency_by_source(bm_df, verbose=True)
     dict_base, dict_mean, dict_diff, dict_unity, dict_special = cdic.getBaseMeanDiffUnitySpecialDicts()
+    # SCHEMA / BASIS GATE (review S10, 2026-07-26).  Stage-1's criterion set is data,
+    # not code: a metric added or renamed changes the required BoMetric_df columns, so a
+    # pickle saved before that change simply cannot be scored.  Without this the failure
+    # was a bare KeyError deep in the per-ticker loop with no hint that the PANEL was the
+    # problem.  Name the missing columns and say what to do.
+    _need = (list(dict_base) + ['m' + k[0].upper() + k[1:] for k in dict_mean]
+             + ['d' + k[0].upper() + k[1:] for k in dict_diff]
+             + ['u' + k[0].upper() + k[1:] for k in dict_unity] + list(dict_special))
+    _missing = [c for c in _need if c not in bm_df.columns]
+    if _missing:
+        raise KeyError(
+            'BoMetric_df is missing %d Stage-1 criterion column(s): %s. This panel was '
+            'built by an OLDER version of the metric set and cannot be scored by the '
+            'current code -- re-fetch, or check out the code that produced it. Scoring '
+            'it anyway would mix metric bases silently.'
+            % (len(_missing), _missing))
+    _nan_acct = {}
     tbs_df = pd.DataFrame(columns=['score', 'source'])
     tbs_df['source'] = bm_df['source'].unique()
     pbar = tqdm(total=len(bm_df['source'].unique()))
@@ -52,33 +79,88 @@ def simpleScore_fromDict(bm_df,bm_ave,bm_da,n=8,as_of=None):
             if bmdf_tick.empty:
                 continue
         tempscore = 0
+        _tick_nan = []
+        # STAGE-1 WINDOW IS *NOT* FREQUENCY-SCALED (CEO/specialist ruling Q2, 2026-07-26).
+        # Every source is scored over the SAME NUMBER OF ROWS, head(n).
+        #
+        # WHY, and why this differs from every other window in the pipeline: calcByTier
+        # returns `resvec.head(n).mean()` -- the mean of a PASS/FAIL indicator, i.e. an
+        # ESTIMATED PROBABILITY that this company passes the criterion.  That estimand is a
+        # property of the company; halving n does not change it, it only degrades the
+        # estimator by ~sqrt(2).  Calendar-span reasoning is right where a window feeds a
+        # LEVEL or a RATIO (TTM sums, YoY lags, Altman year-sums, moat means, the
+        # Beneish/Montier windows -- all still scaled, deliberately); here it feeds a COUNT
+        # OF BERNOULLI TRIALS, which is a different object.
+        #
+        # Measured on the 2026-07-17 panel: scaling left the semi-annual MEAN essentially
+        # unchanged (10.0024 -> 9.9681, bias ~ 0) but raised its score SD 1.7322 -> 1.9393
+        # (+12%), and top-tail selection converts estimator noise straight into gate share:
+        # SA share of the RAW Stage-1 top-100 went 31% -> 46% against a ~15% universe base
+        # rate.  (An earlier version of this comment also quoted "carved 45% -> 54%" -- that
+        # pair was measured on an intermediate working tree and does NOT describe the
+        # shipping code; the shipping CARVED+FLOORED general top-100 figure is 44%, and the
+        # raw/carved/floored bases must never be quoted interchangeably.)  Bias ~ 0 with a large variance cost => for a GATE, take
+        # the low-variance option.  The main counter-argument also failed empirically: the
+        # d* diff family (44.5% of Stage-1 summed weight, the block calendar-span would most
+        # protect) is frequency-neutral to -0.0095 on Sigma-w 8.30.
+        #
+        # HONEST COST: head(8) is 4 calendar years for a semi-annual filer, so Stage-1 is
+        # SLOWER TO DROP a deteriorating semi-annual name.  Accepted: aggregate bias ~ 0,
+        # and recency judgment lives downstream (Stage-2, forensics, R7, the display) on a
+        # calendar-correct basis.
+        #
+        # `freq_map` is still computed and still drives the flow factors and the run banner;
+        # it just no longer scales THIS window.  Do not "restore" the scaling here.
+        _nw = n
         for key in dict_base:
-            temp = calcByTier('base', dict_base[key]['Tier'], dict_base[key]['Sign'], bmdf_tick[key], bm_ave[key],key,n)
+            temp = calcByTier('base', dict_base[key]['Tier'], dict_base[key]['Sign'], bmdf_tick[key], bm_ave[key],key,_nw,nan_sink=_tick_nan)
             tempscore = tempscore + temp
         for key in dict_mean:
             mkey = "m" + key[0].upper() + key[1:]
-            temp = calcByTier('mean', dict_mean[key]['Tier'], dict_mean[key]['Sign'], bmdf_tick[mkey], bm_ave[mkey],key,n)
+            temp = calcByTier('mean', dict_mean[key]['Tier'], dict_mean[key]['Sign'], bmdf_tick[mkey], bm_ave[mkey],key,_nw,nan_sink=_tick_nan)
             tempscore = tempscore + temp
         for key in dict_diff:
             dkey = "d" + key[0].upper() + key[1:]
-            temp = calcByTier('diff', dict_diff[key]['Tier'], dict_diff[key]['Sign'], bmdf_tick[dkey], bm_ave[dkey],key,n)
+            temp = calcByTier('diff', dict_diff[key]['Tier'], dict_diff[key]['Sign'], bmdf_tick[dkey], bm_ave[dkey],key,_nw,nan_sink=_tick_nan)
             tempscore = tempscore + temp
         for key in dict_unity:
             ukey = "u" + key[0].upper() + key[1:]
-            temp = calcByTier('unity', dict_unity[key]['Tier'], dict_unity[key]['Sign'], bmdf_tick[ukey], bm_ave[ukey],key,n)
+            temp = calcByTier('unity', dict_unity[key]['Tier'], dict_unity[key]['Sign'], bmdf_tick[ukey], bm_ave[ukey],key,_nw,nan_sink=_tick_nan)
             tempscore = tempscore + temp
         for key in dict_special:
-            temp = calcByTier('special', dict_special[key]['Tier'], dict_special[key]['Sign'], bmdf_tick[key], bm_ave[key],key,n)
+            temp = calcByTier('special', dict_special[key]['Tier'], dict_special[key]['Sign'], bmdf_tick[key], bm_ave[key],key,_nw,nan_sink=_tick_nan)
             tempscore = tempscore + temp
 
         tbs_df.loc[tbs_df['source'] == ticker, 'score'] = tempscore
+        if _nan_acct is not None:
+            _nan_acct[ticker] = (len(_tick_nan),
+                                 float(sum(w for _m, w in _tick_nan)),
+                                 sorted({m for m, _w in _tick_nan}))
         pbar.update(n=1)
 
     pbar.close()
+    # NaN-WEIGHT READOUT (ruling Q1.5).  For every source, how many Stage-1 criteria were
+    # scored on an entirely non-computable window, and what tier weight that adds up to.
+    # This is what makes the Stage-2 missingness coupling visible (a fully-NaN Stage-2 name
+    # would gain +0.1394 AggScore vs a 0.134 median->top-20 distance), and it is the
+    # precondition for any future gate-width experiment -- widening head(100) would activate
+    # that latent reward, so the incidence has to be measured before anyone widens it.
+    if _nan_acct:
+        _tot_w = sum(v[1] for v in _nan_acct.values())
+        _worst = sorted(_nan_acct.items(), key=lambda kv: -kv[1][1])[:15]
+        print('STAGE-1 NaN ACCOUNTING: %d source(s) have >=1 all-NaN criterion; summed '
+              'NaN tier-weight across the universe = %.2f' % (len(_nan_acct), _tot_w),
+              flush=True)
+        print('  worst by NaN tier-weight: '
+              + '; '.join('%s n=%d w=%.2f %s' % (k, v[0], v[1], v[2][:4])
+                          for k, v in _worst), flush=True)
     tbs_df.sort_values('score', ascending=False,inplace=True)
     return tbs_df
 
-def calcByTier(dict,Tier,Sign,metvec,avec,met,n):
+def calcByTier(dict,Tier,Sign,metvec,avec,met,n,nan_sink=None):
+    """nan_sink: optional list.  When given, a criterion whose SCORING WINDOW is entirely
+    non-computable appends (met, tier_weight) -- the accounting behind the per-name
+    NaN-weight readout below (ruling Q1.5).  Purely observational; the score is untouched."""
     resvec = pd.DataFrame(columns=[met])
     w = 0
     if Tier == 'S':
@@ -101,8 +183,42 @@ def calcByTier(dict,Tier,Sign,metvec,avec,met,n):
     else:
         testvec = metvec
 
+    # NaN SCORES AS A FAIL, DELIBERATELY (ruling Q1, 2026-07-26).  `Sign * NaN > 0` is
+    # False, so a non-computable criterion contributes 0 to the window mean.  Three
+    # reasons it stays that way, recorded because the alternative looks appealing:
+    #
+    #  1. SEMANTICS.  For the criteria where this bites most, the value is OUT OF DOMAIN
+    #     rather than unmeasurable -- Graham on negative EPS_ttm or negative book value has
+    #     no published definition at all.  "Undefined" is a real answer about the company,
+    #     not a gap in the data.
+    #  2. THE COMPLETENESS-FILTER ROLE.  Stage-1 failing NaN is what keeps incomplete names
+    #     out of the top-100, and that is load-bearing for Stage-2: there, a NaN metric is
+    #     mean-imputed to z = 0, which sits at the 52nd-65th percentile on 15 of 17
+    #     weighted columns.  A name with NOTHING computable would collect +0.1394 AggScore
+    #     against a median->top-20 distance of 0.134 -- i.e. reach the top-20 on
+    #     missingness alone.  That reward is latent ONLY because this gate filters first.
+    #  3. EXCLUDING NaN FROM THE MEAN IS ADVERSELY SELECTED.  head(n) with NaN dropped
+    #     scores a name on its SELECTED rows: a loss-maker's computable Graham rows are
+    #     exactly its profitable quarters, so it would earn the full Tier-S w=1.0 on 2 of 8
+    #     quarters instead of w x 2/8.  That is the same mechanism as the >4-sigma ejection
+    #     this project removed, pointed the other way.  An all-NaN column would also poison
+    #     tempscore and silently drop the name.
+    #
+    # The genuine complaint behind "but loss-making cash-generative firms get punished"
+    # lives in uIncomeQuality (a ratio whose denominator changes sign), which is fixed
+    # separately -- not here.  And this is metric-dependent by design but NEVER
+    # TIER-dependent: a tier is a weight, not a semantic, and tier-conditional NaN
+    # behaviour would make a name's missingness penalty move at the next weight re-fit.
     resvec[met] = [w if Sign * val > 0 else 0 for val in testvec]
     res = resvec[met].head(n).mean()
+
+    if nan_sink is not None:
+        try:
+            _win = pd.to_numeric(pd.Series(list(testvec)).head(n), errors='coerce')
+            if len(_win) == 0 or _win.isna().all():
+                nan_sink.append((met, w))
+        except Exception:
+            pass
 
     return res
 

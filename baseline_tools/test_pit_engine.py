@@ -347,12 +347,34 @@ def test_fillprereq_date_join_identity_and_ragged():
         columns=list(dict.fromkeys(tf_cols))), preReq, bs, inc, cf, km, fr)
     # recompute the same via a positional (dup-date) fallback frame and compare the
     # shared prereq columns
+    # `grahamNumber` is EXCLUDED from the pass-through identity check: since 2026-07-25 it
+    # is RECOMPUTED in-pipeline as sqrt(22.5 * EPS_ttm * bookValuePerShare) rather than
+    # taken from FMP's km payload (review H2 -- FMP's quarterly value is half the published
+    # one).  Asserting pass-through for it was an OBSOLETE assertion that aborted this test
+    # BEFORE its ragged-statement and duplicate-date assertions ran, which is how the price
+    # length-assignment fetch-killer (ship-gate B1) reached review with no live test
+    # coverage of fillPreReqdf's fallback path.  It is asserted separately below.
+    _RECOMPUTED = {"grahamNumber"}
     for nm in ("bs", "inc", "cf", "km", "fr"):
         for i in preReq.get(nm, []):
+            if i in _RECOMPUTED:
+                continue
             assert np.array_equal(
                 pd.to_numeric(tf_join[i], errors="coerce").to_numpy(),
                 pd.to_numeric({"bs": bs, "inc": inc, "cf": cf, "km": km, "fr": fr}[nm][i],
                               errors="coerce").to_numpy()), (nm, i)
+
+    # (A2b) grahamNumber is COMPUTED, not passed through: it must differ from FMP's km
+    # column and must equal sqrt(22.5 * EPS_ttm * BVPS) built from the same frame.
+    _g_out = pd.to_numeric(tf_join["grahamNumber"], errors="coerce").to_numpy()
+    _g_fmp = pd.to_numeric(km["grahamNumber"], errors="coerce").to_numpy()
+    assert not np.array_equal(_g_out, _g_fmp),         "grahamNumber must be recomputed in-pipeline, not passed through from FMP"
+    _ni = pd.to_numeric(tf_join["netIncome"], errors="coerce")
+    _sh = pd.to_numeric(tf_join["weightedAverageShsOut"], errors="coerce")
+    _bv = pd.to_numeric(tf_join["bookValuePerShare"], errors="coerce")
+    _eps = _ni.iloc[::-1].rolling(4).sum().iloc[::-1] / _sh
+    _exp = np.sqrt(22.5 * _eps.where(_eps > 0) * _bv.where(_bv > 0)).to_numpy()
+    assert np.allclose(_g_out, _exp, equal_nan=True), (_g_out[:4], _exp[:4])
 
     # (A3) REORDERED dates (LOW-A): a statement whose date rows are shuffled relative
     # to bs must still pair BY DATE (reindex), not by position -> identical values in

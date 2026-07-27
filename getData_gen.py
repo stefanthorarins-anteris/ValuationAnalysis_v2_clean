@@ -536,8 +536,11 @@ def forceNumOnDf(df):
     #                     `date` (utils.setDatesToQuarterly overwrites `date` in place)
     # calendarYear is deliberately NOT preserved: it is a genuine year and is better off
     # numeric.
+    #   grahamUndefinedReason  why a Graham row is undefined (ruling Q1.3) -- a reason
+    #                     CODE, so it must survive as a string like the others
     for _passthrough in ('reportedCurrency', 'period', 'fillingDate', 'acceptedDate',
-                         'periodEndDate'):
+                         'periodEndDate', 'grahamUndefinedReason',
+                         'reportingFrequency'):
         if _passthrough in dftemp.columns:
             preserve.add(_passthrough)
 

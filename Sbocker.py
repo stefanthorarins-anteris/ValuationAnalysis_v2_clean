@@ -338,10 +338,19 @@ def main():
             datandmetricdic.update(getfunddic)
             datandmetricdic['manualelimtickers'] = newmanelimtckrs
 
-            lenhcy = len(datandmetricdic['hasCurrentYear'])
-            if lenhcy > 0 and lenhcy < 3/4 * (len(Tickers_df) - len(datandmetricdic['tickersfailed'])):
-                datandmetricdic['BoMetric_df'] = datandmetricdic['BoMetric_df'].iloc[1:,:]
-                datandmetricdic['cdx_df'] = datandmetricdic['cdx_df'].iloc[1:,:]
+            # REMOVED (review S9, 2026-07-26): a `hasCurrentYear` trim used to sit here --
+            #     if lenhcy > 0 and lenhcy < 3/4 * (...):
+            #         BoMetric_df = BoMetric_df.iloc[1:, :]; cdx_df = cdx_df.iloc[1:, :]
+            # It was a SILENT NO-OP and had been since it was written: `getfunddic` still
+            # holds the UNTRIMMED frames and is spread LAST into datandmetricdic a few lines
+            # below, so the trim was discarded on every run.  That is the identical
+            # "spread-last overwrites" defect the manual-elim provenance fix (C-3) documents
+            # immediately beneath -- the fix landed on `manualelimtickers` and missed these
+            # two lines.  Deleted rather than repaired: dropping the globally-first row of
+            # two whole panels is not a defensible response to "fewer than 3/4 of names have
+            # a current-year statement" (it removes ONE ticker's oldest row, chosen by
+            # ingestion order), and nothing downstream depends on it having happened.
+            # `hasCurrentYear` itself is still captured and still returned for diagnostics.
 
             # Note that **getfunddic should overwrite key-value combinations in datandmetricdic
             datandmetricdic = {**datandmetricdic, **{'Tickers_df': Tickers_df}, **getfunddic, **configdic}
@@ -396,6 +405,15 @@ def main():
         else:
             loadmetricdic = {'loadBoMetric': loadBoMetricbool, 'loadBoMetricfname': configdic['loadBoMetricfname']}
             datandmetricdic = utils.loadWrapper('metric', loadmetricdic)
+            # BASIS CHECK ON THE LOAD PATH (review S10, 2026-07-26).  -loadbometric on a
+            # pre-2026-07-19 pickle silently mixes bases: its `price` is the old
+            # quarterly-PE derivation (~1/4 of the real price) and its `grahamNumber` is
+            # FMP's quarterly one, so Stage-1 scores the OLD basis while Stage-2 applies
+            # today's per-quarter corrections to the same cdx_df.  Verified on the 07-17
+            # pickle: marketCap/(price*shares) median 3.9999, and uGrahamNumberToPrice
+            # therefore runs ~2x loose.  Nothing announced it.  One loud banner does.
+            utils.check_panel_basis(datandmetricdic,
+                                    configdic['loadBoMetricfname'])
 
         # Apply data quality filter (remove corrupted/invalid price data)
         # This must happen BEFORE any scoring to prevent garbage from affecting calculations

@@ -74,16 +74,57 @@ COHORTS = ['REIT', 'Mining', 'InvestmentVehicle', 'FinManager', 'BalanceSheetFin
 # pool value (freeCashFlowYield / revenueGrowth / Altman-Z / Piotroski / bVpRatio /
 # tbVpRatio / freeCashFlowPerShareGrowth / moatScore / CycleHeat have no clean cdx column).
 # The first six are kept first and unchanged so their confirmed values do not move.
+# Metrics whose MARKER must come from the pool's own (period-corrected) basis, NOT the raw
+# cdx latest row -- reviewer finding H2 (marker-vs-pool basis). These four are flow/stock
+# ratios (a flow
+# numerator over a balance-sheet or price denominator), so the pipeline's per-quarter
+# annualization correction (reviewReference._pool_raw_fast -> stage2_metrics.postbm_metric
+# with rpy=reporting_period.rows_per_year) SCALES them. The pool distribution is built on the
+# corrected basis; taking the marker from the raw cdx latest row left a semi-annual company's
+# dot plotting at 2.1-3.1x its true position against that pool (measured: GFRD.L ROCE 2.98x,
+# ITV.L 3.13x; 41 of the shipped top-100 are non-quarterly reporters). Sourcing the marker
+# from `raw_all` -- the SAME _pool_raw_fast output the pool is built from -- makes the two
+# sides identical BY CONSTRUCTION rather than by a duplicated correction factor that could
+# drift. Quarterly reporters have rpy=4 -> factor 1 -> bit-identical marker (verified).
+# NOTE the same-period ratios (currentRatio, grossProfitMargin, incomeQuality) are NOT here:
+# numerator and denominator share a period, so annualization cancels and they are unaffected.
+POOL_BASIS_MARKERS = {'RoA', 'earnYield', 'returnOnEquity', 'returnOnCapitalEmployed'}
+
+# DISPLAY-LAYER ANNUALIZATION (coordinator ruling, on top of the pipeline's 2026-07-25
+# period-aware / annualize work -- NOT part of the earlier 2026-07-19 soundness-audit wave).
+# The pipeline puts every flow/stock metric on a common PER-QUARTER basis
+# (stage2_metrics: STAGE2_FLOW_OVER_STOCK via postbm_metric, plus free_cash_flow_yield --
+# both multiply by reporting_period.per_quarter_factor). That is right for SCORING (z-scored,
+# so only the cross-sectional ratio matters) but wrong for DISPLAY: the thresholds we render
+# against (ROIC >15%/<10%, R1/R4's ROE>15%) are ANNUAL rules of thumb, and a human reading
+# "ROIC: 20%" means twenty percent per YEAR. So we annualize these five for display.
+#
+# The factor is a CONSTANT x4: the pool basis is already per-quarter FOR EVERY SOURCE by
+# construction (semi-annual rows were halved upstream), so no per-source rpy is needed here --
+# per-quarter -> annual is x4 regardless of filing frequency (= rp.annualize_factor semantics
+# applied to an already-per-quarter quantity).
+#
+# Applied ONCE, at the source, to BOTH the pool distributions and raw_all -- so the displayed
+# value, the dot's marker, the percentile, the p10/p50/p90 spread, the verdict/flag rule inputs
+# and Section C all inherit the SAME scale. A uniform scale leaves percentile positions and dot
+# positions EXACTLY invariant, so marker == pool basis (1.00x) still holds by construction.
+ANNUALIZED_DISPLAY_METRICS = {'RoA', 'earnYield', 'returnOnEquity',
+                              'returnOnCapitalEmployed', 'freeCashFlowYield'}
+ANNUALIZE_DISPLAY_FACTOR = 4.0
+
 SECTION_G_METRICS = [
-    ('ROIC',                'returnOnCapitalEmployed', 'returnOnCapitalEmployed',    'ratio'),
+    # '(ann.)' marks the five metrics annualized for display (ANNUALIZED_DISPLAY_METRICS):
+    # the pool basis is per-quarter, so these are x4'd to the annual convention a reader
+    # (and the annual rule-of-thumb thresholds) assume.
+    ('ROIC (ann.)',         'returnOnCapitalEmployed', 'returnOnCapitalEmployed',    'ratio'),
     # ROE/ROA formatted as % here to MATCH Section C's pct_format (reviewer F6: the same
     # metric must not render twice with inconsistent formatting on a cohort page).
-    ('ROE',                 'returnOnEquity',          'returnOnEquity',             'pct'),
-    ('ROA',                 'returnOnAssets',          'RoA',                        'pct'),
+    ('ROE (ann.)',          'returnOnEquity',          'returnOnEquity',             'pct'),
+    ('ROA (ann.)',          'returnOnAssets',          'RoA',                        'pct'),
     ('Gross Margin',        'grossProfitMargin',       'grossProfitMargin',          'pct'),
-    ('FCF Yield',           None,                      'freeCashFlowYield',          'pct'),
+    ('FCF Yield (ann.)',    None,                      'freeCashFlowYield',          'pct'),
     ('Current Ratio',       'currentRatio',            'currentRatio',               'ratio'),
-    ('Earnings Yield',      'earningsYield',           'earnYield',                  'pct'),
+    ('Earnings Yield (ann.)', 'earningsYield',         'earnYield',                  'pct'),
     ('Revenue Growth',      None,                      'revenueGrowth',              'pct'),
     ('Income Quality',      'incomeQuality',           'incomeQuality',              'ratio'),
     ('Altman-Z',            None,                      'Altman-Z',                   'ratio'),
@@ -158,31 +199,134 @@ def ratio_format(v, decimals=2):
     return f"{v:.{decimals}f}"
 
 
-def ttm_sum(df, col):
-    """Compute trailing-12-month sum from quarterly data (NEWEST 4 rows = head(4) after newest-first sort)."""
+# --------------------------------------------------------------------------- #
+#  Reporting-frequency awareness for the TTM helpers  (reviewer R-N2)           #
+# --------------------------------------------------------------------------- #
+# A "trailing twelve months" sum is ONE YEAR of rows = rows_per_year rows: 4 for a
+# quarterly filer, 2 for a semi-annual one. These helpers used to hard-code head(4),
+# which for a semi-annual filer summed TWENTY-FOUR months -- then compared it against
+# 12-month bars (Sloan's 0.10) and printed it as "TTM". Classification comes from the
+# pipeline's own `reporting_period` module (period column when present, date-cadence
+# fallback on saved data) so the presentation and the scorer agree on who is semi-annual.
+# Unknown -> 4 (quarterly), so quarterly filers and any un-mapped source are BIT-IDENTICAL.
+_RPY_BY_SOURCE = {}
+_RPY_MAP_STATUS = 'not-built'   # 'ok' | 'not-built' | 'degraded: <reason>'
+
+
+def build_rpy_map(cdx_df):
+    """Populate the module-level {source: rows_per_year} map from a cdx panel. Idempotent.
+
+    NEVER fails silently (domain N9): the callers sit inside broad try/except blocks, so a
+    degraded map would quietly return every semi-annual filer to the 24-month TTM basis this
+    layer exists to fix -- with nothing visible on the page. On degradation we record it in
+    _RPY_MAP_STATUS, banner on stderr+stdout, and `rpy_basis_banner()` renders a page-level
+    warning so the CEO can never read a page whose basis silently regressed."""
+    global _RPY_BY_SOURCE, _RPY_MAP_STATUS
+    try:
+        import reporting_period as rp
+        m = rp.rows_per_year_by_source(cdx_df) or {}
+        if not m:
+            raise RuntimeError('classification returned no sources')
+        _RPY_BY_SOURCE, _RPY_MAP_STATUS = m, 'ok'
+    except Exception as e:
+        _RPY_BY_SOURCE = {}
+        _RPY_MAP_STATUS = f'degraded: {type(e).__name__}: {e}'
+        banner = ("\n" + "!" * 78 + "\n"
+                  "!!! REPORTING-FREQUENCY MAP UNAVAILABLE -- TTM BASIS DEGRADED !!!\n"
+                  "!!! Every source is being treated as QUARTERLY, so a SEMI-ANNUAL filer's  !!!\n"
+                  "!!! 'TTM' sums TWENTY-FOUR months again (Sloan/FFO/P-FFO affected) and is !!!\n"
+                  "!!! compared against 12-month bars. The page carries a visible banner.    !!!\n"
+                  f"!!! Cause: {_RPY_MAP_STATUS}\n"
+                  + "!" * 78 + "\n")
+        print(banner, file=sys.stderr, flush=True)
+        print(banner, flush=True)
+    return _RPY_BY_SOURCE
+
+
+def rpy_basis_banner():
+    """Page-level HTML banner when the filing-frequency basis is degraded/unbuilt; '' when ok."""
+    if _RPY_MAP_STATUS == 'ok':
+        return ''
+    return ('<div class="basis-warning"><strong>⚠ REPORTING-BASIS WARNING —</strong> the '
+            'filing-frequency classification is unavailable, so every company is treated as a '
+            'quarterly filer. For any SEMI-ANNUAL filer the "TTM" figures on this page sum '
+            'TWENTY-FOUR months (Sloan accruals, FFO/share, P/FFO) and are compared against '
+            'twelve-month bars, so those numbers and their 🚩/verdict icons are NOT reliable '
+            f'for such names. Status: {escape(_RPY_MAP_STATUS)}.</div>')
+
+
+def rpy_for_source(source):
+    """rows_per_year for a source name; 4 (quarterly) when unknown."""
+    v = _RPY_BY_SOURCE.get(source, 4)
+    try:
+        v = int(v)
+    except (TypeError, ValueError):
+        return 4
+    return v if v in (2, 4) else 4
+
+
+def _rpy_from_frame(df):
+    """rows_per_year inferred from a per-source frame's own 'source' column (4 if absent)."""
+    if df is None or not hasattr(df, 'columns') or 'source' not in df.columns or not len(df):
+        return 4
+    s = df['source'].dropna()
+    return rpy_for_source(s.iloc[0]) if len(s) else 4
+
+
+def ttm_sum(df, col, rpy=None):
+    """Trailing-TWELVE-MONTH sum: the newest `rpy` rows (4 quarterly / 2 semi-annual) after a
+    newest-first sort. `rpy=None` derives it from the frame's own 'source' column; pass it
+    explicitly where the frame carries no 'source' (e.g. the extended-pool reducer)."""
     if df is None or df.empty or col not in df.columns:
         return np.nan
-    values = df[col].dropna().head(4).values
+    if rpy is None:
+        rpy = _rpy_from_frame(df)
+    values = df[col].dropna().head(int(rpy)).values
     if len(values) == 0:
         return np.nan
     return float(np.sum(values))
 
 
-def ttm_aligned_sums(df, cols):
-    """Trailing-12-month sums for several columns computed over the SAME set of quarters
-    (the newest 4 rows where EVERY listed column is non-NaN). Unlike calling ttm_sum per
-    column -- which drops NaNs independently and can sum DIFFERENT quarters per column --
+def ttm_aligned_sums(df, cols, rpy=None):
+    """Trailing-12-month sums for several columns computed over the SAME set of periods
+    (the newest `rpy` rows where EVERY listed column is non-NaN). Unlike calling ttm_sum per
+    column -- which drops NaNs independently and can sum DIFFERENT periods per column --
     this keeps a paired sum (e.g. R2's netIncome vs operating cash flow) aligned on one
     consistent period set. Returns a tuple of floats (np.nan where unavailable), in `cols`
-    order. `df` is assumed newest-first (get_cdx_for_ticker's order)."""
-    n = len(cols)
+    order. `df` is assumed newest-first (get_cdx_for_ticker's order). `rpy=None` -> derived
+    from the frame's 'source' column (4 = quarterly when unknown)."""
     if df is None or df.empty or any(c not in df.columns for c in cols):
         return tuple(np.nan for _ in cols)
-    sub = df[cols].dropna()          # rows where ALL cols present -> aligned quarters
+    if rpy is None:
+        rpy = _rpy_from_frame(df)
+    sub = df[cols].dropna()          # rows where ALL cols present -> aligned periods
     if sub.empty:
         return tuple(np.nan for _ in cols)
-    sub = sub.head(4)
+    sub = sub.head(int(rpy))
     return tuple(float(sub[c].sum()) for c in cols)
+
+
+def net_debt_to_ebitda_annual(df, rpy=None):
+    """Net debt / ANNUAL EBITDA -- the standard multiple a "> 4x" bar is written for.
+
+    cdx_df's netDebtToEBITDA divides a point-in-time net-debt STOCK by a single period's
+    EBITDA, so the raw field reads ~4x high for a quarterly filer and ~2x for a semi-annual
+    one. Stage-1 already corrects it (reporting_period.STAGE1_FLOW_CORRECTION marks it
+    'flow_den'/'annualize'); the presentation did not, so it printed a per-quarter multiple
+    as "x" and fired R4's "> 4x" leverage limb on ~2.4x as many names as intended
+    (measured on the saved panel: raw median 3.348 / 47.1% over 4, vs annualized 0.837 /
+    20.0%). We reuse the pipeline's own factor so both agree by construction."""
+    raw = latest_row_value(df, 'netDebtToEBITDA')
+    if np.isnan(raw):
+        return np.nan
+    if rpy is None:
+        rpy = _rpy_from_frame(df)
+    try:
+        import reporting_period as rp
+        f = rp.stage1_flow_factor('netDebtToEBITDA', rpy)      # = 1 / annualize_factor(rpy)
+    except Exception:
+        f = 1.0 / float(int(rpy) or 4)
+    return raw * f
 
 
 def latest_row_value(df, col):
@@ -206,23 +350,24 @@ def compute_operating_margin(df):
     return op_inc / rev
 
 
-def compute_fcf_margin_ttm(df):
-    """Compute TTM FCF margin (TTM FCF / TTM revenue)."""
+def compute_fcf_margin_ttm(df, rpy=None):
+    """Compute TTM FCF margin (TTM FCF / TTM revenue). RATIO-CANCELLING w.r.t. the window
+    (both sums span the same periods), but the window is still made a true 12 months."""
     if df is None or df.empty:
         return np.nan
-    fcf_ttm = ttm_sum(df, 'freeCashFlow')
-    rev_ttm = ttm_sum(df, 'revenue')
+    fcf_ttm = ttm_sum(df, 'freeCashFlow', rpy)
+    rev_ttm = ttm_sum(df, 'revenue', rpy)
     if np.isnan(fcf_ttm) or np.isnan(rev_ttm) or rev_ttm == 0:
         return np.nan
     return fcf_ttm / rev_ttm
 
 
-def compute_cash_conversion(df):
-    """Compute cash conversion (TTM FCF / TTM netIncome)."""
+def compute_cash_conversion(df, rpy=None):
+    """Compute cash conversion (TTM FCF / TTM netIncome). RATIO-CANCELLING w.r.t. the window."""
     if df is None or df.empty:
         return np.nan
-    fcf_ttm = ttm_sum(df, 'freeCashFlow')
-    ni_ttm = ttm_sum(df, 'netIncome')
+    fcf_ttm = ttm_sum(df, 'freeCashFlow', rpy)
+    ni_ttm = ttm_sum(df, 'netIncome', rpy)
     if np.isnan(fcf_ttm) or np.isnan(ni_ttm) or ni_ttm == 0:
         return np.nan
     return fcf_ttm / ni_ttm
@@ -239,12 +384,14 @@ def compute_interest_coverage(df):
     return op_inc / int_exp
 
 
-def compute_ffo_per_share(df):
-    """REIT FFO per share (proxy): (netIncome + D&A) / weightedAverageShsOut (TTM)."""
+def compute_ffo_per_share(df, rpy=None):
+    """REIT FFO per share (proxy): (netIncome + D&A) / weightedAverageShsOut (TTM).
+    A LEVEL (not ratio-cancelling): it flows into P/FFO against a point-in-time market cap,
+    so a 24-month sum would understate P/FFO for a semi-annual filer."""
     if df is None or df.empty:
         return np.nan
-    ni_ttm = ttm_sum(df, 'netIncome')
-    da_ttm = ttm_sum(df, 'depreciationAndAmortization')
+    ni_ttm = ttm_sum(df, 'netIncome', rpy)
+    da_ttm = ttm_sum(df, 'depreciationAndAmortization', rpy)
     shares = latest_row_value(df, 'weightedAverageShsOut')
     if np.isnan(ni_ttm) or np.isnan(da_ttm) or np.isnan(shares) or shares == 0:
         return np.nan
@@ -521,25 +668,45 @@ _EXT_CDX_COLS = ['date', 'revenue', 'operatingIncome', 'freeCashFlow', 'netIncom
 # TLtoEquity are stored as (threshold - ratio), so a HIGHER value is GOOD -> '↑ better'.
 ORIENTATION = {
     # -- Composites --
-    'AggScore':   ('unbounded (emp −0.47…0.40)', '↑ better',
-                   'Stage-2 weighted sum of z-scored metrics'),
-    'moatScore':  ('0–11 (emp 2–6 in top-100)', '↑ better',
-                   'count of 11 quality boxes ticked'),
+    # RANGE-FREE on purpose (domain S7): the old 'emp -0.47...0.40' band was measured on the
+    # GENERAL pool only, while cohort pages score on per-cohort weight vectors whose scale
+    # differs (cohort AggScores ran ~+5 pre-normalisation), so any fixed band asserts a false
+    # ceiling on one pool or the other. Comparable WITHIN a pool; not across pools.
+    'AggScore':   ('unbounded · pool-relative', '↑ better',
+                   'Stage-2 weighted sum of z-scored metrics. Scale depends on the weight '
+                   'vector of the pool, so compare AggScore only against names in the SAME pool '
+                   '(general vs a carve cohort), never across pools or against a fixed band.'),
+    'moatScore':  ('0–11 (emp 1–7 typical, median 3)', '↑ better',
+                   'count of 11 quality boxes ticked; range is the POST-ANNUALIZATION scale '
+                   '(5 of the 11 components compared a quarterly ratio against an annual bar '
+                   'and were structurally near-unpassable until the 2026-07-25 fix, so scores '
+                   'from runs before that fetch sit lower — max now reaches 10–11)'),
     # -- Forensic (Sections F / G) --
     'M-Score':      ('stored Beneish+1.78', '↓ better (>0 flags)',
                      'earnings-manipulation index'),
-    'C-Score':      ('0–6', '↓ better (≥4 flag, 0 clean)',
-                     'count of 6 accounting red flags'),
+    'C-Score':      ('0–5', '↓ better (≥4 of 5 flags, 0 clean)',
+                     'count of 5 Montier accounting red flags. The sixth flag -- the '
+                     'depreciation-rate test -- was REMOVED from the scored set entirely: it '
+                     'needs GROSS property/plant/equipment as its denominator, a field FMP does '
+                     'not carry on the standard balance sheet, so it fired by construction. '
+                     'The ≥4 cutoff is UNCHANGED and is therefore '
+                     'now ≥4 of 5 -- deliberately stricter than published Montier, because on '
+                     'an advisory flag a false positive costs more than a false negative.'),
     'sloanAccruals':('ratio', '↓ better (low/neg = cash-backed)',
                      'balance-sheet accruals; pipeline flag = worst quintile in-run, not absolute'),
     'incomeQuality':('≈1 neutral (emp −13.8…8.0)', '↑ better (≈>1 good)',
                      'CFO/NI; noisy near NI≈0'),
-    # 2026-07-19 soundness audit: the pipeline's computed variant DEVIATES from published
-    # Altman-Z (wrong x2 variable, quarter-scale flow terms), so the published 1.8/3.0
-    # thresholds do not apply to the quantity we compute -> no hard verdict, relative-only.
+    # Soundness audit (2026-07-19, re-derived 2026-07-26 on the CURRENT code): the computed
+    # variant is NOT published Altman-Z. The quarter-scale flow half of the original finding is
+    # FIXED; what remains is that the statistic is ~ONE TERM -- 0.6*x4 (market cap / total
+    # liabilities) is 66.5% of the score with corr 0.997 to Z -- plus the wrong x2 variable.
+    # A near-single-ratio leverage measure, so the published 1.8/3.0 cutoffs do not apply.
     'Altman-Z':     ('relative-only (uncalibrated)', '↑ better',
-                     'computed variant deviates from published Altman-Z — thresholds not '
-                     'calibrated; treat as relative-only pending fix'),
+                     'computed variant is NOT published Altman-Z: the 0.6*x4 term '
+                     '(market cap / total liabilities) alone is ~66.5% of the score and '
+                     'correlates 0.997 with it, so this behaves as essentially ONE '
+                     'leverage term, not a five-factor Z. The 1.8/3.0 cutoffs do not '
+                     'apply to it — treat as relative-only pending a fix'),
     'Piotroski':    ('0–9 (≥7 strong, ≤3 weak)', '↑ better',
                      'count of 9 fundamental-improvement tests'),
     'CycleHeat':    ('[−3,3]', '↓ better (penalized, w=−0.080)',
@@ -597,9 +764,10 @@ BENCHMARKS = {
     'sloan': dict(tick=0.10, warn=('>', 0.10),
                          note='rule-of-thumb: > 0.10 flag (high accruals); low/neg = cash-backed (non-financial)',
                          suppress=_FIN),
-    # 'Altman-Z' DELIBERATELY ABSENT (2026-07-19 soundness audit): the pipeline's computed
-    # variant deviates from published Altman-Z (wrong x2 variable, quarter-scale flow terms),
-    # so 1.8/3.0 are not calibrated for the quantity we compute. No tick is drawn on its peer
+    # 'Altman-Z' DELIBERATELY ABSENT (soundness audit; re-derived 2026-07-26): the computed
+    # variant is dominated by ONE term -- 0.6*x4 (market cap / total liabilities) is 66.5% of
+    # the score, corr 0.997 -- plus the wrong x2 variable, so it is not the published
+    # five-factor statistic and 1.8/3.0 are not calibrated for it. No tick is drawn on its peer
     # bar and no verdict is derived from it -- the bar shows the PEER DISTRIBUTION ONLY
     # (relative-only). Do not restore a tick/threshold here without a recalibration decision.
     'Piotroski': dict(tick=3, warn=('<=', 3), good=('>=', 7),
@@ -609,7 +777,7 @@ BENCHMARKS = {
                          note='rule-of-thumb: stored >0 flags (Beneish>−1.78); invalid financials',
                          suppress=_FIN),
     'C-Score': dict(tick=None, warn=('>=', 4),
-                         note='rule-of-thumb: ≥4 flag · 0 clean; invalid financials',
+                         note='rule-of-thumb: ≥4 of 5 flags fired · 0 clean; stricter than published Montier by design; invalid financials',
                          suppress=_FIN),
 }
 
@@ -689,13 +857,14 @@ VERDICT_RULES = {
     'returnOnCapitalEmployed': dict(good='high', green=0.15, red=0.10, note='rule-of-thumb: >15% strong · <10% weak · 10–15% borderline (non-financial)', suppress=_FIN),
     'interest_coverage':       dict(good='high', green=3.3,  red=2.7,  note='rule-of-thumb: >3× ok · <3× flag · 2.7–3.3 borderline (non-financial)', suppress=_FIN),
     'sloan':                   dict(good='low',  green=0.09, red=0.11, note='rule-of-thumb: ≤0.10 cash-backed · >0.10 high-accrual flag · 0.09–0.11 borderline (non-financial)', suppress=_FIN),
-    # Altman-Z DELIBERATELY ABSENT (2026-07-19 soundness audit): the computed variant
-    # deviates from published Altman-Z, so 1.8/3.0 are not calibrated for it -> it is listed
+    # Altman-Z DELIBERATELY ABSENT (soundness audit; re-derived 2026-07-26): the computed
+    # variant is ~one term (0.6*x4 = mcap/total-liabilities, 66.5% of the score, corr 0.997),
+    # not the published five-factor Z, so 1.8/3.0 are not calibrated for it -> it is listed
     # in VERDICT_GRAY (⚪, relative-only) until the pipeline metric is fixed. Do not restore
     # a threshold verdict here without a recalibration decision.
     'Piotroski':               dict(good='high', green=7,    red=4,    note='rule-of-thumb: ≥7 strong · ≤3 weak · 4–6 middling'),
     'M-Score':                 dict(good='low',  green=-0.5, red=0.5,  note='rule-of-thumb: stored ≤0 clean · >0 flag · −0.5…+0.5 borderline (invalid financials)', suppress=_FIN),
-    'C-Score':                 dict(good='low',  green=0.5,  red=3.5,  note='rule-of-thumb: 0 clean · ≥4 flag · 1–3 borderline (invalid financials)', suppress=_FIN),
+    'C-Score':                 dict(good='low',  green=0.5,  red=3.5,  note='rule-of-thumb (out of 5 flags): 0 clean · ≥4 of 5 flag · 1–3 borderline; ≥4-of-5 is stricter than published Montier by design (invalid financials)', suppress=_FIN),
     'incomeQuality':           dict(good='high', green=0.9,  red=0.7,  note='rule-of-thumb: ≥0.9 cash-backed · <0.7 flag · 0.7–0.9 borderline (non-financial)', suppress=_FIN),
 }
 # A.1 floor rules: 🔴 on the bad side, else ⚪ (no positive standalone rule).
@@ -716,7 +885,29 @@ VERDICT_GRAY = {
     'freeCashFlowPerShareGrowth', 'net_debt_ebitda', 'CycleHeat', 'AggScore', 'moatScore',
     'p_ffo', 'ffo_per_share', 'ltv', 'nav',
 }
-_MOAT_NEAR_ZERO = 0.02   # |stored (mean−threshold)| below this -> 🟡 "near its bar"
+# Moat comparators are stored as (value − threshold) [or (threshold − value) for the four
+# "lower is better" ones], so 0 IS the bar. The 🟡 "sitting on its bar" band must therefore be
+# PROPORTIONATE TO EACH COMPARATOR'S OWN THRESHOLD -- a flat ±0.02 meant "within 20% of the
+# bar" for RoA (bar 0.10) but "within 2.5%" for TLtoEquity (bar 0.8), so amber did not mean the
+# same thing across the eleven (measured amber share: RoA 23.3% vs TLtoEquity 2.2%). Thresholds
+# below are the pipeline's own (postBo.moatIdentifier): value − thr, or thr − value.
+MOAT_THRESHOLDS = {
+    'FCFyield': 0.10, 'GrossMargin': 0.30, 'RevtoASS': 0.75, 'RoE': 0.15, 'RoA': 0.10,
+    'ROIC': 0.15, 'SGAtoGP': 0.15, 'DeptoGP': 0.10, 'NetMargin': 0.20,
+    'CapExtoEarnings': 0.20, 'TLtoEquity': 0.80,
+}
+# "on its bar" = within this FRACTION of the comparator's own threshold.
+MOAT_NEAR_ZERO_FRAC = 0.05
+_MOAT_NEAR_ZERO = 0.02   # legacy flat fallback (only for a comparator with no known threshold)
+
+
+def moat_near_zero_band(component):
+    """Half-width of the 🟡 'on its bar' band for one moat comparator: a fixed FRACTION of
+    that comparator's own threshold, so amber means the same thing on all eleven."""
+    thr = MOAT_THRESHOLDS.get(component)
+    if thr is None or not np.isfinite(thr) or thr == 0:
+        return _MOAT_NEAR_ZERO
+    return abs(thr) * MOAT_NEAR_ZERO_FRAC
 
 # Suspicion-flag confidence tiers (static per rule; "flag the flag").
 FLAG_TIERS = {'R1': 'M', 'R2': 'H', 'R3': 'H', 'R4': 'M', 'R5': 'L', 'R6': 'M', 'R7': 'L'}
@@ -774,11 +965,16 @@ def compute_verdict(metric_key, value, cohort_label=None, low_conf=False):
         v = safe_float(value)
         if np.isnan(v):
             return 'gray', 'value unavailable'
-        if v > _MOAT_NEAR_ZERO:
-            return 'good', 'moat component passes its bar (stored mean−threshold > 0)'
-        if v < -_MOAT_NEAR_ZERO:
-            return 'warn', 'moat component fails its bar (stored mean−threshold < 0)'
-        return 'neutral', 'moat component sits right at its bar (stored mean−threshold ≈ 0)'
+        comp = metric_key.split(':', 1)[1]
+        band = moat_near_zero_band(comp)                      # proportionate to its own bar
+        thr = MOAT_THRESHOLDS.get(comp)
+        margin = (f' (bar {thr:g}; amber within ±{MOAT_NEAR_ZERO_FRAC:.0%} of it)'
+                  if thr is not None else '')
+        if v > band:
+            return 'good', f'moat component passes its bar (stored value−threshold > 0){margin}'
+        if v < -band:
+            return 'warn', f'moat component fails its bar (stored value−threshold < 0){margin}'
+        return 'neutral', f'moat component sits ON its bar (stored value−threshold ≈ 0){margin}'
     return None, None
 
 
@@ -797,18 +993,40 @@ def _winsorize(arr, p=1.0):
     return np.clip(arr, lo, hi)
 
 
-def _sloan_recomputed(g):
-    """Sloan accruals over cdx_df: (TTM netIncome - TTM operating cash flow)/latest assets."""
-    ni = ttm_sum(g, 'netIncome')
-    cfo = ttm_sum(g, 'netCashProvidedByOperatingActivities')
-    ta = latest_row_value(g, 'totalAssets')
-    if np.isnan(ni) or np.isnan(cfo) or np.isnan(ta) or ta == 0:
+def _sloan_recomputed(g, rpy=None):
+    """Sloan accruals = (NI_ttm − CFO_ttm) / AVERAGE total assets over the same 12 months.
+
+    ONE DEFINITION (code S5): this now matches the pipeline's canonical
+    forensicFlags.computeSloanAccruals exactly -- TTM flows over the AVERAGE of beginning- and
+    end-of-window total assets (Sloan's original form). It previously divided by the LATEST
+    total assets, so the number under the bar, the peer bar itself, the 🚩/verdict and the
+    'shortlist CSV' row shown beside it were TWO different quantities sharing one name and one
+    0.10 bar. Denominator averaging matters for a grower: assets rise over the window, so
+    latest-TA understates accruals versus the canonical measure.
+
+    NOT ratio-cancelling: a 12-month FLOW difference over a STOCK, compared to an absolute
+    12-month bar (0.10) -- so the window must be a true year (reviewer R-N2): `rpy` rows.
+    Falls back to latest total assets when there is no one-year-earlier asset level (keeps the
+    name in the peer pool rather than dropping it; the pipeline returns NaN there instead)."""
+    ni = ttm_sum(g, 'netIncome', rpy)
+    cfo = ttm_sum(g, 'netCashProvidedByOperatingActivities', rpy)
+    if np.isnan(ni) or np.isnan(cfo) or 'totalAssets' not in getattr(g, 'columns', []):
         return np.nan
-    return (ni - cfo) / ta
+    if rpy is None:
+        rpy = _rpy_from_frame(g)
+    ta_series = pd.to_numeric(g['totalAssets'], errors='coerce').dropna()   # newest-first
+    if ta_series.empty:
+        return np.nan
+    ta_end = float(ta_series.iloc[0])
+    ta_begin = float(ta_series.iloc[int(rpy)]) if len(ta_series) > int(rpy) else np.nan
+    avg_ta = (ta_end + ta_begin) / 2.0 if not np.isnan(ta_begin) else ta_end
+    if np.isnan(avg_ta) or avg_ta == 0:
+        return np.nan
+    return (ni - cfo) / avg_ta
 
 
-def _p_ffo_reducer(g):
-    ffo_ps = compute_ffo_per_share(g)
+def _p_ffo_reducer(g, rpy=None):
+    ffo_ps = compute_ffo_per_share(g, rpy)
     shares = latest_row_value(g, 'weightedAverageShsOut')
     mktcap = latest_row_value(g, 'marketCap')
     if np.isnan(ffo_ps) or np.isnan(shares) or np.isnan(mktcap) or ffo_ps * shares == 0:
@@ -816,30 +1034,37 @@ def _p_ffo_reducer(g):
     return mktcap / (ffo_ps * shares)
 
 
-def _affo_payout_reducer(g):
-    div = abs(ttm_sum(g, 'dividendsPaid'))
-    ffo = ttm_sum(g, 'netIncome') + ttm_sum(g, 'depreciationAndAmortization')
-    capex = ttm_sum(g, 'netCashProvidedByOperatingActivities') - ttm_sum(g, 'freeCashFlow')
+def _affo_payout_reducer(g, rpy=None):
+    # RATIO-CANCELLING (12-month dividends over a 12-month AFFO), but windowed correctly too.
+    div = abs(ttm_sum(g, 'dividendsPaid', rpy))
+    ffo = ttm_sum(g, 'netIncome', rpy) + ttm_sum(g, 'depreciationAndAmortization', rpy)
+    capex = ttm_sum(g, 'netCashProvidedByOperatingActivities', rpy) - ttm_sum(g, 'freeCashFlow', rpy)
     denom = ffo - capex
     if np.isnan(div) or np.isnan(denom) or denom <= 0:
         return np.nan
     return div / denom
 
 
-def _ext_reducer(g):
+def _ext_reducer(g, rpy=None):
     """Per-source extended metrics, using the SAME helpers as the per-name markers so the
-    pool value and the displayed marker are identical."""
+    pool value and the displayed marker are identical.
+
+    `rpy` MUST be passed here: the group frame this receives is column-selected and carries
+    NO 'source' column, so the frame-derived fallback cannot see the filing frequency and
+    would silently treat a semi-annual filer as quarterly (reviewer R-N2)."""
     return pd.Series({
         'op_margin': compute_operating_margin(g),
-        'fcf_margin': compute_fcf_margin_ttm(g),
+        'fcf_margin': compute_fcf_margin_ttm(g, rpy),
         'interest_coverage': compute_interest_coverage(g),
-        'net_debt_ebitda': latest_row_value(g, 'netDebtToEBITDA'),
+        # ANNUAL multiple (see net_debt_to_ebitda_annual): the pool, the marker, the displayed
+        # number and the "> 4x" triggers must all be the same annual quantity.
+        'net_debt_ebitda': net_debt_to_ebitda_annual(g, rpy),
         'effective_tax': _clip01(latest_row_value(g, 'effectiveTaxRate')),
         'dso': latest_row_value(g, 'daysSalesOutstanding'),
         'inv_days': latest_row_value(g, 'daysOfInventoryOutstanding'),
-        'sloan': _sloan_recomputed(g),
-        'p_ffo': _p_ffo_reducer(g),
-        'affo_payout': _affo_payout_reducer(g),
+        'sloan': _sloan_recomputed(g, rpy),
+        'p_ffo': _p_ffo_reducer(g, rpy),
+        'affo_payout': _affo_payout_reducer(g, rpy),
         'ltv': compute_ltv_proxy(g),
     })
 
@@ -883,6 +1108,7 @@ def build_extended_pools(data):
     try:
         membership = build_cohort_membership(data)
         cdx = data['cdx_df']
+        build_rpy_map(cdx)          # filing-frequency map for the TTM helpers (R-N2)
         cols = [c for c in _EXT_CDX_COLS if c in cdx.columns] + ['source']
         c = cdx[cols].copy()
         c['date'] = pd.to_datetime(c['date'], errors='coerce')
@@ -892,7 +1118,15 @@ def build_extended_pools(data):
             all_members |= set(lst)
         sub = c[c['source'].isin(all_members)]
         value_cols = [x for x in cols if x != 'source']
-        per = sub.groupby('source', sort=False)[value_cols].apply(_ext_reducer)
+        # Explicit per-source loop (not .apply): the reducer needs each source's rows_per_year
+        # and the column-selected group frame carries no 'source' column to derive it from.
+        _rows = {src: _ext_reducer(grp[value_cols], rpy_for_source(src))
+                 for src, grp in sub.groupby('source', sort=False)}
+        per = (pd.DataFrame.from_dict(_rows, orient='index') if _rows
+               else pd.DataFrame(columns=[
+                   'op_margin', 'fcf_margin', 'interest_coverage', 'net_debt_ebitda',
+                   'effective_tax', 'dso', 'inv_days', 'sloan', 'p_ffo', 'affo_payout', 'ltv']))
+        per.index.name = 'source'
 
         # Merge the non-dup moat components (markers + pools) from moatdf.
         moatdf = data.get('moatdf')
@@ -1087,6 +1321,7 @@ def compute_cohort_percentiles(data):
 
         postrank_df = data['postrank_df']
         cdx_df = data['cdx_df']
+        build_rpy_map(cdx_df)       # filing-frequency map for the TTM helpers (R-N2)
         moatdf = data.get('moatdf')
         carveout = data.get('carveout_sidelists', {})
 
@@ -1100,6 +1335,21 @@ def compute_cohort_percentiles(data):
 
         # Raw playbook-metric pools per cohort (from cdx_df, moatScore merged).
         dist_pools = rr.full_membership_pools(membership, cdx_df, moatdf=moatdf)
+
+        def _annualize_display(df):
+            """Per-quarter -> ANNUAL for the flow/stock metrics, for DISPLAY (see
+            ANNUALIZED_DISPLAY_METRICS). Uniform scale => percentiles/dot positions invariant."""
+            if df is None or not hasattr(df, 'columns'):
+                return df
+            for c in ANNUALIZED_DISPLAY_METRICS:
+                if c in df.columns:
+                    df[c] = pd.to_numeric(df[c], errors='coerce') * ANNUALIZE_DISPLAY_FACTOR
+            return df
+
+        # Annualize BEFORE the p10/p50/p90 stats are derived, so the spread, the percentile
+        # and the marker all sit on the one annual scale.
+        for _lbl in list(dist_pools):
+            dist_pools[_lbl] = _annualize_display(dist_pools[_lbl])
 
         # Cohort p10/p50/p90 lookup for the distribution bars.
         stats_long = rr.cohort_stats_long(dist_pools)
@@ -1115,6 +1365,9 @@ def compute_cohort_percentiles(data):
             all_names |= set(membership.get(cohort_label, []))
         raw_all = rr._pool_raw_fast(list(all_names), cdx_df, nq=16)
         raw_all = rr._merge_moat({'_': raw_all}, moatdf)['_']
+        # SAME annualization as the pools above -- raw_all feeds the markers, raw_metric(),
+        # Section C's displayed values and the verdict/flag rule inputs, so it must match.
+        raw_all = _annualize_display(raw_all)
         if 'source' in raw_all.columns:
             raw_all = raw_all.set_index('source')
 
@@ -1126,7 +1379,15 @@ def compute_cohort_percentiles(data):
 
         def latest_marker(ticker, cdx_col, pool_metric):
             """Raw marker: cdx latest if the metric has a native cdx column, else the
-            reviewReference raw-pool value (e.g. freeCashFlowYield)."""
+            reviewReference raw-pool value (e.g. freeCashFlowYield).
+
+            EXCEPT the POOL_BASIS_MARKERS four (reviewer H2): those are period-corrected in
+            the pool, so their marker is read from `raw_all` -- the same _pool_raw_fast output
+            the pool distribution is built from -- so marker and pool share one basis."""
+            if pool_metric in POOL_BASIS_MARKERS:
+                if ticker in raw_all.index and pool_metric in raw_all.columns:
+                    return safe_float(raw_all.loc[ticker, pool_metric])
+                return np.nan
             if cdx_col is not None:
                 g = cdx_by_ticker.get(ticker)
                 if g is not None and cdx_col in g.columns:
@@ -1348,9 +1609,23 @@ class PresentationBuilder:
         # untouched so no shown number moves.)
         ni_ttm, cfo_ttm = ttm_aligned_sums(cdx, ['netIncome', 'netCashProvidedByOperatingActivities'])
         ni_ttm_rev, rev_ttm = ttm_aligned_sums(cdx, ['netIncome', 'revenue'])
-        roic = L('returnOnCapitalEmployed'); roe = L('returnOnEquity'); roa = L('returnOnAssets')
+        # POOL-BASIS for the four POOL_BASIS_MARKERS: the verdict icon and the flag rules MUST
+        # be computed on the SAME value the page displays beside them (Sections C and G both
+        # show the pool basis now), otherwise the icon contradicts the number it annotates.
+        # BASIS (implemented state -- display-layer annualization): raw_metric() returns the DISPLAY-ANNUALIZED
+        # value -- compute_cohort_percentiles already multiplied ANNUALIZED_DISPLAY_METRICS by
+        # ANNUALIZE_DISPLAY_FACTOR (x4) in both raw_all and the pools. So these are ANNUAL
+        # figures and the A.1 thresholds below (ROIC 0.15/0.10, R1/R4's ROE>0.15) are annual
+        # rules of thumb applied to annual values -- correctly calibrated as-is.
+        # DO NOT re-annualize here: another x4 would make the comparisons x16 too lenient.
+        roic = self.raw_metric(ticker, 'returnOnCapitalEmployed')
+        roe = self.raw_metric(ticker, 'returnOnEquity')
+        roa = self.raw_metric(ticker, 'RoA')
         gm = L('grossProfitMargin'); income_qual = L('incomeQuality')
-        net_debt_ebitda = L('netDebtToEBITDA'); curr_ratio = L('currentRatio')
+        # ANNUAL Net Debt/EBITDA from the extended pool -- the same value Section C displays
+        # and the same basis R4's "> 4x" limb is written for (never the raw per-period field).
+        net_debt_ebitda = self.ext_val(ticker, 'net_debt_ebitda')
+        curr_ratio = L('currentRatio')
         op_margin = compute_operating_margin(cdx)
         fcf_margin = compute_fcf_margin_ttm(cdx)
         cash_conv = compute_cash_conversion(cdx)
@@ -1449,13 +1724,15 @@ class PresentationBuilder:
                 f"Profit without cash: TTM net income {ni_ttm:,.0f} > 0 but TTM operating cash flow "
                 f"{cfo_ttm:,.0f} < 0 — earnings are not turning into cash.")
         # R3 — forensic contradiction on a pick (suppress FIN). M-Score / C-Score limbs ONLY.
-        # The Altman-Z limb was REMOVED (2026-07-19 soundness audit): our computed Z deviates
-        # from published Altman-Z, so a "<1.8" trip is not calibrated evidence of distress.
+        # The Altman-Z limb was REMOVED (soundness audit; re-derived 2026-07-26): our computed
+        # "Z" is ~one leverage term (0.6*x4 = mcap/total-liabilities, 66.5% of the score, corr
+        # 0.997), not the published five-factor statistic, so a "<1.8" trip is not calibrated
+        # evidence of distress.
         # Both remaining limbs are HIGH-tier (the earlier Z-only -> Medium path is gone with it).
         if not is_fin:
             trips = []
             if not np.isnan(m_score) and m_score > 0: trips.append(f"M-Score {m_score:.2f} > 0")
-            if not np.isnan(c_score) and c_score >= 4: trips.append(f"C-Score {c_score:.0f} ≥ 4")
+            if not np.isnan(c_score) and c_score >= 4: trips.append(f"C-Score {c_score:.0f} of 5 ≥ 4")
             if trips:
                 add('R3', ['moatScore', 'returnOnCapitalEmployed', 'grossProfitMargin'] + VAL_KEYS,
                     "Forensic contradiction on a pick: " + "; ".join(trips)
@@ -1727,7 +2004,9 @@ class PresentationBuilder:
 
         elif cohort_label == 'Mining':
             # Mining-specific metrics (raw values from cdx_df, not z-scores)
-            net_debt_ebitda = latest_row_value(cdx_df, 'netDebtToEBITDA')
+            # ANNUAL multiple from the extended pool (= the marker its bar is drawn against
+            # and the basis R4's "> 4x" limb uses); the raw cdx field is per-period.
+            net_debt_ebitda = self.ext_val(ticker, 'net_debt_ebitda')
             fcf = latest_row_value(cdx_df, 'freeCashFlow')
             # CycleHeat IS a poolable playbook metric -> use its RAW reviewReference value
             # (the rank row carries a z-score, not the raw value) so the number matches
@@ -1740,7 +2019,7 @@ class PresentationBuilder:
             <div class="section-c valuation">
                 <h3>Valuation Ratios (Mining)</h3>
                 <table class="metrics-table">
-                    <tr><td><strong>Net Debt/EBITDA</strong></td><td>{ratio_format(net_debt_ebitda)} {nde_bar}</td><td>latest · trailing EBITDA distorts cyclicals</td></tr>
+                    <tr><td><strong>Net Debt/EBITDA (ann.)</strong></td><td>{ratio_format(net_debt_ebitda)}x {nde_bar}</td><td>annual EBITDA · trailing EBITDA distorts cyclicals</td></tr>
                     <tr><td><strong>Free Cash Flow</strong></td><td>{ratio_format(fcf)}</td><td>latest Q (currency, no bar)</td></tr>
                     <tr><td><strong>CycleHeat</strong> {orient_chip('CycleHeat')}</td><td>{ratio_format(cycleheat)} {ch_bar}</td><td>strong signal</td></tr>
                 </table>
@@ -1752,9 +2031,15 @@ class PresentationBuilder:
         elif cohort_label in ['BalanceSheetFin', 'FinManager']:
             # Bank/FinManager metrics (raw values from cdx_df, not z-scores)
             pb = latest_row_value(cdx_df, 'pbRatio')
-            roe = latest_row_value(cdx_df, 'returnOnEquity')
-            # cdx_df's ROA column is 'returnOnAssets' (the pool uses 'RoA').
-            roa = latest_row_value(cdx_df, 'returnOnAssets')
+            # POOL-BASIS (reviewer finding H2 + the display-annualization ruling that sits on
+            # the pipeline's 2026-07-25 period-aware work): ROE/ROA are
+            # POOL_BASIS_MARKERS, so BOTH the displayed number and the dot use the pool's
+            # period-corrected basis (raw_metric -> raw_all -> _pool_raw_fast) -- never the
+            # raw cdx latest row. This keeps Section C identical to Section G for the same
+            # metric on the same page, and the dot can never disagree with the number beside
+            # it. (Per-quarter trajectory is still visible in Section D's sparklines.)
+            roe = self.raw_metric(ticker, 'returnOnEquity')
+            roa = self.raw_metric(ticker, 'RoA')       # pool key is 'RoA' (cdx col: returnOnAssets)
             op_margin = compute_operating_margin(cdx_df)
 
             roe_bar = self.dist_bar(ticker, cohort_label, 'returnOnEquity', marker=roe)
@@ -1768,8 +2053,8 @@ class PresentationBuilder:
                 <h3>Valuation Ratios ({'Bank' if cohort_label == 'BalanceSheetFin' else 'FinManager'})</h3>
                 <table class="metrics-table">
                     <tr><td><strong>P/B</strong></td><td>{ratio_format(pb)}</td><td>latest (see B/P bar, §G)</td></tr>
-                    <tr><td><strong>ROE</strong> {orient_chip('returnOnEquity')}</td><td>{pct_format(roe)} {roe_bar}</td><td>latest</td></tr>
-                    <tr><td><strong>ROA</strong> {orient_chip('RoA')}</td><td>{pct_format(roa)} {roa_bar}</td><td>latest</td></tr>
+                    <tr><td><strong>ROE (ann.)</strong> {orient_chip('returnOnEquity')}</td><td>{pct_format(roe)}{self._vf(ev, 'returnOnEquity')} {roe_bar}</td><td>annualized (pool basis)</td></tr>
+                    <tr><td><strong>ROA (ann.)</strong> {orient_chip('RoA')}</td><td>{pct_format(roa)}{self._vf(ev, 'RoA')} {roa_bar}</td><td>annualized (pool basis)</td></tr>
                     <tr><td><strong>Op Margin</strong></td><td>{pct_format(op_margin)} {opm_bar}</td><td>TTM</td></tr>
                     <tr><td><strong>Effective Tax</strong></td><td>{pct_format(eff_tax)} {efftax_bar}</td><td>latest, clip[0,1]</td></tr>
                 </table>
@@ -1781,8 +2066,9 @@ class PresentationBuilder:
         elif cohort_label == 'InvestmentVehicle':
             # Investment vehicle metrics (raw values from cdx_df, not z-scores)
             pb = latest_row_value(cdx_df, 'pbRatio')
-            roe = latest_row_value(cdx_df, 'returnOnEquity')
-            roic = latest_row_value(cdx_df, 'returnOnCapitalEmployed')
+            # POOL-BASIS for ROE/ROIC (see the Fin block above for the rationale).
+            roe = self.raw_metric(ticker, 'returnOnEquity')
+            roic = self.raw_metric(ticker, 'returnOnCapitalEmployed')
 
             roe_bar = self.dist_bar(ticker, cohort_label, 'returnOnEquity', marker=roe)
             roic_bar = self.dist_bar(ticker, cohort_label, 'returnOnCapitalEmployed', marker=roic)
@@ -1792,8 +2078,8 @@ class PresentationBuilder:
                 <h3>Valuation Ratios (InvestmentVehicle)</h3>
                 <table class="metrics-table">
                     <tr><td><strong>P/B (NAV proxy)</strong></td><td>{ratio_format(pb)}</td><td>disc to NAV</td></tr>
-                    <tr><td><strong>ROE</strong> {orient_chip('returnOnEquity')}</td><td>{pct_format(roe)} {roe_bar}</td><td>latest</td></tr>
-                    <tr><td><strong>ROIC</strong> {orient_chip('returnOnCapitalEmployed')}</td><td>{ratio_format(roic)} {roic_bar}</td><td>latest</td></tr>
+                    <tr><td><strong>ROE (ann.)</strong> {orient_chip('returnOnEquity')}</td><td>{pct_format(roe)}{self._vf(ev, 'returnOnEquity')} {roe_bar}</td><td>annualized (pool basis)</td></tr>
+                    <tr><td><strong>ROIC (ann.)</strong> {orient_chip('returnOnCapitalEmployed')}</td><td>{ratio_format(roic)}{self._vf(ev, 'returnOnCapitalEmployed')} {roic_bar}</td><td>annualized (pool basis)</td></tr>
                 </table>
                 <div class="gap-note">[NAV/holdings composition not obtainable from filter data]</div>
             </div>
@@ -1802,24 +2088,34 @@ class PresentationBuilder:
 
         else:
             # General block (default) - all raw values from cdx_df, not z-scores from postrank
-            roic = latest_row_value(cdx_df, 'returnOnCapitalEmployed')
+            # EXCEPT the POOL_BASIS_MARKERS: ROIC uses the pool's period-corrected basis for
+            # BOTH the number and the dot (see the Fin block above). grossProfitMargin is a
+            # same-period ratio -> annualization cancels -> cdx latest is already on-basis.
+            roic = self.raw_metric(ticker, 'returnOnCapitalEmployed')
             gm = latest_row_value(cdx_df, 'grossProfitMargin')
             op_margin = compute_operating_margin(cdx_df)
             fcf_margin = compute_fcf_margin_ttm(cdx_df)
             cash_conv = compute_cash_conversion(cdx_df)
             income_qual = latest_row_value(cdx_df, 'incomeQuality')
-            net_debt_ebitda = latest_row_value(cdx_df, 'netDebtToEBITDA')
+            # ANNUAL multiple from the extended pool (= the marker its bar is drawn against
+            # and the basis R4's "> 4x" limb uses); the raw cdx field is per-period.
+            net_debt_ebitda = self.ext_val(ticker, 'net_debt_ebitda')
             int_cov = compute_interest_coverage(cdx_df)
             # P/E: general names -> AggScoreTop100['PE-ratio']; fallback / carve names not
-            # in the top-100 CSV -> 1 / earningsYield (cdx latest), guarding non-positive
-            # or NaN earnings (gap-tag rather than emit a garbage negative/huge P/E).
+            # in the top-100 CSV -> 1 / earnings yield, guarding non-positive or NaN earnings
+            # (gap-tag rather than emit a garbage negative/huge P/E).
+            # The fallback uses the ANNUALIZED pool-basis earnYield (raw_metric), NOT the raw
+            # cdx latest row: inverting a per-PERIOD yield produced a P/E inflated by the
+            # annualization factor (a quarterly row's yield is ~1/4 of the annual one, so 1/ey
+            # read ~4x too high). 1 / annual-yield is a genuine annual P/E, and it is correct
+            # for semi-annual filers too (the pool basis normalizes them before we scale).
             pe_ratio = np.nan
             if aggscore_df is not None and not aggscore_df.empty:
                 ag_row = aggscore_df[aggscore_df['source'] == ticker]
                 if not ag_row.empty:
                     pe_ratio = safe_float(ag_row.iloc[0].get('PE-ratio'))
             if np.isnan(pe_ratio):
-                ey = latest_row_value(cdx_df, 'earningsYield')
+                ey = self.raw_metric(ticker, 'earnYield')      # annualized (see above)
                 if not np.isnan(ey) and ey > 0:
                     pe_ratio = 1.0 / ey
             # FCF yield has no native cdx_df column -- source the raw reviewReference pool
@@ -1846,19 +2142,19 @@ class PresentationBuilder:
             <div class="section-c valuation">
                 <h3>Valuation Ratios</h3>
                 <table class="metrics-table">
-                    <tr><td><strong>ROIC/ROCE</strong> {orient_chip('returnOnCapitalEmployed')}</td><td>{ratio_format(roic)}{self._vf(ev, 'returnOnCapitalEmployed')} {roic_bar}</td><td>proxy</td></tr>
+                    <tr><td><strong>ROIC/ROCE (ann.)</strong> {orient_chip('returnOnCapitalEmployed')}</td><td>{ratio_format(roic)}{self._vf(ev, 'returnOnCapitalEmployed')} {roic_bar}</td><td>annualized (pool basis)</td></tr>
                     <tr><td><strong>Gross Margin</strong> {orient_chip('grossProfitMargin')}</td><td>{pct_format(gm)}{self._vf(ev, 'grossProfitMargin')} {gm_bar}</td><td>latest</td></tr>
                     <tr><td><strong>Op Margin</strong></td><td>{pct_format(op_margin)}{self._vf(ev, 'op_margin')} {opm_bar}</td><td>TTM</td></tr>
                     <tr><td><strong>FCF Margin</strong></td><td>{pct_format(fcf_margin)}{self._vf(ev, 'fcf_margin')} {fcfm_bar}</td><td>TTM</td></tr>
                     <tr><td><strong>Cash Conversion</strong></td><td>{ratio_format(cash_conv)}{self._vf(ev, 'cash_conv')}</td><td>TTM FCF / NI</td></tr>
                     <tr><td><strong>Income Quality</strong> {orient_chip('incomeQuality')}</td><td>{ratio_format(income_qual)}{self._vf(ev, 'incomeQuality')} {iq_bar}</td><td>audit</td></tr>
-                    <tr><td><strong>Net Debt/EBITDA</strong></td><td>{ratio_format(net_debt_ebitda)}{self._vf(ev, 'net_debt_ebitda')} {nde_bar}</td><td>latest</td></tr>
+                    <tr><td><strong>Net Debt/EBITDA (ann.)</strong></td><td>{ratio_format(net_debt_ebitda)}x{self._vf(ev, 'net_debt_ebitda')} {nde_bar}</td><td>annual EBITDA</td></tr>
                     <tr><td><strong>Interest Coverage</strong></td><td>{ratio_format(int_cov)}{self._vf(ev, 'interest_coverage')} {intcov_bar}</td><td>op inc / int exp</td></tr>
                     <tr><td><strong>Effective Tax</strong></td><td>{pct_format(eff_tax)} {efftax_bar}</td><td>latest, clip[0,1]</td></tr>
                     <tr><td><strong>Days Sales Outstanding</strong></td><td>{ratio_format(dso)} {dso_bar}</td><td>latest</td></tr>
                     <tr><td><strong>Inventory Days</strong></td><td>{ratio_format(inv_days)} {invd_bar}</td><td>goods cohorts</td></tr>
                     <tr><td><strong>P/E</strong></td><td>{ratio_format(pe_ratio)}{self._vf(ev, 'peRatio')}</td><td>traded or yield inv</td></tr>
-                    <tr><td><strong>FCF Yield</strong> {orient_chip('freeCashFlowYield')}</td><td>{pct_format(fcf_yield)}{self._vf(ev, 'freeCashFlowYield')} {fcfy_bar}</td><td>reviewRef raw (TTM)</td></tr>
+                    <tr><td><strong>FCF Yield (ann.)</strong> {orient_chip('freeCashFlowYield')}</td><td>{pct_format(fcf_yield)}{self._vf(ev, 'freeCashFlowYield')} {fcfy_bar}</td><td>annualized (pool basis)</td></tr>
                 </table>
                 <div class="gap-note">[WACC, EV/EBIT not obtainable from filter data; P/E withheld from peer bar — use earnings-yield bar in Section G]</div>
             </div>
@@ -2030,8 +2326,8 @@ class PresentationBuilder:
             <table class="forensic-table">
                 <tr><td><strong>M-Score</strong> {orient_chip('M-Score')}</td><td>{m_score}{mscore_v}</td></tr>
                 <tr><td><strong>C-Score</strong> {orient_chip('C-Score')}</td><td>{c_score}{cscore_v}</td></tr>
-                <tr><td><strong>Sloan Accruals (shortlist CSV)</strong> {orient_chip('sloanAccruals')}</td><td>{sloan}</td></tr>
-                <tr><td><strong>Sloan Accruals (cohort peer)</strong> {orient_chip('sloanAccruals')}</td><td>{ratio_format(sloan_cohort)}{sloan_vf} {sloan_bar}</td></tr>
+                <tr><td><strong>Sloan Accruals</strong> — pipeline value <span class="pctile">(as-shipped CSV; (NI−CFO)/avg assets)</span> {orient_chip('sloanAccruals')}</td><td>{sloan}<span class="pctile"> · no bar/verdict here — see the peer row below</span></td></tr>
+                <tr><td><strong>Sloan Accruals</strong> — peer-pool recompute <span class="pctile">(same definition: (NI−CFO)/avg assets, 12-mo window; THIS row carries the 0.10 bar, the verdict icon and the 🚩)</span> {orient_chip('sloanAccruals')}</td><td>{ratio_format(sloan_cohort)}{sloan_vf} {sloan_bar}</td></tr>
                 <tr><td><strong>Income Quality</strong> {orient_chip('incomeQuality')}</td><td>{ratio_format(income_qual)}{iq_vf}</td></tr>
                 <tr><td><strong>FCF vs Net Income (TTM)</strong></td><td>FCF: {ratio_format(fcf_ttm)} / NI: {ratio_format(ni_ttm)}</td></tr>
                 <tr><td><strong>Forensic Tag</strong></td><td>{forensic_tag}</td></tr>
@@ -2093,9 +2389,10 @@ class PresentationBuilder:
 
         flags = []
 
-        # Solvency check REMOVED (2026-07-19 soundness audit): it rested on the computed
-        # Altman-Z being < 1.8, but the pipeline's variant deviates from published Altman-Z
-        # (wrong x2 variable, quarter-scale flow terms), so the 1.8 cut is NOT calibrated for
+        # Solvency check REMOVED (soundness audit; re-derived 2026-07-26): it rested on the
+        # computed Altman-Z being < 1.8, but that statistic is ~ONE term (0.6*x4 =
+        # mcap/total-liabilities, 66.5% of the score, corr 0.997) plus a wrong x2 variable --
+        # not the published five-factor Z -- so the 1.8 cut is NOT calibrated for
         # the quantity we compute -- a "Solvency Risk (Z<1.8)" banner was an uncalibrated
         # verdict. Altman-Z is now presented relative-only (⚪ verdict, no tick on its peer
         # bar). The interest-coverage and leverage checks below remain as the solvency signals
@@ -2107,10 +2404,12 @@ class PresentationBuilder:
         if not np.isnan(safe_float(int_cov)) and safe_float(int_cov) < 2:
             flags.append(('RED', 'Low Interest Coverage (<2)'))
 
-        # Leverage check - use raw netDebtToEBITDA from cdx
-        net_debt_ebitda = latest_row_value(cdx, 'netDebtToEBITDA')
+        # Leverage check -- ANNUAL Net Debt/EBITDA (net_debt_to_ebitda_annual). The raw cdx
+        # field is a per-PERIOD multiple, so testing it against the annual "> 4x" bar fired on
+        # ~2.4x as many names as intended (the SECOND hard-coded >4 site; the first is R4).
+        net_debt_ebitda = net_debt_to_ebitda_annual(cdx)
         if not np.isnan(safe_float(net_debt_ebitda)) and safe_float(net_debt_ebitda) > 4:
-            flags.append(('AMBER', 'High Leverage (ND/EBITDA>4)'))
+            flags.append(('AMBER', 'High Leverage (ND/EBITDA>4x, annual)'))
 
         # Dilution check (shares rising 3y)
         shares = cdx['weightedAverageShsOut'].dropna().values
@@ -2221,7 +2520,9 @@ class PresentationBuilder:
                 if bdf is not None and not bdf.empty:
                     band_names[label] = bdf.head(N)['source'].tolist()
 
-        content = """<div class="content">""" + self._icon_legend()
+        # rpy_basis_banner() is '' in the healthy case; it renders a loud page-level warning
+        # if the filing-frequency map degraded (domain N9 -- never a silent basis regression).
+        content = """<div class="content">""" + rpy_basis_banner() + self._icon_legend()
         if banded:
             # PRIMARY: banded partition. Each general-pool name renders once, under its
             # band. cohort_label stays 'general' so cohort-percentile / valuation lookups
@@ -2716,6 +3017,17 @@ nav.sidebar {
     font-size: 0.85em;
     line-height: 1.7;
 }
+.basis-warning {
+    background: #fff3cd;
+    border: 2px solid #b30000;
+    border-radius: 6px;
+    padding: 10px 14px;
+    margin: 0 0 14px 0;
+    font-size: 0.9em;
+    line-height: 1.5;
+    color: #5a3d00;
+}
+
 .icon-legend .leg { margin-right: 12px; white-space: nowrap; }
 .icon-legend .leg-sep { margin-right: 12px; color: #999; }
 .icon-legend .leg-note { margin-top: 4px; color: #666; font-size: 0.95em; }

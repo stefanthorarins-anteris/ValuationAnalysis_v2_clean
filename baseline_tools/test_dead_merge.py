@@ -195,6 +195,61 @@ def test_pit_universe_exchange_matched():
     assert "DEADLSE" not in uni    # non-NA1 dead EXCLUDED (exchange-matched)
 
 
+def _merge_content_case(bm_extra_cols, live_values):
+    """Merge one synthetic dead entity into a live frame whose BoMetric_df carries
+    `bm_extra_cols`, with `live_values` written on the single live row.  Returns the
+    SystemExit message, or None when the gate allowed the merge."""
+    dmdic = _mini_dmdic()
+    bm = dmdic["BoMetric_df"]
+    for c in bm_extra_cols:
+        bm[c] = live_values.get(c, 0.0)
+    dmdic["BoMetric_df"] = bm
+    reg = pd.DataFrame({
+        "symbol": ["ZZZ"], "entity_id": ["ZZZ"], "exchange": ["NASDAQ"],
+        "ipoDate": pd.to_datetime(["2010-01-01"]),
+        "delistedDate": pd.to_datetime(["2022-06-30"])})
+    try:
+        dm.merge_dead_into_dmdic(dmdic, {"ZZZ": _synthetic_entity()}, reg,
+                                 as_of="2020-12-31")
+    except SystemExit as e:
+        return str(e)
+    return None
+
+
+def test_merge_content_gate_scope_is_the_criterion_set():
+    """The merge-content gate must refuse on a column the SCORER READS and must NOT
+    refuse on a retired one.
+
+    `uIncomeQuality` was retired 2026-07-26 (replaced by `CFOlessEarnings`) but still
+    sits in older panels; because the dead side is built by TODAY's code it comes out
+    all-NaN there, which the first version of this gate reported as a generation
+    mismatch and refused on -- blocking a merge that would have scored FINE, since
+    nothing reads the column.  Pin both directions so the scope cannot silently widen
+    back to 'every column in the frame'."""
+    _b, _m, _d, _u, _s = cdic.getBaseMeanDiffUnitySpecialDicts()
+    crit = set(list(_b) + ['m' + k[0].upper() + k[1:] for k in _m]
+               + ['d' + k[0].upper() + k[1:] for k in _d]
+               + ['u' + k[0].upper() + k[1:] for k in _u] + list(_s))
+    assert "uIncomeQuality" not in crit      # retired -> out of scope
+    assert "mSalesToMarketCap" in crit       # scored -> in scope
+
+    # (a) RETIRED column all-NaN on the dead side ONLY -> must NOT refuse.
+    assert _merge_content_case(["uIncomeQuality"], {"uIncomeQuality": 1.0}) is None
+
+    # (b) SCORED criterion all-NaN on the LIVE side -> MUST refuse, and name it.
+    msg = _merge_content_case(["mSalesToMarketCap"], {"mSalesToMarketCap": np.nan})
+    assert msg is not None and "mSalesToMarketCap" in msg
+    assert "uIncomeQuality" not in msg
+
+    # (c) explicit override proceeds on the same known-invalid basis.
+    os.environ["ALLOW_MERGE_CONTENT_MISMATCH"] = "1"
+    try:
+        assert _merge_content_case(["mSalesToMarketCap"],
+                                   {"mSalesToMarketCap": np.nan}) is None
+    finally:
+        del os.environ["ALLOW_MERGE_CONTENT_MISMATCH"]
+
+
 @pytest.mark.skipif(not (os.path.exists(REAL_PICKLE) and os.path.exists(DEAD_PICKLE)
                          and os.path.exists(REGISTRY)),
                     reason="real pickles not present (dev-only)")
@@ -208,7 +263,19 @@ def test_real_override_none_top20_bit_identical():
         dead = pickle.load(f)
     reg = dm.load_registry(REGISTRY)
     D = "2020-12-31"
-    base = s2.reproduce_pit_top(dmdic, D, na1_only=True)
+    # SKIP, do not fail, when the real pickle predates the current metric set.  Since
+    # 2026-07-26 Stage-1 refuses a panel missing a criterion column (calcScore's schema
+    # gate) -- the same posture as the price-basis refusal -- so "bit-identical top-20 on
+    # the 07-13 panel" is no longer assertable BY DESIGN.  The test stays valuable for a
+    # freshly-fetched panel, so it is skipped with the reason rather than deleted or
+    # weakened.
+    try:
+        base = s2.reproduce_pit_top(dmdic, D, na1_only=True)
+    except KeyError as e:
+        if "OLDER version of the metric set" in str(e):
+            pytest.skip("real pickle predates the current metric set (Stage-1 schema gate): "
+                        + str(e)[:120])
+        raise
     merged, _ = dm.merge_dead_into_dmdic(dmdic, dead, reg, as_of=D,
                                          entities=list(dead.keys())[:40])
     got = s2.reproduce_pit_top(merged, D, na1_only=True, universe_override=None)

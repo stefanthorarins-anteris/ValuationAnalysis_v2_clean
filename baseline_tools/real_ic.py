@@ -89,9 +89,9 @@ def profit_timing_real(dmdic, panel, real):
     D, D1, D3 = "2020-12-28", "2022-12-27", "2024-12-28"
     with contextlib.redirect_stdout(io.StringIO()):
         bm0, cdx0 = s2.prepare_pit(dmdic, D, na1_only=False)
-        top0 = s2.stage2_top(s2.stage1_boscore(bm0), cdx0)
+        top0 = s2.stage2_top(s2.stage1_boscore(bm0, cdx_pit=cdx0), cdx0)
         bm1, cdx1 = s2.prepare_pit(dmdic, D1, na1_only=False)
-        top1 = s2.stage2_top(s2.stage1_boscore(bm1), cdx1)
+        top1 = s2.stage2_top(s2.stage1_boscore(bm1, cdx_pit=cdx1), cdx1)
     ex = [s for s in top0 if s not in set(top1)]
     st = [s for s in top0 if s in set(top1)]
 
