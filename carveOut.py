@@ -501,9 +501,31 @@ def _is_known_sector(sec):
     return bool(sec) and sec not in _UNKNOWN_SECTORS
 
 
+#  REPO-ROOT anchor for the undated data pickles (fix, 2026-07-27).
+#  `sectorsdic_fmp.pickle` was resolved as a BARE RELATIVE PATH, i.e. against the CALLER'S
+#  CWD.  Every shipped caller happens to run from the repo root, so this never bit in
+#  production -- but any tool invoked from a subdirectory (e.g. `python baseline_tools/x.py`
+#  executed while cd'd into baseline_tools) silently got an EMPTY sector map, which makes
+#  partition_universe raise, which sends its callers down their carve FALLBACK path and
+#  emits a NON-CARVED, NON-DEDUPED top-100 under the normal filenames.  The data file lives
+#  next to this module, so resolve it from here and stop depending on where the process
+#  happens to be standing.
+_MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+def _resolve_repo_data(path):
+    """Resolve an undated repo data file: absolute/found-as-given wins, else repo-root."""
+    if os.path.isabs(path) or os.path.exists(path):
+        return path
+    cand = os.path.join(_MODULE_DIR, path)
+    return cand if os.path.exists(cand) else path
+
+
 def _load_sector_map(sector_pickle='sectorsdic_fmp.pickle'):
     """symbol -> sector, from the local sector pickle (dict sector -> [symbols]).
-    Reuses the forensicFlags convention.  Returns {} if the pickle is absent."""
+    Reuses the forensicFlags convention.  Returns {} if the pickle is absent.
+    Path is resolved against the REPO ROOT, not the CWD (see _resolve_repo_data)."""
+    sector_pickle = _resolve_repo_data(sector_pickle)
     try:
         from forensicFlags import _load_sector_map as _ff_load
         return _ff_load(sector_pickle)
@@ -528,8 +550,13 @@ def _load_industry_map(industry_pickle=None):
     import glob
     path = industry_pickle
     if not path:
-        cands = sorted(glob.glob('industrydic_fmp_*.pickle'))
+        # Glob the REPO ROOT, not the CWD -- same defect class as the sector map above.
+        cands = sorted(glob.glob(os.path.join(_MODULE_DIR, 'industrydic_fmp_*.pickle')))
+        if not cands:
+            cands = sorted(glob.glob('industrydic_fmp_*.pickle'))
         path = cands[-1] if cands else None
+    else:
+        path = _resolve_repo_data(path)
     if not path or not os.path.exists(path):
         return {}
     d = pd.read_pickle(path)

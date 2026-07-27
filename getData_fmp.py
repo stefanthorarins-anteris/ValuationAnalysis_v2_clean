@@ -82,51 +82,11 @@ def get_fundamentals_fmp(Tickers_df, cdx_df, BoMetric_df, baseurl,
                     pricefail.append(ticker)
                     pricefailESN.append(row.exchangeShortName)
                 else:
-                    tempdf = pd.DataFrame()
-                    tempdf['date'] = tempfund['date']
-                    # need to lag denominator for Assets, Investment and such [determined before t]
-
-                    ratioOpCalcDicts = {**BoMetric_base_dict, **BoMetric_mean_dict, **BoMetric_unity_dict, **BoMetric_diff_dict}
-                    for key in ratioOpCalcDicts:
-                        restr = key
-                        strUp = ratioOpCalcDicts[key]['Upper']
-                        strDn = ratioOpCalcDicts[key]['Lower']
-                        tf = cm.calc_simpleRatio(tempfund, strUp, strDn)
-                        # FLOW-SCALE CORRECTION (specialist annualization ruling, 2026-07-25).
-                        # A semi-annual row's flow covers 6 months, so any flow/stock or
-                        # stock/flow Stage-1 ratio reads ~2x (or ~0.5x) purely from the
-                        # reporting convention.  reporting_period decides which keys are
-                        # affected, which LEG the flow is on, and whether the test's threshold
-                        # is absolute (true annualisation) or scale-free (per-quarter basis).
-                        # Factor is exactly 1.0 for every unaffected key and for quarterly
-                        # names on the scale-free keys -> no-op.
-                        _ff = rp.stage1_flow_factor(key, _rpy_t)
-                        if _ff != 1.0:
-                            tf = [(v * _ff) if v is not None else v for v in tf]
-                        if key in BoMetric_base_dict:
-                            tempMetric_df[restr] = tf
-                        if key in BoMetric_mean_dict:
-                            mrestr = "m" + restr[0].upper() + restr[1:]
-                            tempMetric_df[mrestr] = tf
-                        if key in BoMetric_unity_dict:
-                            urestr = "u" + restr[0].upper() + restr[1:]
-                            tempMetric_df[urestr] = tf
-                        if key in BoMetric_diff_dict:
-                            tempdf['forDiff'] = tf
-                            tf = cm.calc_diff(tempdf,'forDiff',n,rpy=_rpy_t)
-                            drestr = "d" + restr[0].upper() + restr[1:]
-                            tempMetric_df[drestr] = tf
-
-                    for key1 in BoMetric_special_dict.keys():
-                        tf = cm.calc_special(tempfund, key1, n, rpy=_rpy_t)
-                        tempMetric_df[key1] = tf
-
-                    # Drop the OLDEST rows whose YoY/diff windows have no counterpart:
-                    # `rpy` of them, not a fixed 4 (a semi-annual filer would otherwise
-                    # lose two full years of history).  Row-based site NOT on the audit's
-                    # list -- found in the 2026-07-25 sweep.
-                    tempMetric_df_trimmed = tempMetric_df.drop(
-                        tempMetric_df.tail(_rpy_t).index)
+                    tempMetric_df_trimmed = build_bometric_rows(
+                        tempfund, tempMetric_df, _rpy_t, n=n,
+                        dicts=(BoMetric_base_dict, BoMetric_mean_dict,
+                               BoMetric_unity_dict, BoMetric_diff_dict,
+                               BoMetric_special_dict))
 
                     # align schemas (preserve all columns) before concatenation to avoid losing columns
                     cols_union = BoMetric_df.columns.union(tempMetric_df_trimmed.columns)
@@ -313,6 +273,119 @@ def fillPreReqdf(tempfund,preReq_dict,bs,inc,cf,km,fr):
                                               errors='coerce')).reindex(tempfund.index)
                 tempfund['price'] = _price.replace([np.inf, -np.inf], np.nan)
 
+    tempfund = stamp_frequency_and_graham(tempfund)
+
+    # Keep the RAW fiscal period-end date BEFORE setDatesToQuarterly overwrites `date`
+    # with a quarter-start stamp (audit H-2 fix, 2026-07-19).  `date` is deliberately left
+    # exactly as it is -- every downstream consumer (the cross-statement date join, the
+    # forensic YoY shifts, CycleHeat's restatement tie-break, data_quality's row matching)
+    # keys off the quarterly stamp -- so this is ADDITIVE.  The quarter stamp is lossy in
+    # the two ways that matter: 52/53-week fiscal drift collapses two different period ends
+    # onto ONE quarter (282 sources carry duplicate quarters), and a fiscal year that does
+    # not align to calendar quarters cannot be recovered from it afterwards.
+    tempfund['periodEndDate'] = tempfund['date'].values
+    tempfund = utils.setDatesToQuarterly(tempfund)
+    if tempfund['date'].iloc[0].year == datetime.today().year:
+        hcybool = True
+
+    return tempfund, hcybool
+
+
+def build_bometric_rows(tempfund, tempMetric_df, rpy, n=1, dicts=None):
+    """Build ONE source's Stage-1 BoMetric rows from its cdx-schema frame.
+
+    EXTRACTED from get_fundamentals_fmp's per-ticker body (2026-07-27) with NO
+    behavioural change.  It was previously replicated in
+    baseline_tools/dead_merge._build_entity_frames -- a duplication that module's own
+    docstring names as its standing drift risk and explicitly proposes extracting.
+    The offline panel-upgrade path needed the same loop a THIRD time, which made the
+    extraction the cheaper option.  dead_merge and panel_upgrade now both call this.
+
+    CONTRACT:
+      * `tempfund` is NEWEST-FIRST (raw FMP statement order) with a positional index:
+        `calc_diff`'s shift(-1) is "one period OLDER" and its rolling mean runs on the
+        reversed series, and the tail() trim below drops the OLDEST rows.  Feeding an
+        oldest-first frame silently inverts every diff metric.
+      * `rpy` is THIS source's rows-per-year, read from the ONE classification stamped
+        by fillPreReqdf (never re-derived from snapped dates -- review item 9).
+      * `tempMetric_df` is the pre-initialised destination frame (initTempMets output,
+        already date-snapped), carrying `date` + `source`.
+
+    Returns the TRIMMED frame (oldest `rpy` rows dropped).
+    """
+    if dicts is None:
+        (_preReq, _calc, BoMetric_base_dict, BoMetric_mean_dict, BoMetric_diff_dict,
+         BoMetric_unity_dict, BoMetric_special_dict) = cdic.getDicts()
+    else:
+        (BoMetric_base_dict, BoMetric_mean_dict, BoMetric_unity_dict,
+         BoMetric_diff_dict, BoMetric_special_dict) = dicts
+
+    tempdf = pd.DataFrame()
+    tempdf['date'] = tempfund['date']
+    # need to lag denominator for Assets, Investment and such [determined before t]
+
+    ratioOpCalcDicts = {**BoMetric_base_dict, **BoMetric_mean_dict, **BoMetric_unity_dict, **BoMetric_diff_dict}
+    for key in ratioOpCalcDicts:
+        restr = key
+        strUp = ratioOpCalcDicts[key]['Upper']
+        strDn = ratioOpCalcDicts[key]['Lower']
+        tf = cm.calc_simpleRatio(tempfund, strUp, strDn)
+        # FLOW-SCALE CORRECTION (specialist annualization ruling, 2026-07-25).
+        # A semi-annual row's flow covers 6 months, so any flow/stock or
+        # stock/flow Stage-1 ratio reads ~2x (or ~0.5x) purely from the
+        # reporting convention.  reporting_period decides which keys are
+        # affected, which LEG the flow is on, and whether the test's threshold
+        # is absolute (true annualisation) or scale-free (per-quarter basis).
+        # Factor is exactly 1.0 for every unaffected key and for quarterly
+        # names on the scale-free keys -> no-op.
+        _ff = rp.stage1_flow_factor(key, rpy)
+        if _ff != 1.0:
+            tf = [(v * _ff) if v is not None else v for v in tf]
+        if key in BoMetric_base_dict:
+            tempMetric_df[restr] = tf
+        if key in BoMetric_mean_dict:
+            mrestr = "m" + restr[0].upper() + restr[1:]
+            tempMetric_df[mrestr] = tf
+        if key in BoMetric_unity_dict:
+            urestr = "u" + restr[0].upper() + restr[1:]
+            tempMetric_df[urestr] = tf
+        if key in BoMetric_diff_dict:
+            tempdf['forDiff'] = tf
+            tf = cm.calc_diff(tempdf, 'forDiff', n, rpy=rpy)
+            drestr = "d" + restr[0].upper() + restr[1:]
+            tempMetric_df[drestr] = tf
+
+    for key1 in BoMetric_special_dict.keys():
+        tf = cm.calc_special(tempfund, key1, n, rpy=rpy)
+        tempMetric_df[key1] = tf
+
+    # Drop the OLDEST rows whose YoY/diff windows have no counterpart:
+    # `rpy` of them, not a fixed 4 (a semi-annual filer would otherwise
+    # lose two full years of history).  Row-based site NOT on the audit's
+    # list -- found in the 2026-07-25 sweep.
+    return tempMetric_df.drop(tempMetric_df.tail(rpy).index)
+
+
+def stamp_frequency_and_graham(tempfund):
+    """Stamp `reportingFrequency` and the in-pipeline `grahamNumber` (+ undefined reason).
+
+    EXTRACTED from fillPreReqdf (2026-07-27) with NO behavioural change, so the OFFLINE
+    panel-upgrade path (baseline_tools/panel_upgrade.py, which rebuilds Stage-1 from a
+    SAVED cdx_df rather than from raw statements) executes THIS function rather than a
+    replica of it.  The dead-merge module already had to replicate the Stage-1 metric loop
+    and that replication is the module's own stated drift risk; this is the same class of
+    risk and it is avoidable here, so it is avoided.
+
+    CONTRACT (unchanged from the in-line version):
+      * `tempfund` is NEWEST-FIRST -- the raw FMP statement order.  Both the TTM rolling
+        sum and `date`-cadence classification depend on it.
+      * `tempfund['date']` still holds RAW period-end dates at the live call site
+        (setDatesToQuarterly runs AFTER).  The offline caller can only offer SNAPPED
+        dates, which is a documented approximation, not a different code path.
+      * index must be positional/aligned with the frame's own rows (the live frame is
+        freshly built, so RangeIndex).
+    Returns the same frame, mutated in place and returned for call-site clarity.
+    """
     # GRAHAM NUMBER, computed in-pipeline (review H2 fix, 2026-07-25).
     #
     # FMP's quarterly `grahamNumber` is sqrt(22.5 * EPS_QUARTERLY * BVPS), i.e. HALF the
@@ -395,20 +468,7 @@ def fillPreReqdf(tempfund,preReq_dict,bs,inc,cf,km,fr):
     _reason[_neg_bv.fillna(False).values] = 'graham_undefined_negative_bv'
     tempfund['grahamUndefinedReason'] = _reason.values
 
-    # Keep the RAW fiscal period-end date BEFORE setDatesToQuarterly overwrites `date`
-    # with a quarter-start stamp (audit H-2 fix, 2026-07-19).  `date` is deliberately left
-    # exactly as it is -- every downstream consumer (the cross-statement date join, the
-    # forensic YoY shifts, CycleHeat's restatement tie-break, data_quality's row matching)
-    # keys off the quarterly stamp -- so this is ADDITIVE.  The quarter stamp is lossy in
-    # the two ways that matter: 52/53-week fiscal drift collapses two different period ends
-    # onto ONE quarter (282 sources carry duplicate quarters), and a fiscal year that does
-    # not align to calendar quarters cannot be recovered from it afterwards.
-    tempfund['periodEndDate'] = tempfund['date'].values
-    tempfund = utils.setDatesToQuarterly(tempfund)
-    if tempfund['date'].iloc[0].year == datetime.today().year:
-        hcybool = True
-
-    return tempfund, hcybool
+    return tempfund
 
 def getFsData_fmp(ticker, period, limit, baseurl, api_key,compyear, tickersfailed, lenfail,datefail,emptyfail,
                   dead_path=False, http_get=None):

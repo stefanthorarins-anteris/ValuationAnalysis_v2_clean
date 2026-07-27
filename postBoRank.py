@@ -1,3 +1,4 @@
+import os
 import sys
 
 import createDicts as cdic
@@ -26,6 +27,7 @@ def postBoScoreRanking(bmtop, bstop, cdxtop, baseurl, api_key, period='quarter',
     # has a live seam; the point-in-time DCF/beta substitution itself is a later
     # (registry-backed, Phase 3+) step and is NOT wired on this path yet.  With
     # as_of=None nothing below branches on it -> live behaviour unchanged.
+    _assert_offline_dcf_is_score_neutral()
     print('Ranking the top 100 stocks, according to BoScore.')
     sys.stdout.flush()  # Ensure output is printed before progress bar
 
@@ -159,10 +161,44 @@ def _sort_cdx_newest_first(cdxtop):
     return cdxtop
 
 
+# OFFLINE SEAM for the DCF leg (added 2026-07-27).  Stage-2's ONLY network dependency is a
+# per-ticker discounted-cash-flow call, one per name in the top-100 -- so re-scoring a SAVED
+# panel through the DEPLOYED path could not be done without ~100 live FMP calls, which the
+# work-machine rule explicitly discourages.  With this set, the call is skipped and the DCF
+# frame comes back empty, exactly as it already does on an HTTP failure (a path production
+# handles every run).
+#
+# PROVABLY SCORE-NEUTRAL, and ENFORCED: `DcfToPrice` carries w = 0.000 in the decisional
+# vector, so its value cannot move AggScore by construction.  That is a fact about today's
+# weights, not a law -- so if the weight is ever made non-zero, offline mode REFUSES rather
+# than silently changing the score.  Default OFF: the live fetch path is unchanged.
+OFFLINE_NO_DCF = os.environ.get('VA_OFFLINE_NO_DCF', '') == '1'
+
+
+def _assert_offline_dcf_is_score_neutral():
+    """Refuse offline scoring if DcfToPrice has acquired a weight."""
+    if not OFFLINE_NO_DCF:
+        return
+    postBm, postNew = cdic.getPostDict()
+    w = float({**postBm, **postNew}.get('DcfToPrice', {}).get('w', 0) or 0)
+    if w != 0:
+        raise SystemExit(
+            "VA_OFFLINE_NO_DCF=1 but DcfToPrice now carries w=%r.  Offline mode skips the "
+            "DCF fetch, which is only score-neutral while that weight is 0 -- refusing "
+            "rather than emitting a silently different ranking." % w)
+    print("!" * 78, flush=True)
+    print("!!! VA_OFFLINE_NO_DCF=1 -- Stage-2 DCF fetch SKIPPED (no network).  DcfToPrice "
+          "w=0.000,\n!!! so AggScore is unaffected; the DCF column is empty/NaN in any "
+          "DISPLAY that reads it.", flush=True)
+    print("!" * 78, flush=True)
+
+
 def _fetch_ticker_dcf(ticker, baseurl, api_key, dcf_bulk_dict):
     """Fetch (or reuse bulk) DCF data for one ticker and return it as a normalised
     DataFrame.  Returns (dcf_df, dcf_from_bulk, resp_dcf_status, resp_dcf).
     """
+    if OFFLINE_NO_DCF:
+        return pd.DataFrame(), False, "offline-skipped", None
     dcf_from_bulk = ticker in dcf_bulk_dict
     resp_dcf = None
     if dcf_from_bulk:
@@ -480,6 +516,99 @@ WINSOR_Z_EPS = 1e-9       # slack on the max|z| <= WINSOR_SIGMA target test
 WINSOR_EXEMPT_BOUNDED = ('Piotroski', 'CycleHeat', 'marketCapRevQuants', 'mcapQuants')
 
 
+# --------------------------------------------------------------------------- #
+#  NORMALISATION METHOD  (A/B switch, 2026-07-27)                             #
+# --------------------------------------------------------------------------- #
+# 'zscore' : winsorize the RAW column, then (x - mu) / sigma.  THE SHIPPED PATH.
+# 'rank'   : map the column to ranks, then through the inverse normal CDF.
+#
+# WHY 'rank' EXISTS.  Sigma-winsorization assumes an approximately symmetric, roughly
+# Gaussian column; several of these metrics are strongly skewed, which the winsorizer
+# reduces but cannot remove.  Two consequences the z-path cannot escape:
+#   (1) CROSS-COLUMN INCOMPARABILITY.  A weight w only means "w units of AggScore per
+#       sigma of THIS column", and a sigma of a skewed column is not a sigma of a
+#       symmetric one, so the weight vector's components silently mean different things.
+#       After a rank map every column is the SAME distribution by construction, so a
+#       weight means one thing everywhere -- which is the precondition for the weight
+#       vector to be re-fittable at all.
+#   (2) THE MISSING-DATA REWARD (reviewer finding N1).  Both paths fill an unavailable
+#       metric with 0, but 0 means different things: under z-scoring 0 is the winsorized
+#       MEAN, which on the shipped 07-17 pool sat at the 52nd-65th percentile on 15 of 17
+#       weighted columns -- so a name MISSING a metric scored ABOVE the typical name on
+#       it, worth +0.1394 AggScore for full missingness against a 0.134 median-to-top-20
+#       distance.  Under the rank map 0 is AT OR NEAR the median, so the same fillna(0) is
+#       (near-)neutral and most of the reward vanishes without a special case.
+#       PRECISELY (do NOT round this up to "0 is the median by construction" -- it is not):
+#       the map centres on the median EXACTLY only when the column's observed values are
+#       DISTINCT.  Ties displace the centre, because a tied group takes one averaged
+#       plotting position instead of spanning several: `_rank_normal([1, 1, 2])` has mean
+#       +0.0260, and on a 60/40 binary column the fill sits above ~60% of the pool.  This
+#       is not a technicality -- it IS the entire measured residual.  Of the +0.0228 that
+#       survives on the 07-17 pool, `marketCapRevQuants` alone contributes +0.0244: five
+#       discrete levels, hence massive ties, hence a fill that is materially off-median.
+#       Measured effect of the switch: full-missingness advantage +0.1616 -> +0.0228 (-86%),
+#       and columns whose fill sits above their own median 14/18 -> 2/18.  A real and large
+#       reduction; NOT an elimination.
+#
+# DEFAULT IS UNCHANGED.  'zscore' remains the production default: the deployed mu weights
+# were tuned on the z-path, and a rank map changes what each weight MEANS, so switching
+# the live default is a CEO decision that belongs WITH the weight re-fit, not before it.
+# The switch exists so the two can be measured side by side on identical inputs.
+NORM_ZSCORE = 'zscore'
+NORM_RANK = 'rank'
+NORM_METHOD_DEFAULT = NORM_ZSCORE
+
+# Plotting position for the rank -> normal map.  Blom: p_i = (r_i - 3/8) / (n + 1/4).
+# Chosen over Van der Waerden r/(n+1) because it is the near-unbiased normal-scores
+# constant, i.e. E[z_i] is closest to the expected order statistic, so the resulting
+# column's sd is closest to 1 at the pool sizes here (~100 names Stage-2, ~6.5k universe-
+# wide).  It is a MONOTONE relabelling either way, so the choice cannot change the ORDER
+# within a column -- only the spacing, and therefore how much a given rank gap is worth
+# against another column's rank gap.
+RANK_PLOT_A = 0.375
+
+
+def _rank_normal(x):
+    """Rank -> inverse-normal ('probit' / normal-scores) map of one metric column.
+
+    * Ties get the AVERAGE rank, so tied names get the SAME score -- required: a
+      discrete column (Piotroski, the market-cap quantile codes) is mostly ties, and
+      breaking them by row order would inject pure noise into the ranking.
+    * NaN keeps NaN and does NOT consume a rank slot, so the percentiles describe the
+      OBSERVED population.  The caller's fillna(0) then lands a missing metric AT OR NEAR
+      that population's median (finding N1) -- see the tie caveat below for when "near"
+      is as good as it gets.
+    * CENTRING, stated exactly.  With all values DISTINCT the ranks are symmetric about
+      (n+1)/2, so the plotting positions are symmetric about 0.5 and the output has mean
+      EXACTLY 0 and median exactly 0.  WITH TIES NEITHER HOLDS: a tied group collapses
+      onto one averaged plotting position instead of spanning several, which displaces the
+      centre.  `_rank_normal([1, 1, 2])` has mean +0.0260; a 60/40 binary column puts 0
+      above ~60% of the pool, not 50%.  So "0 is the median" is a property of
+      distinct-valued columns, NOT of this function -- and the discrete columns
+      (`Piotroski` 0..9, `marketCapRevQuants` 5 levels) are exactly the ones where it
+      fails.  On the 07-17 pool `marketCapRevQuants` alone accounts for +0.0244 of the
+      +0.0228 residual missing-data advantage.  Do not restate this as "by construction".
+    * sd is CLOSE to but not exactly 1 (finite-sample plotting position, and ties compress
+      a column's spread).  That is deliberate and is NOT re-scaled: rescaling each column
+      back to unit variance would hand a heavily-tied column the same spread as a
+      fully-resolved one, i.e. it would re-weight the vector by tie structure.
+    """
+    from scipy.special import ndtri            # scipy is a declared dependency
+    s = pd.to_numeric(x, errors='coerce')
+    valid = s.notna()
+    n = int(valid.sum())
+    out = pd.Series(np.nan, index=s.index, dtype='float64')
+    if n == 0:
+        return out
+    if n == 1:
+        out[valid] = 0.0                        # a single observation IS the median
+        return out
+    r = s[valid].rank(method='average')
+    p = (r - RANK_PLOT_A) / (n + 1.0 - 2.0 * RANK_PLOT_A)
+    out[valid] = ndtri(p.to_numpy(dtype='float64'))
+    return out
+
+
 def _winsorize_raw(x, n_sigma=WINSOR_SIGMA, max_passes=WINSOR_MAX_PASSES):
     """Symmetric sigma-winsorization of a RAW metric column, iterated toward max|z| <=
     n_sigma.  Returns (series, n_cells_changed, n_passes, converged).
@@ -542,9 +671,28 @@ def _winsorize_raw(x, n_sigma=WINSOR_SIGMA, max_passes=WINSOR_MAX_PASSES):
     return orig, 0, max_passes, False         # pass bound exhausted -> un-winsorizable
 
 
-def normalizeAndDropNA(df, weight_series=None, winsor_sigma=WINSOR_SIGMA):
+def normalizeAndDropNA(df, weight_series=None, winsor_sigma=WINSOR_SIGMA,
+                       method=None, rank_bounded=True):
     """WINSORIZE each weighted RAW metric column at +-winsor_sigma, then
     cross-sectionally z-score; drop a row only when EVERY metric is NaN.
+
+    method : NORM_ZSCORE (default, the shipped path -- everything below applies) or
+             NORM_RANK (rank -> inverse-normal; see NORM_RANK's notes and _rank_normal).
+             Under NORM_RANK the winsorizer is NOT run: a monotone relabelling of a column
+             has the same ranks as the column, so clipping its tail cannot change the
+             result.  The winsorizer is retained, not removed -- the z-path still uses it.
+    rank_bounded : NORM_RANK only.  True (default) rank-maps the bounded/discrete columns
+             (WINSOR_EXEMPT_BOUNDED) along with the rest.  Their WINSORIZATION exemption
+             does not carry over, because it rests on a premise the rank map removes: they
+             are exempt from clipping because a large |z| there is real structure that
+             clipping would destroy, whereas ranking destroys nothing (it is
+             order-preserving) and their spacing is ORDINAL anyway -- Piotroski 9 vs 8 is
+             "one criterion better", not a measured distance, which is exactly what a
+             normal-scores map assumes.  Leaving them un-mapped would also put a raw-scaled
+             column beside 13 N(0,1) columns inside a frame every consumer downstream
+             reads as normalised, i.e. it would re-introduce the cross-column
+             incomparability the method exists to remove.  Set False to measure that
+             alternative.
 
     OUTLIER HANDLING (audit H1/H2 fix 2026-07-19, upgraded 2026-07-25).  Originally
     this EJECTED any row with |z| > 4 in ANY metric column.  Three things were wrong:
@@ -636,6 +784,42 @@ def normalizeAndDropNA(df, weight_series=None, winsor_sigma=WINSOR_SIGMA):
         return dfnona, list(df['source'])
 
     tempnum = dfnona.drop('source',axis=1).apply(pd.to_numeric, errors='coerce')
+
+    if method is None:
+        method = NORM_METHOD_DEFAULT
+    if method not in (NORM_ZSCORE, NORM_RANK):
+        raise ValueError("normalizeAndDropNA: method must be %r or %r, got %r"
+                         % (NORM_ZSCORE, NORM_RANK, method))
+
+    if method == NORM_RANK:
+        # --- RANK -> INVERSE-NORMAL ---------------------------------------------------
+        # No winsorization pass, because the map depends only on the ORDER within a column
+        # and clipping cannot REORDER anything: every name the winsorizer would move keeps
+        # its exact rank position relative to every other name.  (Precisely: clipping is
+        # weakly monotone, so its only possible effect here is to MERGE the clipped tail
+        # into one tied score -- it can never swap two names, and it cannot change any
+        # unclipped name's score at all.  Verified in
+        # test_rank_normalization.test_rank_normal_is_invariant_to_any_strictly_monotone_
+        # transform + ..._clipping_only_merges_the_clipped_tail.)  The fat tail the
+        # winsorizer exists to defuse cannot dominate a rank map in the first place, so
+        # running it would only destroy raw values for no change in outcome.  Nothing is
+        # silently skipped -- it is inapplicable.
+        if rank_bounded:
+            to_map = list(tempnum.columns)
+        else:
+            to_map = [c for c in tempnum.columns if c not in WINSOR_EXEMPT_BOUNDED]
+        for col in to_map:
+            tempnum[col] = _rank_normal(tempnum[col])
+        # fillna(0) is the SAME line the z-path uses, and here 0 is the observed MEDIAN of
+        # the column, so an unavailable metric is exactly neutral (finding N1).
+        temp_normpsmdf = tempnum.fillna(0)
+        skipped = [c for c in tempnum.columns if c not in to_map]
+        print("normalizeAndDropNA[rank]: inverse-normal mapped %d column(s) over %d row(s)"
+              "%s" % (len(to_map), len(tempnum),
+                      ("; LEFT RAW (rank_bounded=False): %s" % skipped) if skipped else ""),
+              flush=True)
+        dfnona[temp_normpsmdf.columns] = temp_normpsmdf
+        return dfnona.copy(), outlierlist
 
     # --- PASS 1: winsorize the WEIGHTED RAW columns at +-winsor_sigma -------------
     # Done BEFORE mu/sigma so the z-score below is computed on an UNCONTAMINATED

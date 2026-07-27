@@ -146,42 +146,21 @@ def _build_entity_frames(entity, source, cdx_cols, bm_cols, n=1):
     if not gdg.checkIfValidFS(tempfund):
         return None, None
 
-    tempdf = pd.DataFrame()
-    tempdf["date"] = tempfund["date"]
-    # LOCKSTEP with the live ingest (review H4, 2026-07-25): this loop is a copy of
-    # getData_fmp's Stage-1 metric construction, so it must carry the SAME per-source
-    # rows-per-year branching and the SAME Stage-1 flow-scale correction.  Without them
-    # the dead-merged panel was a HYBRID and the PIT beat-rate it feeds was
-    # non-comparable to live for every semi-annual name.
+    # LOCKSTEP with the live ingest (review H4, 2026-07-25): the Stage-1 metric loop USED
+    # to be a hand-copy of getData_fmp's, which is why it had to carry the SAME per-source
+    # rows-per-year branching and the SAME Stage-1 flow-scale correction -- and why it had
+    # silently NOT carried them (the dead-merged panel was a HYBRID, non-comparable to live
+    # for every semi-annual name).  The copy is GONE as of 2026-07-27: it calls the live
+    # function.  Lockstep is now structural, not maintained by hand.
     # READ the one classification stamped by the live fillPreReqdf (review item 9) --
     # never re-derive it from the already-SNAPPED date column.
     _rpy = rp.rows_per_year(
         tempfund[rp.FREQ_COLUMN].iloc[0] if rp.FREQ_COLUMN in tempfund.columns
         else rp.UNKNOWN)
-    ratioOpCalcDicts = {**BoMetric_base_dict, **BoMetric_mean_dict,
-                        **BoMetric_unity_dict, **BoMetric_diff_dict}
-    for key in ratioOpCalcDicts:
-        restr = key
-        strUp = ratioOpCalcDicts[key]["Upper"]
-        strDn = ratioOpCalcDicts[key]["Lower"]
-        tf = cm.calc_simpleRatio(tempfund, strUp, strDn)
-        _ff = rp.stage1_flow_factor(key, _rpy)
-        if _ff != 1.0:
-            tf = [(v * _ff) if v is not None else v for v in tf]
-        if key in BoMetric_base_dict:
-            tempMetric_df[restr] = tf
-        if key in BoMetric_mean_dict:
-            tempMetric_df["m" + restr[0].upper() + restr[1:]] = tf
-        if key in BoMetric_unity_dict:
-            tempMetric_df["u" + restr[0].upper() + restr[1:]] = tf
-        if key in BoMetric_diff_dict:
-            tempdf["forDiff"] = tf
-            tf = cm.calc_diff(tempdf, "forDiff", n, rpy=_rpy)
-            tempMetric_df["d" + restr[0].upper() + restr[1:]] = tf
-    for key1 in BoMetric_special_dict.keys():
-        tempMetric_df[key1] = cm.calc_special(tempfund, key1, n, rpy=_rpy)
-
-    tempMetric_df_trimmed = tempMetric_df.drop(tempMetric_df.tail(_rpy).index)
+    tempMetric_df_trimmed = gdf.build_bometric_rows(
+        tempfund, tempMetric_df, _rpy, n=n,
+        dicts=(BoMetric_base_dict, BoMetric_mean_dict, BoMetric_unity_dict,
+               BoMetric_diff_dict, BoMetric_special_dict))
     return tempfund, tempMetric_df_trimmed
 
 
