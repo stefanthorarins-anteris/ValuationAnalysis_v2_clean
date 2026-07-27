@@ -243,6 +243,33 @@ def build_rpy_map(cdx_df):
     return _RPY_BY_SOURCE
 
 
+def reporting_frequency(source, cdx_df=None):
+    """(label, is_inferred) for one source's REPORTING FREQUENCY -- CEO-facing.
+
+    PREFERS the pipeline's stamped ingest verdict (reporting_period.FREQ_COLUMN, written once at
+    ingest = the single source of truth). Falls back to the SAME cadence classification the
+    classifier uses when that column is absent (e.g. the saved pickles, which predate the
+    stamp), and reports is_inferred=True so the page can say so rather than assert it."""
+    label_of = {2: 'semi-annual (H1/H2)', 4: 'quarterly'}
+    try:
+        import reporting_period as rp
+        col = rp.FREQ_COLUMN
+        if cdx_df is not None and col in getattr(cdx_df, 'columns', []):
+            vals = {str(v).strip().lower() for v in cdx_df.loc[cdx_df['source'] == source, col]
+                    if str(v).strip() and str(v).strip().lower() != 'nan'}
+            if len(vals) == 1:
+                v = vals.pop()
+                if v == rp.SEMIANNUAL:
+                    return 'semi-annual (H1/H2)', False
+                if v == rp.QUARTERLY:
+                    return 'quarterly', False
+                return f'{v} (as stamped)', False
+    except Exception:
+        pass
+    rpy = rpy_for_source(source)                     # cadence classification (same logic)
+    return label_of.get(rpy, 'quarterly'), True
+
+
 def rpy_basis_banner():
     """Page-level HTML banner when the filing-frequency basis is degraded/unbuilt; '' when ok."""
     if _RPY_MAP_STATUS == 'ok':
@@ -265,12 +292,33 @@ def rpy_for_source(source):
     return v if v in (2, 4) else 4
 
 
+_RPY_BLIND_DEFAULTS = 0     # calls that had to guess quarterly (see below)
+
+
 def _rpy_from_frame(df):
-    """rows_per_year inferred from a per-source frame's own 'source' column (4 if absent)."""
+    """rows_per_year inferred from a per-source frame's own 'source' column.
+
+    NEVER SILENT when it cannot tell (the window-anchoring class: the moat window, the H2
+    markers and the extended-pool reducer were each wrong once because a frequency default
+    was applied invisibly). A frame with no usable 'source' column -- e.g. a column-selected
+    groupby frame -- cannot be classified, so we must fall back to quarterly; that fallback is
+    COUNTED and warned about once, so a future call site that reintroduces the bug shows up in
+    the log instead of quietly summing 24 months for semi-annual filers. Call sites that cannot
+    supply a 'source' column MUST pass `rpy` explicitly."""
+    global _RPY_BLIND_DEFAULTS
     if df is None or not hasattr(df, 'columns') or 'source' not in df.columns or not len(df):
+        _RPY_BLIND_DEFAULTS += 1
+        if _RPY_BLIND_DEFAULTS == 1:
+            log.warning("reporting-frequency BLIND DEFAULT: a TTM helper received a frame with "
+                        "no 'source' column and no explicit rpy -- assuming quarterly. A "
+                        "semi-annual filer would silently get a 24-month window here. Pass rpy "
+                        "explicitly at that call site.")
         return 4
     s = df['source'].dropna()
-    return rpy_for_source(s.iloc[0]) if len(s) else 4
+    if not len(s):
+        _RPY_BLIND_DEFAULTS += 1
+        return 4
+    return rpy_for_source(s.iloc[0])
 
 
 def ttm_sum(df, col, rpy=None):
@@ -1607,8 +1655,9 @@ class PresentationBuilder:
         # each pair must sum the same non-NaN period set, else a NaN quarter in one column
         # misaligns the comparison. (compute_cash_conversion, a DISPLAYED value, is left
         # untouched so no shown number moves.)
-        ni_ttm, cfo_ttm = ttm_aligned_sums(cdx, ['netIncome', 'netCashProvidedByOperatingActivities'])
-        ni_ttm_rev, rev_ttm = ttm_aligned_sums(cdx, ['netIncome', 'revenue'])
+        _rpy = rpy_for_source(ticker)      # EXPLICIT (never rely on the frame-derived default)
+        ni_ttm, cfo_ttm = ttm_aligned_sums(cdx, ['netIncome', 'netCashProvidedByOperatingActivities'], _rpy)
+        ni_ttm_rev, rev_ttm = ttm_aligned_sums(cdx, ['netIncome', 'revenue'], _rpy)
         # POOL-BASIS for the four POOL_BASIS_MARKERS: the verdict icon and the flag rules MUST
         # be computed on the SAME value the page displays beside them (Sections C and G both
         # show the pool basis now), otherwise the icon contradicts the number it annotates.
@@ -1627,8 +1676,8 @@ class PresentationBuilder:
         net_debt_ebitda = self.ext_val(ticker, 'net_debt_ebitda')
         curr_ratio = L('currentRatio')
         op_margin = compute_operating_margin(cdx)
-        fcf_margin = compute_fcf_margin_ttm(cdx)
-        cash_conv = compute_cash_conversion(cdx)
+        fcf_margin = compute_fcf_margin_ttm(cdx, _rpy)
+        cash_conv = compute_cash_conversion(cdx, _rpy)
         int_cov = compute_interest_coverage(cdx)
         fcf_yield = self.raw_metric(ticker, 'freeCashFlowYield')
         earn_yield = self.raw_metric(ticker, 'earnYield')
@@ -1905,6 +1954,17 @@ class PresentationBuilder:
         # Determine nav bucket
         nav_bucket = "top-5" if rank <= 5 else ("top-10" if rank <= 10 else "top-20")
 
+        # REPORTING FREQUENCY (CEO-facing; previously printed nowhere, so a semi-annual filer
+        # was indistinguishable from a quarterly one except via a sparkline span caption).
+        # It drives every TTM window on the page, so it belongs beside the identity fields.
+        freq_label, freq_inferred = reporting_frequency(ticker, self.data.get('cdx_df'))
+        freq_tag = ' <span class="pctile">(inferred from filing cadence)</span>' if freq_inferred else ''
+        freq_title = ('Filing frequency. Drives every trailing-twelve-month window on this page '
+                      '(Sloan accruals, FFO/share, P/FFO, FCF vs NI). '
+                      + ('INFERRED from the date cadence — this run predates the pipeline stamping '
+                         'reportingFrequency at ingest.' if freq_inferred
+                         else 'From the pipeline ingest verdict (reportingFrequency).'))
+
         html = f"""
         <div class="section-a">
             <h2>{ticker} <span class="subtitle">{name}</span></h2>
@@ -1913,6 +1973,7 @@ class PresentationBuilder:
                 <span><strong>Sector:</strong> {sector}</span>
                 <span><strong>Price:</strong> {price_str}</span>
                 <span><strong>Market Cap:</strong> {mktcap_str}</span>
+                <span title="{escape(freq_title)}"><strong>Reporting:</strong> {escape(freq_label)}{freq_tag}</span>
             </div>
             <div class="meta-row">
                 <span><strong>AggScore:</strong> {ratio_format(agg_score, 1)} {orient_chip('AggScore')}</span>
@@ -1973,7 +2034,10 @@ class PresentationBuilder:
 
         if cohort_label == 'REIT':
             # REIT-specific metrics (all from cdx_df raw values, not z-scores)
-            ffo_per_share = compute_ffo_per_share(cdx_df)
+            # rpy EXPLICIT: FFO is a 12-month FLOW feeding P/FFO against a point-in-time
+            # market cap, so a wrong window would misprice a semi-annual REIT (~2x) AND
+            # mis-position its dot against the rpy-correct pool.
+            ffo_per_share = compute_ffo_per_share(cdx_df, rpy_for_source(ticker))
             # P/FFO = marketCap / TTM FFO (where FFO = ffo_per_share * shares)
             shares = latest_row_value(cdx_df, 'weightedAverageShsOut')
             ffo_total = ffo_per_share * shares if ffo_per_share and shares and not np.isnan(ffo_per_share) and not np.isnan(shares) else np.nan
@@ -2094,8 +2158,9 @@ class PresentationBuilder:
             roic = self.raw_metric(ticker, 'returnOnCapitalEmployed')
             gm = latest_row_value(cdx_df, 'grossProfitMargin')
             op_margin = compute_operating_margin(cdx_df)
-            fcf_margin = compute_fcf_margin_ttm(cdx_df)
-            cash_conv = compute_cash_conversion(cdx_df)
+            _rpy_c = rpy_for_source(ticker)
+            fcf_margin = compute_fcf_margin_ttm(cdx_df, _rpy_c)
+            cash_conv = compute_cash_conversion(cdx_df, _rpy_c)
             income_qual = latest_row_value(cdx_df, 'incomeQuality')
             # ANNUAL multiple from the extended pool (= the marker its bar is drawn against
             # and the basis R4's "> 4x" limb uses); the raw cdx field is per-period.
@@ -2208,6 +2273,12 @@ class PresentationBuilder:
             ('Days Inventory Outstanding', get_trend('daysOfInventoryOutstanding')),
         ]
 
+        # Header must state THIS company's period. It said "(Quarterly)" for every name, which
+        # is plainly wrong for a semi-annual filer -- and it sat directly above the span caption
+        # that reveals the real cadence. Chose accuracy over dropping the word: each point on
+        # these sparklines IS one reporting period, so naming the period is genuinely useful.
+        _trend_period_word = ('Semi-Annual' if rpy_for_source(ticker) == 2 else 'Quarterly')
+
         sparklines = []
         for name, trend in metrics:
             if not trend:
@@ -2227,7 +2298,7 @@ class PresentationBuilder:
 
         html = f"""
         <div class="section-d trends">
-            <h3>Multi-Year Trends (Quarterly)</h3>
+            <h3>Multi-Year Trends ({escape(_trend_period_word)})</h3>
             {''.join(sparklines) if sparklines else '<p>[No trend data]</p>'}
         </div>
         """
@@ -2291,8 +2362,9 @@ class PresentationBuilder:
         # Raw incomeQuality from cdx (the rank row's incomeQuality is a z-score, not a
         # ratio) -- must match Section C's value for the same name.
         income_qual = latest_row_value(cdx, 'incomeQuality')
-        fcf_ttm = ttm_sum(cdx, 'freeCashFlow')
-        ni_ttm = ttm_sum(cdx, 'netIncome')
+        _rpy_f = rpy_for_source(ticker)
+        fcf_ttm = ttm_sum(cdx, 'freeCashFlow', _rpy_f)
+        ni_ttm = ttm_sum(cdx, 'netIncome', _rpy_f)
 
         m_score = "—"
         c_score = "—"
@@ -2407,7 +2479,7 @@ class PresentationBuilder:
         # Leverage check -- ANNUAL Net Debt/EBITDA (net_debt_to_ebitda_annual). The raw cdx
         # field is a per-PERIOD multiple, so testing it against the annual "> 4x" bar fired on
         # ~2.4x as many names as intended (the SECOND hard-coded >4 site; the first is R4).
-        net_debt_ebitda = net_debt_to_ebitda_annual(cdx)
+        net_debt_ebitda = net_debt_to_ebitda_annual(cdx, rpy_for_source(ticker))
         if not np.isnan(safe_float(net_debt_ebitda)) and safe_float(net_debt_ebitda) > 4:
             flags.append(('AMBER', 'High Leverage (ND/EBITDA>4x, annual)'))
 
