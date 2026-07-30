@@ -897,6 +897,29 @@ def run_top100_postrank_ols(dmdic, verbose=True):
     
     # Filter to metrics that exist in the data
     available_metrics = [m for m in postrank_metrics if m in analysis_df.columns]
+
+    # UN-WEIGHT BEFORE REGRESSING (fix, 2026-07-29).  These columns come from postRank and are
+    # `z x weight`, not the metric.  For the FIT that is harmless -- scaling a regressor by a
+    # positive constant only rescales its coefficient -- but the REPORTED coefficient then has
+    # the sign of `z x w`, so any NEGATIVE-weight metric is reported with its sign INVERTED.
+    # `CycleHeat` (w = -0.080) is the live case: a genuinely protective late-cycle signal would
+    # have been printed as harmful, and vice versa.  Dividing by the weight puts every
+    # regressor back on the metric's own z-scale with the metric's own sign, so a coefficient
+    # can be read as "effect of being one sigma better on THIS metric".  w = 0 columns are
+    # dropped: they carry no contribution to divide out and are not part of the score.
+    # ONE shared helper, called by the FIT side here and by the RE-RANK side in
+    # backtest_outputs.compute_ols_weighted_ranking.  They MUST use the same basis: the
+    # coefficients fitted here are applied there, and `standardize(z x w) == sign(w) *
+    # standardize(z)`, so un-weighting on only one side inverts every negative-weight metric's
+    # contribution (CycleHeat).  Do not re-inline this arithmetic.
+    try:
+        import postBoRank as _pbr
+        analysis_df, available_metrics, _dropped_zero = _pbr.unweight_postrank_metrics(
+            analysis_df, available_metrics, verbose=True, label='OLS fit: ')
+    except Exception as _e:
+        print('  !! could not un-weight postRank metrics (%s: %s) -- coefficient signs for '
+              'NEGATIVE-weight metrics (CycleHeat) are INVERTED in the output below.'
+              % (type(_e).__name__, _e), flush=True)
     
     # Also filter to metrics with valid data (no all-NaN, no all-inf)
     valid_metrics = []

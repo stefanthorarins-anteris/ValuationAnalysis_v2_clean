@@ -282,6 +282,29 @@ def rpy_basis_banner():
             f'for such names. Status: {escape(_RPY_MAP_STATUS)}.</div>')
 
 
+def schema_note_banner(aggscore_df):
+    """Page-level banner when the run's AggScore CSV declares a REDUCED schema; '' otherwise.
+
+    Added 2026-07-30.  `baseline_tools/emit_deck_inputs.py` can build the deck's inputs fully
+    offline, which necessarily omits the API-sourced columns, and it stamps a `_SCHEMA_NOTE` on
+    every row to say so.  That note reached the CSV but NEVER the HTML, so a reader of the deck
+    could not tell an offline-reduced run from a full pipeline run -- the gaps looked like facts
+    about the companies rather than absences in the input.  Same treatment as the
+    reporting-basis warning, because it is the same class of problem: the reader must be told
+    what the page cannot know.
+    """
+    if aggscore_df is None or getattr(aggscore_df, 'empty', True):
+        return ''
+    if '_SCHEMA_NOTE' not in getattr(aggscore_df, 'columns', []):
+        return ''
+    notes = [str(x) for x in aggscore_df['_SCHEMA_NOTE'].dropna().unique() if str(x).strip()]
+    if not notes:
+        return ''
+    return ('<div class="basis-warning"><strong>⚠ REDUCED-SCHEMA RUN —</strong> this deck was '
+            'built from OFFLINE inputs, not from a full pipeline run. ' + escape(notes[0])
+            + '</div>')
+
+
 def rpy_for_source(source):
     """rows_per_year for a source name; 4 (quarterly) when unknown."""
     v = _RPY_BY_SOURCE.get(source, 4)
@@ -1877,14 +1900,22 @@ class PresentationBuilder:
                 name = row.iloc[0].get('name', 'Unknown')
                 exchange = row.iloc[0].get('exchange', '—')
 
+        # LABEL THE TAXONOMY THAT WAS ACTUALLY USED (fix, 2026-07-30).  `sector` comes from the
+        # API-sourced `sector` column when present, and otherwise falls back to
+        # `get_industry()` -- a DIFFERENT taxonomy (156 FMP industries vs ~11 sectors).  The
+        # field was labelled "Sector:" either way, so on any run without that column (e.g. the
+        # offline-reduced deck) the page silently showed an industry under a sector label:
+        # "Marine Shipping" is not a sector.  Suffix the fallback so the reader can see which
+        # taxonomy they are looking at.
+        sector = None
         if aggscore_df is not None and not aggscore_df.empty:
             row = aggscore_df[aggscore_df['source'] == ticker]
             if not row.empty:
-                sector = row.iloc[0].get('sector', self.data['get_industry'](ticker))
-            else:
-                sector = self.data['get_industry'](ticker)
-        else:
-            sector = self.data['get_industry'](ticker)
+                sector = row.iloc[0].get('sector', None)
+        if sector is None or (isinstance(sector, float) and np.isnan(sector)) \
+                or str(sector).strip() in ('', '—', 'nan'):
+            _ind = self.data['get_industry'](ticker)
+            sector = ('%s (industry)' % _ind) if _ind and _ind != 'Unknown' else '—'
 
         return name, exchange, sector
 
@@ -2594,7 +2625,9 @@ class PresentationBuilder:
 
         # rpy_basis_banner() is '' in the healthy case; it renders a loud page-level warning
         # if the filing-frequency map degraded (domain N9 -- never a silent basis regression).
-        content = """<div class="content">""" + rpy_basis_banner() + self._icon_legend()
+        content = ("""<div class="content">""" + rpy_basis_banner()
+                   + schema_note_banner(self.data.get('aggscore_df'))
+                   + self._icon_legend())
         if banded:
             # PRIMARY: banded partition. Each general-pool name renders once, under its
             # band. cohort_label stays 'general' so cohort-percentile / valuation lookups

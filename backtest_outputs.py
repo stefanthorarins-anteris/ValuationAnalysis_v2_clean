@@ -905,12 +905,35 @@ def compute_ols_weighted_ranking(postrank_df, ols_coefficients):
         return None
     
     df = postrank_df.copy()
-    
+
     # Get metrics that are in both the postrank and the coefficients
     coef_dict = dict(zip(ols_coefficients['metric'], ols_coefficients['coefficient']))
     available_metrics = [m for m in coef_dict.keys() if m in df.columns]
-    
+
     if not available_metrics:
+        return None
+
+    # SAME BASIS AS THE FIT (fix, 2026-07-30).  The coefficients handed in here were fitted on
+    # the UN-WEIGHTED metric z (backtest_unified.run_top100_postrank_ols), but `postrank_df`
+    # holds `z x w`.  Standardizing the weighted column instead of the un-weighted one flips
+    # the sign of every NEGATIVE-weight metric, because
+    #     standardize(z x w) == sign(w) * standardize(z)
+    # -- so `CycleHeat` (w = -0.080) would enter this score with the opposite sign to the one
+    # its coefficient was estimated with.  Measured: corr(OLS_Score, true CycleHeat) went
+    # +1.0000 -> -1.0000 when only the fit side was un-weighted.  (Before either side was
+    # touched, BOTH used `z x w` and the double negation happened to cancel, which is why the
+    # original code was accidentally right and a one-sided fix was worse than none.)
+    # Both sides now call the same helper so the bases cannot drift apart again.
+    try:
+        import postBoRank as _pbr
+        df, available_metrics, _dropped = _pbr.unweight_postrank_metrics(
+            df, available_metrics, verbose=False)
+        available_metrics = [m for m in available_metrics if m in coef_dict]
+    except Exception as _e:
+        print('!! compute_ols_weighted_ranking could NOT un-weight postRank metrics '
+              '(%s: %s). REFUSING to emit an OLS re-ranking: it would apply coefficients '
+              'fitted on the metric z-scale to `z x w` columns, inverting every '
+              'negative-weight metric.' % (type(_e).__name__, _e))
         return None
     
     # Compute OLS-weighted score
@@ -943,14 +966,35 @@ def save_stock_picks(output_folder, postrank_df, ols_reranked_df=None):
     if postrank_df is None or postrank_df.empty:
         return None
     
-    # Select key columns for the stock picks output
-    key_cols = ['source', 'BoScore', 'AggScore', 'rankOfRanks', 'rankOfRanks_diag', 
-                'Altman-Z', 'Piotroski', 'CycleHeat', 'moatScore',
-                'grahamNumberToPrice', 'earnYield', 'returnOnEquity']
-    
-    available_cols = ['source'] + [c for c in key_cols[1:] if c in postrank_df.columns]
-    
-    picks_df = postrank_df[available_cols].copy()
+    # COLUMN NAMES DECLARE THE BASIS (fix, 2026-07-29).  `postrank_df` is postRank, whose
+    # metric columns are ALL `z x weight` -- postBoRank multiplies before assembling the frame
+    # (postBoRank.py:110-118).  Publishing them under the metric's own name misrepresents a
+    # weighted contribution as the metric, and for a NEGATIVE-weight metric it inverts the
+    # sign outright: `CycleHeat` (w = -0.080) came out as an exact negative image of the true
+    # value.  The same defect was found and fixed in postBo.writeBoAggToCSV; this was the
+    # second of three sites.  Raw values are not available here (this function receives only
+    # postRank), so the honest fix is to NAME them for what they are.
+    # `BoScore` is DROPPED, not published (fix, 2026-07-30).  It is a getPostDict key with
+    # w = 0.000, so postRank['BoScore'] is identically -0.0 (nunique == 1) -- the weighting
+    # multiplied it away.  Publishing a constant-zero column under the name of the Stage-1
+    # score, inside the very function whose comment says the names declare the basis, is the
+    # same misrepresentation this change exists to remove.  The real Stage-1 BoScore lives in
+    # resdic['BoScore_df'], which this function does not receive; if it is wanted here it must
+    # be passed in, not scavenged from postRank.
+    _SCORE_COLS = ['AggScore', 'rankOfRanks', 'rankOfRanks_diag']
+    _WEIGHTED_METRICS = ['Altman-Z', 'Piotroski', 'CycleHeat',
+                         'grahamNumberToPrice', 'earnYield', 'returnOnEquity']
+    # moatScore is NOT weighted: it is merged into postRank at Sbocker.py:467, AFTER
+    # getAggScore, so it is the raw integer score and keeps its plain name.
+    _RAW_COLS = ['moatScore']
+
+    available_score = [c for c in _SCORE_COLS if c in postrank_df.columns]
+    available_wt = [c for c in _WEIGHTED_METRICS if c in postrank_df.columns]
+    available_raw = [c for c in _RAW_COLS if c in postrank_df.columns]
+
+    picks_df = postrank_df[['source'] + available_score + available_wt
+                           + available_raw].copy()
+    picks_df = picks_df.rename(columns={c: c + '_weighted_contrib' for c in available_wt})
     picks_df['Original_Rank'] = range(1, len(picks_df) + 1)
     
     # Add OLS ranking if available

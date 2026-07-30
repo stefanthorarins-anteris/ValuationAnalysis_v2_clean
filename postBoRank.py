@@ -892,6 +892,51 @@ def normalizeAndDropNA(df, weight_series=None, winsor_sigma=WINSOR_SIGMA,
 
     return dfnonanorm, outlierlist
 
+def unweight_postrank_metrics(df, cols=None, verbose=False, label=''):
+    """Recover the METRIC z-scale from a postRank-style frame: divide each metric column by
+    its production weight.  Returns (new_df, kept_cols, dropped_zero_cols).
+
+    WHY THIS IS A SHARED HELPER AND NOT INLINE ARITHMETIC (2026-07-30).  postRank's metric
+    columns are `z x w`.  Any consumer that wants the metric must un-weight, and CONSUMERS THAT
+    MUST AGREE WITH EACH OTHER ARE THE WHOLE PROBLEM: the OLS path fits coefficients in one
+    function (`backtest_unified.run_top100_postrank_ols`) and applies them in another
+    (`backtest_outputs.compute_ols_weighted_ranking`).  When only the FIT side was un-weighted,
+    the two bases diverged for negative weights and the re-ranker inverted -- because
+    `standardize(z x w) == sign(w) * standardize(z)`.  Before that, BOTH sides used `z x w` and
+    the double negation made the result accidentally correct.  So a one-sided fix was worse
+    than no fix, and the durable remedy is that both sides call the SAME function.
+
+    `w = 0` columns are DROPPED, not divided: they are identically +-0.0 in postRank (the
+    multiply annihilated them), so there is no information to recover and 0/0 is not a metric.
+    Columns with no weight entry (e.g. `moatScore`, which is merged post-weighting and is
+    already raw) are left untouched.
+    """
+    postBm, postNew = cdic.getPostDict()
+    W = {**{k: float(postBm[k]['w']) for k in postBm},
+         **{k: float(postNew[k]['w']) for k in postNew}}
+    out = df.copy()
+    if cols is None:
+        cols = [c for c in out.columns if c in W]
+    kept, dropped = [], []
+    for c in cols:
+        if c not in out.columns:
+            continue
+        w = W.get(c)
+        if w is None:
+            kept.append(c)          # not a weighted metric -- leave as-is
+            continue
+        if w == 0:
+            dropped.append(c)
+            continue
+        out[c] = pd.to_numeric(out[c], errors='coerce') / w
+        kept.append(c)
+    if verbose:
+        print('  %sun-weighted %d postRank metric column(s) to the metric z-scale (signs now '
+              'match the metrics); dropped %d zero-weight column(s) %s'
+              % (label, len(kept), len(dropped), dropped), flush=True)
+    return out, kept, dropped
+
+
 def getAggScore(df):
     #df['AggScore'] = np.nan
     cts = list(set(df.columns) - set(['source']))

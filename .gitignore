@@ -70,6 +70,7 @@ baseline_tools/attribution_*.csv
 baseline_tools/conditional_*.csv
 baseline_tools/anchor_check_*.csv
 baseline_tools/confound_*.csv
+baseline_tools/industry_attribution.csv
 baseline_tools/refit_runlog_*.json
 baseline_tools/refit_grid_*.csv
 baseline_tools/CORRECTED_*.csv

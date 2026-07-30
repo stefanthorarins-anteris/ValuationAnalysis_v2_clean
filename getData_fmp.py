@@ -452,6 +452,15 @@ def stamp_frequency_and_graham(tempfund):
     _graham = np.sqrt(22.5 * _eps_ttm.where(_eps_ttm > 0)
                       * _bvps.where(_bvps > 0))
     tempfund['grahamNumber'] = _graham.replace([np.inf, -np.inf], np.nan).values
+    # EXPOSE the TTM EPS this function already computed (additive, 2026-07-29).  It is the
+    # canonical trailing-year EPS on this panel -- rpy-aware, one consistent share basis, and
+    # the SAME basis as `price` (marketCap/weightedAverageShsOut) -- so any consumer needing a
+    # trailing P/E must use THIS rather than re-deriving it.  The pick-log's entry valuation is
+    # the first such consumer; without this it would have had to duplicate the convention, and
+    # a second definition of trailing EPS is exactly how two parts of this pipeline end up
+    # disagreeing about the same company.  FMP's own `earningsYield` is NOT a substitute: it is
+    # computed against FMP's price, not the corrected one.
+    tempfund['epsTTM'] = _eps_ttm.replace([np.inf, -np.inf], np.nan).values
     # WHY each undefined Graham row is undefined (ruling Q1.3, 2026-07-26).  Graham stays a
     # NaN -> Stage-1 FAIL, but the fail now carries a REASON, per row, so the deferred CEO
     # question -- should that Tier-S w=1.0 slot be cheapness, or the

@@ -37,8 +37,43 @@ PICK_LOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'pick_l
 
 # Fixed column order -- the header written once on file creation. Long/tidy: one row per
 # (run, list, stock).
+#  ENTRY VALUATION (added 2026-07-29).  The log recorded WHAT was picked and its AggScore but
+#  NOTHING about the valuation paid, which made the CEO's stated sell trigger -- "P/E going up"
+#  -- uninstrumentable: with no entry multiple on record there is nothing for a later multiple
+#  to be compared against.  These columns are captured AT ENTRY, on the same append-only row.
+#
+#  =====================================================================================
+#  THE NAMES DECLARE THE BASIS, AND THE BASIS IS NOT A TRADED PRICE.  READ THIS.
+#  =====================================================================================
+#  Every figure here is derived from the STATEMENT PERIOD-END, because that is what `cdx_df`
+#  carries -- it is `marketCap / weightedAverageShsOut` at the period end, NOT the quote on the
+#  day the name was picked.  Measured on the 2026-07-17 panel: median divergence from the live
+#  quote 21.2%, with 76% of names more than 10% apart, and top-20 rows 3.5-6.5 months stale.
+#  It is also in the company's OWN REPORTING CURRENCY (WATR.L reads 3.83 against a 302.50 quote),
+#  which is why `reporting_currency` is logged beside it -- a number with no currency is not a
+#  price.  The columns were briefly named `entry_price` / `entry_PB`; they were renamed before
+#  any row was ever written, because `pick_log.csv` is APPEND-ONLY and a mis-named column would
+#  have been permanent and unrepairable.
+#
+#  WHY NOT FETCH THE REAL QUOTE (the honest alternative, deliberately deferred): it is the
+#  better number and it is cheap -- a handful of calls for a 20-name list, on the machine where
+#  the pipeline already spends ~12 hours of API budget.  It is NOT wired here because the CEO's
+#  standing rule is to confirm an external endpoint with a verifying call BEFORE wiring it, and
+#  that call cannot be made from this machine.  Wiring an unverified network dependency into an
+#  APPEND-ONLY log is the one place a silent failure is permanent.  So: declare the basis now,
+#  add `entry_quote_*` columns once the quote endpoint is confirmed on the home machine.
+#
+#  `entry_industry_median_PE` is the peer yardstick: a P/E of 14 means opposite things in Marine
+#  Shipping and in Software, so an absolute multiple alone cannot support a "re-rated" judgement.
 PICK_LOG_COLUMNS = ['as_of', 'logged_at', 'filter_commit', 'list', 'rank',
-                    'ticker', 'company', 'aggscore']
+                    'ticker', 'company', 'aggscore',
+                    'reporting_currency',
+                    'entry_periodend_price_reporting_ccy',
+                    'entry_periodend_trailing_PE',
+                    'entry_periodend_PB_fmp_basis',
+                    'entry_periodend_grahamNumberToPrice',
+                    'entry_industry_median_periodend_PE',
+                    'entry_industry_median_n']
 
 # Cohort carve-label (from carveOut) -> pick-log `list` tag. Referencing the carveOut
 # constants keeps this in lock-step if a label is ever renamed there. Iteration order here
@@ -132,25 +167,131 @@ def _warn_empty_general(frame):
     print(banner, flush=True)
 
 
-def _rows_from_frame(frame, list_tag, depth, names):
-    """Emit (rank, ticker, company, aggscore) partial rows from a postRank-style frame,
-    rank 1-based within the frame's existing (AggScore-descending) order, head(depth)."""
+_VAL_COLS = ['reporting_currency',
+             'entry_periodend_price_reporting_ccy', 'entry_periodend_trailing_PE',
+             'entry_periodend_PB_fmp_basis', 'entry_periodend_grahamNumberToPrice',
+             'entry_industry_median_periodend_PE', 'entry_industry_median_n']
+_EMPTY_VAL = {c: '' for c in _VAL_COLS}
+
+#  Minimum peer count for an industry median to be published.  One FMP industry in this
+#  universe has a SINGLE member, whose "industry median P/E" is just its own P/E -- a
+#  self-comparison that would read as "in line with peers" by construction.
+MIN_PEERS_FOR_INDUSTRY_MEDIAN = 5
+
+
+def entry_valuations(resdic):
+    """ticker -> entry valuation dict, from the NEWEST cdx row per source.
+
+    PERIOD-END values, not traded prices, and not window averages -- see the long note at
+    PICK_LOG_COLUMNS for what they are and are not.  The Stage-2 metric frame holds head(nq)
+    MEANS of these quantities (which is what the score wants); this reads the newest row so the
+    figure is at least a single point in time rather than a trailing average of several.
+
+    `entry_periodend_trailing_PE` uses `epsTTM`, the canonical rpy-aware trailing EPS stamped by
+    getData_fmp.stamp_frequency_and_graham on the SAME share basis as `price` -- deliberately
+    not FMP's `earningsYield`, which is computed against FMP's own price.  A non-positive EPS
+    yields a BLANK, never a negative number: a negative P/E is not a cheaper valuation and must
+    never sort or compare as one.
+
+    EACH FIELD IS GUARDED INDEPENDENTLY.  A first version wrapped all of them in one try, so a
+    single missing cdx column (`pbRatio`, say) blanked ALL five for EVERY ticker -- one absent
+    field silently destroying four present ones.  Now a missing column costs only its own
+    column.  Everything remains best-effort: a missing entry valuation is recoverable, a crashed
+    pipeline is not (the module's standing rule).
+    """
+    out = {}
+    try:
+        import numpy as _np
+        import pandas as _pd
+        cdx = resdic.get('cdx_df')
+        if cdx is None or 'source' not in getattr(cdx, 'columns', []):
+            print('[PICK-LOG] no cdx_df: entry valuations blank.', flush=True)
+            return out
+        d = cdx.copy()
+        d['date'] = _pd.to_datetime(d['date'], errors='coerce')
+        # cdx is stored ascending per source, so the LAST row is the newest; sort defensively
+        d = d.sort_values(['source', 'date'])
+        newest = d.groupby('source', sort=False).tail(1)
+        if 'source' not in newest.columns:
+            return out
+        newest = newest.set_index('source')
+
+        def _num(col):
+            """Independent per-column read: absent -> an all-NaN series, never an exception."""
+            if col not in newest.columns:
+                print('[PICK-LOG] cdx column %r absent; that column logs blank (others are '
+                      'unaffected).' % col, flush=True)
+                return _pd.Series(_np.nan, index=newest.index, dtype='float64')
+            return _pd.to_numeric(newest[col], errors='coerce')
+
+        px, eps = _num('price'), _num('epsTTM')
+        pb, gr = _num('pbRatio'), _num('grahamNumber')
+        ccy = (newest['reportedCurrency'].astype(object)
+               if 'reportedCurrency' in newest.columns
+               else _pd.Series('', index=newest.index, dtype=object))
+
+        pe = (px / eps.where(eps > 0)).replace([_np.inf, -_np.inf], _np.nan)
+        gtp = (gr / px.where(px != 0)).replace([_np.inf, -_np.inf], _np.nan)
+
+        # industry median P/E over the whole universe (peers, not the shortlist), with a
+        # MINIMUM peer count so a one-member industry cannot self-compare.
+        med_by_ind, n_by_ind, ind = {}, {}, {}
+        try:
+            import carveOut as _co2
+            ind = _co2._load_industry_map()
+            tmp = _pd.DataFrame({'pe': pe})
+            tmp['ind'] = [ind.get(s) for s in tmp.index]
+            g = tmp.dropna(subset=['pe', 'ind']).groupby('ind')['pe']
+            n_by_ind = g.size().to_dict()
+            med_by_ind = {k: v for k, v in g.median().to_dict().items()
+                          if n_by_ind.get(k, 0) >= MIN_PEERS_FOR_INDUSTRY_MEDIAN}
+        except Exception as _ie:
+            print('[PICK-LOG] industry median unavailable (%s: %s); that column logs blank.'
+                  % (type(_ie).__name__, _ie), flush=True)
+
+        def _f(v):
+            return '' if v is None or _pd.isna(v) else float(v)
+
+        for s in newest.index:
+            _i = ind.get(s)
+            out[s] = {
+                'reporting_currency': ('' if _pd.isna(ccy.get(s)) else str(ccy.get(s) or '')),
+                'entry_periodend_price_reporting_ccy': _f(px.get(s)),
+                'entry_periodend_trailing_PE': _f(pe.get(s)),
+                'entry_periodend_PB_fmp_basis': _f(pb.get(s)),
+                'entry_periodend_grahamNumberToPrice': _f(gtp.get(s)),
+                'entry_industry_median_periodend_PE': _f(med_by_ind.get(_i)),
+                'entry_industry_median_n': (n_by_ind.get(_i, '')
+                                            if _i in med_by_ind else ''),
+            }
+    except Exception as _e:
+        print('[PICK-LOG] entry valuations unavailable (%s: %s); logging blanks.'
+              % (type(_e).__name__, _e), flush=True)
+    return out
+
+
+def _rows_from_frame(frame, list_tag, depth, names, vals=None):
+    """Emit (rank, ticker, company, aggscore, entry_*) partial rows from a postRank-style
+    frame, rank 1-based within the frame's existing (AggScore-descending) order, head(depth)."""
     rows = []
     if frame is None or 'source' not in getattr(frame, 'columns', []):
         return rows
+    vals = vals or {}
     head = frame.head(depth)
     has_agg = 'AggScore' in head.columns
     for rank, (_, r) in enumerate(head.iterrows(), start=1):
         ticker = r['source']
         company = names.get(ticker, '')
         aggscore = r['AggScore'] if has_agg else ''
-        rows.append({
+        row = {
             'list': list_tag,
             'rank': rank,
             'ticker': '' if ticker is None else str(ticker),
             'company': '' if company is None else str(company),
             'aggscore': '' if aggscore is None else aggscore,
-        })
+        }
+        row.update(vals.get(ticker, _EMPTY_VAL))
+        rows.append(row)
     return rows
 
 
@@ -167,6 +308,7 @@ def build_pick_log_rows(resdic, as_of=None, logged_at=None, filter_commit=None):
     if filter_commit is None:
         filter_commit = _git_short_hash()
     names = _names_map(resdic)
+    vals = entry_valuations(resdic)
 
     # Depth of the emitted GENERAL deliverable = the presentation top-N (ntopxlsx). Falls
     # back to 20 (the config default) if absent. Side-lists match the side-list CSV = ntopagg.
@@ -176,7 +318,7 @@ def build_pick_log_rows(resdic, as_of=None, logged_at=None, filter_commit=None):
     partial = []
     # GENERAL: the carve-deduped general pool -- the exact frame the emitted top-N comes from.
     gen_frame = resdic.get('postRank')
-    gen_rows = _rows_from_frame(gen_frame, _GENERAL_LIST, general_depth, names)
+    gen_rows = _rows_from_frame(gen_frame, _GENERAL_LIST, general_depth, names, vals)
     if not gen_rows:
         _warn_empty_general(gen_frame)
     partial += gen_rows
@@ -191,7 +333,8 @@ def build_pick_log_rows(resdic, as_of=None, logged_at=None, filter_commit=None):
             print(f"[PICK-LOG] side-list '{list_tag}' ({carve_label}) absent this run; "
                   f"skipping (no rows logged for it).", flush=True)
             continue
-        partial += _rows_from_frame(sdic['postRank'], list_tag, sidelist_depth, names)
+        partial += _rows_from_frame(sdic['postRank'], list_tag, sidelist_depth, names,
+                                   vals)
 
     # Stamp the run-level columns onto every row.
     rows = []
@@ -210,6 +353,29 @@ def append_pick_log(rows, path=PICK_LOG_PATH):
     file_exists = os.path.exists(path)
     size = os.path.getsize(path) if file_exists else 0
     write_header = (not file_exists) or (size == 0)
+
+    # HEADER-WIDTH GUARD (added 2026-07-29, while it was still free).  This file is APPEND-ONLY
+    # and has NO header on an append, so if PICK_LOG_COLUMNS ever gains or loses a column, every
+    # subsequent block silently mis-aligns against the header already on disk -- and because
+    # nothing may be rewritten, the damage is permanent.  Refuse instead: a run with no
+    # pick-log block is recoverable, a log whose columns mean different things in different
+    # blocks is not.  Checked ONLY on the append path (a fresh file writes its own header).
+    # This was added at the one moment it cost nothing: before any pick_log.csv existed.
+    if file_exists and size > 0 and not write_header:
+        try:
+            with open(path, 'r', encoding='utf-8', newline='') as hf:
+                existing = next(csv.reader(hf), None)
+        except Exception:
+            existing = None
+        if existing and list(existing) != list(PICK_LOG_COLUMNS):
+            _missing = [c for c in existing if c not in PICK_LOG_COLUMNS]
+            _added = [c for c in PICK_LOG_COLUMNS if c not in existing]
+            raise RuntimeError(
+                'PICK-LOG SCHEMA DRIFT: %s already has a header of %d column(s) but the writer '
+                'now has %d. Appending would mis-align every future row against a header that '
+                'can never be rewritten (append-only). Removed: %s. Added: %s. '
+                'FIX: start a NEW dated log file rather than appending to this one.'
+                % (path, len(existing), len(PICK_LOG_COLUMNS), _missing, _added))
 
     # LOW-2 -- trailing-partial-row seam: if a PRIOR run was crash-truncated mid-row (its
     # last byte is not a newline), pad ONE newline at EOF first, so this run's block cannot

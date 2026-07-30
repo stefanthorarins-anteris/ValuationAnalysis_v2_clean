@@ -351,7 +351,9 @@ def writeResWrapper(resdic):
     # `sector` per name and cross-checks it against the pickle-derived financial
     # classification (ff.applySectorFallback), returning the reconciled flag_df.
     fname_AggScoretop = f'AggScoreTop{ntopagg}-{fidag}_{datasource}_{tickerfilter}.csv'
-    flag_df = writeBoAggToCSV(fb_df, mscore, cscore, baseurl, api_key, ntopagg, fname_AggScoretop, flag_df)
+    flag_df = writeBoAggToCSV(fb_df, mscore, cscore, baseurl, api_key, ntopagg,
+                              fname_AggScoretop, flag_df,
+                              raw_df=resdic.get('postScoreMetric_raw'))
 
     # Write the standalone forensic decision-support CSV AFTER the API-sector
     # cross-check, so it carries the reconciled (conservative) financial classification.
@@ -440,7 +442,11 @@ def writeResWrapper(resdic):
     return ([fname_AggScoretop, fname_presentationtop, fname_forensic]
             + sidelist_fnames + band_fnames + reviewref_fnames)
 
-def writeBoAggToCSV(fb_df, mscore, cscore, baseurl, api_key, ntopagg, fname_AggScoretop, flag_df=None):
+def writeBoAggToCSV(fb_df, mscore, cscore, baseurl, api_key, ntopagg, fname_AggScoretop,
+                    flag_df=None, raw_df=None):
+    """raw_df : resdic['postScoreMetric_raw'] -- the UNWEIGHTED, UN-NORMALISED metric
+    frame.  Required to publish any metric under its own name: `fb_df` is postRank,
+    whose metric columns are all `z x w` (see the CycleHeat note below)."""
     fbdf_tocsv = fb_df.head(ntopagg)
     symblist = list(fbdf_tocsv['source'])
     #BoComp_tocsv = pd.DataFrame(columns=['source','currentRatio','dividendYield','grahamNumberToPrice','price','beta',
@@ -642,10 +648,48 @@ def writeBoAggToCSV(fb_df, mscore, cscore, baseurl, api_key, ntopagg, fname_AggS
     BoComp_tocsv['DCF-to-Price'] = dcf2p
     BoComp_tocsv['M-Score'] = mscoreVec
     BoComp_tocsv['C-Score'] = cscoreVec
-    # Add CycleHeat from postRank data (already calculated in postBoRank)
-    if 'CycleHeat' in fbdf_tocsv.columns:
-        BoComp_tocsv['CycleHeat'] = fbdf_tocsv['CycleHeat'].values
-    # Add moatScore from postRank data (merged from moatIdentifier)
+    # CycleHeat -- PUBLISHED FROM THE RAW FRAME, NOT FROM postRank (fix, 2026-07-29).
+    #
+    # THE DEFECT THIS REPLACES.  `fb_df` is resdic['postRank'], and postBoRank multiplies
+    # every metric column by its weight BEFORE assembling that frame
+    # (postBoRank.py:110-118), so postRank['CycleHeat'] is `z x (-0.080)` -- NOT the metric.
+    # Because CycleHeat is winsor-EXEMPT (bounded/discrete), its z is an exact affine
+    # function of the raw value, so multiplying by a NEGATIVE weight inverts it EXACTLY:
+    # measured on the 2026-07-17 panel, corr(published, true) = -1.000000 and median ratio
+    # -0.027282.  The published column's MINIMUM was therefore the HOTTEST name in the pool.
+    #
+    # SCOPE -- ONLY THIS CSV WAS AFFECTED.  The HTML deck was NOT: it sources CycleHeat from a
+    # recomputed raw value and matches RawMetricsTop100 to 4.44e-16 (corr +1.000000).  An
+    # earlier version of this comment claimed "the deck's cyclicality read was inverted for
+    # every name" -- that was FALSE and is corrected here, because a wrong scope in a permanent
+    # comment is how a wrong scope reaches a report.
+    #
+    # THE CLASS, swept exhaustively (2026-07-29): all 21 metric columns in postRank are
+    # `z x w`, none are raw, and THREE sites copied metric-named columns out of it:
+    #   * postBo.writeBoAggToCSV (here)          -- the defect above, fixed;
+    #   * backtest_outputs.save_stock_picks      -- 7 columns, now renamed *_weighted_contrib;
+    #   * backtest_unified / backtest_ols_analysis -- regressed on `z x w`, so CycleHeat's
+    #     coefficient was reported sign-flipped; both now un-weight first.
+    #   * moatScore -- SAFE, and deliberately left as-is: merged into postRank at
+    #     Sbocker.py:467, i.e. AFTER getAggScore has run, so never weighted, never summed into
+    #     AggScore, and not a weight_series key.  Verified: integral values.
+    # A first inspection found only two of the three sites; the frozen inventory in
+    # baseline_tools/test_published_columns.py now fails on any unreviewed reader, because
+    # "every metric column here is z x w" means a new reader is wrong BY DEFAULT.
+    # That is why this now reads from `raw_df` and REFUSES to fall back to postRank.
+    if raw_df is not None and 'CycleHeat' in getattr(raw_df, 'columns', []):
+        _cyc = raw_df.set_index('source')['CycleHeat']
+        BoComp_tocsv['CycleHeat'] = [_cyc.get(s, np.nan) for s in symblist]
+    elif 'CycleHeat' in fbdf_tocsv.columns:
+        # Do NOT silently publish the weighted column again.  Emit the gap loudly instead:
+        # a missing column is recoverable, a sign-inverted one is not detectable downstream.
+        print('!' * 78, flush=True)
+        print('!!! CycleHeat OMITTED from %s: postScoreMetric_raw was not supplied, and the\n'
+              '!!! only other source (postRank) holds the WEIGHTED z (w=-0.080), which is\n'
+              '!!! SIGN-INVERTED against the metric. Publishing a gap, not a wrong number.'
+              % fname_AggScoretop, flush=True)
+        print('!' * 78, flush=True)
+    # moatScore -- raw by construction (merged post-weighting at Sbocker.py:467); see above.
     if 'moatScore' in fbdf_tocsv.columns:
         BoComp_tocsv['moatScore'] = fbdf_tocsv['moatScore'].values
 

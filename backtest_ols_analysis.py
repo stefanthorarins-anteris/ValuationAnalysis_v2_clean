@@ -160,6 +160,21 @@ def run_ols_analysis(loadfname=None, buy_year=2020, eval_years=3, topn=100, verb
                    if postRank[c].dtype in ['float64', 'int64', 'float32', 'int32']
                    and not any(id_str in c for id_str in id_cols)]
     
+    # UN-WEIGHT BEFORE REGRESSING (fix, 2026-07-29) -- same defect as backtest_unified.py.
+    # `postRank`'s metric columns are `z x weight`; regressing on them and printing the
+    # coefficients reports a NEGATIVE-weight metric with its sign INVERTED (`CycleHeat`,
+    # w = -0.080).  Divide by the weight so each coefficient is on the metric's own z-scale
+    # with the metric's own sign.  Zero-weight columns are dropped rather than divided by 0.
+    # The SAME shared helper the other two OLS sites use -- see
+    # postBoRank.unweight_postrank_metrics for why this must not be re-inlined.
+    try:
+        import postBoRank as _pbr
+        postRank, metric_cols, _dropped = _pbr.unweight_postrank_metrics(
+            postRank, metric_cols, verbose=verbose, label='OLS analysis: ')
+    except Exception as _e:
+        print("  !! could not un-weight postRank metrics (%s: %s) -- CycleHeat's coefficient "
+              "sign is INVERTED below." % (type(_e).__name__, _e))
+
     if verbose:
         print(f"Metric columns found: {metric_cols}")
     

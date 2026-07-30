@@ -280,6 +280,19 @@ def main():
         star = "  <== TOP-5" if r["rank"] <= 5 else ""
         print("  %2d. %-14s AggScore %+.4f%s" % (r["rank"], r["source"], r["AggScore"], star))
 
+    # DECK PRE-FLIGHT LINE (automates top20-real-value-verification.md S6.3 step 3, which
+    # currently asks the CEO to tally industries by hand).  Printed with the list rather than
+    # after it, because a 40%-one-industry shortlist changes how every subsequent line is read.
+    try:
+        import industry_attribution as ia
+        print("\n" + bar)
+        print(ia.concentration_line(list(t20["source"]),
+                                    sorted(set(dmdic["cdx_df"]["source"]))))
+        print(bar, flush=True)
+    except Exception as e:
+        print("\n  industry-concentration pre-flight unavailable: %s: %s"
+              % (type(e).__name__, e))
+
     print("\n" + bar)
     print("MARKET-CAP BANDS -- as the PIPELINE returns them")
     print(bar)
