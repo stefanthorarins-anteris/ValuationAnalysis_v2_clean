@@ -65,6 +65,29 @@ import reporting_period as rp
 #  the list while they were in fact missing from the file -- a schema note that under-reports
 #  the gaps is worse than none, because the reader trusts it.  M/C are now COMPUTED, so they
 #  are no longer absent; the list below is the real remainder.
+def code_provenance():
+    """`<sha>[-dirty]` for the tree that produced the artifact, or 'unknown'.
+
+    A DATED ARTIFACT OF RECORD MUST NAME THE CODE THAT PRODUCED IT.  This is the direct lesson
+    of the CycleHeat column: a CSV shipped a sign-inverted metric and there was no way, from the
+    file, to tell which code generation had written it -- so the defect and its fix could not be
+    told apart by anyone reading the artifact.  Stamped dynamically rather than hard-coded so it
+    cannot go stale the first time the code moves.
+    """
+    import subprocess
+    try:
+        sha = subprocess.run(["git", "-C", _REPO, "rev-parse", "--short", "HEAD"],
+                             capture_output=True, text=True, timeout=15).stdout.strip()
+        if not sha:
+            return "unknown"
+        dirty = bool(subprocess.run(["git", "-C", _REPO, "status", "--porcelain"],
+                                    capture_output=True, text=True,
+                                    timeout=15).stdout.strip())
+        return sha + ("-dirty" if dirty else "")
+    except Exception:
+        return "unknown"
+
+
 SCHEMA_NOTE = ("OFFLINE REDUCED SCHEMA -- this file was NOT written by the pipeline. ABSENT "
                "(not zero, not blank-because-zero): price, PE-ratio, beta, sector, rating_fmp, "
                "DCF-to-Price -- all of which require live API calls. PRESENT and offline-"
@@ -147,7 +170,10 @@ def emit(resdic_path, run_dir, run_date, datasource="fmp", tickerfilter="stock_N
                             "sloanAccruals", "sloan_worstQuintile_inShortlist",
                             "forensicTag") if c in flag_df.columns]
         agg = agg.merge(flag_df[keep], on="source", how="left")
-    agg["_SCHEMA_NOTE"] = SCHEMA_NOTE
+    agg["_SCHEMA_NOTE"] = ("Generated from code commit %s on %s. %s"
+                           % (code_provenance(),
+                              pd.Timestamp.now().strftime("%Y-%m-%d %H:%M"),
+                              SCHEMA_NOTE))
     agg_path = os.path.join(run_dir, "AggScoreTop%d-%s_%s.csv" % (topn, run_date, tag))
     agg.to_csv(agg_path, index=False)
 

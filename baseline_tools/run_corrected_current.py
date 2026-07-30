@@ -67,6 +67,34 @@ import postBo as pb
 import postBoRank as pbr
 
 RUN_DATE = "2026-07-17"
+
+
+def code_provenance():
+    """`<sha>[-dirty]` of the tree that produced these files -- see
+    emit_deck_inputs.code_provenance for why a dated artifact must name its own code."""
+    import subprocess
+    try:
+        sha = subprocess.run(["git", "-C", _REPO, "rev-parse", "--short", "HEAD"],
+                             capture_output=True, text=True, timeout=15).stdout.strip()
+        if not sha:
+            return "unknown"
+        dirty = bool(subprocess.run(["git", "-C", _REPO, "status", "--porcelain"],
+                                    capture_output=True, text=True,
+                                    timeout=15).stdout.strip())
+        return sha + ("-dirty" if dirty else "")
+    except Exception:
+        return "unknown"
+
+
+#  RECORDED IN THE ARTIFACT because it is the kind of number that gets quoted without its
+#  population and then means the opposite of what it says.
+DOUBLE_PENALTY_CAVEAT = (
+    "CycleHeat/EPStoEPSmean overlap is POOL-DEPENDENT AND THE SIGN FLIPS: Spearman is "
+    "-0.6515 (86.7% opposite-sign) on the DEPLOYED top-100 pool, but +0.27 across the WHOLE "
+    "07-17 UNIVERSE. The double-penalty finding is real WHERE THE WEIGHTS OPERATE (the pool) "
+    "and REVERSES universe-wide. Never quote either figure without naming its population. "
+    "This is a CEO weight decision; no weight has been changed.")
+
 BANNER_LIMITS = [
     "07-17 UNIVERSE / OLD GATES -- ~500+ names the corrected gates would admit were never "
     "fetched (~523 pricefails, ~72% non-US, plus the lenfail 16->8 cohort). NOT the list a "
@@ -126,6 +154,13 @@ def emit_lists(resdic, dmdic, outdir, tag):
               if dmdic.get("Tickers_df") is not None else None)
     bres = co.partition_by_marketcap(postRank, dmdic["cdx_df"], names=_names)
 
+    # Stamp provenance + the pool-dependence caveat on the artifact itself, so neither can be
+    # separated from the numbers they qualify.
+    _prov = ("Generated from code commit %s on %s | %s"
+             % (code_provenance(), pd.Timestamp.now().strftime("%Y-%m-%d %H:%M"),
+                DOUBLE_PENALTY_CAVEAT))
+    general = general.copy()
+    general["_PROVENANCE"] = _prov
     general.to_csv(os.path.join(outdir, "CORRECTED_general_top100-%s.csv" % tag), index=False)
 
     band_tables = {}
