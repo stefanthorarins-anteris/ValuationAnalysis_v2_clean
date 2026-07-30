@@ -116,7 +116,10 @@ def _stage2_metric_loop_offline(bstop, cdxtop, nq=16):
         # (restated) quarters to the last-ingested figure, so the live and offline
         # paths now agree by construction -- including on the previously-divergent
         # ILMN-type restatement names.
-        setv("CycleHeat", sm.cycleheat(tempcdx))
+        # rpy passed for LOCKSTEP with live postBoRank (fix 2026-07-30): the window is
+        # frequency-scaled, so omitting it here would silently re-introduce the
+        # 2x-calendar-span divergence for semi-annual filers in the offline path.
+        setv("CycleHeat", sm.cycleheat(tempcdx, rpy=_rpy))
 
     return out
 

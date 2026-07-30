@@ -126,7 +126,10 @@ def _pool_raw_fast(sources, cdx_df, nq=16):
         r['tbVpRatio'] = sm.tbv_p_ratio(t, nq, rpy=_rpy)
         r['Altman-Z'] = sm.altman_z(t, rpy=_rpy)
         r['Piotroski'] = sm.piotroski(t, rpy=_rpy)
-        r['CycleHeat'] = sm.cycleheat(t)
+        # rpy passed for lockstep with the live scorer (fix 2026-07-30) -- every other metric
+        # on these lines already scales its window to the filer's frequency; CycleHeat was the
+        # one that did not, so the reference artifact reported a different h than the deck.
+        r['CycleHeat'] = sm.cycleheat(t, rpy=_rpy)
         rows.append(r)
     return pd.DataFrame(rows)
 

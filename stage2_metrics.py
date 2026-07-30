@@ -439,17 +439,54 @@ def prepare_eps_series(tempcdx):
     return eps.replace([np.inf, -np.inf], np.nan).dropna()
 
 
-def cycleheat(tempcdx):
+#  CycleHeat's baseline window, in QUARTERS, scaled to the filer's own frequency by
+#  rp.scale_window (28 quarterly rows / 14 semi-annual rows = ~7 years either way).
+#
+#  WHY A CAP EXISTS AT ALL (fix, 2026-07-30).  CycleHeat is a SELF-REFERENCE z-score: how far
+#  the latest EPS sits above the stock's OWN history.  It therefore depends entirely on how
+#  much history it is handed -- and it was handed "whatever rows exist", the only metric in the
+#  Stage-2 block taking neither `nq` nor `rpy`.  Two measured consequences on the 07-17 panel:
+#    * A SEMI-ANNUAL filer's window already spanned 11.04 years (median 11.50, max 25.25)
+#      against a quarterly peer's 5.53 (median 5.75) -- ~2x the calendar time off the same
+#      ~22.5 rows, because rows-per-year differs.  ~14% of the universe, and 31 of 57 rendered
+#      deck pages, were being measured against a baseline twice as long as their peers'.
+#    * A LONGER window RAISES h for an improving company, because a longer history means a
+#      lower baseline to exceed.  Measured on the 1,065 deep-history names (span > 8y):
+#      mean h on the full window vs the most recent half was +0.981 vs +0.735 for rising-EPS
+#      names (+0.246 sigma) and -0.797 vs -0.642 for falling ones.  w(CycleHeat) = -0.080, so
+#      that is a straight PENALTY on exactly the population the CEO singled out as needing
+#      protection: "a real value company that has recently become one".
+#  At `-nrperiods 80` those spans would become ~20 and ~40 years, so the deep-history fetch --
+#  undertaken to make cyclicality DETECTABLE -- would have intensified the penalty on improving
+#  companies instead.  The cap makes h a fixed-calendar-time measure regardless of fetch depth.
+#
+#  WHY 28 QUARTERS.  Two constraints pick it: it must be long enough to contain a full business
+#  cycle (the quantity the metric is named for), and it must be >= the ~24 rows a quarterly
+#  filer carries on the CURRENT panel so it CANNOT BIND there -- making this change bit-identical
+#  for every quarterly name today, which is the regression that matters.  7 years satisfies both.
+CYCLEHEAT_BASE_NQ = 28
+
+
+def cycleheat(tempcdx, nq=CYCLEHEAT_BASE_NQ, rpy=rp.DEFAULT_ROWS_PER_YEAR):
     """CycleHeat for BOTH the live scorer and the offline reproduction
     (postBoRank.py:433-488).
 
     Uses the shared canonical EPS history (prepare_eps_series) -- one row per
-    date, restatement tie broken to the last-ingested figure -- then delegates
-    the z-score to cycleheat_zscore.  "current" = the most-recent quarter
-    (.iloc[-1] of the date-ascending series).  NaN on failure.
+    date, restatement tie broken to the last-ingested figure -- TRUNCATED to the most recent
+    `scale_window(nq, rpy)` observations, then delegates the z-score to cycleheat_zscore.
+    "current" = the most-recent quarter (.iloc[-1] of the date-ascending series).  NaN on
+    failure.
+
+    `rpy` is THIS filer's rows-per-year, so the window spans the same CALENDAR time for a
+    semi-annual filer as for a quarterly one -- the same treatment every neighbouring metric in
+    the Stage-2 block already had.  Defaults keep old behaviour only in the degenerate sense
+    that a caller omitting `rpy` gets the quarterly window; callers MUST pass it (all three do).
     """
     try:
         eps_clean = prepare_eps_series(tempcdx)
+        w = rp.scale_window(nq, rpy)
+        if w and len(eps_clean) > w:
+            eps_clean = eps_clean.tail(w)          # most-recent w observations
         if len(eps_clean) >= 2:
             return cycleheat_zscore(eps_clean, eps_clean.iloc[-1])   # iloc[-1] = MOST RECENT
         return np.nan

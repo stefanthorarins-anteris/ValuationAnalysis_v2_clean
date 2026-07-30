@@ -266,7 +266,10 @@ def _compute_ticker_metrics(ticker, tempcdx, dcf, bstop, nq, tempcntr,
     setv('Altman-Z', sm.altman_z(tempcdx, rpy=rpy))
     setv('Piotroski', sm.piotroski(tempcdx, rpy=rpy))
     setv('priceGrowth', sm.price_growth(tempcdx, nq, rpy=rpy))
-    setv('CycleHeat', sm.cycleheat(tempcdx))
+    # rpy MUST be passed: CycleHeat is a self-reference z-score, so its window length
+    # decides the baseline. It was the only metric in this block taking neither nq nor
+    # rpy (fix 2026-07-30); see stage2_metrics.CYCLEHEAT_BASE_NQ.
+    setv('CycleHeat', sm.cycleheat(tempcdx, rpy=rpy))
 
     # DcfToPrice needs the live DCF frame; diagnostic-log missing columns for the
     # first ticker (matches the historical behaviour).
