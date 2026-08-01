@@ -136,13 +136,120 @@ def classify_from_cadence(dates):
 CLASSIFIER_PRIORITY = 'period'
 
 
-def classify_source(dates=None, period_values=None, conflicts=None, source=None):
-    """Frequency for ONE source.
+# =========================================================================== #
+#  RECENCY: classify on the RECENT history, not the whole fetched panel        #
+# =========================================================================== #
+# THE DEFECT (fix, 2026-07-31).  Both signals were WHOLE-HISTORY reductions:
+#   * classify_from_period is a SET UNION -- a single `Q1` or `Q3` label ANYWHERE in the
+#     fetched history stamps the source QUARTERLY for its entire panel;
+#   * classify_from_cadence is a MEDIAN GAP over the whole window.
+# Neither has a notion of "now", so the verdict's meaning is a function of FETCH DEPTH.  At
+# `-nrperiods 24` the window is ~6 years; at `-nrperiods 80` it is ~20.
+#
+# That matters because reporting frequency is not a fixed property of an issuer -- it CHANGES.
+# UK/LSE issuers largely dropped quarterly reporting after the FCA removed the
+# interim-management-statement requirement (~2014-15).  So on a deep fetch a currently
+# SEMI-ANNUAL LSE filer with a pre-2015 quarterly era carries Q1/Q3 labels from that era, the
+# set union sees them, and it is stamped QUARTERLY -- silently reverting the ENTIRE semi-annual
+# fix wave for that name: Graham's EPS_ttm sums 4 halves = 24 months, Piotroski's prior-period
+# lag becomes 2 years, the Stage-1 flow factors run at 1.0 instead of 0.5, and every
+# scale_window call goes unscaled.  ~14% of the universe reports semi-annually, so this is the
+# cohort the whole module exists to protect.
+#
+# THE WINDOW, and why 4 years.  It is bounded on BOTH sides, and the bounds nearly meet:
+#   LOWER BOUND -- the window must contain enough rows for the SEMI-ANNUAL verdicts to be
+#   reachable at all, and semi-annual is the sparse side (2 rows/year).  The label path needs
+#   PERIOD_MIN_LABELLED_ROWS = 4 all-Q2/Q4 rows = 2 years; the cadence path needs
+#   CADENCE_MIN_GAPS = 3 gaps = 4 rows = ~1.5 years.  A window under ~2 years makes SEMIANNUAL
+#   UNREACHABLE, and UNKNOWN is treated as quarterly -- i.e. too short a window reverts the fix
+#   just as thoroughly as too long a one.
+#   UPPER BOUND -- the window must not span a regime change.  The FCA change is ~11 years back
+#   from 2026, but the bound that matters is the GENERAL one: whatever the next convention
+#   change is, a shorter window clears it sooner.
+# 4 years sits with ~2x margin over the lower bound (a semi-annual filer gets ~8 rows against a
+# 4-row floor and ~7 gaps against a 3-gap floor; a quarterly filer gets ~16 rows and ~8
+# separate Q1/Q3 sightings, so a missing quarter cannot flip it) and ~3x clearance under the
+# upper one.  It is also exactly the calendar span the pipeline's own history gate already
+# demands (failTests.py: rows_per_year x 4 = 4 years), so the classifier now looks at the same
+# span the fetch gate requires rather than at whatever depth was fetched.
+#
+# ANCHORED TO THE SOURCE'S OWN NEWEST ROW, NOT TO TODAY.  A dead/delisted name in the
+# survivorship-clean dead-merged universe, and every point-in-time `as_of` reproduction, has a
+# newest row that is YEARS old; a window anchored to the wall clock would select ZERO rows for
+# them and hand every such name back as UNKNOWN -> quarterly, reverting the fix across the
+# entire offline PIT path.  "The most recent 4 years OF THIS SOURCE'S HISTORY" is
+# fetch-depth-independent AND as-of-independent.
+CLASSIFY_RECENT_DAYS = 1461                  # 4.0 years (4 x 365.25), see above
+
+# FLOOR, so recency can never DESTROY a signal it was meant to sharpen.  If the 4-year window
+# holds fewer than this many rows (a sparse or gappy source), fall back to the most recent
+# CLASSIFY_RECENT_MIN_ROWS rows regardless of their dates.  8 rows = 4 semi-annual years, i.e.
+# 2x the PERIOD_MIN_LABELLED_ROWS floor -- enough for either verdict to be reachable.  Without
+# this floor a semi-annual filer with one missing half in the last four years would drop to
+# UNKNOWN -> the quarterly path, which is the very outcome the fix exists to prevent.  The
+# fallback is still BOUNDED (8 rows, not the whole panel), so the fetch-depth dependence is
+# gone either way.
+CLASSIFY_RECENT_MIN_ROWS = 8
+
+
+def _recent_slice(dates, period_values, days=CLASSIFY_RECENT_DAYS,
+                  min_rows=CLASSIFY_RECENT_MIN_ROWS):
+    """(dates, period_values) restricted to the source's most RECENT `days` of history.
+
+    `dates` and `period_values` must be POSITIONALLY aligned (all three call sites take both
+    off the same per-source frame, so they are).  Returns the inputs UNCHANGED -- i.e. today's
+    whole-history behaviour -- whenever the restriction cannot be made safely:
+      * `dates` is None (a caller with labels but no dates has nothing to be recent about);
+      * no date parses (an all-NaT column carries no recency information);
+      * the two inputs disagree in length (alignment cannot be assumed, so do not guess).
+    Falling back to the OLD behaviour on every unsafe input is deliberate: this function must
+    never be the reason a source loses its classification.
+    """
+    if dates is None:
+        return dates, period_values
+    d = pd.to_datetime(pd.Series(list(dates)).reset_index(drop=True), errors='coerce')
+    if d.notna().sum() == 0:
+        return dates, period_values
+    pv = None if period_values is None else list(period_values)
+    if pv is not None and len(pv) != len(d):
+        return dates, period_values
+    newest = d.max()
+    # Compared as a DAY DIFFERENCE rather than `newest - Timedelta(days)`: constructing a
+    # Timedelta from a large `days` raises OutOfBoundsTimedelta, so an over-wide window (a
+    # caller disabling the cap, or a test sweeping the constant) would blow up instead of
+    # degrading to whole-history.  The subtraction of two real dates cannot overflow.
+    age_days = (newest - d).dt.days
+    keep = age_days.notna() & (age_days <= int(days))
+    if int(keep.sum()) < int(min_rows):
+        # Sparse/gappy: take the most recent `min_rows` DATED rows instead of the calendar
+        # window.  Ranking by date (not by row order) so this does not depend on whether the
+        # caller's frame is newest-first or oldest-first -- the two call orders differ.
+        order = d.rank(method='first', ascending=False)          # 1 = newest; NaT -> NaN
+        keep = order.notna() & (order <= int(min_rows))
+        if int(keep.sum()) == 0:
+            return dates, period_values
+    idx = list(keep[keep].index)
+    return d.iloc[idx], (None if pv is None else [pv[i] for i in idx])
+
+
+def classify_source(dates=None, period_values=None, conflicts=None, source=None,
+                    recent_days=CLASSIFY_RECENT_DAYS):
+    """Frequency for ONE source, decided on its RECENT history (see CLASSIFY_RECENT_DAYS).
+
+    THE ONE PLACE THE RECENCY WINDOW IS APPLIED.  All three production call sites funnel
+    through here -- the ingest stamp (getData_fmp.fillPreReqdf), the fetch history gate
+    (failTests) and the whole-panel map (frequency_by_source) -- so the window cannot be
+    applied at two of three sites, which is this project's signature defect.  The two
+    primitives (classify_from_period / classify_from_cadence) stay PURE whole-input reductions:
+    they are the "what do these labels/dates say" layer and are called directly by tests.
 
     `conflicts`: optional list.  When `period` and cadence BOTH resolve and DISAGREE, a
     record (source, by_period, by_cadence) is appended -- that is how the disagreement
-    becomes a counted, loggable event rather than a silent tie-break.
+    becomes a counted, loggable event rather than a silent tie-break.  BOTH verdicts are taken
+    on the SAME recent window, so a conflict is now a genuine disagreement between the two
+    signals rather than an artifact of them reading different spans.
     """
+    dates, period_values = _recent_slice(dates, period_values, days=recent_days)
     by_period = classify_from_period(period_values) if period_values is not None else UNKNOWN
     by_cadence = classify_from_cadence(dates) if dates is not None else UNKNOWN
 
@@ -181,22 +288,90 @@ def classify_source(dates=None, period_values=None, conflicts=None, source=None)
 FREQ_COLUMN = 'reportingFrequency'
 _VALID_FREQ = (QUARTERLY, SEMIANNUAL, UNKNOWN)
 
+# =========================================================================== #
+#  THE CONFLICT WATCHDOG, CARRIED IN THE DATA TOO                              #
+# =========================================================================== #
+# WHY THIS COLUMN EXISTS (fix, 2026-07-31).  The "STANDING GUARD" below reported NOTHING, by
+# construction, and would have reported nothing on the deep-history fetch:
+#   * `classify_source` only records a conflict when handed a `conflicts` list, and the INGEST
+#     site -- the ONLY place that holds both the RAW period-end dates and the authoritative
+#     `period` field -- called it withOUT `conflicts` and withOUT `source`;
+#   * the universe-wide banner site (postBo.py) DOES pass a list, but `frequency_by_source`
+#     SHORT-CIRCUITS on the stored FREQ_COLUMN and so never calls `classify_source` at all.
+# Those two facts compose: the moment the ingest verdict started being stored (which is the
+# right design), the only site that could see a conflict stopped looking and the only site
+# still looking could no longer see one.  Reproduced 2026-07-31: a frame carrying a genuine
+# period-vs-cadence conflict AND a stored verdict emits no banner and no CSV; drop the stored
+# column and both appear.  So "zero conflicts reported" meant "nothing looked", not "none
+# exist" -- and the ship-gate called this the single most important post-fetch diagnostic.
+#
+# The fix has to survive the short-circuit, so the conflict is STAMPED INTO THE FRAME beside
+# the verdict itself: detected once at ingest (where both signals exist and are un-snapped),
+# carried in the panel, and re-emitted by `frequency_by_source` on the stored-column path.
+# That makes the diagnostic work at BOTH sites, and makes it survive the pickle -- postBo runs
+# off a saved panel, so an in-memory-only accumulator would go dark again the moment the fetch
+# and the ranking are separate invocations.
+#
+# ENCODING: '' (or NaN) = no conflict; otherwise 'by_period|by_cadence'.  A plain string so it
+# rides through forceNumOnDf's passthrough list and pickles without a custom dtype.
+FREQ_CONFLICT_COLUMN = 'reportingFrequencyConflict'
+_CONFLICT_SEP = '|'
 
-def frequency_by_source(cdx_df, verbose=False):
+
+def encode_conflict(conflicts):
+    """'by_period|by_cadence' for the FIRST record in `conflicts`, else '' (no conflict).
+
+    `classify_source` appends at most one record per source, so the first is the only one.
+    Taking the first rather than asserting len<=1 keeps this a diagnostic that cannot itself
+    break a 12-hour fetch."""
+    if not conflicts:
+        return ''
+    _src, by_period, by_cadence = conflicts[0]
+    return '%s%s%s' % (by_period, _CONFLICT_SEP, by_cadence)
+
+
+def decode_conflict(value):
+    """(by_period, by_cadence) from a stamped value, or None when there is no conflict."""
+    if not isinstance(value, str):
+        return None
+    v = value.strip()
+    if not v or _CONFLICT_SEP not in v:
+        return None
+    by_period, _sep, by_cadence = v.partition(_CONFLICT_SEP)
+    by_period, by_cadence = by_period.strip(), by_cadence.strip()
+    if by_period in _VALID_FREQ and by_cadence in _VALID_FREQ:
+        return (by_period, by_cadence)
+    return None
+
+
+def frequency_by_source(cdx_df, verbose=False, csv=False):
     """{source: frequency} for a whole panel, computed ONCE.
 
     PRIORITY: the stored FREQ_COLUMN (the ingest-time verdict, the single source of truth)
     -> the `period` field -> date cadence.  Sources that cannot be decided come back
     UNKNOWN, which every caller treats as quarterly.
+
+    Conflicts are collected from BOTH paths -- freshly, for sources classified here, and by
+    decoding FREQ_CONFLICT_COLUMN for sources served from the stored verdict -- so the
+    watchdog reports on a panel that carries the ingest verdict (see FREQ_CONFLICT_COLUMN).
+
+    `csv` -- write ReportingFrequencyConflicts_<date>.csv.  Defaults to FALSE and is enabled
+    at exactly ONE site: postBo's UNIVERSE-WIDE read.  There are four `verbose=True` callers
+    and they run on DIFFERENT pools (the full universe, the top-100, Stage-1, the forensics);
+    if each wrote the shared filename, the last one to run -- typically a narrow pool with
+    nothing to report -- would CLOBBER the universe-wide list with a shorter or empty one.
+    The banner still prints at every site; only the artifact is single-writer.
     """
     out = {}
     if cdx_df is None or 'source' not in getattr(cdx_df, 'columns', []):
         return out
     has_freq = FREQ_COLUMN in cdx_df.columns
     has_period = 'period' in cdx_df.columns
+    has_conflict = FREQ_CONFLICT_COLUMN in cdx_df.columns
     cols = ['source'] + (['date'] if 'date' in cdx_df.columns else []) \
                       + (['period'] if has_period else []) \
-                      + ([FREQ_COLUMN] if has_freq else [])
+                      + ([FREQ_COLUMN] if has_freq else []) \
+                      + ([FREQ_CONFLICT_COLUMN] if has_conflict else [])
     sub = cdx_df[cols]
     conflicts = []
     n_from_col = 0
@@ -212,6 +387,17 @@ def frequency_by_source(cdx_df, verbose=False):
         if stored:
             out[src] = stored
             n_from_col += 1
+            # THE SHORT-CIRCUIT MUST NOT SWALLOW THE DIAGNOSTIC.  `classify_source` is not
+            # called on this path, so a conflict can only be reported by decoding the one the
+            # ingest site already found and stamped (FREQ_CONFLICT_COLUMN).  Without this the
+            # banner site sees an empty list on every panel that carries an ingest verdict --
+            # i.e. on all of them from the next fetch onward.
+            if has_conflict:
+                for _v in grp[FREQ_CONFLICT_COLUMN]:
+                    _dec = decode_conflict(_v)
+                    if _dec is not None:
+                        conflicts.append((src, _dec[0], _dec[1]))
+                        break
             continue
         out[src] = classify_source(
             dates=grp['date'] if 'date' in grp.columns else None,
@@ -225,11 +411,18 @@ def frequency_by_source(cdx_df, verbose=False):
                              % (n_from_col, len(out),
                                 'period' if has_period else 'cadence'))
         print(describe_counts(out, source_of_truth=src_of_truth), flush=True)
-    log_conflicts(conflicts, verbose=verbose)
+    # n_examined is what turns "no banner" into a POSITIVE statement.  Passing the source
+    # count means a zero result reads "the watchdog RAN over N sources and found none",
+    # which is a different fact from "nothing looked" -- the fact that was indistinguishable
+    # before this fix and that made the diagnostic worthless.
+    log_conflicts(conflicts, verbose=verbose, csv=csv, n_examined=len(out),
+                  detected_via=('stamped ingest column + fresh classification'
+                                if has_conflict else 'fresh classification only'))
     return out
 
 
-def log_conflicts(conflicts, verbose=True, csv=True):
+def log_conflicts(conflicts, verbose=True, csv=True, n_examined=None,
+                  detected_via=None, label=''):
     """LOUD, counted, per-source report of every `period`-vs-cadence disagreement.
 
     A disagreement means the two independent signals for a source's reporting frequency
@@ -237,13 +430,32 @@ def log_conflicts(conflicts, verbose=True, csv=True):
     (CLASSIFIER_PRIORITY) is silently deciding how it gets scored.  That must never be
     invisible: 279 such names exist on the 2026-07-17 panel, and 25% of the semi-annual
     cohort flipping path between two runs would otherwise look like ordinary churn.
+
+    ZERO IS REPORTED AS A RESULT, NOT AS SILENCE (fix, 2026-07-31).  This used to `return`
+    immediately on an empty list, which made "0 conflicts" and "nothing ever looked"
+    indistinguishable in the run log -- and for the whole period the ingest verdict was being
+    stored, it was ALWAYS the latter (see FREQ_CONFLICT_COLUMN).  With `n_examined` supplied
+    the empty case prints an affirmative one-liner and still writes the (header-only) CSV, so
+    the ARTIFACT'S ABSENCE now means the watchdog did not run.  That is the whole point of a
+    standing guard: a guard that is silent when healthy cannot be distinguished from a guard
+    that is dead.
     """
     if not conflicts:
+        if verbose:
+            print('REPORTING-FREQUENCY CONFLICT CHECK%s: 0 conflict(s)%s -- the watchdog RAN'
+                  '%s. (`period` and date cadence agree wherever both resolve.)'
+                  % (' [%s]' % label if label else '',
+                     '' if n_examined is None else ' across %d source(s) examined' % n_examined,
+                     '' if not detected_via else ' via %s' % detected_via), flush=True)
+        if csv:
+            _write_conflict_csv([], verbose=verbose)
         return conflicts
     if verbose:
         print('!' * 78, flush=True)
-        print('!!! REPORTING-FREQUENCY CONFLICT: `period` and date cadence DISAGREE on '
-              '%d source(s).' % len(conflicts), flush=True)
+        print('!!! REPORTING-FREQUENCY CONFLICT%s: `period` and date cadence DISAGREE on '
+              '%d source(s)%s.'
+              % (' [%s]' % label if label else '', len(conflicts),
+                 '' if n_examined is None else ' of %d examined' % n_examined), flush=True)
         print('!!! Tie-break in force: CLASSIFIER_PRIORITY = %r (reporting_period.py) -- '
               'one constant, flip it when the FMP `period`-semantics question is settled.'
               % CLASSIFIER_PRIORITY, flush=True)
@@ -258,19 +470,28 @@ def log_conflicts(conflicts, verbose=True, csv=True):
                  if len(conflicts) > 40 else ''), flush=True)
         print('!' * 78, flush=True)
     if csv:
-        try:
-            fn = ('ReportingFrequencyConflicts_%s.csv'
-                  % pd.Timestamp.today().strftime('%Y-%m-%d'))
-            pd.DataFrame(conflicts,
-                         columns=['source', 'by_period', 'by_cadence']).to_csv(fn,
-                                                                              index=False)
-            if verbose:
-                print('  frequency-conflict list written to: %s' % fn, flush=True)
-        except Exception as _e:
-            if verbose:
-                print('  WARNING: could not write frequency-conflict list (%s)' % _e,
-                      flush=True)
+        _write_conflict_csv(conflicts, verbose=verbose)
     return conflicts
+
+
+def _write_conflict_csv(conflicts, verbose=True):
+    """Write ReportingFrequencyConflicts_<date>.csv -- ALWAYS, even when empty.
+
+    Header-only on zero conflicts, deliberately: the file's PRESENCE is the evidence that the
+    check ran, so its absence is now a real signal rather than the ambiguity it used to be.
+    Best-effort and fully swallowed -- a diagnostic must never be able to abort a 12-hour
+    fetch, which is why this is the one place that touches the filesystem."""
+    try:
+        fn = ('ReportingFrequencyConflicts_%s.csv'
+              % pd.Timestamp.today().strftime('%Y-%m-%d'))
+        pd.DataFrame(list(conflicts),
+                     columns=['source', 'by_period', 'by_cadence']).to_csv(fn, index=False)
+        if verbose:
+            print('  frequency-conflict list written to: %s (%d row(s))'
+                  % (fn, len(conflicts)), flush=True)
+    except Exception as _e:
+        if verbose:
+            print('  WARNING: could not write frequency-conflict list (%s)' % _e, flush=True)
 
 
 def rows_per_year_by_source(cdx_df, verbose=False):

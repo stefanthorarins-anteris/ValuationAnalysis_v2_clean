@@ -106,10 +106,14 @@ def test_floor_average():
 
 
 def test_smoke_real_pricesource():
+    import pytest
     csv = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                        "price_data", "real_prices.csv")
     if not os.path.exists(csv):
-        return
+        # EXPLICIT SKIP, NOT a bare `return` (audit C4, fixed 2026-07-31).  Under pytest a
+        # `return` is a PASS, so this reported green having asserted nothing whenever the price
+        # CSV was absent -- the normal state on the machine that runs the fetch.
+        pytest.skip("no price_data/real_prices.csv here -- real-pricesource smoke NOT run")
     ps = rc.PriceSource(csv)
     # URTH benchmark must resolve and be positive over a 12mo anchor window.
     b = rc.benchmark_return(ps, "2021-12-31", "2022-12-30")
@@ -121,15 +125,23 @@ def test_smoke_real_pricesource():
 
 if __name__ == "__main__":
     import traceback
+    import pytest as _pytest
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     fails = 0
+    skips = 0
     for fn in fns:
         try:
             fn()
             print(f"PASS {fn.__name__}")
+        # Skipped derives from BaseException, so `except Exception` below would NOT catch it and
+        # the script would abort.  It is also NOT a pass, so it gets its own counter.
+        except _pytest.skip.Exception as _s:
+            skips += 1
+            print(f"SKIP {fn.__name__}: {_s}")
         except Exception:
             fails += 1
             print(f"FAIL {fn.__name__}")
             traceback.print_exc()
-    print(f"\n{len(fns)-fails}/{len(fns)} passed")
+    print(f"\n{len(fns)-fails-skips}/{len(fns)} passed"
+          + (f", {skips} SKIPPED (not a pass)" if skips else ""))
     sys.exit(1 if fails else 0)

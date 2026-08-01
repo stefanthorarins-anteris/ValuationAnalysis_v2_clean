@@ -2,6 +2,7 @@ import os
 import sys
 
 import createDicts as cdic
+import getData_gen as gdg
 import requests
 import pandas as pd
 import numpy as np
@@ -20,18 +21,26 @@ import reporting_period as rp
 # --------------------------------------------------------------------------- #
 def postBoScoreRanking(bmtop, bstop, cdxtop, baseurl, api_key, period='quarter',
                        nq=16, as_of=None, weight_override=None, names=None,
-                       dedup_issuers=True):
+                       dedup_issuers=True, pool_label=None):
+    # pool_label : names THIS pool in the missing-data fill report ('general' or a carve-out
+    # cohort label).  Diagnostic only -- it reaches no scoring path.
     # as_of : point-in-time date D (default None).  as_of=None reproduces the live
     # Stage-2 ranking BIT-FOR-BIT.  The parameter is threaded here so the PIT DCF/beta
     # engagement (computed point-in-time DcfToPrice + CycleHeat beta, design s2B/s2C)
     # has a live seam; the point-in-time DCF/beta substitution itself is a later
     # (registry-backed, Phase 3+) step and is NOT wired on this path yet.  With
     # as_of=None nothing below branches on it -> live behaviour unchanged.
-    _assert_offline_dcf_is_score_neutral()
+    # `weight_override` is passed so the score-neutrality guard sees THIS POOL's weights, not
+    # just the main vector: a carve-out cohort could give DcfToPrice a weight without the main
+    # dict changing, and skipping the fetch would then silently blank a metric that scores.
+    _assert_offline_dcf_is_score_neutral(weight_override)
     print('Ranking the top 100 stocks, according to BoScore.')
     sys.stdout.flush()  # Ensure output is printed before progress bar
 
-    _diagnose_inputs(bmtop, bstop, cdxtop)
+    # Guarded like the other three (review B1).  This one was missed on the first pass and the
+    # sweep test caught it -- which is the partial-sweep defect class this project keeps hitting,
+    # so the sweep is asserted rather than trusted.
+    _safe_diagnose(_diagnose_inputs, bmtop, bstop, cdxtop)
 
     postBmRankingDict, postNewRankingDict = cdic.getPostDict()
     postScoreMetric_df = pd.DataFrame()
@@ -71,20 +80,28 @@ def postBoScoreRanking(bmtop, bstop, cdxtop, baseurl, api_key, period='quarter',
         dcf, dcf_from_bulk, resp_dcf_status, resp_dcf = _fetch_ticker_dcf(
             ticker, baseurl, api_key, dcf_bulk_dict)
 
+        # A DIAGNOSTIC MUST NEVER ABORT THE RUN (review B1, 2026-07-31).  These three calls
+        # were unguarded, inside a postBoScoreRanking that is itself unguarded in
+        # postBoWrapper, so ANY defect in a print-only helper cost Stage-2 -> no postRank -> no
+        # AggScore CSV, no XLSX, no side-lists, no band CSVs, no pick-log.  That is what
+        # happened with `resp_dcf.text` on a _FailedResponse.  Fixing only that one attribute
+        # leaves the structure that turned a print bug into a total loss, so the structure is
+        # fixed too -- this wave already holds `log_conflicts` and `_write_conflict_csv` to the
+        # same standard, and the run's own diagnostics should not be the one exception.
         if tempcntr == 0:
-            _diagnose_first_ticker_data(ticker, dcf, dcf_from_bulk, resp_dcf_status,
-                                        resp_dcf, tempcdx)
+            _safe_diagnose(_diagnose_first_ticker_data, ticker, dcf, dcf_from_bulk,
+                           resp_dcf_status, resp_dcf, tempcdx)
 
         _compute_ticker_metrics(ticker, tempcdx, dcf, bstop, nq, tempcntr,
                                 postBmRankingDict, postNewRankingDict, postScoreMetric_df,
                                 rpy=rp.rows_per_year(freq_map, ticker))
 
         if tempcntr == 0:
-            _diagnose_first_ticker_metrics(ticker, postScoreMetric_df)
+            _safe_diagnose(_diagnose_first_ticker_metrics, ticker, postScoreMetric_df)
 
         pbar.update(n=1)
 
-    _diagnose_pre_normalize(postScoreMetric_df)
+    _safe_diagnose(_diagnose_pre_normalize, postScoreMetric_df)
 
     # --- REVIEW-REFERENCE capture (READ-ONLY; must NOT perturb scoring) ----------
     # Snapshot the RAW per-ticker metrics BEFORE normalizeAndDropNA z-scores them IN
@@ -105,6 +122,16 @@ def postBoScoreRanking(bmtop, bstop, cdxtop, baseurl, api_key, period='quarter',
     # cohort zeroed is exempt in that cohort's pool too.
     postScoreMetric_df, outlierlist = normalizeAndDropNA(postScoreMetric_df,
                                                          weight_series=weight_series)
+
+    # MISSING-DATA FILL CALIBRATION (2026-08-01) -- EMITS ONLY, changes no score.
+    # Placed HERE because this is the one point where both sides exist: postScoreMetric_raw
+    # still carries the NaNs, and postScoreMetric_df carries the z's that the fillna(0) has
+    # already imputed.  It runs for EVERY pool (general + the five carve-out cohorts), which is
+    # the part nobody has measured -- a cohort concentrating most of its weight on two columns
+    # makes a single fill far more consequential per cell than the same fill in the general
+    # pool.  Read-only on both frames; nothing is assigned back.
+    _safe_diagnose(missing_data_fill_report, postScoreMetric_raw, postScoreMetric_df,
+                   weight_series, pool=(pool_label or 'general'))
 
     # Apply weights using the stable weight_series mapping; if a weight is missing,
     # default to 1.
@@ -161,36 +188,112 @@ def _sort_cdx_newest_first(cdxtop):
     return cdxtop
 
 
-# OFFLINE SEAM for the DCF leg (added 2026-07-27).  Stage-2's ONLY network dependency is a
-# per-ticker discounted-cash-flow call, one per name in the top-100 -- so re-scoring a SAVED
-# panel through the DEPLOYED path could not be done without ~100 live FMP calls, which the
-# work-machine rule explicitly discourages.  With this set, the call is skipped and the DCF
-# frame comes back empty, exactly as it already does on an HTTP failure (a path production
-# handles every run).
+# OFFLINE SEAM for the DCF leg (added 2026-07-27; DEFAULT FLIPPED TO SKIP 2026-07-31).
 #
-# PROVABLY SCORE-NEUTRAL, and ENFORCED: `DcfToPrice` carries w = 0.000 in the decisional
-# vector, so its value cannot move AggScore by construction.  That is a fact about today's
-# weights, not a law -- so if the weight is ever made non-zero, offline mode REFUSES rather
-# than silently changing the score.  Default OFF: the live fetch path is unchanged.
-OFFLINE_NO_DCF = os.environ.get('VA_OFFLINE_NO_DCF', '') == '1'
+# Stage-2's ONLY network dependency is a per-ticker discounted-cash-flow call, and it buys
+# NOTHING: it exists to compute `DcfToPrice`, which carries w = 0.000 in the decisional vector
+# and is therefore multiplied by zero.  The seam was built so a SAVED panel could be re-scored
+# through the deployed path without live calls -- but it was OFF by default, so every
+# production run still paid for the calls it could not use.
+#
+# THE COUNT IS 225 PER RUN, NOT ~100.  `postBoScoreRanking` runs ONCE PER POOL, not once per
+# run: the general pool (head(100)) plus five carve-out cohorts (head(25) each).  Verified
+# against the shipped 2026-07-17 resdic -- all five cohorts were fully populated at 25 names,
+# so 100 + 5x25 = 225 GETs, every one of them feeding a zero-weight metric.  With a standing
+# work-machine call-count caution and a ~12h fetch the same night, that is 225 calls of pure
+# cost.  Hence: SKIP BY DEFAULT.
+#
+# PROVABLY SCORE-NEUTRAL TODAY, AND ENFORCED -- the enforcement is the whole point.  Skipping
+# the fetch leaves the DCF frame empty, exactly as an HTTP failure already does on any run.
+# That is score-neutral only while every weight on `DcfToPrice` is zero, which is a fact about
+# today's vectors and NOT a law.  So if the weight ever becomes non-zero,
+# `_assert_offline_dcf_is_score_neutral` REFUSES the run rather than emitting a silently
+# different ranking with a blank metric.  Flipping the default makes that guard load-bearing on
+# EVERY production run instead of only inside the offline tools, which is why it is also
+# widened below to cover the per-cohort weight overrides.
+#
+# TO RE-ENABLE THE LIVE FETCH: VA_OFFLINE_NO_DCF=0 (or 'false' / 'no' / 'off').
+# `=1` still means skip, so the six baseline_tools scripts that do
+# `os.environ.setdefault('VA_OFFLINE_NO_DCF', '1')` are unaffected.
+_DCF_ENV = 'VA_OFFLINE_NO_DCF'
+_ENV_FALSEY = {'0', 'false', 'no', 'off', 'none', 'null'}
 
 
-def _assert_offline_dcf_is_score_neutral():
-    """Refuse offline scoring if DcfToPrice has acquired a weight."""
+def _env_flag(name, default):
+    """Env flag as a real TRUTH test, not a presence test.
+
+    A presence test is the audit-C2 footgun in reverse: with the default now ON, an operator
+    writing `VA_OFFLINE_NO_DCF=0` to re-enable the live fetch must actually get the live fetch,
+    not be ignored.  An UNSET or empty value takes `default`; anything explicitly falsey is
+    False; anything else is True.
+    """
+    v = os.environ.get(name)
+    if v is None or not str(v).strip():
+        return default
+    return str(v).strip().lower() not in _ENV_FALSEY
+
+
+OFFLINE_NO_DCF = _env_flag(_DCF_ENV, default=True)      # DEFAULT: skip the 225 useless GETs
+
+_DCF_BANNER_SHOWN = False
+
+
+def _dcf_weights_in_force(weight_override=None):
+    """Every weight `DcfToPrice` carries anywhere that can reach a score, as {where: w}.
+
+    WHY THE COHORT OVERRIDES ARE INCLUDED (2026-07-31).  The original guard read only
+    `cdic.getPostDict()`.  But `postBoScoreRanking` is also called per carve-out cohort with a
+    `weight_override` from `carveOut.COHORT_WEIGHTS`, and a cohort override could give
+    `DcfToPrice` a non-zero weight without touching the main vector -- which would slip past a
+    guard that only inspects the main one.  All five cohorts are 0.0 today (verified), so this
+    widening is precautionary; it matters because flipping the default makes this guard the only
+    thing standing between a future weight change and a silently blank metric.
+    """
+    out = {}
+    try:
+        postBm, postNew = cdic.getPostDict()
+        out['getPostDict'] = float({**postBm, **postNew}
+                                   .get('DcfToPrice', {}).get('w', 0) or 0)
+    except Exception as _e:                     # a broken dict must not mask the check
+        out['getPostDict'] = 'UNREADABLE (%s)' % type(_e).__name__
+    if isinstance(weight_override, dict) and 'DcfToPrice' in weight_override:
+        try:
+            out['weight_override'] = float(weight_override['DcfToPrice'] or 0)
+        except (TypeError, ValueError):
+            out['weight_override'] = 'UNREADABLE'
+    return out
+
+
+def _assert_offline_dcf_is_score_neutral(weight_override=None):
+    """Refuse to skip the DCF fetch if DcfToPrice has acquired a weight ANYWHERE in force."""
+    global _DCF_BANNER_SHOWN
     if not OFFLINE_NO_DCF:
         return
-    postBm, postNew = cdic.getPostDict()
-    w = float({**postBm, **postNew}.get('DcfToPrice', {}).get('w', 0) or 0)
-    if w != 0:
+    weights = _dcf_weights_in_force(weight_override)
+    bad = {k: v for k, v in weights.items() if not isinstance(v, float) or v != 0.0}
+    if bad:
         raise SystemExit(
-            "VA_OFFLINE_NO_DCF=1 but DcfToPrice now carries w=%r.  Offline mode skips the "
-            "DCF fetch, which is only score-neutral while that weight is 0 -- refusing "
-            "rather than emitting a silently different ranking." % w)
-    print("!" * 78, flush=True)
-    print("!!! VA_OFFLINE_NO_DCF=1 -- Stage-2 DCF fetch SKIPPED (no network).  DcfToPrice "
-          "w=0.000,\n!!! so AggScore is unaffected; the DCF column is empty/NaN in any "
-          "DISPLAY that reads it.", flush=True)
-    print("!" * 78, flush=True)
+            "Stage-2 DCF fetch is SKIPPED (%s default, or =1) but DcfToPrice now carries a "
+            "non-zero / unreadable weight: %r.  Skipping the fetch is only score-neutral while "
+            "that weight is 0 -- REFUSING rather than emitting a silently different ranking "
+            "with a blank metric.  Either set %s=0 to fetch it live, or re-zero the weight."
+            % (_DCF_ENV, bad, _DCF_ENV))
+    # Print ONCE per process, not once per pool: postBoScoreRanking runs 6 times, and a banner
+    # repeated 6 times in the run log trains the reader to skip it.
+    if not _DCF_BANNER_SHOWN:
+        _DCF_BANNER_SHOWN = True
+        _how = ('DEFAULT' if os.environ.get(_DCF_ENV) in (None, '')
+                else '%s=%s' % (_DCF_ENV, os.environ.get(_DCF_ENV)))
+        print("!" * 78, flush=True)
+        print("!!! Stage-2 per-ticker DCF fetch SKIPPED (%s) -- saves ~225 live FMP GETs per\n"
+              "!!! run (100 general + 5 cohorts x 25).  DcfToPrice w=0.000 in every vector in\n"
+              "!!! force, so AggScore is UNAFFECTED; the DCF column reads empty/NaN in any\n"
+              "!!! DISPLAY that shows it.  Set %s=0 to fetch it live." % (_how, _DCF_ENV),
+              flush=True)
+        print("!!! NOTE: this gates STAGE-2 only.  writeBoAggToCSV and createPresentation make\n"
+              "!!! their own DCF calls on separate code paths that this flag does NOT touch.",
+              flush=True)
+        print("!" * 78, flush=True)
 
 
 def _fetch_ticker_dcf(ticker, baseurl, api_key, dcf_bulk_dict):
@@ -205,12 +308,20 @@ def _fetch_ticker_dcf(ticker, baseurl, api_key, dcf_bulk_dict):
         dcf_data = [dcf_bulk_dict[ticker]]
         resp_dcf_status = "bulk"
     else:
-        # Fallback to individual API call
-        resp_dcf = requests.get(f'{baseurl}v3/discounted-cash-flow/{ticker}?apikey={api_key}')
-        resp_dcf_status = resp_dcf.status_code
+        # Fallback to individual API call.  HARDENED (fix, 2026-07-31): this ran as a bare
+        # requests.get with NO TIMEOUT and NO RETRY, ~100 times immediately after 12+ hours of
+        # sustained API load.  With no timeout a hung socket stalls the unattended run
+        # indefinitely; the existing bare `except` only covered `.json()`, not the GET itself,
+        # so a connection error propagated out of the Stage-2 scorer. safe_http_get gives it
+        # the same 10s timeout / 3 retries / backoff discipline as the fetch loop, and returns
+        # a _FailedResponse rather than raising, so a dead endpoint costs DcfToPrice for this
+        # ticker (weight 0.000 in the live vector) instead of the whole ranking.
+        resp_dcf = gdg.safe_http_get(
+            f'{baseurl}v3/discounted-cash-flow/{ticker}?apikey={api_key}')
+        resp_dcf_status = getattr(resp_dcf, 'status_code', None)
         try:
-            dcf_data = resp_dcf.json() if resp_dcf.status_code == 200 else []
-        except:
+            dcf_data = resp_dcf.json() if resp_dcf_status == 200 else []
+        except Exception:
             dcf_data = []
 
     # Convert bulk data (already in dict format) or API response to DataFrame
@@ -260,6 +371,11 @@ def _compute_ticker_metrics(ticker, tempcdx, dcf, bstop, nq, tempcntr,
     setv('freeCashFlowYield', sm.free_cash_flow_yield(tempfcf, tempmcap, nq, rpy=rpy))
     setv('freeCashFlowPerShareGrowth',
          sm.free_cash_flow_per_share_growth(tempfcf, tempshares, nq, rpy=rpy))
+    # EPStoEPSmean's BASELINE window is stage2_metrics.EPS_MEAN_BASE_NQ (28 quarters), NOT
+    # the ambient `nq` scoring window of this function -- do NOT "thread nq through" here.
+    # `nq` is the head(n) averaging window the postBm/postNew ratio metrics use (16); the
+    # mean-reversion baseline needs a full business cycle and is a different quantity. rpy
+    # MUST be passed so that baseline spans the same calendar time for a semi-annual filer.
     setv('EPStoEPSmean', sm.eps_to_eps_mean(tempcdx, rpy=rpy))
     setv('marketCapRevQuants', tempcdx.mcapQuants.iloc[0])
     setv('tbVpRatio', sm.tbv_p_ratio(tempcdx, nq, rpy=rpy))
@@ -344,6 +460,24 @@ def _diagnose_inputs(bmtop, bstop, cdxtop):
     sys.stdout.flush()
 
 
+def _safe_diagnose(fn, *args, **kwargs):
+    """Run a PRINT-ONLY diagnostic; never let it abort the caller.
+
+    Stage-2 has no per-ticker guard and postBoWrapper does not wrap postBoScoreRanking, so an
+    exception anywhere in this file costs every deliverable of the night.  A helper whose only
+    job is to print must never be able to do that (review B1, 2026-07-31 -- `resp_dcf.text` on
+    a _FailedResponse did exactly this).  The failure is reported LOUDLY rather than swallowed:
+    a silently-missing diagnostic is how the frequency watchdog went dark for a whole release.
+    """
+    try:
+        return fn(*args, **kwargs)
+    except Exception as _e:
+        print("WARNING: diagnostic %s FAILED (%s: %s) -- scoring continues, but this "
+              "diagnostic's output is MISSING from the run log."
+              % (getattr(fn, '__name__', fn), type(_e).__name__, _e), flush=True)
+        return None
+
+
 def _diagnose_first_ticker_data(ticker, dcf, dcf_from_bulk, resp_dcf_status, resp_dcf, tempcdx):
     print(f"\nDIAGNOSTIC: First ticker ({ticker}) data:", flush=True)
     print(f"  DCF source: {'bulk' if dcf_from_bulk else 'individual'}, status: {resp_dcf_status}, empty: {dcf.empty}, shape: {dcf.shape if not dcf.empty else 'N/A'}", flush=True)
@@ -357,7 +491,14 @@ def _diagnose_first_ticker_data(ticker, dcf, dcf_from_bulk, resp_dcf_status, res
         print(f"    marketCap: {tempcdx['marketCap'].iloc[0] if 'marketCap' in tempcdx.columns else 'N/A'}", flush=True)
         print(f"    operatingIncome: {tempcdx['operatingIncome'].iloc[0] if 'operatingIncome' in tempcdx.columns else 'N/A'}", flush=True)
     if not dcf_from_bulk and resp_dcf_status != 200:
-        print(f"  DCF error: {resp_dcf.text[:100] if resp_dcf is not None else 'N/A'}", flush=True)
+        # getattr, NOT `.text` (review B1, fixed 2026-07-31).  `resp_dcf is not None` is
+        # satisfied by getData_gen._FailedResponse, which had no `.text`, so this line raised
+        # AttributeError and killed Stage-2 on the FIRST ticker of each of the 6 pools --
+        # precisely in the dead/hung-endpoint case the safe_http_get hardening was added for.
+        # _FailedResponse now provides `.text`, so this is belt-and-braces: a diagnostic must
+        # not depend on the exact response type it happens to be handed.
+        _body = getattr(resp_dcf, 'text', None) if resp_dcf is not None else None
+        print(f"  DCF error: {str(_body)[:100] if _body is not None else 'N/A'}", flush=True)
     print(f"  Note: Altman-Z and Piotroski calculated from tempcdx fundamentals", flush=True)
 
 
@@ -894,6 +1035,129 @@ def normalizeAndDropNA(df, weight_series=None, winsor_sigma=WINSOR_SIGMA,
     dfnonanorm = dfnona.copy()
 
     return dfnonanorm, outlierlist
+
+MISSING_REPORT_CSV = 'MissingDataFillReport_%s.csv'
+_MISSING_CSV_STARTED = set()
+
+
+def missing_data_fill_report(raw_df, norm_df, weight_series, pool='general',
+                             csv=True, verbose=True):
+    """WHERE THE fillna(0) IMPUTATION LANDS, per weighted column and per name.  EMITS ONLY.
+
+    WHY IT HAS TO BE PRODUCED BY THE RUN (2026-08-01).  A missing metric is imputed by
+    `normalizeAndDropNA`'s post-normalisation `fillna(0)`, i.e. it is scored AT THE POOL MEAN
+    of that column, not as "missing".  Whether that is generous or punitive depends on where 0
+    sits in the column's OBSERVED z distribution -- which is a property of THIS pool on THIS
+    panel.  Every fill percentile we hold was measured on a pre-change panel, and the 2026-08-01
+    scoring changes (the EPStoEPSmean window cap and the incomeQuality basis) move the very
+    distributions those percentiles were measured against.  Re-deriving them later from a stale
+    panel would calibrate the new design against the old data, so tonight's run PRODUCES the
+    calibration instead.
+
+    THE SIGN OF THE WEIGHT IS PART OF THE READING, AND THE NAIVE PERCENTILE GETS IT BACKWARDS.
+    A fill sitting ABOVE a column's median is an ADVANTAGE only if that column's weight is
+    POSITIVE.  `CycleHeat` carries w = -0.080, so a fill above its median is a PENALTY -- the
+    imputed name is scored as if it were hot.  `fill_effect` below therefore reports
+    (percentile - 0.5) * sign(w), not the raw percentile.
+
+    SCORE-NEUTRAL BY CONSTRUCTION: both frames arrive as inputs and are only read; nothing is
+    assigned back, and the function returns its own frames.  Fully guarded -- a diagnostic must
+    never be able to cost a 12-hour run.
+    """
+    try:
+        wser = dict(weight_series) if weight_series is not None else {}
+        wcols = [c for c in raw_df.columns
+                 if c != 'source' and float(wser.get(c, 0) or 0) != 0.0]
+        if not wcols:
+            return None, None
+        rows = []
+        for c in wcols:
+            w = float(wser[c])
+            rawc = pd.to_numeric(raw_df[c], errors='coerce')
+            zc = pd.to_numeric(norm_df[c], errors='coerce')
+            imputed = rawc.isna()
+            obs = zc[~imputed].dropna()           # the OBSERVED (non-imputed) z distribution
+            if len(obs) == 0:
+                pct = np.nan
+            else:
+                # percentile of the fill value (z = 0) among observed z, 'mean' convention
+                pct = 0.5 * ((obs < 0.0).sum() + (obs <= 0.0).sum()) / len(obs)
+            eff = np.nan if not np.isfinite(pct) else (pct - 0.5) * (1.0 if w > 0 else -1.0)
+            rows.append(dict(
+                pool=pool, column=c, weight=round(w, 6),
+                n_names=int(len(rawc)), n_imputed=int(imputed.sum()),
+                pct_imputed=round(100.0 * imputed.mean(), 2),
+                fill_percentile_in_observed_z=(None if not np.isfinite(pct) else round(pct, 4)),
+                observed_z_median=(None if len(obs) == 0 else round(float(obs.median()), 4)),
+                fill_effect=(None if not np.isfinite(eff) else round(eff, 4)),
+                fill_reading=('n/a' if not np.isfinite(eff) else
+                              ('ADVANTAGE (fill scores better than the median name)' if eff > 0
+                               else 'PENALTY (fill scores worse than the median name)'
+                               if eff < 0 else 'neutral')),
+                weight_share_of_pool=round(abs(w) / sum(abs(float(wser[k])) for k in wcols), 4),
+            ))
+        col_df = pd.DataFrame(rows)
+
+        imp = raw_df[wcols].apply(lambda s: pd.to_numeric(s, errors='coerce')).isna()
+        name_df = pd.DataFrame({
+            'pool': pool,
+            'source': raw_df['source'].values,
+            'n_imputed_cols': imp.sum(axis=1).values,
+            'n_weighted_cols': len(wcols),
+            'imputed_weight_share': [
+                round(sum(abs(float(wser[c])) for c in wcols if imp.iloc[i][c])
+                      / sum(abs(float(wser[k])) for k in wcols), 4)
+                for i in range(len(raw_df))],
+            'imputed_cols': [', '.join(c for c in wcols if imp.iloc[i][c])
+                             for i in range(len(raw_df))],
+        })
+
+        if verbose:
+            worst = col_df.dropna(subset=['fill_effect']).reindex(
+                col_df['fill_effect'].abs().sort_values(ascending=False).index).head(4)
+            n_any = int((name_df['n_imputed_cols'] > 0).sum())
+            print("MISSING-DATA FILL REPORT [pool=%s]: %d weighted column(s); %d of %d name(s) "
+                  "(%.1f%%) carry >=1 imputed column; %d imputed cell(s) total."
+                  % (pool, len(wcols), n_any, len(name_df),
+                     100.0 * n_any / max(1, len(name_df)), int(col_df['n_imputed'].sum())),
+                  flush=True)
+            for _, r in worst.iterrows():
+                print("    %-28s w=%+.4f  imputed=%3d (%.1f%%)  fill at pct %.3f of observed z"
+                      "  -> %s" % (r['column'], r['weight'], r['n_imputed'], r['pct_imputed'],
+                                   r['fill_percentile_in_observed_z'] or float('nan'),
+                                   r['fill_reading']), flush=True)
+            heavy = name_df[name_df['imputed_weight_share'] >= 0.20]
+            if len(heavy):
+                print("    NAMES SCORED >=20%% ON FILLS: %s"
+                      % ', '.join('%s (%.0f%%)' % (r['source'], 100 * r['imputed_weight_share'])
+                                  for _, r in heavy.head(10).iterrows()), flush=True)
+        if csv:
+            _write_missing_csv(col_df, name_df)
+        return col_df, name_df
+    except Exception as _e:
+        print('WARNING: missing-data fill report skipped for pool=%s (%s: %s)'
+              % (pool, type(_e).__name__, _e), flush=True)
+        return None, None
+
+
+def _write_missing_csv(col_df, name_df):
+    """Append both tables to one dated CSV (a `section` column separates them).
+
+    APPEND, because postBoScoreRanking runs ONCE PER POOL -- general plus five carve-out
+    cohorts -- and a per-call overwrite would leave only the last cohort, which is the same
+    single-writer clobber the frequency-conflict CSV hit.  Header written once per process.
+    """
+    try:
+        fn = MISSING_REPORT_CSV % pd.Timestamp.today().strftime('%Y-%m-%d')
+        a = col_df.assign(section='per_column')
+        b = name_df.assign(section='per_name')
+        out = pd.concat([a, b], ignore_index=True, sort=False)
+        first = fn not in _MISSING_CSV_STARTED
+        out.to_csv(fn, index=False, mode='w' if first else 'a', header=first)
+        _MISSING_CSV_STARTED.add(fn)
+    except Exception as _e:
+        print('WARNING: could not write the missing-data fill CSV (%s)' % _e, flush=True)
+
 
 def unweight_postrank_metrics(df, cols=None, verbose=False, label=''):
     """Recover the METRIC z-scale from a postRank-style frame: divide each metric column by

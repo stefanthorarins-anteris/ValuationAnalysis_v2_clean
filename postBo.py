@@ -1,4 +1,5 @@
 import calcScore as cs
+import getData_gen as gdg
 import postBoRank as pbr
 import reporting_period as rp
 from detectManipulation import _toNewestFirst
@@ -16,6 +17,70 @@ import warnings
 
 # Suppress FutureWarning about DataFrame concatenation with empty/all-NA entries
 warnings.filterwarnings('ignore', message='.*concatenation with empty or all-NA entries.*')
+
+
+def _diag_newest_rows(df, n=3):
+    """The most recent `n` rows of a per-source frame, for a PRINT-ONLY diagnostic.
+
+    WHY THIS IS NOT JUST `_toNewestFirst(df).head(n)` (review L4, 2026-07-31).  The audit-C5
+    fix replaced `head(n)` -- which cannot raise -- with `_toNewestFirst`, whose
+    `pd.to_datetime(s)` has NO `errors='coerce'`.  A single unparseable date in the first
+    source's rows therefore raised ValueError inside `postBoWrapper`'s diagnostic block, which
+    is unguarded, aborting Stage-2 and every deliverable.  Making a LOG LINE able to kill the
+    run is a strictly worse defect than the mislabelling it fixed.
+
+    `_toNewestFirst` itself is deliberately NOT loosened: it is the shared forensic helper
+    behind the Beneish/Montier YoY shifts, where an unparseable date SHOULD fail loudly rather
+    than sort as NaT.  Coercion belongs here, in the diagnostic, not there.
+
+    Falls back to the original `head(n)` if even the coerced sort fails, so the diagnostic
+    degrades to "possibly mis-ordered" rather than to "no run".
+    """
+    try:
+        d = df.copy()
+        d['_diag_dt'] = pd.to_datetime(d['date'], errors='coerce')
+        return (d.sort_values('_diag_dt', ascending=False, na_position='last')
+                 .drop(columns=['_diag_dt']).head(n))
+    except Exception:
+        return df.head(n)
+
+
+def _fmt4(v):
+    """`"{:.4f}"` of a number, or the string 'NaN' for anything that is not one.
+
+    Exists because `"{:.4f}".format(None)` raises TypeError and FMP genuinely returns
+    `"beta": null` / `"price": null` on many non-US listings (review item 5, 2026-07-31).  bool
+    is excluded deliberately: it is an int subclass, and a boolean price is corrupt data, not a
+    number.  NaN in, 'NaN' out -- the column's existing sentinel, so nothing downstream changes.
+    """
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return 'NaN'
+    try:
+        if v != v:                      # NaN
+            return 'NaN'
+        return "{:.4f}".format(v)
+    except (TypeError, ValueError):
+        return 'NaN'
+
+
+def _one_mean_score(df, source, col):
+    """The single `col` value for `source`, or None when it is absent / duplicated / NaN.
+
+    Replaces `df[df['source'] == s][col].isna().item()` + `.item()`, which raises ValueError on
+    a zero-row OR multi-row selection (issuer clones give multi-row) and KeyError when the
+    column is missing.  Returning None lets the caller emit the 'NaN' sentinel instead of
+    aborting the stage (review item 5, 2026-07-31).
+    """
+    try:
+        if df is None or col not in getattr(df, 'columns', []):
+            return None
+        sel = pd.to_numeric(df.loc[df['source'] == source, col], errors='coerce').dropna()
+        if len(sel) != 1:
+            return None                 # absent (0) or ambiguous (>1) -- both are 'NaN'
+        return float(sel.iloc[0])
+    except Exception:
+        return None
+
 
 def postBoWrapper(dmdic, as_of=None):
     """Scoring orchestration.  as_of (default None) threads the point-in-time date D
@@ -44,9 +109,16 @@ def postBoWrapper(dmdic, as_of=None):
         if 'source' in bmdf.columns:
             first_source = bmdf['source'].iloc[0]
             print(f"BoMetric_df first source: {first_source}", flush=True)
-            # Show sample rows for first source
-            first_source_data = bmdf[bmdf['source'] == first_source].head(3)
-            print(f"Sample rows for {first_source} (first 3):", flush=True)
+            # Show sample rows for first source -- the MOST RECENT three.  Same audit-C5
+            # defect as the cdx_df block below (NOT on the audit's list -- found in the same
+            # sweep): BoMetric_df is stored OLDEST-first, so head(3) labelled the three oldest
+            # periods "first 3".  Fixed in lockstep so both halves of this diagnostic block
+            # mean the same thing; a block where one sample is newest-first and the other
+            # oldest-first is worse than either.
+            first_source_data = _diag_newest_rows(
+                bmdf[bmdf['source'] == first_source], 3)
+            print(f"Sample rows for {first_source} (3 MOST RECENT periods, newest first):",
+                  flush=True)
             numeric_cols_sample = first_source_data.select_dtypes(include=[np.number]).columns[:5]
             if len(numeric_cols_sample) > 0:
                 print(first_source_data[['date', 'source'] + list(numeric_cols_sample)].to_string(), flush=True)
@@ -67,9 +139,18 @@ def postBoWrapper(dmdic, as_of=None):
         if 'source' in cdx_df.columns:
             first_source = cdx_df['source'].iloc[0]
             print(f"cdx_df first source: {first_source}", flush=True)
-            # Show sample rows for first source
-            first_source_data = cdx_df[cdx_df['source'] == first_source].head(3)
-            print(f"Sample rows for {first_source} (first 3):", flush=True)
+            # Show sample rows for first source -- the MOST RECENT three (audit C5, fixed
+            # 2026-07-31).  cdx_df is stored OLDEST-first, so head(3) printed the three
+            # OLDEST quarters under the label "first 3": on the 07-17 panel that meant
+            # ~2020 rows presented as the newest data.  This is the line the CEO reads at
+            # 3am to judge whether the fetch actually picked up the current quarter, so
+            # showing the oldest rows made it actively misleading rather than merely
+            # cosmetic.  _diag_newest_rows sorts by PARSED date (coercing, and never raising --
+            # see review L4), so the orientation is right whichever way the rows arrive.
+            first_source_data = _diag_newest_rows(
+                cdx_df[cdx_df['source'] == first_source], 3)
+            print(f"Sample rows for {first_source} (3 MOST RECENT periods, newest first):",
+                  flush=True)
             key_cols = ['date', 'source', 'marketCap', 'freeCashFlow', 'price', 'totalAssets']
             available_cols = [col for col in key_cols if col in first_source_data.columns]
             if len(available_cols) > 0:
@@ -123,7 +204,15 @@ def postBoWrapper(dmdic, as_of=None):
     # Stage-1 with verbose defaulted off, and the Q2 ruling then made Stage-1's use of the
     # map a no-op on the score -- so the wiring's only surviving effect had been to hide
     # the banner.  Keep the call and keep it loud.
-    _freq_map = rp.frequency_by_source(dmdic.get('cdx_df'), verbose=True)
+    # CSV WRITING IS ENABLED HERE AND NOWHERE ELSE (fix, 2026-07-31): this is the run's
+    # UNIVERSE-WIDE read, so it is the one entitled to write the shared
+    # ReportingFrequencyConflicts_<date>.csv artifact.
+    # The other verbose callers (postBoRank's top-100, calcScore, detectManipulation) run on
+    # narrower pools and would clobber this artifact with a shorter list.  The conflict is now
+    # detected even though this call is served from the stored ingest verdict, because
+    # frequency_by_source decodes the stamped rp.FREQ_CONFLICT_COLUMN -- before that fix this
+    # banner could only ever report zero, whatever the data said.
+    _freq_map = rp.frequency_by_source(dmdic.get('cdx_df'), verbose=True, csv=True)
     BoScore_df = cs.simpleScore_fromDict(bmdf, bmav, bmda, n, as_of=as_of,
                                         freq_map=_freq_map)
 
@@ -199,7 +288,8 @@ def postBoWrapper(dmdic, as_of=None):
               if _tdf is not None and 'symbol' in getattr(_tdf, 'columns', [])
                  and 'name' in getattr(_tdf, 'columns', []) else {})
     rankdic = pbr.postBoScoreRanking(BoM_dftop100, BoS_dftop100, cdx_dftop100, dmdic['baseurl'], dmdic['api_key'],
-                                     dmdic['period'],n,as_of=as_of,names=_names)
+                                     dmdic['period'],n,as_of=as_of,names=_names,
+                                     pool_label='general')
 
     # UNWINNED FILTER: -1.5 z-score pass-filter on six metrics (earnYield, grahamNumberToPrice,
     # RoA, EPStoEPSmean, freeCashFlowYield, revenueGrowth). Computed and stored in resdic but
@@ -235,9 +325,12 @@ def postBoWrapper(dmdic, as_of=None):
                 wov = co.COHORT_WEIGHTS.get(label)
                 print(f"CARVE-OUT side-list '{label}': ranking {len(head)} names"
                       f"{' with per-cohort weights' if wov else ''}", flush=True)
+                # pool_label=label so the missing-data fill report names THIS cohort: the
+                # cohorts are the part of that calibration nobody has measured.
                 carveout_sidelists[label] = pbr.postBoScoreRanking(bm, head, cd, dmdic['baseurl'], dmdic['api_key'],
                                                                    dmdic['period'], n, as_of=as_of,
-                                                                   weight_override=wov)
+                                                                   weight_override=wov,
+                                                                   pool_label=label)
             except Exception as e:
                 print(f"CARVE-OUT side-list '{label}' FAILED ({type(e).__name__}: {e}); "
                       f"skipping this side-list (main output unaffected).", flush=True)
@@ -351,9 +444,25 @@ def writeResWrapper(resdic):
     # `sector` per name and cross-checks it against the pickle-derived financial
     # classification (ff.applySectorFallback), returning the reconciled flag_df.
     fname_AggScoretop = f'AggScoreTop{ntopagg}-{fidag}_{datasource}_{tickerfilter}.csv'
-    flag_df = writeBoAggToCSV(fb_df, mscore, cscore, baseurl, api_key, ntopagg,
-                              fname_AggScoretop, flag_df,
-                              raw_df=resdic.get('postScoreMetric_raw'))
+    # GUARDED (fix, 2026-07-31), matching the convention every other block in this function
+    # already follows.  writeBoAggToCSV makes ~4-5 API calls x ntopagg names, and it ran
+    # UNGUARDED here: anything it raised took out not only the AggScore CSV but every
+    # deliverable AFTER it -- the forensic CSV, the presentation XLSX, the side-lists, the band
+    # CSVs and the pick-log -- i.e. the entire output of a 12-hour fetch, for a transient
+    # post-processing error. The calls themselves are now hardened (gdg.safe_json_list), so
+    # this is the second line of defence rather than the first.
+    # flag_df is DELIBERATELY left at its pre-call value on failure: writeBoAggToCSV returns
+    # the sector-reconciled table, so on failure we publish the unreconciled one (which is
+    # what the forensic CSV was built from) rather than None, which would cascade.
+    try:
+        flag_df = writeBoAggToCSV(fb_df, mscore, cscore, baseurl, api_key, ntopagg,
+                                  fname_AggScoretop, flag_df,
+                                  raw_df=resdic.get('postScoreMetric_raw'))
+    except Exception as _e:
+        print(f'WARNING: AggScore CSV stage failed ({type(_e).__name__}: {_e}); '
+              f'{fname_AggScoretop} may be missing or partial and the API sector '
+              f'cross-check did not run. Every LATER deliverable (forensic CSV, XLSX, '
+              f'side-lists, band CSVs, pick-log) still runs.', flush=True)
 
     # Write the standalone forensic decision-support CSV AFTER the API-sector
     # cross-check, so it carries the reconciled (conservative) financial classification.
@@ -363,8 +472,16 @@ def writeResWrapper(resdic):
     # create presentation xlsx of ntopxlsx stocks. When currency data is present the
     # general top-N is drawn from the General band (>$300M); pending currency -> unchanged.
     fname_presentationtop= f'PresentationTop{ntopxlsx}-{fidag}_{datasource}_{tickerfilter}.xlsx'
-    createPresentation(fb_df, mscore, cscore, baseurl, api_key, ntopxlsx, fname_presentationtop, years, flag_df,
-                       bands=marketcap_bands)
+    # GUARDED (fix, 2026-07-31), same reasoning as the AggScore CSV above: ~7 API calls x
+    # ntopxlsx names, previously unguarded, and everything after it (side-lists, band CSVs,
+    # reviewReference, pick-log) died with it.
+    try:
+        createPresentation(fb_df, mscore, cscore, baseurl, api_key, ntopxlsx, fname_presentationtop, years, flag_df,
+                           bands=marketcap_bands)
+    except Exception as _e:
+        print(f'WARNING: presentation XLSX stage failed ({type(_e).__name__}: {_e}); '
+              f'{fname_presentationtop} may be missing or partial. Every LATER deliverable '
+              f'(side-lists, band CSVs, reviewReference, pick-log) still runs.', flush=True)
 
     # Phase-1 carve-out: write each labeled side-list (REIT / Mining / investment
     # vehicles) as its own compact CSV alongside the main deliverables. Best-effort
@@ -472,170 +589,247 @@ def writeBoAggToCSV(fb_df, mscore, cscore, baseurl, api_key, ntopagg, fname_AggS
     dcf_bulk_dict = {}
     
     print(f'Writing top {ntopagg} stocks to .csv')
+    # GRANULARITY: THREE LAYERS, because the first two are not enough (review item 5,
+    # 2026-07-31 -- this supersedes an earlier note here that argued a per-row guard was
+    # impossible).
+    #   1. THE CALL degrades: every request goes through gdg.safe_json_list, which cannot raise
+    #      and returns [] -- so a throttled/hung endpoint costs that field, not the stage.
+    #   2. THE VALUE degrades: `_fmt4` / `_one_mean_score` absorb the present-but-awkward values
+    #      (`beta: null`, a duplicated issuer) that a healthy 200 can carry and that layer 1
+    #      cannot help with.
+    #   3. THE ROW degrades: the pad-to-length guard below, as a backstop for anything neither
+    #      layer anticipated.
+    # WHY LAYER 3 IS SAFE, since the obvious form is not: the twelve vectors are appended once
+    # per name and then assigned as columns of a fixed-length frame, so a plain
+    # `try/except: continue` leaves them RAGGED and the assignment raises "Length of values does
+    # not match length of index" -- a one-name fault becoming total loss.  Padding in `finally`
+    # to a per-row target length cannot ragged them, which is what makes the guard workable.
+    _row_vectors = (priceVec, pEratioVec, betaVec, sectorVec, ratingVec_fmp, crVec,
+                    dyVec, GNtPVec, margin, dcf2p, mscoreVec, cscoreVec)
+    assert len(_row_vectors) == 12, len(_row_vectors)
+    _rows_degraded = []
     pbar = tqdm(total=ntopagg)
-    for row in BoComp_tocsv.itertuples():
-        symb = row.source
-        temp_resp_km = requests.get(f'{baseurl}v3/key-metrics/{symb}?period=quarter&limit=4&apikey={api_key}').json()
-        temp_resp_fr = requests.get(f'{baseurl}v3/ratios/{symb}?period=quarter&limit=4&apikey={api_key}').json()
-        
-        # Use bulk data for profile, rating, and DCF if available, otherwise fallback to individual calls
-        if symb in profile_bulk_dict:
-            temp_resp_pr = [profile_bulk_dict[symb]]  # Convert dict to list format
-        else:
-            temp_resp_pr = requests.get(f'{baseurl}v3/profile/{symb}?apikey={api_key}').json()
-        
-        if symb in dcf_bulk_dict:
-            temp_resp_dcf = [dcf_bulk_dict[symb]]  # Convert dict to list format
-        else:
-            temp_resp_dcf_raw = requests.get(f'{baseurl}v3/discounted-cash-flow/{symb}?apikey={api_key}')
-            temp_resp_dcf = temp_resp_dcf_raw.json()
-        
-        # Diagnostic: Check what the DCF API actually returns (only for first ticker)
-        if len(crVec) == 0:  # Only print for first ticker to avoid spam
-            print(f"\nDEBUG: DCF API response for {symb}:")
-            print(f"  Status code: {temp_resp_dcf_raw.status_code}")
-            print(f"  Response type: {type(temp_resp_dcf)}")
-            if isinstance(temp_resp_dcf, list):
-                print(f"  Response length: {len(temp_resp_dcf)}")
-                if len(temp_resp_dcf) > 0:
-                    print(f"  First element type: {type(temp_resp_dcf[0])}")
-                    if isinstance(temp_resp_dcf[0], dict):
-                        print(f"  First element keys: {list(temp_resp_dcf[0].keys())}")
-            elif isinstance(temp_resp_dcf, dict):
-                print(f"  Dict keys: {list(temp_resp_dcf.keys())}")
-                print(f"  Dict content: {temp_resp_dcf}")
+    for _row_i, row in enumerate(BoComp_tocsv.itertuples(), start=1):
+        # PAD-TO-LENGTH GUARD (review item 5, 2026-07-31).  My earlier reasoning that a
+        # per-row guard was impossible here was wrong: only the NAIVE form is defeated by
+        # the twelve parallel vectors.  A `finally` that pads every vector to this row's
+        # target length CANNOT ragged them, so the column assignment after the loop can
+        # never hit 'Length of values does not match length of index'.  A partially-
+        # appended row is completed with the 'NaN' sentinel the columns already use.
+        _want = _row_i                      # this row's target length for every vector
+        try:
+            symb = row.source
+            # HARDENED (fix, 2026-07-31).  These were bare `requests.get(...).json()` -- no
+            # timeout, no retry, and `.json()` chained to the call inside a loop body with NO
+            # try/except anywhere in it.  ~4-5 calls x 100 names, fired immediately after 12+
+            # hours of sustained API load, i.e. exactly when a throttle is most likely.  A
+            # throttled 200 with an HTML body raised JSONDecodeError straight out of the stage and
+            # cost the CSV, the XLSX, the forensic CSV, the postRank pickle AND the pick-log; with
+            # no timeout, a hung socket stalled the unattended run indefinitely.
+            # safe_json_list returns [] on any failure, so a FAILED CALL degrades that column for
+            # that name.
+            #
+            # CORRECTION (review item 5, 2026-07-31).  An earlier version of this comment claimed
+            # "every consumer below already guards on `len(...) == 0` -> 'NaN'".  That is FALSE, and
+            # it was the false premise used to argue no per-row guard was needed.  Three raise paths
+            # remained, all confirmed by execution, and NONE of them is a failed call -- each is a
+            # healthy 200 with an awkward VALUE, which safe_json_list cannot help with:
+            #   * `"{:.4f}".format(None)` -> TypeError on `price` and `beta`.  FMP returns
+            #     `"beta": null` for plenty of non-US listings, and these two checked key PRESENCE
+            #     but not None -- while the grahamNumberToPrice block a few lines down does check
+            #     None explicitly, so the omission was an oversight, not a convention.
+            #   * `grossProfitMargin` summed rows [1..3] after type-checking only row [0], so a
+            #     None in any later row raised TypeError on `float + None`.  (NOT named in the
+            #     review -- found applying its lesson to the rest of the loop.)
+            #   * `.item()` on a zero-row (KeyError) or duplicated (ValueError) mscore/cscore
+            #     selection -- issuer clones are a known phenomenon in this pipeline.
+            # All three are now closed at the point of use, AND a pad-to-length guard backstops the
+            # whole row (see the loop preamble) so no future raise here can ragged the vectors.
+            temp_resp_km = gdg.safe_json_list(
+                f'{baseurl}v3/key-metrics/{symb}?period=quarter&limit=4&apikey={api_key}',
+                label='key-metrics %s' % symb)
+            temp_resp_fr = gdg.safe_json_list(
+                f'{baseurl}v3/ratios/{symb}?period=quarter&limit=4&apikey={api_key}',
+                label='ratios %s' % symb)
+
+            # Use bulk data for profile, rating, and DCF if available, otherwise fallback to individual calls
+            if symb in profile_bulk_dict:
+                temp_resp_pr = [profile_bulk_dict[symb]]  # Convert dict to list format
             else:
-                print(f"  Response content: {temp_resp_dcf}")
-        
-        # Handle case where API returns a dict instead of a list (API might have changed)
-        if isinstance(temp_resp_dcf, dict):
-            # If it's a dict, try to convert to list format or extract error
-            if 'Error Message' in temp_resp_dcf or 'error' in str(temp_resp_dcf).lower():
-                temp_resp_dcf = []  # Treat as empty
+                temp_resp_pr = gdg.safe_json_list(
+                    f'{baseurl}v3/profile/{symb}?apikey={api_key}', label='profile %s' % symb)
+
+            _dcf_status = 'bulk'
+            if symb in dcf_bulk_dict:
+                temp_resp_dcf = [dcf_bulk_dict[symb]]  # Convert dict to list format
             else:
-                # Try to wrap in list if it's a single DCF object
-                temp_resp_dcf = [temp_resp_dcf] if temp_resp_dcf else []
+                # safe_json_list already normalises the dict/Error-Message body the block below
+                # used to handle by hand, and never raises on an unparseable one.
+                temp_resp_dcf = gdg.safe_json_list(
+                    f'{baseurl}v3/discounted-cash-flow/{symb}?apikey={api_key}',
+                    label='dcf %s' % symb)
+                _dcf_status = 'ok' if temp_resp_dcf else 'empty-or-failed'
+
+            # Diagnostic: Check what the DCF API actually returns (only for first ticker)
+            if len(crVec) == 0:  # Only print for first ticker to avoid spam
+                print(f"\nDEBUG: DCF API response for {symb}:")
+                print(f"  Status: {_dcf_status}")
+                print(f"  Response type: {type(temp_resp_dcf)}")
+                if isinstance(temp_resp_dcf, list):
+                    print(f"  Response length: {len(temp_resp_dcf)}")
+                    if len(temp_resp_dcf) > 0:
+                        print(f"  First element type: {type(temp_resp_dcf[0])}")
+                        if isinstance(temp_resp_dcf[0], dict):
+                            print(f"  First element keys: {list(temp_resp_dcf[0].keys())}")
+                elif isinstance(temp_resp_dcf, dict):
+                    print(f"  Dict keys: {list(temp_resp_dcf.keys())}")
+                    print(f"  Dict content: {temp_resp_dcf}")
+                else:
+                    print(f"  Response content: {temp_resp_dcf}")
         
-        # Check if API responses are empty before accessing
-        # Check currentRatio
-        if len(temp_resp_fr) == 0 or 'currentRatio' not in temp_resp_fr[0]:
-            crVec.append('NaN')
-        elif type(temp_resp_fr[0]['currentRatio']) == int or type(temp_resp_fr[0]['currentRatio']) == float:
-            crVec.append("{:.4f}".format(temp_resp_fr[0]['currentRatio']))
-        else:
-            crVec.append('NaN')
+            # Handle case where API returns a dict instead of a list (API might have changed)
+            if isinstance(temp_resp_dcf, dict):
+                # If it's a dict, try to convert to list format or extract error
+                if 'Error Message' in temp_resp_dcf or 'error' in str(temp_resp_dcf).lower():
+                    temp_resp_dcf = []  # Treat as empty
+                else:
+                    # Try to wrap in list if it's a single DCF object
+                    temp_resp_dcf = [temp_resp_dcf] if temp_resp_dcf else []
+        
+            # Check if API responses are empty before accessing
+            # Check currentRatio
+            if len(temp_resp_fr) == 0 or 'currentRatio' not in temp_resp_fr[0]:
+                crVec.append('NaN')
+            elif type(temp_resp_fr[0]['currentRatio']) == int or type(temp_resp_fr[0]['currentRatio']) == float:
+                crVec.append("{:.4f}".format(temp_resp_fr[0]['currentRatio']))
+            else:
+                crVec.append('NaN')
             
-        # Check dividendYield
-        if len(temp_resp_km) == 0 or 'dividendYield' not in temp_resp_km[0]:
-            dyVec.append('NaN')
-        elif type(temp_resp_km[0]['dividendYield']) == int or type(temp_resp_km[0]['dividendYield']) == float:
-            dyVec.append("{:.4f}".format(temp_resp_km[0]['dividendYield']*100))
-        else:
-            dyVec.append('NaN')
-            
-        # Check grahamNumberToPrice
-        if len(temp_resp_km) == 0 or len(temp_resp_pr) == 0:
-            GNtPVec.append('NaN')
-        elif 'grahamNumber' not in temp_resp_km[0] or 'price' not in temp_resp_pr[0]:
-            GNtPVec.append('NaN')
-        elif temp_resp_km[0]['grahamNumber'] is None or temp_resp_pr[0]['price'] is None:
-            GNtPVec.append('NaN')
-        else:
-            gtp = (temp_resp_km[0]['grahamNumber']/temp_resp_pr[0]['price'])
-            if type(gtp) == int or type(gtp) == float:
-                GNtPVec.append("{:.4f}".format(gtp))
+            # Check dividendYield
+            if len(temp_resp_km) == 0 or 'dividendYield' not in temp_resp_km[0]:
+                dyVec.append('NaN')
+            elif type(temp_resp_km[0]['dividendYield']) == int or type(temp_resp_km[0]['dividendYield']) == float:
+                dyVec.append("{:.4f}".format(temp_resp_km[0]['dividendYield']*100))
             else:
+                dyVec.append('NaN')
+            
+            # Check grahamNumberToPrice
+            if len(temp_resp_km) == 0 or len(temp_resp_pr) == 0:
                 GNtPVec.append('NaN')
-                
-        # Check price
-        if len(temp_resp_pr) == 0 or 'price' not in temp_resp_pr[0]:
-            priceVec.append('NaN')
-        else:
-            priceVec.append("{:.4f}".format(temp_resp_pr[0]['price']))
-            
-        # Check beta
-        if len(temp_resp_pr) == 0 or 'beta' not in temp_resp_pr[0]:
-            betaVec.append('NaN')
-        else:
-            betaVec.append("{:.4f}".format(temp_resp_pr[0]['beta']))
-            
-        # Check sector
-        if len(temp_resp_pr) == 0 or 'sector' not in temp_resp_pr[0]:
-            sectorVec.append('NaN')
-        else:
-            sectorVec.append(temp_resp_pr[0]['sector'])
-            
-        # Check priceEarningsRatio
-        if len(temp_resp_fr) == 0 or 'priceEarningsRatio' not in temp_resp_fr[0]:
-            pEratioVec.append('NaN')
-        else:
-            perat = temp_resp_fr[0]['priceEarningsRatio']
-            if type(perat) == int or type(perat) == float:
-                pEratioVec.append("{:.4f}".format(perat))
+            elif 'grahamNumber' not in temp_resp_km[0] or 'price' not in temp_resp_pr[0]:
+                GNtPVec.append('NaN')
+            elif temp_resp_km[0]['grahamNumber'] is None or temp_resp_pr[0]['price'] is None:
+                GNtPVec.append('NaN')
             else:
+                gtp = (temp_resp_km[0]['grahamNumber']/temp_resp_pr[0]['price'])
+                if type(gtp) == int or type(gtp) == float:
+                    GNtPVec.append("{:.4f}".format(gtp))
+                else:
+                    GNtPVec.append('NaN')
+                
+            # Check price -- _fmt4, because these two checked key PRESENCE but not None and
+            # FMP returns `"price": null` / `"beta": null` on many non-US listings, so
+            # `"{:.4f}".format(None)` raised TypeError here and cost the whole stage
+            # (review item 5, 2026-07-31; the grahamNumberToPrice block above always
+            # checked None explicitly, so these two were simply missed).
+            if len(temp_resp_pr) == 0 or 'price' not in temp_resp_pr[0]:
+                priceVec.append('NaN')
+            else:
+                priceVec.append(_fmt4(temp_resp_pr[0]['price']))
+
+            # Check beta
+            if len(temp_resp_pr) == 0 or 'beta' not in temp_resp_pr[0]:
+                betaVec.append('NaN')
+            else:
+                betaVec.append(_fmt4(temp_resp_pr[0]['beta']))
+            
+            # Check sector
+            if len(temp_resp_pr) == 0 or 'sector' not in temp_resp_pr[0]:
+                sectorVec.append('NaN')
+            else:
+                sectorVec.append(temp_resp_pr[0]['sector'])
+            
+            # Check priceEarningsRatio
+            if len(temp_resp_fr) == 0 or 'priceEarningsRatio' not in temp_resp_fr[0]:
                 pEratioVec.append('NaN')
+            else:
+                perat = temp_resp_fr[0]['priceEarningsRatio']
+                if type(perat) == int or type(perat) == float:
+                    pEratioVec.append("{:.4f}".format(perat))
+                else:
+                    pEratioVec.append('NaN')
                 
-        # Check rating
-        # Use bulk rating data if available, otherwise fallback to individual call
-        if symb in rating_bulk_dict:
-            temp_resp_rating = [rating_bulk_dict[symb]]
-        else:
-            temp_resp_rating = requests.get(f'{baseurl}v3/rating/{symb}?apikey={api_key}').json()
-        if len(temp_resp_rating) == 0 or 'ratingRecommendation' not in temp_resp_rating[0]:
-            ratingVec_fmp.append('NaN')
-        else:
-            ratingVec_fmp.append(temp_resp_rating[0]['ratingRecommendation'])
+            # Check rating
+            # Use bulk rating data if available, otherwise fallback to individual call
+            if symb in rating_bulk_dict:
+                temp_resp_rating = [rating_bulk_dict[symb]]
+            else:
+                temp_resp_rating = gdg.safe_json_list(
+                    f'{baseurl}v3/rating/{symb}?apikey={api_key}', label='rating %s' % symb)
+            if len(temp_resp_rating) == 0 or 'ratingRecommendation' not in temp_resp_rating[0]:
+                ratingVec_fmp.append('NaN')
+            else:
+                ratingVec_fmp.append(temp_resp_rating[0]['ratingRecommendation'])
             
-        # Check M_Score
-        if not (mscore[mscore['source'] == symb]['M_Score_mean']).isna().item():
-            mcurscore = mscore[mscore['source'] == symb]['M_Score_mean'].item().item()
-            if type(mcurscore) == int or type(mcurscore) == float:
-                mscoreVec.append("{:.4f}".format(mscore[mscore['source'] == symb]['M_Score_mean'].item()))
-            else:
-                mscoreVec.append('NaN')
-        else:
-            mscoreVec.append('NaN')
-            
-        # Check C_Score
-        if not (cscore[cscore['source'] == symb]['C_Score_mean']).isna().item():
-            curcscore = cscore[cscore['source'] == symb]['C_Score_mean'].item().item()
-            if type(curcscore) == int or type(curcscore) == float:
-                cscoreVec.append("{:.4f}".format(cscore[cscore['source'] == symb]['C_Score_mean'].item()))
-            else:
-                cscoreVec.append('NaN')
-        else:
-            cscoreVec.append('NaN')
+            # Check M_Score / C_Score -- via _one_mean_score, because the old
+            # `[...].isna().item()` + `.item()` raised ValueError on a DUPLICATED source
+            # (issuer clones are a known phenomenon here) and KeyError on an ABSENT one, either
+            # of which cost the whole stage (review item 5, 2026-07-31).  Semantics are
+            # unchanged for the healthy single-row case; absent/duplicated/NaN -> 'NaN'.
+            mscoreVec.append(_fmt4(_one_mean_score(mscore, symb, 'M_Score_mean')))
 
-        # Check grossProfitMargin (needs 4 periods)
-        if len(temp_resp_fr) == 0 or 'grossProfitMargin' not in temp_resp_fr[0]:
-            margin.append('NaN')
-        elif len(temp_resp_fr) < 4:
-            margin.append('NaN')
-        elif type(temp_resp_fr[0]['grossProfitMargin']) == int or type(temp_resp_fr[0]['grossProfitMargin']) == float:
-            gpmsum= temp_resp_fr[0]['grossProfitMargin'] + temp_resp_fr[1]['grossProfitMargin'] + temp_resp_fr[2]['grossProfitMargin'] + temp_resp_fr[3]['grossProfitMargin']
-            margin.append("{:.4f}".format(gpmsum*25))
-        else:
-            margin.append('NaN')
+            cscoreVec.append(_fmt4(_one_mean_score(cscore, symb, 'C_Score_mean')))
 
-        # Check DCF to Price
-        if len(temp_resp_dcf) == 0:
-            dcf2p.append('NaN')
-        elif 'dcf' not in temp_resp_dcf[0]:
-            dcf2p.append('NaN')
-        elif temp_resp_dcf[0]['dcf'] is None:
-            dcf2p.append('NaN')
-        elif type(temp_resp_dcf[0]['dcf']) == int or type(temp_resp_dcf[0]['dcf']) == float:
-            if 'Stock Price' not in temp_resp_dcf[0]:
+            # Check grossProfitMargin (needs 4 periods).  The sum spans rows [0..3] but only
+            # row [0] was type-checked, so a None in ANY of rows 1-3 raised TypeError on
+            # `float + None`.  NOT named in the review -- found applying its lesson to the rest
+            # of the loop.  All four rows are now validated before summing.
+            if len(temp_resp_fr) == 0 or 'grossProfitMargin' not in temp_resp_fr[0]:
+                margin.append('NaN')
+            elif len(temp_resp_fr) < 4:
+                margin.append('NaN')
+            else:
+                _gpm = [temp_resp_fr[i].get('grossProfitMargin') for i in range(4)]
+                if all(isinstance(v, (int, float)) and not isinstance(v, bool) and v == v
+                       for v in _gpm):
+                    margin.append(_fmt4(sum(_gpm) * 25))
+                else:
+                    margin.append('NaN')
+
+            # Check DCF to Price
+            if len(temp_resp_dcf) == 0:
                 dcf2p.append('NaN')
-            elif temp_resp_dcf[0]['Stock Price'] is None:
+            elif 'dcf' not in temp_resp_dcf[0]:
                 dcf2p.append('NaN')
-            elif type(temp_resp_dcf[0]['Stock Price']) == int or type(temp_resp_dcf[0]['Stock Price']) == float:
-                dcf2p.append("{:.4f}".format(temp_resp_dcf[0]['dcf']/(temp_resp_dcf[0]['Stock Price'])))
+            elif temp_resp_dcf[0]['dcf'] is None:
+                dcf2p.append('NaN')
+            elif type(temp_resp_dcf[0]['dcf']) == int or type(temp_resp_dcf[0]['dcf']) == float:
+                if 'Stock Price' not in temp_resp_dcf[0]:
+                    dcf2p.append('NaN')
+                elif temp_resp_dcf[0]['Stock Price'] is None:
+                    dcf2p.append('NaN')
+                elif type(temp_resp_dcf[0]['Stock Price']) == int or type(temp_resp_dcf[0]['Stock Price']) == float:
+                    dcf2p.append("{:.4f}".format(temp_resp_dcf[0]['dcf']/(temp_resp_dcf[0]['Stock Price'])))
+                else:
+                    dcf2p.append('NaN')
             else:
                 dcf2p.append('NaN')
-        else:
-            dcf2p.append('NaN')
+        except Exception as _row_err:
+            print('WARNING: %s row degraded to NaN in the AggScore CSV (%s: %s) -- the'
+                  ' remaining names and every later deliverable still run.'
+                  % (symb, type(_row_err).__name__, _row_err), flush=True)
+            _rows_degraded.append(symb)
+        finally:
+            for _v in _row_vectors:
+                del _v[_want:]              # discard a partial append, then pad to length
+                while len(_v) < _want:
+                    _v.append('NaN')
         pbar.update(n=1)
+    if _rows_degraded:
+        print('AGGSCORE-CSV DEGRADED-ROW SUMMARY: %d of %d name(s) had their API-sourced '
+              'columns written as NaN: %s'
+              % (len(_rows_degraded), len(BoComp_tocsv), ', '.join(map(str, _rows_degraded))),
+              flush=True)
     BoComp_tocsv['price'] = priceVec
     BoComp_tocsv['PE-ratio'] = pEratioVec
     BoComp_tocsv['beta'] = betaVec
@@ -751,28 +945,57 @@ def createPresentation(finalBoRank_df, mscore, cscore, baseurl, api_key, topn, f
     wb = openpyxl.Workbook()
     print(f'Writing top {topn} stocks to an .xlsx file for presentation')
     pbar = tqdm(total=topn)
+    _pages_skipped = []
     for symb in symblist[::-1]:
-        km = pd.DataFrame(
-            requests.get(f'{baseurl}v3/key-metrics/{symb}?period=annual&limit={years}&apikey={api_key}').json())
-        fr = pd.DataFrame(
-            requests.get(f'{baseurl}v3/ratios/{symb}?period=annual&limit={years}&apikey={api_key}').json())
-        pr = requests.get(
-            f'{baseurl}v3/profile/{symb}?apikey={api_key}').json()
-        rating = requests.get(
-            f'{baseurl}v3/rating/{symb}?apikey={api_key}').json()
+        # HARDENED (fix, 2026-07-31): seven bare `requests.get(...).json()` calls per name,
+        # x topn names, run immediately after 12+ hours of sustained API load and with no
+        # timeout, no retry and `.json()` chained to the call.  Now routed through
+        # gdg.safe_json_list -- 10s timeout, 3 retries with backoff, and [] instead of a
+        # JSONDecodeError on a throttled 200 carrying an HTML body.
+        km = pd.DataFrame(gdg.safe_json_list(
+            f'{baseurl}v3/key-metrics/{symb}?period=annual&limit={years}&apikey={api_key}',
+            label='key-metrics %s' % symb))
+        fr = pd.DataFrame(gdg.safe_json_list(
+            f'{baseurl}v3/ratios/{symb}?period=annual&limit={years}&apikey={api_key}',
+            label='ratios %s' % symb))
+        pr = gdg.safe_json_list(
+            f'{baseurl}v3/profile/{symb}?apikey={api_key}', label='profile %s' % symb)
+        rating = gdg.safe_json_list(
+            f'{baseurl}v3/rating/{symb}?apikey={api_key}', label='rating %s' % symb)
         #target = requests.get(
         # f'https://financialmodelingprep.com/api/v4/price-target-consensus?symbol{symb}&apikey={api_key}').json()
-        sp = requests.get(
-            f'{baseurl}v4/stock_peers?symbol={symb}&apikey={api_key}').json()
-        cf = pd.DataFrame(
-            requests.get(f'{baseurl}v3/cash-flow-statement/{symb}?period=annual&limit={years}&apikey={api_key}').json())
-        dcf_resp = requests.get(f'{baseurl}v3/discounted-cash-flow/{symb}?apikey={api_key}').json()
+        sp = gdg.safe_json_list(
+            f'{baseurl}v4/stock_peers?symbol={symb}&apikey={api_key}', label='peers %s' % symb)
+        cf = pd.DataFrame(gdg.safe_json_list(
+            f'{baseurl}v3/cash-flow-statement/{symb}?period=annual&limit={years}&apikey={api_key}',
+            label='cash-flow %s' % symb))
+        dcf_resp = gdg.safe_json_list(
+            f'{baseurl}v3/discounted-cash-flow/{symb}?apikey={api_key}', label='dcf %s' % symb)
         dcf = pd.DataFrame.from_dict(dcf_resp) if dcf_resp else pd.DataFrame()
-        
+
+        # PAGE-LEVEL DEGRADATION (fix, 2026-07-31).  pr / rating / sp / dcf / nspe are each
+        # empty-guarded below, but km, fr and cf are NOT: every column of the sheet indexes
+        # `km.<field>` / `fr['<field>']` / `cf.freeCashFlow` directly, so an empty response for
+        # any of those three is an AttributeError/KeyError that propagates out of the loop and
+        # costs the WHOLE XLSX -- and, before writeResWrapper guarded this call, every
+        # deliverable after it too.  Hardening the transport does not fix that on its own: a
+        # genuinely empty FMP response produces the same empty frame as a failed call.  So skip
+        # THIS PAGE, name it, and report the total at the end.
+        if km.empty or fr.empty or cf.empty:
+            _missing = ', '.join(n for n, d in (('key-metrics', km), ('ratios', fr),
+                                                ('cash-flow', cf)) if d.empty)
+            print(f'  WARNING: {symb} presentation page SKIPPED -- empty/failed {_missing}. '
+                  f'The remaining pages and every later deliverable still run.', flush=True)
+            _pages_skipped.append(symb)
+            pbar.update(n=1)
+            continue
+
         # Check if DCF has required columns, use fallback if empty
         dcf_has_data = not dcf.empty and 'Stock Price' in dcf.columns and 'dcf' in dcf.columns
 
-        NYSEspe = requests.get(f'https://financialmodelingprep.com/api/v4/sector_price_earning_ratio?date={ll5}&exchange=NYSE&apikey={api_key}').json()
+        NYSEspe = gdg.safe_json_list(
+            f'https://financialmodelingprep.com/api/v4/sector_price_earning_ratio?date={ll5}&exchange=NYSE&apikey={api_key}',
+            label='sector-PE')
         nspe_df = pd.DataFrame(NYSEspe) if isinstance(NYSEspe, list) and len(NYSEspe) > 0 else pd.DataFrame()
         nspe_has_data = not nspe_df.empty and 'sector' in nspe_df.columns and 'pe' in nspe_df.columns
         symb_df = pd.DataFrame(
@@ -918,6 +1141,11 @@ def createPresentation(finalBoRank_df, mscore, cscore, baseurl, api_key, topn, f
 
         pbar.update(n=1)
 
+    if _pages_skipped:
+        print('PRESENTATION SKIPPED-PAGE SUMMARY: %d of %d page(s) omitted for empty/failed '
+              'API data: %s'
+              % (len(_pages_skipped), len(symblist), ', '.join(map(str, _pages_skipped))),
+              flush=True)
 
     wb.save(fname)
     wb.close()

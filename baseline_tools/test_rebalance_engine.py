@@ -124,10 +124,15 @@ def test_beatrate_via_primitive():
 #  HARD GATE -- real ranker reproduces the certified 30%                      #
 # --------------------------------------------------------------------------- #
 def test_certified_reproduction():
-    for p in (PICKLE, DEAD, REGISTRY, PRICES, PRICES_2025):
-        if not os.path.exists(p):
-            print(f"  [SKIP] certified reproduction -- missing input: {p}")
-            return
+    # EXPLICIT SKIP, NOT a bare `return` (audit C4, fixed 2026-07-31).  Under pytest a
+    # `return` is a PASS, so this HARD GATE reported green having asserted nothing whenever an
+    # input was missing -- which is the normal state on the machine that runs the fetch.  A
+    # hard gate that silently passes when its inputs are absent is not a gate.
+    _missing = [p for p in (PICKLE, DEAD, REGISTRY, PRICES, PRICES_2025)
+                if not os.path.exists(p)]
+    if _missing:
+        pytest.skip("certified reproduction NOT run -- missing input(s): %s"
+                    % ", ".join(_missing))
     import dead_merge as dm
     import stage2_pit as s2
     import createDicts as cdic
@@ -202,5 +207,13 @@ if __name__ == "__main__":
     test_frictionless_equals_txzero()
     test_beatrate_via_primitive()
     print("- HARD GATE (real ranker):")
-    test_certified_reproduction()
-    print("ALL SELF-CHECKS PASSED")
+    # Skipped is not an Exception subclass, so it would abort the script; catch it and say so
+    # rather than letting the final line claim everything passed.
+    _skipped = None
+    try:
+        test_certified_reproduction()
+    except pytest.skip.Exception as _s:
+        _skipped = str(_s)
+        print(f"  [SKIP] {_skipped}")
+    print("ALL SELF-CHECKS PASSED"
+          + (" (except the HARD GATE, which was SKIPPED -- NOT a pass)" if _skipped else ""))

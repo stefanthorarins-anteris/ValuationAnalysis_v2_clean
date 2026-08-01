@@ -40,12 +40,38 @@ class _FailedResponse:
     status-code gate records a definitive, *retryable* ``failcode`` (fetch-unknown)
     instead of either crashing on a ``None`` response or being mislabelled as a
     genuine empty ("no data") response.  See ``safe_http_get`` and the dead-
-    fundamentals loop (review ADDENDUM-3 HIGH-1)."""
+    fundamentals loop (review ADDENDUM-3 HIGH-1).
+
+    IT MUST BE RESPONSE-SHAPED, NOT JUST STATUS-SHAPED (review B1, fixed 2026-07-31).
+    This shim used to define only `status_code` / `url` / `error` / `json()`.  When the
+    2026-07-31 hardening routed `postBoRank._fetch_ticker_dcf` through `safe_http_get`, the
+    diagnostic that consumes its 4th return value did `resp_dcf.text[:100]` behind an
+    `is not None` guard -- which a `_FailedResponse` SATISFIES -- and raised
+    `AttributeError: '_FailedResponse' object has no attribute 'text'`, aborting Stage-2 in
+    exactly the dead/hung-endpoint scenario the hardening exists for.  `.text` is the
+    second-most-used Response attribute after `.status_code`, so the shim owning it is the
+    fix that generalises: any OTHER consumer reaching for `.text` is now also safe, whereas a
+    `getattr` at one call site would only have fixed that site.  Kept as a read-only property
+    so it cannot be accidentally overwritten and so it stays consistent with `json()`."""
 
     def __init__(self, status_code=599, url=None, error=None):
         self.status_code = status_code
         self.url = url
         self.error = error
+
+    @property
+    def text(self):
+        """A body-shaped string describing WHY there is no body."""
+        return '<no response body: request failed%s>' % (
+            ' (%s)' % self.error if self.error else '')
+
+    @property
+    def content(self):
+        return self.text.encode('utf-8')
+
+    @property
+    def ok(self):
+        return False
 
     def json(self):
         return []
@@ -89,6 +115,60 @@ def safe_http_get(url, params=None, headers=None, timeout=10, retries=3, backoff
                 return last_resp if last_resp is not None else _FailedResponse(url=url, error=str(e))
             sleep(backoff * (2 ** (attempt - 1)))
     return last_resp if last_resp is not None else _FailedResponse(url=url)
+
+def safe_json_list(url, params=None, headers=None, timeout=10, retries=3, backoff=1,
+                   sleep=None, _get=None, label=None, verbose=True):
+    """GET a JSON endpoint and return a LIST of records -- never raise, never hang.
+
+    WHY THIS EXISTS (fix, 2026-07-31).  The FETCH loop is hardened (safe_http_get: timeout,
+    retries, exponential backoff) but the DELIVERABLE stages were not.  `writeBoAggToCSV`
+    (~4-5 calls x 100 names) and `createPresentation` (~7 calls x 20 names) fired ~500-700
+    calls as bare `requests.get(url).json()`:
+      * NO TIMEOUT -- a hung socket stalls an UNATTENDED run INDEFINITELY, which on a
+        12-hour overnight job is the worst failure mode available;
+      * NO RETRY -- a single 429 is terminal;
+      * `.json()` CHAINED to the call -- a throttled 200 carrying an HTML body raises
+        JSONDecodeError, and the loop bodies had no try/except, so the exception propagated
+        out of the stage and cost the CSV, the XLSX, the forensic CSV, the postRank pickle
+        and the pick-log.
+    And it runs IMMEDIATELY AFTER 12+ hours of sustained API load, which is exactly when a
+    throttle is most likely.  Losing 12 hours of fetched data to a post-processing network
+    error is not an acceptable failure mode, so every one of these calls now degrades to an
+    EMPTY LIST instead.
+
+    Returning `[]` is what makes the degradation land at COLUMN granularity rather than
+    stage granularity: every consumer in those loops already guards on `len(resp) == 0` and
+    writes 'NaN' for that field, so a failed call costs one cell, not the deliverable.
+
+    A dict body (FMP returns `{'Error Message': ...}` on some failures) becomes `[]` unless
+    it looks like a single record, in which case it is wrapped -- the same normalisation the
+    call sites were doing ad hoc.
+
+    `sleep` / `_get` are injectable for offline testing (no real network).
+    """
+    resp = safe_http_get(url, params=params, headers=headers, timeout=timeout,
+                         retries=retries, backoff=backoff, sleep=sleep, _get=_get)
+    status = getattr(resp, 'status_code', None)
+    if status != 200:
+        if verbose:
+            print('  WARNING: %s returned status %s -- that field degrades to NaN for this '
+                  'name; the stage continues.' % (label or url, status), flush=True)
+        return []
+    try:
+        data = resp.json()
+    except Exception as _e:
+        # THE throttled-200-with-an-HTML-body case.  Bare `.json()` raised here.
+        if verbose:
+            print('  WARNING: %s returned a 200 with an unparseable body (%s) -- that field '
+                  'degrades to NaN for this name; the stage continues.'
+                  % (label or url, type(_e).__name__), flush=True)
+        return []
+    if isinstance(data, dict):
+        if 'Error Message' in data or 'error' in str(data).lower():
+            return []
+        return [data]
+    return data if isinstance(data, list) else []
+
 
 def get_tickers(ds, baseurl, api_key, manual_elim=None, tfilt='stock_NA1',sfilt='all', mcapf=-1,fn='',
                 as_of=None, registry=None):
@@ -538,9 +618,17 @@ def forceNumOnDf(df):
     # numeric.
     #   grahamUndefinedReason  why a Graham row is undefined (ruling Q1.3) -- a reason
     #                     CODE, so it must survive as a string like the others
+    #   reportingFrequencyConflict  'by_period|by_cadence' when the two frequency signals
+    #                     disagree for this source, else '' (reporting_period
+    #                     .FREQ_CONFLICT_COLUMN).  It MUST reach the saved panel: postBo's
+    #                     universe-wide conflict banner decodes it, because
+    #                     frequency_by_source short-circuits on the stored verdict and so
+    #                     cannot re-detect the conflict itself.  Coerced to NaN here, the
+    #                     watchdog goes dark again -- exactly the failure it was just fixed
+    #                     for -- which is why it is listed rather than left to chance.
     for _passthrough in ('reportedCurrency', 'period', 'fillingDate', 'acceptedDate',
                          'periodEndDate', 'grahamUndefinedReason',
-                         'reportingFrequency'):
+                         'reportingFrequency', 'reportingFrequencyConflict'):
         if _passthrough in dftemp.columns:
             preserve.add(_passthrough)
 

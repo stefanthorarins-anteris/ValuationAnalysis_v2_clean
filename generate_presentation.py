@@ -765,8 +765,14 @@ ORIENTATION = {
                      'an advisory flag a false positive costs more than a false negative.'),
     'sloanAccruals':('ratio', '↓ better (low/neg = cash-backed)',
                      'balance-sheet accruals; pipeline flag = worst quintile in-run, not absolute'),
-    'incomeQuality':('≈1 neutral (emp −13.8…8.0)', '↑ better (≈>1 good)',
-                     'CFO/NI; noisy near NI≈0'),
+    # BASIS CHANGED 2026-08-01 (audit D2): this is no longer FMP's CFO/NI ratio.  It is
+    # (CFO − netIncome) / totalAssets, averaged over the scoring window — an ACCRUALS
+    # measure on an assets scale, so typical values are ~±0.05, NOT ~1.  The old
+    # "≈1 neutral (emp −13.8…8.0)" text described the ratio and would now be actively
+    # misleading.  Measured on the shipped top-100 under the new basis: −0.050…+0.043.
+    'incomeQuality':('accruals/assets (emp −0.05…+0.04)', '↑ better (cash > earnings)',
+                     '(CFO−NI)/totalAssets; sign-safe replacement for the CFO/NI ratio, '
+                     'which inverted for loss-makers and exploded as NI→0'),
     # Soundness audit (2026-07-19, re-derived 2026-07-26 on the CURRENT code): the computed
     # variant is NOT published Altman-Z. The quarter-scale flow half of the original finding is
     # FIXED; what remains is that the statistic is ~ONE TERM -- 0.6*x4 (market cap / total
@@ -936,7 +942,14 @@ VERDICT_RULES = {
     'Piotroski':               dict(good='high', green=7,    red=4,    note='rule-of-thumb: ≥7 strong · ≤3 weak · 4–6 middling'),
     'M-Score':                 dict(good='low',  green=-0.5, red=0.5,  note='rule-of-thumb: stored ≤0 clean · >0 flag · −0.5…+0.5 borderline (invalid financials)', suppress=_FIN),
     'C-Score':                 dict(good='low',  green=0.5,  red=3.5,  note='rule-of-thumb (out of 5 flags): 0 clean · ≥4 of 5 flag · 1–3 borderline; ≥4-of-5 is stricter than published Montier by design (invalid financials)', suppress=_FIN),
-    'incomeQuality':           dict(good='high', green=0.9,  red=0.7,  note='rule-of-thumb: ≥0.9 cash-backed · <0.7 flag · 0.7–0.9 borderline (non-financial)', suppress=_FIN),
+    # 'incomeQuality': GRAY BY AUDIT DECISION (D2, 2026-08-01) -- deliberately no verdict.
+    # It carried green=0.9 / red=0.7 ("≥0.9 cash-backed · <0.7 flag"), which are RATIO-scale
+    # thresholds for FMP's CFO/NI.  The metric is now (CFO−NI)/totalAssets, whose values run
+    # ~±0.05, so EVERY name would fall below red=0.7 and the whole shortlist would render as a
+    # red flag.  Re-deriving calibrated bands for the new scale is a fitting exercise and is
+    # NOT authorised, so the honest move is the one Altman-Z already takes: publish the number,
+    # withhold the verdict, and say why -- rather than invent thresholds or leave miscalibrated
+    # ones firing.  The orientation chip (↑ better) still applies and is unaffected.
 }
 # A.1 floor rules: 🔴 on the bad side, else ⚪ (no positive standalone rule).
 VERDICT_FLOORS = {
@@ -951,6 +964,12 @@ VERDICT_GRAY = {
     # 'Altman-Z': gray by AUDIT DECISION (not because no rule exists in the literature) --
     # our computed variant is not the published statistic, so its thresholds are meaningless.
     'Altman-Z',
+    # 'incomeQuality': gray by the SAME audit decision (D2, 2026-08-01).  Its old green=0.9 /
+    # red=0.7 bands were for FMP's CFO/NI ratio; the metric is now (CFO−NI)/totalAssets with
+    # values ~±0.05, so those bands would flag every name.  Listed HERE rather than merely
+    # deleted from VERDICT_RULES, so it renders as an explicit ⚪ "no honest standalone rule"
+    # instead of silently falling through to whatever the default is.
+    'incomeQuality',
     'peRatio', 'pbRatio', 'bVpRatio', 'tbVpRatio', 'grossProfitMargin', 'op_margin',
     'effective_tax', 'dso', 'inv_days', 'returnOnEquity', 'RoA', 'revenueGrowth',
     'freeCashFlowPerShareGrowth', 'net_debt_ebitda', 'CycleHeat', 'AggScore', 'moatScore',

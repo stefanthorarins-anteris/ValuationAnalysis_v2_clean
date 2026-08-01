@@ -234,6 +234,20 @@ def getPostDict(macroAdj=1):
                          'grahamNumberToPrice': {'eqMet': 'grahamNumberToPrice',    'w': 0.033},   # legacy 1
                          'bVpRatio':            {'eqMet': 'pbRatio',                'w': 0.033},   # legacy 0.25
                          'revenueGrowth':       {'eqMet': 'revenue',                'w': 0.027},   # legacy 1
+                         # incomeQuality: the KEY and the WEIGHT are unchanged, but the
+                         # QUANTITY changed on 2026-08-01 (audit D2, CEO-approved).  It is no
+                         # longer FMP's CFO/NI ratio -- which inverts for loss-makers and
+                         # explodes as NI->0 -- but (CFO - netIncome)/totalAssets, the
+                         # sign-safe scale-free form (stage2_metrics.income_quality_accruals).
+                         # Stage-1 got this treatment in July (CFOlessEarnings, below);
+                         # Stage-2 was missed until now.
+                         # WEIGHT PROVENANCE, recorded rather than quietly fixed: 0.072 was
+                         # FITTED AGAINST THE RATIO, so it is a weight INHERITED by a
+                         # different quantity.  Re-fitting is a separate exercise and is NOT
+                         # authorised; this is a known, accepted consequence of correcting the
+                         # metric in isolation.  Sign VERIFIED to still be high-is-good:
+                         # spearman(new, old) = +0.32 on the healthy NI>0/CFO>0 pool, so
+                         # +0.072 keeps its meaning where the old metric was not inverted.
                          'incomeQuality':       {'eqMet': 'incomeQuality',          'w': 0.072},   # legacy 1
                          'returnOnEquity':      {'eqMet': 'returnOnEquity',         'w': 0.030},   # legacy 1
                          'returnOnCapitalEmployed': {'eqMet': 'returnOnCapitalEmployed', 'w': 0.060},  # legacy 1

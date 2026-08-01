@@ -151,8 +151,107 @@ def postbm_metric(key, met, tempcdx, nq, rpy=rp.DEFAULT_ROWS_PER_YEAR):
         return (1 / tempcdx[met]).head(w).mean()
     elif key == "revenueGrowth":
         return tempcdx[met].pct_change(-int(rpy), fill_method=None).head(w).mean()
+    elif key == "incomeQuality":
+        return income_quality_accruals(tempcdx, nq, rpy=rpy)
     else:
         return tempcdx[met].head(w).mean() * ff
+
+
+# --------------------------------------------------------------------------- #
+#  incomeQuality -- SIGN-SAFE, SCALE-FREE  (audit D2, fixed 2026-08-01)        #
+# --------------------------------------------------------------------------- #
+# Minimum totalAssets for the denominator.  TA is a positive stock for any going concern;
+# this only rejects the degenerate rows (0.35% of the universe panel are exactly 0, none
+# negative), so it is a guard, not a filter.
+_IQ_MIN_ASSETS = 0.0
+
+
+def income_quality_accruals(tempcdx, nq, rpy=rp.DEFAULT_ROWS_PER_YEAR):
+    """Earnings quality as CASH-BACKING OF EARNINGS, scaled by assets:
+
+        mean over the window of   (CFO - netIncome) / totalAssets
+
+    HIGH = operating cash flow exceeds accounting earnings = low accruals = GOOD.
+
+    WHY THE RATIO IT REPLACES WAS BROKEN (audit D2).  Stage-2 weighted FMP's `incomeQuality`
+    = CFO / netIncome at w = +0.072.  That is a ratio whose DENOMINATOR CHANGES SIGN, so it
+    INVERTS for loss-makers, and it EXPLODES as NI -> 0.  Stage-1 got the sign-safe treatment
+    in July (`CFOlessEarnings = CFO - NI`, createDicts.BoMetric_special_dict); Stage-2 was
+    missed and kept the ratio.  Measured on the shipped 2026-07-17 top-100 panel, by quadrant
+    (MEDIANS -- the means are meaningless because the ratio explodes):
+        NI>0 CFO>0  healthy                     n=1827   median  +1.625
+        NI>0 CFO<0  profit but no cash          n= 195   median  -1.078   (correctly bad)
+        NI<0 CFO>0  loss but CASH-GENERATIVE    n= 184   median  -1.987   <-- the GOOD case,
+                                                                              PENALISED hardest
+        NI<0 CFO<0  loss AND burning cash       n=  85   median  +0.489   <-- the BAD case,
+                                                                              REWARDED
+    A company losing money while generating cash is the single clearest "earnings understate
+    the business" signal there is, and the shipped metric ranked it BELOW a company losing
+    money AND burning cash.  The per-name metric spanned -19.78 .. +190.41 on that pool.
+
+    THE FIX, MEASURED PER SOURCE ON THE FULL 7,729-SOURCE UNIVERSE (trailing-year NI/CFO
+    quadrants; the shipped top-100 is 99/100 profitable, so the inversion is invisible there
+    and only bites in the carve-out cohort pools and any future pool holding loss-makers):
+        quadrant                              n      OLD median      NEW median
+        NI>0 CFO>0  healthy                 4596        +1.392         +0.0087
+        NI>0 CFO<0  profit but no cash       322        +0.069         -0.0054
+        NI<0 CFO>0  loss but CASH-GEN        1100        +0.128        +0.0222
+        NI<0 CFO<0  loss AND burning        1575        +0.742         +0.0266
+    THE CONSTRAINT THAT MATTERS IS MET: the GOOD loss-maker moves from far BELOW the healthy
+    median (+0.128 vs +1.392, i.e. heavily penalised at w=+0.072) to ABOVE it (+0.0222 vs
+    +0.0087, i.e. rewarded).  And "profit but no cash" is the only quadrant that goes negative,
+    which is the one that should.
+
+    SEMANTICS -- READ THIS BEFORE CALLING THE LAST ROW A RESIDUAL INVERSION.  The cash-BURNING
+    loss-maker still edges the cash-GENERATING one (+0.0266 vs +0.0222).  That is correct by
+    construction and is the SAME accepted semantics as the Stage-1 form (see
+    createDicts.BoMetric_special_dict, which states it explicitly): this is an EARNINGS-QUALITY
+    (accruals) test, NOT a profitability test.  A company with a large non-cash writedown
+    (NI very negative, CFO mildly negative) genuinely does have earnings that understate its
+    cash, and that is what this metric is asking.  Profitability is scored separately and by
+    other metrics in this same vector (RoA, earnYield) and at Tier S in Stage-1.  Ordering
+    loss-makers by profitability is not this metric's job, and building that in would
+    re-introduce a second quantity into a metric that finally measures one thing.
+
+    WHY totalAssets AND NOT REVENUE (the denominator must never approach or cross zero, or the
+    explosion is simply rebuilt with a new fuse).  Measured over the full 176,781-row panel:
+        totalAssets :  0 negative rows,  613 zero rows (0.35%),  1 NaN
+                       -> and ZERO sources have all-nonpositive assets
+        revenue     :  1,307 NEGATIVE rows,  10,477 zero rows (6.67% non-positive)
+                       -> and 244 SOURCES are entirely zero-revenue
+    Revenue can be legitimately zero (pre-revenue biotech, a shell, a holding company) and can
+    even go NEGATIVE (contra-revenue / refunds), which would re-introduce the exact
+    sign-flipping-denominator defect being fixed.  Total assets cannot go negative -- a
+    NEGATIVE-EQUITY company still has positive assets, because equity, not assets, is what
+    goes negative -- and no source in the universe lacks them entirely.  It is also the
+    denominator the accruals literature uses (Sloan 1996) and the one this pipeline's own
+    `forensicFlags.sloanAccruals` already uses, so the two agree on basis by construction.
+    A zero/NaN/negative TA row yields NaN, which normalizeAndDropNA maps to z = 0 = neutral --
+    the Stage-2 convention for "not computable", never a real score.
+
+    SIGN: unchanged at w = +0.072, and this is VERIFIED, not assumed.  The replaced ratio was
+    high-is-good (for a profitable firm, more cash per unit of earnings is better) and so is
+    this: CFO - NI > 0 means earnings are more than fully cash-backed.  On the healthy
+    NI>0/CFO>0 population the two quantities are positively rank-correlated, so +0.072 keeps
+    its meaning on the names where the old metric was not inverted.  No flip is applied.
+
+    SCALE: (flow - flow) / stock, so it is a flow/stock ratio and takes the same per-quarter
+    normalisation as earnYield / RoA -- a semi-annual filer's six-month CFO and NI over a
+    point-in-time asset base would otherwise read ~2x a quarterly peer's.  x1.0 for quarterly,
+    so the quarterly path is unchanged by the frequency correction itself.
+
+    WEIGHT PROVENANCE, stated because it is a real caveat and not a defect to hide: 0.072 was
+    fitted against the RATIO.  It is therefore a weight INHERITED by a different quantity.
+    Re-fitting is a separate, unauthorised exercise; this is a known and accepted consequence
+    of correcting the metric without re-running the weight fit.
+    """
+    ni = pd.to_numeric(tempcdx["netIncome"], errors="coerce")
+    cfo = pd.to_numeric(tempcdx["netCashProvidedByOperatingActivities"], errors="coerce")
+    ta = pd.to_numeric(tempcdx["totalAssets"], errors="coerce")
+    ta = ta.where(ta > _IQ_MIN_ASSETS)          # 0 / negative / NaN -> NaN, never a divisor
+    val = (cfo - ni) / ta
+    return (val.replace([np.inf, -np.inf], np.nan)
+               .head(rp.scale_window(nq, rpy)).mean() * rp.per_quarter_factor(rpy))
 
 
 # --------------------------------------------------------------------------- #
@@ -195,14 +294,55 @@ def tbv_p_ratio(tempcdx, nq, rpy=rp.DEFAULT_ROWS_PER_YEAR):
 EPS_MEAN_FLOOR_FRAC = 0.01
 
 
-def eps_to_eps_mean(tempcdx, rpy=rp.DEFAULT_ROWS_PER_YEAR):
-    """Exponentially-weighted recent EPS vs its full-window mean, expressed as a
+#  EPStoEPSmean's BASELINE window, in QUARTERS, scaled to the filer's own frequency by
+#  rp.scale_window -- the same treatment CYCLEHEAT_BASE_NQ gives CycleHeat, and for the
+#  same reason.
+#
+#  WHY A CAP EXISTS AT ALL (fix, 2026-07-31).  This was the LAST uncapped window in the
+#  Stage-2 block: `epsmean = eps.mean()` took no `nq` and averaged the WHOLE per-ticker
+#  panel, and `cdx_dftop100` has no row cap (postBo.py), so the baseline length WAS the
+#  fetch depth.  The metric is (epsmean - ewma_recent) / |epsmean| with w = +0.056, so
+#  POSITIVE = recent EPS below the stock's own history = REWARDED.  A longer baseline drags
+#  `epsmean` toward older, smaller earnings, which makes the numerator more negative for any
+#  company whose EPS has GROWN -- i.e. the longer the fetch, the harder a grower is
+#  penalised.  Measured on the shipped 2026-07-17 top-100 (90 names defined on both windows),
+#  full 24-row panel vs the most recent 12 rows:
+#      mean  -1.317 -> -0.623      std 2.715 -> 1.291      spearman 0.785
+#      14 of 90 names CHANGE SIGN, i.e. flip from penalised to rewarded or back
+#      rising-EPS names (n=78): -1.461 on the full panel vs -0.533 on the recent half
+#      falling-EPS names (n=9):  -0.004 on the full panel vs -1.159 on the recent half
+#  So the full-panel baseline is inverted relative to the metric's own thesis: it punishes
+#  growth and spares decline.  At `-nrperiods 80` the baseline becomes ~20 YEARS and the
+#  metric stops being a mean-reversion/trough detector at all -- it becomes a 20-year growth
+#  penalty.  The cap makes the baseline a fixed CALENDAR span regardless of fetch depth.
+#
+#  WHY 28 QUARTERS -- deliberately the SAME VALUE as CYCLEHEAT_BASE_NQ, chosen by the same
+#  two constraints: long enough to contain a full business cycle (the history a
+#  mean-reversion baseline needs), and >= the ~24 rows a quarterly filer carries on the
+#  CURRENT panel so it CANNOT BIND there -- making this change BIT-IDENTICAL for every
+#  quarterly name today, which is the regression that matters.  It is kept as its OWN
+#  constant rather than an alias of CYCLEHEAT_BASE_NQ: these are two different metrics with
+#  two different baselines, and one must not move silently when the other is retuned.
+EPS_MEAN_BASE_NQ = 28
+
+
+def eps_to_eps_mean(tempcdx, nq=EPS_MEAN_BASE_NQ, rpy=rp.DEFAULT_ROWS_PER_YEAR):
+    """Exponentially-weighted recent EPS vs its baseline-window mean, expressed as a
     FRACTION OF THAT MEAN (postBoRank.py:248-256).
 
       (epsmean - ewma_recent_eps) / |epsmean|
 
-    Positive = the last four quarters sit BELOW the stock's own EPS history (the
+    Positive = the most recent year sits BELOW the stock's own EPS history (the
     mean-reversion side the +0.056 weight is betting on); negative = above.
+
+    `epsmean` -- the BASELINE -- is the mean over the most recent
+    `scale_window(nq, rpy)` rows, NOT over the whole panel (fix 2026-07-31; see
+    EPS_MEAN_BASE_NQ for the measured defect).  Both the baseline and the
+    EPS_MEAN_FLOOR_FRAC scale are computed over that same window, so the floor test
+    stays a comparison of two quantities on one window.  `nq` is in QUARTERS and
+    `rpy` scales it to the filer's own frequency, so the baseline spans the same
+    CALENDAR time for a semi-annual filer as for a quarterly one -- and, crucially,
+    the same span whatever `-nrperiods` the fetch used.
 
     DIMENSIONLESS (audit C4 fix, 2026-07-19).  The numerator alone is in currency
     per share, so the metric used to be a mixed-currency PRICE/EPS-LEVEL ranking,
@@ -221,6 +361,15 @@ def eps_to_eps_mean(tempcdx, rpy=rp.DEFAULT_ROWS_PER_YEAR):
     """
     eps = tempcdx["netIncome"] / tempcdx["weightedAverageShsOut"]
     eps = eps.replace([np.inf, -np.inf], np.nan)
+    # BASELINE TRUNCATION.  tempcdx is NEWEST-FIRST (postBoRank._sort_cdx_newest_first, and
+    # the offline PIT loop sorts the same way), so head() keeps the MOST RECENT rows -- the
+    # same end of the series the EWMA below reads via iloc[0:rpy].  Truncating by ROW (no
+    # dropna) rather than by observation is deliberate: it matches every other head()-window
+    # metric in this module, and it leaves the positional iloc indices the EWMA depends on
+    # exactly where they were, so a panel shorter than the window is untouched.
+    _win = rp.scale_window(nq, rpy)
+    if _win and len(eps) > _win:
+        eps = eps.head(_win)
     epsmean = eps.mean()
     a = 0.4
     tw = a * (1 + (1 - a) + (1 - a) ** 2 + (1 - a) ** 3)

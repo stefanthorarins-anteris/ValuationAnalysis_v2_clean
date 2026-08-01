@@ -107,6 +107,10 @@ def _stage2_metric_loop_offline(bstop, cdxtop, nq=16):
         setv("marketCapRevQuants", tempmcapQuants)
         setv("tbVpRatio", sm.tbv_p_ratio(tempcdx, nq, rpy=_rpy))
         setv("BoScore", float(bstop.loc[bstop["source"] == ticker, "score"].iloc[0]))
+        # EPStoEPSmean: baseline window = stage2_metrics.EPS_MEAN_BASE_NQ (28 quarters), NOT
+        # the ambient `nq` (16) -- see the note at the live site (postBoRank). Passing rpy
+        # keeps the offline baseline in LOCKSTEP with live for semi-annual filers; omitting
+        # it would give the offline path an unscaled 28-row (14-year) baseline for them.
         setv("EPStoEPSmean", sm.eps_to_eps_mean(tempcdx, rpy=_rpy))
         setv("priceGrowth", sm.price_growth(tempcdx, nq, rpy=_rpy))
         setv("Altman-Z", sm.altman_z(tempcdx, rpy=_rpy))

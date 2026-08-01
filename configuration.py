@@ -59,9 +59,16 @@ def getDataFetchConfiguration(args):
     if '-sectorfilter' in args:
         print('Limited implementation of sector filter')
         isf = args.index('-sectorfilter')
-        sectorfilter = args[imb+1]
+        # WRONG-INDEX BUG (fixed 2026-07-31): this read args[imb+1] -- `imb` is the
+        # -mcapBelow index, so `isf` was computed and DISCARDED.  Reproduced: `-sectorfilter
+        # Technology` alone raised UnboundLocalError (imb unbound); with -mcapBelow also
+        # present it read the -mcapBelow VALUE and raised '-sectorfilterr argument not valid'.
+        # Unusable in every form.  Same family as the -compyear defect below and as the
+        # audit's C-3/L-5 fixes; an AST sweep of this file (every `args[<var>+1]` checked
+        # against the flag `<var>` indexes) confirms these two were the only survivors.
+        sectorfilter = args[isf+1]
         if sectorfilter not in sectorlist:
-            raise Exception('-sectorfilterr argument not valid')
+            raise Exception('-sectorfilter argument not valid')
     else:
         sectorfilter = 'all'
 
@@ -93,7 +100,13 @@ def getDataFetchConfiguration(args):
     # Get comparison year (default last year)
     if '-compyear' in args:
         ic = args.index("-compyear")
-        compyearstr = args[id+1]
+        # WRONG-INDEX BUG (fixed 2026-07-31): this read args[id+1] -- `id` is the -datasource
+        # index, so `ic` was computed and DISCARDED.  Reproduced: `-compyear thisYear` alone
+        # raised UnboundLocalError; with `-datasource fmp` it read args[1] ('fmp') and raised
+        # 'compyear argument is not valid'.  Unusable in every form -- and `compyear` is
+        # LOAD-BEARING: it drives the datefail gate (failTests.py), which is what rejects a
+        # ticker whose newest statement predates the comparison year.
+        compyearstr = args[ic+1]
         if compyearstr == 'lastYear':
             compyear = datetime.now().year - 1
         elif compyearstr == 'thisYear':

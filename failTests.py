@@ -55,8 +55,41 @@ def testForAPIFaults_fmp(failcodes,compyear,ticker,period,limit,baseurl,api_key,
             whyfail = 'failcode'
             break
         else:
-            resplist.append(resp.json())
-            fsdfdic[key] = pd.DataFrame(resp.json())
+            # THE LAST UNGUARDED JSON PARSE IN THE FETCH PATH (review B2, fixed 2026-07-31).
+            #
+            # A THROTTLED 200 CARRYING AN HTML BODY makes `resp.json()` raise
+            # JSONDecodeError.  `safe_http_get` correctly hands back the raw Response for a
+            # 200, and 200 is not in `failcodes` (400-599), so nothing above catches it --
+            # and `getFsData_fmp` has no `try`, while the call site
+            # (getData_fmp.get_fundamentals_fmp) sits OUTSIDE the per-ticker guard.  It
+            # therefore propagated to Sbocker, which re-raises.
+            #
+            # WHY THIS ONE MATTERS MORE THAN THE ~700 POST-FETCH CALLS ALREADY HARDENED:
+            # this path is ~7,700 tickers x 5 statements = ~38,500 calls (~55x larger), and
+            # THERE IS NO RESUME -- utils.write_lastIndexRead runs only AFTER
+            # get_fundamentals_fmp RETURNS, so a crash at hour 11 of a 12-hour fetch leaves
+            # NOTHING on disk.  Hardening the cheap path and leaving the expensive one bare
+            # was the indefensible asymmetry.
+            #
+            # The handler mirrors the audit H-4 fix two branches down VERBATIM in intent: a
+            # malformed 200 body is `emptyfail` -- skipped and logged as a first-class
+            # completeness artifact -- because "one unlucky throttled ticker must cost that
+            # ticker, not the run".  Not `failcode`: that bucket means a definitive HTTP
+            # status, and conflating an unparseable body with one would misreport the cause.
+            try:
+                _payload = resp.json()
+            except Exception as _je:
+                respfail = True
+                failbool = True
+                whyfail = 'emptyfail'
+                _body = str(getattr(resp, 'text', ''))[:200].replace('\n', ' ')
+                print('EMPTYFAIL %s (%s): HTTP %s but the body is not JSON (%s) -- ticker '
+                      'SKIPPED, run continues. Body head: %r'
+                      % (ticker, calldic[key], getattr(resp, 'status_code', '?'),
+                         type(_je).__name__, _body), flush=True)
+                break
+            resplist.append(_payload)
+            fsdfdic[key] = pd.DataFrame(_payload)
 
     if respfail == False:
         if any([not lst for lst in resplist]):

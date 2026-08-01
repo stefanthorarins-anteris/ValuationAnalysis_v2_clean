@@ -105,6 +105,33 @@ POSTRANK_METRIC_READERS = {
                           "not a metric",
     # NOTE: `pick_log.py` was on this list and matched NOTHING -- it reads AggScore only and
     # takes its entry valuations from cdx_df.  Removed rather than left as a stale claim.
+    # --- reviewed 2026-07-31 ------------------------------------------------------------
+    "loo_weight_influence.py":
+        "CLEARED by an independent cold arithmetic review (2026-07-31): all 18 arms "
+        "re-derived in closed form, max abs diff 0.000e+00 on every statistic, and there is "
+        "NO DIVISION BY ANY WEIGHT anywhere in the file. It sources raw z from "
+        "postScoreMetric_raw and re-runs normalizeAndDropNA exactly as production does. The "
+        "guard fires on this file as a LITERAL-NAME FALSE POSITIVE: the six metric names it "
+        "matches sit in a CANDIDATES list, not in a weighted-column read. "
+        "BUT READ THIS BEFORE COPYING THE PATTERN -- the exemption is narrower than it looks: "
+        "resdic['psmdf_normalized'] IS LITERALLY THE SAME OBJECT as resdic['postRank'] "
+        "(getAggScore mutates its argument in place and returns it), so a module reading "
+        "'psmdf_normalized' IS reading a postRank frame whose metric columns are z x w. This "
+        "script is safe only because its `c in W` filter excludes AggScore and "
+        "rankOfRanks_diag; change that filter and the exemption is void. Aliasing verified, "
+        "not assumed.",
+    "verify_part5_defects.py":
+        "CLEARED by audit 2026-08-01 (commissioned by the MD for the Part 5 defect "
+        "verification; read-only, no network). It DOES read postRank's metric columns -- the "
+        "guard is a TRUE POSITIVE on the trigger, not a misfire -- and all five reads are "
+        "weight-aware: FOUR un-weight explicitly by dividing by the metric's own weight "
+        "(grahamNumberToPrice twice, marketCapRevQuants, and a six-column block via "
+        "`zz[c] = zz[c] / W[c]`), and the FIFTH reads z x w DELIBERATELY, as the finding "
+        "itself -- it is the psbrfilter analysis, which exists to show that the -1.5 cutoff is "
+        "being applied to a WEIGHTED z, and it prints min(z*w) and min(z) side by side. Every "
+        "other `pr[...]` access is pr['source'] or pr['AggScore'], neither of which is a "
+        "metric column. The file's own output states the z*w basis in prose. Exempt because it "
+        "is CORRECT about the basis, not because it is out of scope.",
 }
 
 

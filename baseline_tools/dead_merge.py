@@ -164,6 +164,25 @@ def _build_entity_frames(entity, source, cdx_cols, bm_cols, n=1):
     return tempfund, tempMetric_df_trimmed
 
 
+_ENV_FALSEY = {"", "0", "false", "no", "off", "none", "null"}
+
+
+def _env_truthy(name):
+    """Is env var `name` set to something that MEANS yes?
+
+    THE FOOTGUN THIS FIXES (audit C2, 2026-07-31).  The merge-mismatch override was gated on
+    `if not os.environ.get(NAME)`, which is a PRESENCE test, not a truth test.  So
+    `ALLOW_MERGE_CONTENT_MISMATCH=0`, `=false` and `=no` all ACTIVATED the override -- the
+    operator typing the value that means "no" got the known-invalid basis they were explicitly
+    trying to refuse, on a hard gate whose entire job is to stop a wrongly-scored panel from
+    being returned.  Only an ABSENT or explicitly-falsey value now disables the gate.
+    """
+    v = os.environ.get(name)
+    if v is None:
+        return False
+    return str(v).strip().lower() not in _ENV_FALSEY
+
+
 # --------------------------------------------------------------------------- #
 #  Registry + universe helpers                                                #
 # --------------------------------------------------------------------------- #
@@ -424,12 +443,23 @@ def merge_dead_into_dmdic(dmdic, dead, registry, as_of=None,
              "!!! metric set. Column presence passes; the CONTENT does not:"]
             + ["!!!   %-34s %s" % (c, why) for c, why in _bad[:12]]
             + ["!!! A Tier-S w=1.0 criterion that is all-NaN on the live side fails every live",
-               "!!! name on missing data, and a renamed/inverted metric scores the OLD quantity",
-               "!!! with the NEW sign. FIX: re-fetch the live panel with the current code.",
+               "!!! name on missing data. FIX: re-fetch the live panel with the current code.",
+               "!!!",
+               "!!! WHAT THIS CHECK DOES *NOT* CATCH (audit C3, corrected 2026-07-31). It is a",
+               "!!! NaN-COVERAGE test: it compares how OFTEN a column is populated on each side",
+               "!!! of the merge. It therefore CANNOT detect an INVERTED or RENAMED metric --",
+               "!!! both sides are fully populated in that case, the coverage matches, and this",
+               "!!! banner stays silent while the merged panel scores the OLD quantity with the",
+               "!!! NEW sign. An earlier version of this text claimed exactly that catch; it",
+               "!!! never had it, and a safety banner that overstates its coverage is worse than",
+               "!!! no banner, because the reliance it invites is unearned. Sign/definition",
+               "!!! agreement across the merge is NOT verified anywhere here -- it rests on both",
+               "!!! sides having been built by the same code generation, which is what a",
+               "!!! re-fetch guarantees and what this check can only partially proxy.",
                _bar, ""])
         print(_msg, file=sys.stderr, flush=True)
         print(_msg, flush=True)
-        if not os.environ.get("ALLOW_MERGE_CONTENT_MISMATCH"):
+        if not _env_truthy("ALLOW_MERGE_CONTENT_MISMATCH"):
             raise SystemExit(
                 "REFUSING to return a dead/live merged panel whose Stage-1 columns are "
                 "populated on one side only (%d column(s): %s). Re-fetch the live panel, or "

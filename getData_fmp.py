@@ -30,8 +30,23 @@ def get_fundamentals_fmp(Tickers_df, cdx_df, BoMetric_df, baseurl,
     # tickers whose per-ticker PARSE/COMPUTE step raised (see the guard in the loop).
     # First-class completeness artifact, same as the other fail buckets.
     parsefail = []
+    # POSITIONAL-FALLBACK VISIBILITY (audit A6/B5, added 2026-07-31).
+    # _align_statements_by_date falls back to the OLD positional cross-statement assignment for
+    # the WHOLE ticker if ANY of the 5 statements has an unusable or duplicate date.  That
+    # fallback path is precisely the period MISPAIRING the date-join was built to prevent, and
+    # it is where the old fetch-killer lived.  Duplicate raw dates are REAL on this data
+    # (stage2_metrics.prepare_eps_series exists for exactly that; 282 sources on the 07-17 panel
+    # carry colliding snapped quarters) and the probability rises with 80 rows.
+    # `used_join` was returned but ONLY used to branch -- no counter, no log line -- so the
+    # incidence of the risky path was unobservable.  Tonight it becomes a printed number.
+    joinfallback = []
     emptyfail = []
     hasCurrentYear = []
+    # REPORTING-FREQUENCY CONFLICTS, accumulated across every ticker (fix, 2026-07-31).
+    # A first-class completeness artifact like the fail buckets above: it is the run's only
+    # evidence about whether the two independent frequency signals ever disagree, and until
+    # this existed the answer was unobservable rather than zero.
+    freq_conflicts = []
     if nrTaT < 0 and startindex == 0:
         pbar = tqdm(total=len(Tickers_df))
     elif nrTaT < 0 and startindex > 0:
@@ -64,7 +79,9 @@ def get_fundamentals_fmp(Tickers_df, cdx_df, BoMetric_df, baseurl,
                 tempfund, tempMetric_df = initTempMets(BoMetric_df.columns, cdx_df.columns,
                                                                                        bs['date'], ticker)
 
-                tempfund, hcy = fillPreReqdf(tempfund, preReq_dict, bs, inc, cf, km, fr)
+                tempfund, hcy = fillPreReqdf(tempfund, preReq_dict, bs, inc, cf, km, fr,
+                                             conflicts=freq_conflicts,
+                                             fallbacks=joinfallback)
                 # READ the one classification stamped by fillPreReqdf (review item 9).
                 # It must NOT re-classify: by this point tempfund['date'] has been SNAPPED
                 # to quarter-starts, which can turn a semi-annual cadence into a
@@ -143,6 +160,35 @@ def get_fundamentals_fmp(Tickers_df, cdx_df, BoMetric_df, baseurl,
     if parsefail:
         print('PARSE-FAIL SUMMARY: %d ticker(s) skipped by the per-ticker guard: %s'
               % (len(parsefail), ', '.join(map(str, parsefail))), flush=True)
+    # POSITIONAL-FALLBACK SUMMARY (audit A6/B5).  Printed BESIDE the parse-fail summary and,
+    # like the frequency-conflict check, printed even when the count is ZERO -- an unobserved
+    # rate and a zero rate are different facts, and the whole point of this counter is that
+    # the rate was never measured.  A ticker on this list had its 5 statements assigned by
+    # ROW POSITION, so a ragged statement mispairs periods across statements and corrupts
+    # every cross-statement ratio for that name.  Expect the rate to RISE with `-nrperiods 80`.
+    _n_tick = int(cdx_df['source'].nunique()) if 'source' in cdx_df.columns else 0
+    print('CROSS-STATEMENT DATE-JOIN: positional fallback used for %d of %d ticker(s) (%.2f%%)'
+          '%s'
+          % (len(joinfallback), _n_tick,
+             100.0 * len(joinfallback) / max(1, _n_tick),
+             ('; first 40: %s%s' % (', '.join(map(str, joinfallback[:40])),
+                                    ' ... (+%d more)' % (len(joinfallback) - 40)
+                                    if len(joinfallback) > 40 else ''))
+             if joinfallback else ' -- every ticker used the date join.'), flush=True)
+    # THE REPORTING-FREQUENCY CONFLICT REPORT, emitted by the FETCH itself.
+    # The banner + CSV are also emitted later by postBo's universe-wide read (which now
+    # decodes the stamped column), but this one fires even if the ranking stage is run
+    # separately or never gets there -- and it is the run's only chance to report a conflict
+    # detected on the RAW, un-snapped dates.  Guarded: a diagnostic must never cost the fetch.
+    try:
+        rp.log_conflicts(freq_conflicts, verbose=True,
+                         n_examined=int(cdx_df['source'].nunique())
+                         if 'source' in cdx_df.columns else None,
+                         detected_via='raw period-end dates + `period` at ingest',
+                         label='FETCH')
+    except Exception as _e:
+        print('WARNING: frequency-conflict summary skipped (%s: %s)'
+              % (type(_e).__name__, _e), flush=True)
     # GRAHAM-UNDEFINED INCIDENCE (ruling Q1.3).  Printed every run so the Tier-S w=1.0
     # gate's NaN population is a measured number rather than a surprise in review.
     try:
@@ -160,7 +206,8 @@ def get_fundamentals_fmp(Tickers_df, cdx_df, BoMetric_df, baseurl,
     resfunddic = {'BoMetric_df':BoMetric_df,
                   'cdx_df': cdx_df, 'tickersfailed': tickersfailed, 'lenfail': lenfail, 'pricefail': pricefail,
                   'datefail': datefail, 'emptyfail': emptyfail, 'parsefail': parsefail,
-                  'cind': cntr, 'hasCurrentYear': hasCurrentYear}
+                  'cind': cntr, 'hasCurrentYear': hasCurrentYear,
+                  'freqConflicts': freq_conflicts, 'joinFallback': joinfallback}
     return resfunddic
 
 def _align_statements_by_date(bs, inc, cf, km, fr):
@@ -206,9 +253,22 @@ def _align_statements_by_date(bs, inc, cf, km, fr):
     return aligned, True
 
 
-def fillPreReqdf(tempfund,preReq_dict,bs,inc,cf,km,fr):
+def fillPreReqdf(tempfund,preReq_dict,bs,inc,cf,km,fr,conflicts=None,fallbacks=None):
+    """`conflicts`: optional list, forwarded to stamp_frequency_and_graham so the run can
+    accumulate every reporting-frequency conflict across tickers (see FREQ_CONFLICT_COLUMN).
+
+    `fallbacks`: optional list.  This ticker's source is appended when the cross-statement
+    DATE JOIN could not be used and the old POSITIONAL assignment was taken instead (audit
+    A6/B5).  That path is the period mispairing the join exists to prevent, so its incidence
+    must be a counted number rather than an invisible branch.
+
+    Both default to None = collect nothing, so the offline dead_merge caller is unchanged."""
     hcybool = False
     aligned, used_join = _align_statements_by_date(bs, inc, cf, km, fr)
+    if fallbacks is not None and not used_join:
+        _src = (str(tempfund['source'].iloc[0])
+                if 'source' in getattr(tempfund, 'columns', []) and len(tempfund) else '?')
+        fallbacks.append(_src)
     for key1 in preReq_dict:
         for i in preReq_dict[key1]:
             if key1 == 'bs':
@@ -273,7 +333,7 @@ def fillPreReqdf(tempfund,preReq_dict,bs,inc,cf,km,fr):
                                               errors='coerce')).reindex(tempfund.index)
                 tempfund['price'] = _price.replace([np.inf, -np.inf], np.nan)
 
-    tempfund = stamp_frequency_and_graham(tempfund)
+    tempfund = stamp_frequency_and_graham(tempfund, conflicts=conflicts)
 
     # Keep the RAW fiscal period-end date BEFORE setDatesToQuarterly overwrites `date`
     # with a quarter-start stamp (audit H-2 fix, 2026-07-19).  `date` is deliberately left
@@ -366,8 +426,14 @@ def build_bometric_rows(tempfund, tempMetric_df, rpy, n=1, dicts=None):
     return tempMetric_df.drop(tempMetric_df.tail(rpy).index)
 
 
-def stamp_frequency_and_graham(tempfund):
+def stamp_frequency_and_graham(tempfund, conflicts=None):
     """Stamp `reportingFrequency` and the in-pipeline `grahamNumber` (+ undefined reason).
+
+    `conflicts`: optional list.  Any period-vs-cadence disagreement found for THIS source is
+    appended (source, by_period, by_cadence) so the fetch can report a run-level total, and is
+    ALSO stamped into the frame (rp.FREQ_CONFLICT_COLUMN) so it survives to the saved panel.
+    Defaults to None = collect nothing, which is what the offline callers
+    (panel_upgrade / dead_merge) want and keeps their behaviour unchanged.
 
     EXTRACTED from fillPreReqdf (2026-07-27) with NO behavioural change, so the OFFLINE
     panel-upgrade path (baseline_tools/panel_upgrade.py, which rebuilds Stage-1 from a
@@ -434,11 +500,27 @@ def stamp_frequency_and_graham(tempfund):
     # prefers this column.  Three sites used to decide independently and two of them could
     # DISAGREE -- snapping moves a period end by up to ~92 days, so a semi-annual filer can
     # look quarterly once snapped (282 sources carry colliding snapped quarters).
+    #
+    # AND IT IS THE ONE PLACE THE CONFLICT WATCHDOG CAN SEE ANYTHING (fix, 2026-07-31).  This
+    # call used to pass neither `conflicts` nor `source`, so rp.classify_source had nowhere to
+    # record a period-vs-cadence disagreement -- and the universe-wide banner site (postBo)
+    # cannot detect one either, because frequency_by_source short-circuits on the stored
+    # verdict this very line writes.  Net effect: the module's self-described "STANDING GUARD"
+    # reported zero because NOTHING LOOKED, not because there was nothing to find.  This is
+    # the earliest and only point holding BOTH raw signals, so it is where the check belongs.
+    # The verdict is stamped beside the frequency so it survives the pickle to postBo.
+    _src_t = (str(tempfund['source'].iloc[0])
+              if 'source' in tempfund.columns and len(tempfund) else None)
+    _conf_t = []
     _freq_t = rp.classify_source(
         dates=tempfund['date'] if 'date' in tempfund.columns else None,
         period_values=(list(tempfund['period']) if 'period' in tempfund.columns
-                       else None))
+                       else None),
+        conflicts=_conf_t, source=_src_t)
     tempfund[rp.FREQ_COLUMN] = _freq_t
+    tempfund[rp.FREQ_CONFLICT_COLUMN] = rp.encode_conflict(_conf_t)
+    if conflicts is not None:
+        conflicts.extend(_conf_t)
     _rpy = rp.rows_per_year(_freq_t)
     _ni = pd.to_numeric(tempfund.get('netIncome'), errors='coerce')
     _sh = pd.to_numeric(tempfund.get('weightedAverageShsOut'), errors='coerce')

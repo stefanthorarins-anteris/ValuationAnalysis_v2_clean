@@ -133,10 +133,15 @@ def test_real_pickle_smoke_optional():
     """If a Boresults pickle is present, confirm dedup runs and collapses
     known duplicate lines on the real top-100. Skipped if absent."""
     import glob
+    import pytest
     cands = glob.glob("Boresults_dic-*2026-01-09*.pickle")
     if not cands:
-        print("SKIP real-pickle smoke (no Boresults 2026-01-09 pickle here)")
-        return
+        # EXPLICIT SKIP, NOT a bare `return` (audit C4, fixed 2026-07-31).  Under pytest a
+        # `return` from a test body is a PASS, so this reported GREEN having asserted NOTHING
+        # whenever the artifact was absent -- and absent is the normal state on the machine
+        # that runs the fetch.  A ship gate that turns itself off silently is worse than one
+        # that is missing, because the green is read as coverage.
+        pytest.skip("no Boresults 2026-01-09 pickle here -- real-pickle smoke NOT run")
     d = pd.read_pickle(cands[0])
     cdx = d["cdx_df"]
     top100 = list(d["BoS_dftop100"]["source"])
@@ -149,9 +154,20 @@ def test_real_pickle_smoke_optional():
 
 
 if __name__ == "__main__":
-    test_dedup_collapses_preferred_and_keeps_distinct()
-    test_dedup_dualclass_toggle()
-    test_benchmark_window_return()
-    test_beat_rate_and_missing_policy()
-    test_real_pickle_smoke_optional()
-    print("\nALL OFFLINE TESTS PASSED")
+    import pytest as _pytest
+    _n_skipped = 0
+    for _fn in (test_dedup_collapses_preferred_and_keeps_distinct,
+                test_dedup_dualclass_toggle,
+                test_benchmark_window_return,
+                test_beat_rate_and_missing_policy,
+                test_real_pickle_smoke_optional):
+        # pytest's Skipped does NOT derive from Exception, so a plain call would abort the
+        # script rather than skip one check.  Catch it explicitly and COUNT it, so script mode
+        # reports the same honest "not everything ran" the pytest run now does.
+        try:
+            _fn()
+        except _pytest.skip.Exception as _s:
+            _n_skipped += 1
+            print(f"SKIP {_fn.__name__}: {_s}")
+    print("\nALL OFFLINE TESTS PASSED"
+          + (f" ({_n_skipped} SKIPPED -- NOT a pass)" if _n_skipped else ""))
