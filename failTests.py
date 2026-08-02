@@ -17,7 +17,8 @@ def testForAPIFaults_fmp(failcodes,compyear,ticker,period,limit,baseurl,api_key,
     population this ingestion exists to capture (delisted-ingestion-spec s0):
 
       * F-A -- the DATEFAIL gate is BYPASSED.  compyear defaults to (this year - 1)
-        = 2025 (configuration.py:103).  A company delisted in 2020 has its newest
+        = 2025 (the `compyear` default in
+        configuration.getDataFetchConfiguration).  A company delisted in 2020 has its newest
         income statement ~2019-2020, so `compyear(2025) > 2020` -> datefail ->
         dropped.  On the live gate ~100% of dead names are eliminated even when
         their fundamentals fetch perfectly.  THE DEAD PATH MUST NOT APPLY THIS
@@ -109,8 +110,44 @@ def testForAPIFaults_fmp(failcodes,compyear,ticker,period,limit,baseurl,api_key,
         else:
             tempdf = pd.DataFrame(resplist[2])
             if 'date' in tempdf.columns:
+                # ROW ORDER IS ASSUMED HERE, NOT ESTABLISHED (flagged 2026-08-02, deliberately
+                # NOT changed).  `.iloc[0]` is "the newest income statement" ONLY because FMP
+                # returns statements newest-first.  On an oldest-first body this gate would
+                # compare compyear against the OLDEST year and reject essentially every
+                # ticker.  Sorting instead of assuming would change which tickers pass, i.e.
+                # the universe -- a behaviour change, so it stays a stated precondition.
+                #
+                # THE PARSE IS GUARDED (RUN-KILLER FIXED 2026-08-02, CEO-authorised).
+                # `datetime.strptime(strdate, '%Y-%m-%d')` raises ValueError on any other date
+                # shape and TypeError on None/NaN, and this function sits OUTSIDE the
+                # per-ticker guard: getFsData_fmp has no `try`, and its caller invokes it
+                # BEFORE entering the per-ticker try/except (getData_fmp.get_fundamentals_fmp).
+                # So one malformed date string killed the whole ~38,500-call fetch, WITH NO
+                # RESUME -- utils.write_lastIndexRead runs only after get_fundamentals_fmp
+                # RETURNS, so a crash at hour 11 of 12 left nothing on disk.
+                #
+                # HANDLED EXACTLY AS AUDIT H-4 HANDLES ITS SIBLING CASE (the `else` branch
+                # below) rather than in a second style: an unusable income-statement date is
+                # `emptyfail` -- the ticker is skipped, logged, and lands in the run's
+                # completeness counters -- because "one unlucky ticker must cost that ticker,
+                # not the run".  NOT `datefail`: that bucket means "we read the date and it was
+                # too old", a verdict we cannot reach when the date will not parse.
+                # It has not fired yet because FMP's `date` is consistently ISO; that is a
+                # property of the vendor, not a guarantee, and the cost of being wrong is 12
+                # hours.
                 strdate = tempdf['date'].iloc[0]
-                if compyear > datetime.strptime(strdate, '%Y-%m-%d').year:
+                try:
+                    _newest_year = datetime.strptime(strdate, '%Y-%m-%d').year
+                except (TypeError, ValueError) as _de:
+                    _newest_year = None
+                    failbool = True
+                    whyfail = 'emptyfail'
+                    print('EMPTYFAIL %s: income-statement date %r is not YYYY-MM-DD (%s) -- '
+                          'ticker SKIPPED, run continues.'
+                          % (ticker, strdate, type(_de).__name__), flush=True)
+                if _newest_year is None:
+                    pass                        # already recorded as emptyfail above
+                elif compyear > _newest_year:
                     failbool = True
                     whyfail = 'datefail'
                 else:
@@ -120,13 +157,18 @@ def testForAPIFaults_fmp(failcodes,compyear,ticker,period,limit,baseurl,api_key,
                         # is 4 years of history -- but a SEMI-ANNUAL filer only issues
                         # 2 rows a year, so demanding 16 rows demanded EIGHT years and
                         # rejected perfectly well-covered LSE names for a reporting
-                        # convention.  The bar is now rows-per-year x 4 = 16 quarterly
-                        # or 8 semi-annual, i.e. the same 4 years either way.
+                        # convention.  The bar is rows-per-year x FETCH_HISTORY_YEARS =
+                        # 16 quarterly or 8 semi-annual, i.e. the same 4 years either way.
+                        # The span is a NAMED constant in reporting_period rather than a
+                        # bare `4` here, because the frequency classifier's own recency
+                        # window (CLASSIFY_RECENT_DAYS) is deliberately the SAME span and
+                        # the two must not drift apart -- the classifier should look at
+                        # exactly the history this gate demands.
                         _freq = rp.classify_source(
                             dates=(tempdf['date'] if 'date' in tempdf.columns else None),
                             period_values=(list(tempdf['period'])
                                            if 'period' in tempdf.columns else None))
-                        _minrows = rp.rows_per_year(_freq) * 4
+                        _minrows = rp.rows_per_year(_freq) * rp.FETCH_HISTORY_YEARS
                         if any(j < _minrows for j in lentest):
                             failbool = True
                             whyfail = 'lenfail'

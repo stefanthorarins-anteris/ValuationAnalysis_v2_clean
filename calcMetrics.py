@@ -20,6 +20,15 @@ def calc_simpleRatio(df,strUp,strDn):
 #    return res
 
 def calc_compRatio(df,strUp,strDn,metstr,n,rpy=rp.DEFAULT_ROWS_PER_YEAR):
+    """DEAD CODE -- NO CALLER, AND IT WOULD RAISE IF THERE WERE ONE (flagged 2026-08-02).
+
+    Repo-wide there is no call site: Stage-1 builds its rolling means via
+    calc_simpleRatio + calc_diff (getData_fmp.build_bometric_rows).  And the final line is
+    `res.tolist()` on a DataFrame, which has no `.tolist()` -- so the first caller would get
+    an AttributeError, not a metric.  NOT removed here: deletion is outside the mandate of the
+    pass that found it (behaviour-preserving refactor), and it is harmless while unreachable.
+    Do not adopt it without fixing the return.
+    """
     res = pd.DataFrame()
     if strDn == 'Identity':
         res[metstr] = df[strUp]
@@ -46,7 +55,27 @@ def calc_diff(df,metstr,n,rpy=rp.DEFAULT_ROWS_PER_YEAR):
 
     return res
 
+#  Stage-1 keys this function knows how to compute.  It MUST stay in step with
+#  createDicts.getDicts()'s BoMetric_special_dict, which is the dict the only caller
+#  (getData_fmp.build_bometric_rows) iterates.
+#
+#  WHY IT IS ENFORCED RATHER THAN TRUSTED (2026-08-02).  Before this, an unrecognised
+#  `metstr` fell through every branch and returned an EMPTY DataFrame, which the caller
+#  assigned straight into `tempMetric_df[key1]` -- so a metric added to the dict without a
+#  branch here became an all-NaN column that then scored as pool-neutral, silently.  That is
+#  the same silent-default shape as an unregistered Stage-2 metric, and it is closed the same
+#  way: fail loudly, naming the key.
+_SPECIAL_KEYS = ('CFOlessEarnings', 'PEG', 'returnOnEquity',
+                 'capitalExpenditureCoverageRatio')
+
+
 def calc_special(df,metstr,n,rpy=rp.DEFAULT_ROWS_PER_YEAR):
+    if metstr not in _SPECIAL_KEYS:
+        raise KeyError(
+            "calcMetrics.calc_special has no formula for %r (known: %r). It used to return an "
+            "EMPTY frame for an unknown key, which the caller wrote into BoMetric_df as an "
+            "all-NaN column that scored as pool-neutral -- add the branch, or remove the key "
+            "from createDicts.BoMetric_special_dict." % (metstr, list(_SPECIAL_KEYS)))
     res = pd.DataFrame()
     #if str == 'dInvPEG':
     #    Fix. Needs to be Earnings per share. And needs to be higher than unity (annualized)
@@ -83,10 +112,15 @@ def calc_special(df,metstr,n,rpy=rp.DEFAULT_ROWS_PER_YEAR):
         # as high as intended.  (Row-based site NOT on the audit's list -- found in the
         # 2026-07-25 sweep.)
         res[metstr] = df['returnOnEquity'] - 0.12/float(rpy)
-    elif metstr == 'EPStoEPSmean':
-        eps = df['netIncome']/df['weightedAverageShsOut']
-        epsmean = eps.mean()
-        res[metstr] = eps - epsmean
+    # An 'EPStoEPSmean' branch used to sit here and was UNREACHABLE: 'EPStoEPSmean' is a
+    # STAGE-2 metric key (createDicts postNewRankingDict, computed by
+    # stage2_metrics.eps_to_eps_mean) and has never been in BoMetric_special_dict, which is
+    # the only dict this function is called with. Removed 2026-08-02 -- verified against
+    # getDicts(): the special dict holds exactly _SPECIAL_KEYS. It also computed a DIFFERENT
+    # quantity from the Stage-2 metric of the same name (a raw EPS-minus-mean level, not the
+    # dimensionless deviation), so leaving it in place invited exactly the Stage-1/Stage-2
+    # same-name-different-basis confusion that the accruals divergence came from. Nothing
+    # referenced it, so no stored artifact changes.
     elif metstr == 'capitalExpenditureCoverageRatio':
         tempce2cr = df[metstr]
         ce2cr = -tempce2cr.fillna(0)

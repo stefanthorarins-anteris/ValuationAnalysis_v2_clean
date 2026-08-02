@@ -546,34 +546,33 @@ def test_a_skipped_page_is_REPORTED_not_silent():
 #  simply off by default.  Default flipped 2026-07-31.
 @pytest.fixture
 def reimport_pbr(monkeypatch):
-    """Re-import postBoRank with VA_OFFLINE_NO_DCF set, then UNDO the module-level side effect.
+    """Set VA_OFFLINE_NO_DCF and hand back postBoRank.  NO RE-IMPORT ANY MORE (2026-08-02).
 
-    `OFFLINE_NO_DCF` is evaluated at IMPORT time, so testing the env semantics requires a real
-    re-import -- and that mutates `sys.modules`, which monkeypatch does NOT restore.  Without the
-    teardown below, a test that re-imports with `=0` leaves the whole session holding a
-    postBoRank whose flag says FETCH even after the env var is restored, so any later test (or
-    test FILE) importing it silently gets the wrong module.  Verified: the stale module is the
-    same object and keeps `OFFLINE_NO_DCF = False`.  Dropping it from `sys.modules` on the way
-    out means the next import re-reads the restored environment.
+    THE NAME IS KEPT ONLY SO THE D1 TESTS BELOW READ AS ONE BLOCK; there is nothing left to
+    re-import.  `OFFLINE_NO_DCF` used to be evaluated at IMPORT time, so testing the env
+    semantics required a real `importlib.import_module` -- which mutates `sys.modules`, and
+    monkeypatch does NOT restore that.  A test that re-imported with `=0` therefore left the
+    WHOLE SESSION holding a postBoRank whose flag said FETCH even after the env var was
+    restored: verified, the stale module is the same object and keeps the wrong value.  Any
+    later test, or test FILE, importing postBoRank silently got it.  The suite passed anyway,
+    which is what made it an ORDER-DEPENDENT LATENT FAULT rather than a visible failure -- and
+    the reason the flag is now read per call (postBoRank.offline_no_dcf).
+
+    So this fixture no longer touches sys.modules at all; it sets the env var (monkeypatch
+    restores it) and resets the once-per-process banner flag.  That the tests below still pass
+    with no re-import IS the evidence the import-time read is gone.
     """
-    created = []
+    import postBoRank as mod
 
     def _do(env):
-        import importlib
         if env is None:
             monkeypatch.delenv('VA_OFFLINE_NO_DCF', raising=False)
         else:
             monkeypatch.setenv('VA_OFFLINE_NO_DCF', env)
-        sys.modules.pop('postBoRank', None)
-        mod = importlib.import_module('postBoRank')
-        mod._DCF_BANNER_SHOWN = False
-        created.append(mod)
+        monkeypatch.setattr(mod, '_DCF_BANNER_SHOWN', False)
         return mod
 
     yield _do
-    # monkeypatch restores the env var first; dropping the module makes the next import honest.
-    if created:
-        sys.modules.pop('postBoRank', None)
 
 
 def test_the_deployed_DcfToPrice_weight_really_IS_zero():
@@ -593,7 +592,8 @@ def test_the_deployed_DcfToPrice_weight_really_IS_zero():
 def test_the_DCF_fetch_is_SKIPPED_BY_DEFAULT(reimport_pbr):
     """The fix: unset env must mean no call."""
     pbr = reimport_pbr(None)
-    assert pbr.OFFLINE_NO_DCF is True
+    assert pbr.offline_no_dcf() is True
+    assert pbr.OFFLINE_NO_DCF_DEFAULT is True
 
 
 def test_NO_network_call_is_made_on_the_default_path(reimport_pbr, monkeypatch):
@@ -619,14 +619,14 @@ def test_the_escape_hatch_is_a_TRUTH_test_not_a_presence_test(env, skip, reimpor
     `VA_OFFLINE_NO_DCF=0` to re-enable the live fetch must actually GET the live fetch -- a
     presence test would ignore them and silently keep skipping."""
     pbr = reimport_pbr(env)
-    assert pbr.OFFLINE_NO_DCF is skip, (env, pbr.OFFLINE_NO_DCF)
+    assert pbr.offline_no_dcf() is skip, (env, pbr.offline_no_dcf())
 
 
 def test_the_six_offline_tools_still_get_the_skip(reimport_pbr):
     """Backwards compatibility: six baseline_tools scripts do
     `os.environ.setdefault('VA_OFFLINE_NO_DCF', '1')`, which must keep meaning SKIP."""
     pbr = reimport_pbr('1')
-    assert pbr.OFFLINE_NO_DCF is True
+    assert pbr.offline_no_dcf() is True
 
 
 def test_default_off_is_CONDITIONAL_on_the_weight_being_zero(reimport_pbr, monkeypatch):

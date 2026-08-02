@@ -18,6 +18,15 @@ import reporting_period as rp
 #  shared with the offline reproduction (baseline_tools/stage2_pit.py); this
 #  file owns the LIVE orchestration (input checks, the newest-first re-sort, the
 #  live DCF fetch, normalisation/weighting/aggregation, and issuer-dedup).
+#
+#  IT IS ALSO THE ONLY PUBLISHER OF METRIC VALUES.  Three frames leave this file
+#  carrying metric-named columns on THREE DIFFERENT BASES, and telling them apart
+#  used to depend on the reader knowing which resdic key they came from -- which
+#  is how `AggScoreTop100.CycleHeat` shipped as `z x (-0.080)` (an EXACT sign
+#  inversion) and how two regression consumers fitted and applied coefficients on
+#  disagreeing bases.  Each frame now DECLARES its basis on itself (see the
+#  METRIC BASIS section below) and `metric_frame()` is the one way to read metric
+#  values off any of them, with the basis stated in the call.
 # --------------------------------------------------------------------------- #
 def postBoScoreRanking(bmtop, bstop, cdxtop, baseurl, api_key, period='quarter',
                        nq=16, as_of=None, weight_override=None, names=None,
@@ -59,6 +68,22 @@ def postBoScoreRanking(bmtop, bstop, cdxtop, baseurl, api_key, period='quarter',
                      **{k: postNewRankingDict[k]['w'] for k in postNewRankingDict}}
     if weight_override:
         weight_series = {**weight_series, **weight_override}
+
+    # EVERY METRIC MUST DECLARE ITS WINDOW AND FREQUENCY TREATMENT (stage2_metrics
+    # .STAGE2_METRIC_SPEC).  Checked ONCE PER POOL, before any metric is computed, because a
+    # metric with no registry entry is exactly how CycleHeat shipped taking neither `nq` nor
+    # `rpy` and EPStoEPSmean shipped with its baseline equal to the fetch depth.  A missing
+    # entry now REFUSES the run rather than silently defaulting the window -- the same
+    # posture as the DcfToPrice weight guard above, and for the same reason: a silently
+    # different ranking is worse than no ranking.
+    _unregistered = sm.unregistered_metrics(weight_series.keys())
+    if _unregistered:
+        raise SystemExit(
+            "Stage-2 metric(s) %r have NO entry in stage2_metrics.STAGE2_METRIC_SPEC. That "
+            "table is the AUTHORITY for each metric's window basis and frequency treatment "
+            "and the scorer reads it, so an unregistered metric would be scored on a "
+            "silently-defaulted window. Add an entry declaring the window basis and the "
+            "frequency treatment (with the reason), then re-run." % (_unregistered,))
 
     cdxtop = _sort_cdx_newest_first(cdxtop)
     cdxtop['mcapQuants'] = sm.add_mcap_quants(cdxtop)
@@ -113,7 +138,7 @@ def postBoScoreRanking(bmtop, bstop, cdxtop, baseurl, api_key, period='quarter',
     # sector-neutralization, which is CEO-ratified OFF -- so the capture must stay a pure
     # side-channel.  Because postBoScoreRanking runs once per pool (general + each cohort
     # via postBo), this single line yields raw metrics for every pool automatically.
-    postScoreMetric_raw = postScoreMetric_df.copy()
+    postScoreMetric_raw = stamp_metric_basis(postScoreMetric_df.copy(), BASIS_RAW)
 
     # weight_series is passed so the outlier guard can EXEMPT zero-weight metrics: a
     # w=0 diagnostic column must not clamp (and, pre-fix, must not eject) a name that
@@ -122,6 +147,9 @@ def postBoScoreRanking(bmtop, bstop, cdxtop, baseurl, api_key, period='quarter',
     # cohort zeroed is exempt in that cohort's pool too.
     postScoreMetric_df, outlierlist = normalizeAndDropNA(postScoreMetric_df,
                                                          weight_series=weight_series)
+    #  BASIS_Z from here to the weighting step below -- declared on the frame, so a consumer
+    #  of resdic['postScoreMetric'] can assert it instead of inferring it from the key name.
+    stamp_metric_basis(postScoreMetric_df, BASIS_Z)
 
     # MISSING-DATA FILL CALIBRATION (2026-08-01) -- EMITS ONLY, changes no score.
     # Placed HERE because this is the one point where both sides exist: postScoreMetric_raw
@@ -142,8 +170,25 @@ def postBoScoreRanking(bmtop, bstop, cdxtop, baseurl, api_key, period='quarter',
     psmdf_normalized = pd.concat(
         [postScoreMetric_df[postScoreMetric_df.columns.difference(temp_normpsmdf_weighted.columns)],
          temp_normpsmdf_weighted], axis=1)
+    #  z x w from here on.  Stamped AFTER the concat, because concat drops attrs whenever its
+    #  inputs' attrs differ -- and here one side carries BASIS_Z and the other carries none.
+    #  The name `psmdf_normalized` is the trap this stamp defuses: it says "normalized", it is
+    #  stored in resdic under that name, and its metric columns are WEIGHTED.
+    stamp_metric_basis(psmdf_normalized, BASIS_Z_TIMES_W)
 
     postRank = getAggScore(psmdf_normalized)
+    #  DECLARED INVARIANT, not an accident: getAggScore mutates its argument in place and
+    #  returns it, so these two names are ONE object and resdic ends up storing the same
+    #  frame twice, under 'psmdf_normalized' and 'postRank'.  Consumers depend on the shape
+    #  that follows from it -- resdic['psmdf_normalized'] carries AggScore and
+    #  rankOfRanks_diag and is AggScore-descending -- so the aliasing is deliberately KEPT
+    #  and asserted here rather than quietly removed: if a future edit makes getAggScore
+    #  return a copy, this fails loudly at the source instead of silently changing the
+    #  contents and row order of a stored artifact.
+    assert postRank is psmdf_normalized, \
+        ("getAggScore no longer returns its argument in place: resdic['psmdf_normalized'] "
+         "and resdic['postRank'] have silently become DIFFERENT frames (different columns "
+         "and row order). Update every consumer of psmdf_normalized before allowing this.")
 
     tmpcorr = np.corrcoef(list(postRank['BoScore'].values), list(postRank['AggScore'].values))
     BoAggCorr = tmpcorr[0, 1]
@@ -156,6 +201,12 @@ def postBoScoreRanking(bmtop, bstop, cdxtop, baseurl, api_key, period='quarter',
     postRank, issuer_dupes_dropped = _dedup_issuers_in_ranking(
         postRank, cdxtop, names, dedup_issuers)
 
+    #  METRIC BASIS PER KEY -- each frame also declares it on itself (metric_basis_of):
+    #    postScoreMetric_raw            BASIS_RAW       the metric in its own units
+    #    postScoreMetric                BASIS_Z         winsorized cross-sectional z
+    #    psmdf_normalized / postRank    BASIS_Z_TIMES_W  z x weight (ONE object -- see above)
+    #    postRank_predupe               BASIS_Z_TIMES_W  a copy of postRank before dedup
+    #  Read metric values with metric_frame(frame, basis); do NOT infer the basis from the key.
     rankdic = {'postRank': postRank, 'postScoreMetric': postScoreMetric_df,
                'postScoreMetric_raw': postScoreMetric_raw,
                'psmdf_normalized': psmdf_normalized, 'BoAggCorr': BoAggCorr, 'outlierlist': outlierlist,
@@ -165,16 +216,26 @@ def postBoScoreRanking(bmtop, bstop, cdxtop, baseurl, api_key, period='quarter',
 
 
 def _sort_cdx_newest_first(cdxtop):
-    """Enforce NEWEST-first row order for the whole scorer (Stage-2 ORDERING FIX).
+    """THE ROW-ORDER BOUNDARY for Stage-2: everything downstream may assume newest-first.
 
-    Every metric indexes with .head(nq) / .iloc[0] / .iloc[0:4] / pct_change
-    assuming the most-recent quarter is row 0.  data_quality.py sorts cdx
-    OLDEST-first and nothing re-sorts it on the way here, so those reads would
-    silently use the wrong end (stale windows, sign-flipped growth, time-reversed
-    Piotroski).  Re-sort a COPY newest-first, robustly: dates are coerced to
-    datetime (a naive string sort mis-orders mixed/malformed date strings).  We
-    COPY because cdx_dftop100 is also stored in resdic and must not be mutated.
-    Assert per-ticker row count and NaT count are unchanged.
+    Every metric in stage2_metrics indexes with .head(w) / .iloc[0] / .iloc[lag] /
+    pct_change(-1) assuming the most-recent period is row 0.  data_quality.py sorts cdx
+    OLDEST-first and nothing re-sorts it on the way here, so those reads would silently use
+    the wrong end (stale windows, sign-flipped growth, time-reversed Piotroski).
+
+    THIS IS THE ONE PLACE the live scorer establishes that order, which is the whole point:
+    the individual metrics do NOT re-sort, so there is exactly one site to get right instead
+    of nineteen to remember (see reporting_period's "ROW ORDER" section for the shared
+    vocabulary, and `moatIdentifier` for what the per-consumer version costs).  It stays a
+    WHOLE-FRAME groupwise sort rather than rp.to_newest_first per source, deliberately: a
+    per-source sort would change tie order on duplicate-dated (restated) rows, and this
+    frame has them.
+
+    Re-sorts a COPY, robustly: dates are coerced to datetime (a naive string sort
+    mis-orders mixed/malformed date strings).  The COPY matters because cdx_dftop100 is also
+    stored in resdic and must not be mutated.  Per-ticker row count and NaT count are
+    asserted unchanged, and the result DECLARES its order so a downstream reader can check
+    rather than assume.
     """
     cdxtop = cdxtop.copy()
     _n_before = cdxtop.groupby('source').size()
@@ -185,7 +246,10 @@ def _sort_cdx_newest_first(cdxtop):
         "Stage-2 newest-first re-sort changed per-ticker row counts"
     assert int(cdxtop['date'].isna().sum()) == _nat_before, \
         "Stage-2 newest-first re-sort changed NaT count"
-    return cdxtop
+    # Observed, not assumed: the sort above is the guarantee, and this line is what makes the
+    # guarantee reportable if a future change (a re-sort, a re-index, a merge) breaks it.
+    _safe_diagnose(rp.assert_newest_first, cdxtop, 'Stage-2 cdxtop', by='source')
+    return rp.stamp_row_order(cdxtop, rp.NEWEST_FIRST)
 
 
 # OFFLINE SEAM for the DCF leg (added 2026-07-27; DEFAULT FLIPPED TO SKIP 2026-07-31).
@@ -214,7 +278,9 @@ def _sort_cdx_newest_first(cdxtop):
 #
 # TO RE-ENABLE THE LIVE FETCH: VA_OFFLINE_NO_DCF=0 (or 'false' / 'no' / 'off').
 # `=1` still means skip, so the six baseline_tools scripts that do
-# `os.environ.setdefault('VA_OFFLINE_NO_DCF', '1')` are unaffected.
+# `os.environ.setdefault('VA_OFFLINE_NO_DCF', '1')` are unaffected -- and they stay
+# unaffected now that the flag is read per call rather than at import, because they set it
+# BEFORE the first call as well as before the import.
 _DCF_ENV = 'VA_OFFLINE_NO_DCF'
 _ENV_FALSEY = {'0', 'false', 'no', 'off', 'none', 'null'}
 
@@ -233,9 +299,37 @@ def _env_flag(name, default):
     return str(v).strip().lower() not in _ENV_FALSEY
 
 
-OFFLINE_NO_DCF = _env_flag(_DCF_ENV, default=True)      # DEFAULT: skip the 225 useless GETs
+#  DEFAULT: skip the 225 useless GETs.  The VALUE is read PER CALL, not at import -- see
+#  offline_no_dcf().
+OFFLINE_NO_DCF_DEFAULT = True
 
 _DCF_BANNER_SHOWN = False
+
+
+def offline_no_dcf():
+    """Whether Stage-2 should SKIP the per-ticker DCF fetch, read AT CALL TIME.
+
+    IT USED TO BE A MODULE CONSTANT EVALUATED AT IMPORT (`OFFLINE_NO_DCF = _env_flag(...)`),
+    and that shape caused a real, if latent, fault (fixed 2026-08-02):
+
+      * testing the env semantics required a genuine `importlib.import_module` after
+        monkeypatching the variable, because nothing re-read the environment;
+      * that mutates `sys.modules`, which monkeypatch does NOT restore, so a test that
+        re-imported with `=0` left the WHOLE SESSION holding a postBoRank whose flag said
+        FETCH -- verified: the stale module is the same object and keeps the wrong value.
+        Any later test, or test FILE, importing postBoRank silently got that module.  The
+        suite passed anyway, which is what makes this class of fault dangerous: it is an
+        ORDER-DEPENDENT latent fault, not a visible failure.
+      * and operationally the import-time read is a footgun in its own right: an operator
+        (or a wrapper script) exporting VA_OFFLINE_NO_DCF=0 AFTER postBoRank was first
+        imported was silently ignored.
+
+    Reading in the function makes the env var mean what it says whenever it is asked, and
+    removes the need for any re-import machinery. Both consumers -- the score-neutrality
+    guard and the fetch itself -- call this, so they cannot disagree within a run unless the
+    environment genuinely changes mid-run.
+    """
+    return _env_flag(_DCF_ENV, default=OFFLINE_NO_DCF_DEFAULT)
 
 
 def _dcf_weights_in_force(weight_override=None):
@@ -267,7 +361,7 @@ def _dcf_weights_in_force(weight_override=None):
 def _assert_offline_dcf_is_score_neutral(weight_override=None):
     """Refuse to skip the DCF fetch if DcfToPrice has acquired a weight ANYWHERE in force."""
     global _DCF_BANNER_SHOWN
-    if not OFFLINE_NO_DCF:
+    if not offline_no_dcf():
         return
     weights = _dcf_weights_in_force(weight_override)
     bad = {k: v for k, v in weights.items() if not isinstance(v, float) or v != 0.0}
@@ -300,7 +394,7 @@ def _fetch_ticker_dcf(ticker, baseurl, api_key, dcf_bulk_dict):
     """Fetch (or reuse bulk) DCF data for one ticker and return it as a normalised
     DataFrame.  Returns (dcf_df, dcf_from_bulk, resp_dcf_status, resp_dcf).
     """
-    if OFFLINE_NO_DCF:
+    if offline_no_dcf():
         return pd.DataFrame(), False, "offline-skipped", None
     dcf_from_bulk = ticker in dcf_bulk_dict
     resp_dcf = None
@@ -608,7 +702,7 @@ def _dedup_issuers_in_ranking(postRank, cdxtop, names, dedup_issuers):
                   % (len(issuer_dupes_dropped),
                      ['%s->%s' % (d, k) for d, k in issuer_dupes_dropped]), flush=True)
     except Exception as _e:
-        # LOUD FALLBACK (matches the carve-out banner at postBo.py:143-164). The
+        # LOUD FALLBACK (matches the carve-out banner in postBo.postBoWrapper). The
         # emission-time issuer-dedup IS the "no duplicate issuers in the top-20"
         # guarantee; if it fails we still ship (never crash the deliverable) but the
         # emitted top-20 may carry dual-listings / share-classes, so a single quiet
@@ -678,9 +772,18 @@ WINSOR_EXEMPT_BOUNDED = ('Piotroski', 'CycleHeat', 'marketCapRevQuants', 'mcapQu
 #   (2) THE MISSING-DATA REWARD (reviewer finding N1).  Both paths fill an unavailable
 #       metric with 0, but 0 means different things: under z-scoring 0 is the winsorized
 #       MEAN, which on the shipped 07-17 pool sat at the 52nd-65th percentile on 15 of 17
-#       weighted columns -- so a name MISSING a metric scored ABOVE the typical name on
-#       it, worth +0.1394 AggScore for full missingness against a 0.134 median-to-top-20
-#       distance.  Under the rank map 0 is AT OR NEAR the median, so the same fillna(0) is
+#       weighted columns -- so a name MISSING a metric scored ABOVE the typical name on it.
+#       THE TWO NUMBERS, CORRECTED 2026-08-02 (both re-derived from
+#       baseline_tools/resdic_2026-07-17_CORRECTED.pickle; the previous pair, "+0.1394
+#       against a 0.134 median-to-top-20 distance", was wrong on BOTH and made the reward
+#       read as ~104% of the distance to the shortlist, i.e. ~3x its real size):
+#           median -> rank-20 AggScore distance        0.2560   (was stated 0.134)
+#           full-missingness advantage, 0 - sum w*med(z)  +0.0783   (was stated +0.1394)
+#           => ~31% of the distance, NOT ~104%.
+#       PANEL-DEPENDENT, so do not re-quote either figure without its panel: on today's
+#       code over the same inputs they are 0.2714 and +0.0792 (~29%).  That drift is exactly
+#       why the stale pair survived -- a number with no panel attached cannot be checked.
+#       Under the rank map 0 is AT OR NEAR the median, so the same fillna(0) is
 #       (near-)neutral and most of the reward vanishes without a special case.
 #       PRECISELY (do NOT round this up to "0 is the median by construction" -- it is not):
 #       the map centres on the median EXACTLY only when the column's observed values are
@@ -693,6 +796,23 @@ WINSOR_EXEMPT_BOUNDED = ('Piotroski', 'CycleHeat', 'marketCapRevQuants', 'mcapQu
 #       Measured effect of the switch: full-missingness advantage +0.1616 -> +0.0228 (-86%),
 #       and columns whose fill sits above their own median 14/18 -> 2/18.  A real and large
 #       reduction; NOT an elimination.
+#       *** UNRECONCILED, FLAGGED 2026-08-02 -- DO NOT QUOTE THIS LINE WITHOUT READING THIS.
+#       The pair above is a THIRD set of values for the same two quantities corrected higher
+#       up, and it does not reconcile with them.  Re-measured on
+#       resdic_2026-07-17_CORRECTED.pickle under the definition that reproduces the corrected
+#       figures EXACTLY (advantage = 0 - sum w*median(z), which returns 0.0783 / 0.2560 to
+#       four decimals), the switch reads:
+#              advantage  +0.0783 (z) -> -0.0186 (rank)
+#              fill above its own median  15/18 -> 1/18
+#       i.e. the rank path lands the fill slightly BELOW the median here, not +0.0228 above,
+#       and the +0.0244 marketCapRevQuants attribution above cannot be checked against a
+#       +0.0228 total that does not reproduce.  WHY IT COULD NOT BE SETTLED: the numbers were
+#       almost certainly taken on the SHIPPED pre-fix 07-17 panel, and the shipped resdic
+#       (HomeGDrive/postRank_2026-07-17_*.pickle) predates the `postScoreMetric_raw` key, so
+#       there is no raw frame left on this machine to re-derive them from.  Left in place
+#       rather than overwritten with numbers whose panel I cannot state: the DIRECTION (a
+#       large reduction, not an elimination) is what this note is load-bearing for, and that
+#       survives on both measurements. ***
 #
 # DEFAULT IS UNCHANGED.  'zscore' remains the production default: the deployed mu weights
 # were tuned on the z-path, and a rank map changes what each weight MEANS, so switching
@@ -1159,6 +1279,174 @@ def _write_missing_csv(col_df, name_df):
         print('WARNING: could not write the missing-data fill CSV (%s)' % _e, flush=True)
 
 
+# =========================================================================== #
+#  METRIC BASIS: ONE WAY TO OBTAIN A METRIC VALUE, AND IT NAMES THE BASIS       #
+# =========================================================================== #
+# THE DEFECT CLASS THIS CLOSES.  Stage-2 emits metric-named columns on THREE bases:
+#
+#   BASIS_RAW      postScoreMetric_raw   the metric in its own units (pre-normalisation)
+#   BASIS_Z        postScoreMetric       winsorized cross-sectional z
+#   BASIS_Z_TIMES_W  psmdf_normalized / postRank   z x weight = the AggScore contribution
+#
+# Nothing on the frames said which, so a reader had to know it from the resdic key. Three
+# measured consequences:
+#   * `AggScoreTop100-*.csv` published `CycleHeat` straight off postRank under a comment
+#     asserting it was the metric.  CycleHeat is winsor-EXEMPT, so its z is an exact affine
+#     function of the raw value and w = -0.080 inverted it EXACTLY: corr(published, true) =
+#     -1.0000 on the 07-17 panel, i.e. the column's MINIMUM was the pool's HOTTEST name.
+#   * the OLS path fitted coefficients in one function and applied them in another; when
+#     only the FIT side was un-weighted the two bases diverged for negative weights and the
+#     re-ranker inverted -- and BEFORE that, both used `z x w` and the double negation made
+#     the result ACCIDENTALLY CORRECT.  A one-sided fix was therefore WORSE than no fix.
+#   * `resdic['psmdf_normalized']` IS LITERALLY THE SAME OBJECT as `resdic['postRank']`,
+#     because getAggScore mutates its argument in place and returns it -- so a consumer
+#     reading a metric column off the innocuously-named "normalized" frame is reading
+#     `z x w`.  Two analysis modules needed guard-test exemptions for exactly this.
+#
+# THE REMEDY IS TWO-PART, and neither part alone is enough:
+#   (1) every frame this file emits DECLARES its basis on itself (`stamp_metric_basis`,
+#       carried in df.attrs, which survives copy/slice/pickle);
+#   (2) `metric_frame(df, basis)` is the ONE accessor, and the basis is a REQUIRED argument
+#       -- so the request is explicit AND checkable against the frame's own declaration.
+#       Ask for BASIS_Z off a `z x w` frame and you get the un-weighting; ask for something
+#       unrecoverable (raw <-> z needs the pool's mu/sigma, which the frame does not carry)
+#       and it REFUSES instead of handing back the wrong quantity.
+#
+# LIMIT, STATED EXACTLY RATHER THAN PAPERED OVER -- measured on pandas 2.3.1, the version in
+# requirements, because "attrs propagate" is vaguely true and precisely false:
+#     PRESERVED  copy, pickle, head, boolean mask, reset_index, set_index, assign, drop,
+#                apply, and concat WHEN EVERY INPUT CARRIES IDENTICAL attrs
+#     DROPPED    pd.merge, and pd.concat when the inputs' attrs DIFFER or any is empty
+# The consequence that matters: `Sbocker` merges moatScore onto resdic['postRank'], so the
+# frame the DELIVERABLE stages receive has LOST its stamp.  An unstamped frame therefore means
+# "basis not declared", never "basis is X" -- metric_frame cannot VERIFY such a caller, only
+# take it at its word (still strictly better than a silent guess, because the word has to be
+# said).  So the stamp hardens the frames INSIDE Stage-2 and the ones that reach a consumer
+# unmerged (postScoreMetric_raw, postScoreMetric, psmdf_normalized); the frozen inventory in
+# baseline_tools/test_published_columns.py remains the backstop for everything past the merge.
+# DO NOT "fix" this by stamping after the merge in Sbocker without also deciding what a stamp
+# means on a frame that has since been re-columned -- a stamp that is sometimes stale is worse
+# than one that is sometimes absent.
+METRIC_BASIS_ATTR = 'va_metric_basis'
+BASIS_RAW = 'raw'
+BASIS_Z = 'z'
+BASIS_Z_TIMES_W = 'z*w'
+_METRIC_BASES = (BASIS_RAW, BASIS_Z, BASIS_Z_TIMES_W)
+
+
+def stamp_metric_basis(df, basis):
+    """Declare which basis `df`'s metric columns are on.  Returns the same frame."""
+    if basis not in _METRIC_BASES:
+        raise ValueError('stamp_metric_basis: unknown basis %r (expected one of %r)'
+                         % (basis, _METRIC_BASES))
+    try:
+        df.attrs[METRIC_BASIS_ATTR] = basis
+    except Exception:               # a stamp must never be able to break the scorer
+        pass
+    return df
+
+
+def metric_basis_of(df):
+    """The declared basis, or None when the frame does not declare one (see the LIMIT note).
+
+    None means UNDECLARED. It does NOT mean raw, and a consumer must not read a default
+    into it -- that assumption is the original defect.
+    """
+    try:
+        v = df.attrs.get(METRIC_BASIS_ATTR)
+    except Exception:
+        return None
+    return v if v in _METRIC_BASES else None
+
+
+def metric_frame(df, basis, cols=None, verbose=False, label=''):
+    """THE accessor: metric columns off a Stage-2 frame, on the basis you ASK for.
+
+    `basis` is required and is one of BASIS_RAW / BASIS_Z / BASIS_Z_TIMES_W.  Returns
+    (frame, kept_cols, dropped_zero_weight_cols) -- the same shape as
+    unweight_postrank_metrics, which is now this function's BASIS_Z implementation.
+
+    Behaviour by (declared basis -> requested basis):
+      same                      -> returned unchanged (no arithmetic, so no rounding)
+      z*w -> z                  -> divide by each metric's weight; w = 0 columns DROPPED
+      z   -> z*w                -> multiply by each metric's weight
+      anything involving raw    -> REFUSED (ValueError).  raw <-> z needs the POOL's
+                                   mu/sigma, which no single frame carries; guessing here
+                                   is how a wrong quantity gets published under a right name.
+      undeclared                -> taken at the caller's word, unchanged (cannot verify)
+    """
+    if basis not in _METRIC_BASES:
+        raise ValueError('metric_frame: basis is required and must be one of %r, got %r'
+                         % (_METRIC_BASES, basis))
+    actual = metric_basis_of(df)
+    if actual is None or actual == basis:
+        # NOT stamped when the frame arrived UNDECLARED: the caller's basis is a claim this
+        # function could not verify, and recording an unverified claim as a declaration would
+        # make the stamp sometimes-wrong instead of sometimes-absent.  Sometimes-wrong is the
+        # worse failure -- a later reader would trust it.
+        out = df.copy()
+        if actual is not None:
+            stamp_metric_basis(out, actual)
+        return out, _weighted_metric_cols(out, cols), []
+    if BASIS_RAW in (actual, basis):
+        raise ValueError(
+            'metric_frame: cannot convert metric basis %r -> %r. The raw <-> z step needs '
+            "the POOL's winsorized mu/sigma, which this frame does not carry. Read the raw "
+            "metric from resdic['postScoreMetric_raw'] (basis %r) instead of deriving it."
+            % (actual, basis, BASIS_RAW))
+    if actual == BASIS_Z_TIMES_W and basis == BASIS_Z:
+        out, kept, dropped = unweight_postrank_metrics(df, cols=cols, verbose=verbose,
+                                                       label=label)
+        return stamp_metric_basis(out, BASIS_Z), kept, dropped
+    # BASIS_Z -> BASIS_Z_TIMES_W: the production weighting step, exposed so a consumer that
+    # needs contributions never re-derives it (and never re-derives it DIFFERENTLY).
+    W = _weight_vector()
+    out = df.copy()
+    kept, dropped = [], []
+    for c in _weighted_metric_cols(out, cols):
+        w = W.get(c)
+        if w is None:
+            kept.append(c)
+            continue
+        if w == 0:
+            dropped.append(c)
+            continue
+        out[c] = pd.to_numeric(out[c], errors='coerce') * w
+        kept.append(c)
+    return stamp_metric_basis(out, BASIS_Z_TIMES_W), kept, dropped
+
+
+def assert_metric_basis(df, expected, label=''):
+    """Refuse a frame whose DECLARED basis is not `expected`.  Undeclared passes (see LIMIT).
+
+    For a consumer that wants to read the columns directly rather than transform them: it
+    turns "I believe this frame holds z" into an assertion the frame itself can contradict.
+    """
+    actual = metric_basis_of(df)
+    if actual is not None and actual != expected:
+        raise ValueError(
+            'metric basis mismatch%s: this frame declares %r, the caller expects %r. '
+            'Use postBoRank.metric_frame(df, %r) to convert, or read the frame that carries '
+            'the basis you want.'
+            % (' [%s]' % label if label else '', actual, expected, expected))
+    return True
+
+
+def _weight_vector():
+    """{metric: weight} from the production dictionaries -- the one weight lookup."""
+    postBm, postNew = cdic.getPostDict()
+    return {**{k: float(postBm[k]['w']) for k in postBm},
+            **{k: float(postNew[k]['w']) for k in postNew}}
+
+
+def _weighted_metric_cols(df, cols=None):
+    """Which columns of `df` are weighted metric columns (the ones a basis applies to)."""
+    if cols is not None:
+        return [c for c in cols if c in df.columns]
+    W = _weight_vector()
+    return [c for c in df.columns if c in W]
+
+
 def unweight_postrank_metrics(df, cols=None, verbose=False, label=''):
     """Recover the METRIC z-scale from a postRank-style frame: divide each metric column by
     its production weight.  Returns (new_df, kept_cols, dropped_zero_cols).
@@ -1177,13 +1465,17 @@ def unweight_postrank_metrics(df, cols=None, verbose=False, label=''):
     multiply annihilated them), so there is no information to recover and 0/0 is not a metric.
     Columns with no weight entry (e.g. `moatScore`, which is merged post-weighting and is
     already raw) are left untouched.
+
+    THIS IS NOW `metric_frame`'s BASIS_Z_TIMES_W -> BASIS_Z implementation, and prefer
+    `metric_frame(df, BASIS_Z)` in new code: it additionally CHECKS the frame's declared
+    basis, so it cannot be pointed at a frame that was never weighted.  The name and the
+    (out, kept, dropped) contract are kept because three out-of-file consumers call it
+    (backtest_unified, backtest_outputs, backtest_ols_analysis).
     """
-    postBm, postNew = cdic.getPostDict()
-    W = {**{k: float(postBm[k]['w']) for k in postBm},
-         **{k: float(postNew[k]['w']) for k in postNew}}
+    W = _weight_vector()
     out = df.copy()
     if cols is None:
-        cols = [c for c in out.columns if c in W]
+        cols = _weighted_metric_cols(out)
     kept, dropped = [], []
     for c in cols:
         if c not in out.columns:
@@ -1204,9 +1496,62 @@ def unweight_postrank_metrics(df, cols=None, verbose=False, label=''):
     return out, kept, dropped
 
 
+# =========================================================================== #
+#  SUMMATION ORDER MUST BE DETERMINISTIC                                       #
+# =========================================================================== #
+# THE DEFECT (found independently on two workstreams, fixed 2026-08-02).  Both reducers
+# below selected their columns with `list(set(df.columns) - {'source'})`.  A `set` OF
+# STRINGS iterates in hash order, and CPython RANDOMISES the string hash seed PER PROCESS
+# (PYTHONHASHSEED), so the column order -- and therefore the ORDER OF THE FLOATING-POINT
+# ADDITIONS -- differed between runs of the same code on the same data.  Float addition is
+# not associative, so `AggScore` was not bit-reproducible across processes.
+#
+# MEASURED, not inferred.  Scoring the SAME saved frame under five hash seeds produced five
+# different AggScore byte-hashes; re-summing one frame's own columns in eight shuffled
+# orders moved the row sum by up to 2.220e-16, while the weighted metric columns feeding it
+# were bit-identical (0.000e+00).  A parallel dev hit the same thing from the other side:
+# 1-3 ULP on 65 of 100 names between two runs of a provably innocent change.
+#
+# WHY A 1e-16 WOBBLE IS WORTH FIXING -- it is not the magnitude:
+#   * ANY exact-equality gate on AggScore flakes intermittently, for a reason nobody
+#     diagnoses quickly.  This whole refactor programme is judged on bit-identity harnesses,
+#     and those harnesses were being asked to compare a number that moves by itself.
+#   * "the ranking changed" could not be distinguished from "the process restarted" at a tie.
+#     Rank 20 and rank 21 are separated by ~0.0006 AggScore on the shipped panel, so ties at
+#     the shortlist boundary are not hypothetical -- and getRankOfRanks feeds its sum
+#     straight into `.rank()`, where a 1-ULP difference IS a rank flip.
+#
+# THE ORDER CHOSEN is the canonical emission order the weights now define
+# (scoringWeights.METRIC_KEYS), NOT a second ordering invented here -- so the sum runs in
+# the same order the weight vector is written in.  Any column NOT in the canon (a caller's
+# extra column, `moatScore`, a diagnostic) follows in the FRAME'S OWN column order, which is
+# itself deterministic.  Nothing is added to or removed from the summed SET: this changes
+# only the order, which is why the values may move by an ULP and cannot move by more.
+def deterministic_column_order(columns, exclude=('source',)):
+    """`columns` in a REPRODUCIBLE order: canonical metric keys first, then the rest as given.
+
+    Replaces `list(set(columns) - {'source'})` at every site that then does something
+    ORDER-SENSITIVE with the result (a float sum, a rank, a design matrix).  Never use a set
+    for that: the set is the bug.
+    """
+    try:
+        import scoringWeights as _sw
+        canon = [k for k in _sw.METRIC_KEYS]
+    except Exception:
+        # A missing/broken canon must not make the reducer non-deterministic: fall back to
+        # the frame's own order, which is still reproducible -- just not canonical.
+        canon = []
+    cols = [c for c in columns if c not in exclude]
+    known = [c for c in canon if c in cols]
+    rest = [c for c in cols if c not in known]
+    return known + rest
+
+
 def getAggScore(df):
     #df['AggScore'] = np.nan
-    cts = list(set(df.columns) - set(['source']))
+    # DETERMINISTIC column order -- see the note above.  `set(...)` here made AggScore
+    # differ in its last bits between processes.
+    cts = deterministic_column_order(df.columns)
     df['AggScore'] = df[cts].sum(axis=1)
     postRank = df
     postRank.sort_values(by='AggScore',ascending=False,inplace=True)
@@ -1246,7 +1591,12 @@ def getRankOfRanks(df):
         if col not in ROR_EXCLUDE:
             postRankOfRanks[col + 'rank'] = df[col].rank(ascending=False,method='dense')
 
-    cts = list(set(postRankOfRanks.columns) - set(['source']))
+    # DETERMINISTIC column order -- and this one matters MORE than AggScore's, because the
+    # sum feeds `.rank()` directly: a 1-ULP difference from a different summation order is a
+    # RANK FLIP, not a rounding wobble.  The columns here are the `<metric>rank` names, so
+    # the canonical list does not match them and they fall through to the frame's own order
+    # -- which is deterministic because the loop above builds them by iterating df.columns.
+    cts = deterministic_column_order(postRankOfRanks.columns)
     df[ROR_COLUMN] = postRankOfRanks[cts].sum(1).rank(ascending=True,method='dense')
 
     return df

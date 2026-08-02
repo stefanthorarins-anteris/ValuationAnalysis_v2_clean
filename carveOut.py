@@ -48,6 +48,8 @@ import sys
 import numpy as np
 import pandas as pd
 
+import scoringWeights as sw     # SINGLE SOURCE OF TRUTH for every scoring weight
+
 # --- Financial-Services sub-classification patterns --------------------------
 # FIN-1 Investment Vehicles (CEF / investment trust / BDC): widened CEF keyword set
 # (adds investors / income fund / high income) so "...Investors"-style CEFs are caught.
@@ -186,86 +188,41 @@ FIN2_MANAGER_OVERRIDE = {
 }
 
 # --- per-cohort weight vectors (CEO-approved, valuation-specialist proposal) ----
-# Keys are the REAL metric keys from createDicts.getPostDict() (all 21). Threaded
-# into postBoScoreRanking(weight_override=...) per cohort; the general/main pool
-# uses NO override (default weights). weight 0 -> metric dropped from AggScore
-# (constant/neutral in rankOfRanks); does not change cohort membership.
-COHORT_WEIGHTS = {
-    'Mining': {
-        'earnYield': 0.5, 'RoA': 1.0, 'returnOnEquity': 0.5, 'returnOnCapitalEmployed': 0.5,
-        'grahamNumberToPrice': 0.25, 'bVpRatio': 0.75, 'tbVpRatio': 1.0, 'freeCashFlowYield': 1.5,
-        'freeCashFlowPerShareGrowth': 0.5, 'revenueGrowth': 0.5, 'incomeQuality': 1.25,
-        'grossProfitMargin': 0.25, 'Altman-Z': 1.0, 'Piotroski': 0.75, 'currentRatio': 0.75,
-        'DcfToPrice': 0, 'EPStoEPSmean': 1.0, 'CycleHeat': -1.5, 'priceGrowth': 0,
-        'marketCapRevQuants': 0.25, 'BoScore': 0.1,
-    },
-    'REIT': {
-        'earnYield': 0, 'RoA': 0.5, 'returnOnEquity': 0.5, 'returnOnCapitalEmployed': 0.25,
-        'grahamNumberToPrice': 0, 'bVpRatio': 0.5, 'tbVpRatio': 0.5, 'freeCashFlowYield': 1.0,
-        'freeCashFlowPerShareGrowth': 0.75, 'revenueGrowth': 1.0, 'incomeQuality': 1.25,
-        'grossProfitMargin': 0, 'Altman-Z': 0, 'Piotroski': 0.25, 'currentRatio': 0,
-        'DcfToPrice': 0, 'EPStoEPSmean': 0, 'CycleHeat': -0.25, 'priceGrowth': 0,
-        'marketCapRevQuants': 0.25, 'BoScore': 0.1,
-    },
-    FIN1_VEHICLE: {   # FIN-1 Investment Vehicles
-        'earnYield': 0, 'RoA': 0, 'returnOnEquity': 0.25, 'returnOnCapitalEmployed': 0,
-        'grahamNumberToPrice': 0, 'bVpRatio': 2.0, 'tbVpRatio': 1.0, 'freeCashFlowYield': 0,
-        'freeCashFlowPerShareGrowth': 0, 'revenueGrowth': 0, 'incomeQuality': 0,
-        'grossProfitMargin': 0, 'Altman-Z': 0, 'Piotroski': 0, 'currentRatio': 0,
-        'DcfToPrice': 0, 'EPStoEPSmean': 0, 'CycleHeat': 0, 'priceGrowth': 0,
-        'marketCapRevQuants': 0, 'BoScore': 0.1,
-    },
-    FIN2_MANAGER: {   # FIN-2 Managers / Brokers / Platforms
-        'earnYield': 1.5, 'RoA': 0.5, 'returnOnEquity': 2.0, 'returnOnCapitalEmployed': 1.0,
-        'grahamNumberToPrice': 0.25, 'bVpRatio': 0.25, 'tbVpRatio': 0.25, 'freeCashFlowYield': 2.0,
-        'freeCashFlowPerShareGrowth': 1.5, 'revenueGrowth': 1.5, 'incomeQuality': 1.0,
-        'grossProfitMargin': 0, 'Altman-Z': 0.25, 'Piotroski': 0.5, 'currentRatio': 0.25,
-        'DcfToPrice': 0, 'EPStoEPSmean': 0.5, 'CycleHeat': -0.5, 'priceGrowth': 0,
-        'marketCapRevQuants': 0.25, 'BoScore': 0.1,
-    },
-    FIN3_BALSHEET: {  # FIN-3 Balance-Sheet Financials (banks / lenders / insurers)
-        'earnYield': 1.0, 'RoA': 0.5, 'returnOnEquity': 2.0, 'returnOnCapitalEmployed': 0,
-        'grahamNumberToPrice': 0.75, 'bVpRatio': 1.5, 'tbVpRatio': 1.0, 'freeCashFlowYield': 0,
-        'freeCashFlowPerShareGrowth': 0, 'revenueGrowth': 0.75, 'incomeQuality': 0.25,
-        'grossProfitMargin': 0, 'Altman-Z': 0, 'Piotroski': 0.25, 'currentRatio': 0,
-        'DcfToPrice': 0, 'EPStoEPSmean': 1.0, 'CycleHeat': -1.0, 'priceGrowth': 0,
-        'marketCapRevQuants': 0.25, 'BoScore': 0.1,
-    },
-}
-
-# --- priceGrowth / DcfToPrice ZEROED IN EVERY COHORT (domain review S5, 2026-07-26) ---
-# Both were 0.000 in the GENERAL vector and NON-ZERO here -- priceGrowth 0.25 (Mining,
-# FIN-1) / 0.5 (REIT, FIN-2, FIN-3), DcfToPrice 0.25-0.35 in every cohort -- so the
-# stage2_metrics comments that justify leaving their known defects alone "because w=0.000"
-# were false on all five cohort paths.  What they were carrying:
-#   priceGrowth  the ONE Stage-2 metric with an acknowledged, UNCORRECTED semi-annual 2x
-#                LEVEL bias (a 6-month price move scored against a quarterly 3-month one);
-#                the window scaling cannot fix a level.
-#   DcfToPrice   computed from a LIVE DCF call using the CURRENT market price, while every
-#                other metric is as-of period end -- a basis mix inside the cohort score and
-#                the one channel that can import lookahead, which is exactly why the PIT
-#                reproduction drops it (stage2_pit.DROP_METRICS).
-# Zeroed rather than corrected: correcting priceGrowth needs a metric-definition decision
-# and DcfToPrice needs a point-in-time DCF that does not exist.
+# THE VECTORS AND THEIR PROVENANCE NOW LIVE IN `scoringWeights.py`, the single source of
+# truth for every scoring weight in the repo (single-source refactor, 2026-08-02).  That
+# is where to edit a cohort weight, and where the S5 (priceGrowth / DcfToPrice zeroed in
+# every cohort) and S7 (normalised to Sigma|w| = 1) rulings are recorded, verbatim --
+# including the KNOWN OPEN ISSUE that `BoScore` carries 0.1 in all five cohorts while it
+# is 0.000 in the general vector (the CEO has not ruled; preserved exactly).
 #
-# --- COHORT VECTORS NORMALISED TO Sigma|w| = 1 (domain review S7, 2026-07-26) ---
-# The general vector sums to exactly 1.000; Mining summed to ~14.35, so cohort AggScores
-# were ~14x the general scale while shipping SIDE BY SIDE with general values in three CSV
-# families, against a presentation chip whose stated empirical range is general-only.
-# Normalising is RANK-INVARIANT within a cohort (dividing every weight by one positive
-# constant scales the score, never reorders it -- asserted in the proof), so this changes
-# no cohort's ordering and only puts the numbers on a comparable scale.
-def _normalise_cohort_weights(vectors):
-    out = {}
-    for label, vec in vectors.items():
-        tot = sum(abs(float(v)) for v in vec.values())
-        out[label] = ({k: float(v) / tot for k, v in vec.items()} if tot > 0
-                      else dict(vec))
-    return out
+# Both names are RE-EXPORTED here unchanged, because every consumer reads them off this
+# module: postBo (`co.COHORT_WEIGHTS.get(label)`), tune_run (cohort priors),
+# test_post_fetch_hardening, reviewReference.  Keys are the REAL metric keys from
+# createDicts.getPostDict() (all 21) and are enforced to be exactly that set by
+# scoringWeights._validate().  Threaded into postBoScoreRanking(weight_override=...) per
+# cohort; the general/main pool uses NO override (default weights).  weight 0 -> metric
+# dropped from AggScore (constant/neutral in rankOfRanks); does not change cohort
+# membership.
+COHORT_WEIGHTS_RAW = sw.COHORT_WEIGHTS_RAW   # kept for provenance / A-B
+COHORT_WEIGHTS = sw.COHORT_WEIGHTS           # normalised to Sigma|w| = 1
+# The old private helper `_normalise_cohort_weights(vectors)` (a dict OF vectors -> dict of
+# normalised vectors) is gone; scoringWeights.normalise(vector) is the per-vector primitive
+# and COHORT_WEIGHTS is already normalised. No alias is provided on purpose -- the two have
+# different signatures, so a same-named shim would be a footgun. Nothing outside this
+# module ever called it.
 
-
-COHORT_WEIGHTS_RAW = COHORT_WEIGHTS          # kept for provenance / A-B
-COHORT_WEIGHTS = _normalise_cohort_weights(COHORT_WEIGHTS)
+# The cohort LABELS are owned by THIS module (the constants above); scoringWeights has to
+# spell them as literals because carveOut imports it, so importing back would be a cycle.
+# Assert the two agree at import rather than discovering it as a missing weight_override
+# -- postBo does `co.COHORT_WEIGHTS.get(label)`, which returns None on a mismatch, and a
+# None override means the cohort silently ranks on the GENERAL vector.
+_EXPECTED_COHORT_LABELS = {'REIT', 'Mining', FIN1_VEHICLE, FIN2_MANAGER, FIN3_BALSHEET}
+if set(COHORT_WEIGHTS) != _EXPECTED_COHORT_LABELS:
+    raise RuntimeError(
+        'carveOut: cohort labels and scoringWeights.COHORT_WEIGHTS_RAW disagree. '
+        'carveOut expects %s, scoringWeights supplies %s. A cohort with no weight '
+        'vector silently ranks on the GENERAL weights.'
+        % (sorted(_EXPECTED_COHORT_LABELS), sorted(COHORT_WEIGHTS)))
 
 # --- market-cap band segmentation (ADDITIVE size axis over the GENERAL pool) ---
 # SINGLE SOURCE OF TRUTH for BOTH band SELECTION (partition_by_marketcap) and per-

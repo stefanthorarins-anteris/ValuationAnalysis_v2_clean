@@ -149,12 +149,33 @@ def _no_real_api_key(tmp_path, monkeypatch):
     yield
 
 
+#  THE AST GUARD IS RETIRED AND REPLACED (argparse refactor, 2026-08-02).
+#  ---------------------------------------------------------------------------
+#  The guard below used to assert that every `args[<var> + k]` read in
+#  configuration.py indexed its OWN flag.  That guard existed only because the
+#  hand-rolled `args.index()` idiom made the wrong-index bug REPRESENTABLE, and
+#  it had two standing weaknesses: it required the idiom to survive (`len(reads)
+#  >= 25`) and it had to PIN a known-latent hazard (`ima`, bound by both
+#  -mcapAbove and -fsMAnumber) that it could not actually fix.
+#
+#  configuration.py now parses with argparse, so there are no index variables at
+#  all and the defect class is UNREPRESENTABLE rather than merely absent.  The
+#  sweep machinery is KEPT and INVERTED: instead of checking that each read is
+#  correct, it now asserts there are ZERO such reads.  That is strictly stronger
+#  than deleting the test -- it fails if anyone reintroduces the idiom -- and it
+#  makes the `ima` latent-reuse pin unnecessary, because no index var exists to
+#  be reused.  The BEHAVIOURAL tests above (-compyear / -sectorfilter read their
+#  own value, bad values still rejected, default config unchanged) are unchanged
+#  and are what actually protect the two fixed flags.
 def _configuration_index_reads():
     """Every `args[<var> + k]` read in configuration.py, matched to its ENCLOSING
     `if '-flag' in args:` block and to the flag `<var>` was actually bound from.
 
     Returns (reads, wrong, latent_reuse).  `reads` is a list of
     (flag_of_block, var, flag_var_was_bound_from, lineno).
+
+    Retained post-refactor to prove the idiom is GONE: every returned list must
+    now be empty.
     """
     import ast
     src = open(os.path.join(_HERE, 'configuration.py'), encoding='utf-8').read()
@@ -204,36 +225,210 @@ def _configuration_index_reads():
     return reads, wrong, latent
 
 
-def test_NO_OTHER_wrong_index_bug_of_this_FAMILY_survives():
-    """THE SWEEP, as a standing check -- the reviewer's ENCLOSING-BLOCK method, adopted 2026-07-31.
+def test_the_hand_rolled_index_idiom_is_GONE_from_configuration():
+    """The retired guard, inverted: the wrong-index family is now UNREPRESENTABLE.
 
-    My first version flagged only index variables that were COMPUTED BUT NEVER SUBSCRIPTED (the
-    *orphan* signature).  The reviewer's objection is correct and material: that method is BLIND
-    to a *wrong-but-used* index, which is the actual shape of this family whenever the wrong
-    variable also happens to be subscripted somewhere else.  It reached the right conclusion but
-    could not establish it.
-
-    This version requires, for EVERY `args[<var>+k]` read, that `<var>` was bound from
-    `args.index('-flag')` for the SAME flag whose `if '-flag' in args:` block encloses the read.
-    That is the property the family violates, stated directly.  Reviewer's independent run:
-    30 reads across 19 flags, no wrong-index reads.
+    The old sweep asserted `len(reads) >= 25` and that each read used its own flag's index.
+    After the argparse refactor there are no `args.index()` bindings and no `args[<var>+k]`
+    reads at all, so there is nothing left to get wrong -- and the `ima` double-bind latent
+    hazard (bound by BOTH -mcapAbove and -fsMAnumber, correct only because each use happened
+    to follow its own binding) is gone with it rather than merely pinned.
     """
-    reads, wrong, _latent = _configuration_index_reads()
-    assert len(reads) >= 25, "sweep found only %d reads -- parsing idiom changed?" % len(reads)
-    assert not wrong, (
-        "wrong-index read(s): a value is being read through ANOTHER flag's index -- "
-        "(block_flag, var, var_bound_from, line): %s" % wrong)
+    reads, wrong, latent = _configuration_index_reads()
+    assert reads == [], (
+        "the hand-rolled `args[<var>+1]` idiom is BACK in configuration.py -- this is the "
+        "idiom that produced the -compyear / -sectorfilter / -manelimfilename defects; "
+        "use the argparse parser instead: %s" % reads)
+    assert wrong == [], wrong
+    assert latent == {}, ("index-variable reuse is back (the `ima` hazard): %s" % latent)
 
 
-def test_the_ima_double_bind_is_reported_as_LATENT_reuse():
-    """`ima` is bound by both `-mcapAbove` and `-fsMAnumber`.  Every path is correct TODAY only
-    because each use immediately follows its own binding, in that order -- it becomes a silent
-    wrong-index bug the moment anyone reorders the blocks.  Pinned as a known latent hazard so
-    the sweep's clean result is not mistaken for "no reuse exists"."""
-    _reads, wrong, latent = _configuration_index_reads()
-    assert not wrong
-    assert 'ima' in latent, latent
-    assert latent['ima'] == ['-fsMAnumber', '-mcapAbove'], latent['ima']
+def test_configuration_has_no_args_index_calls_at_all():
+    """Belt-and-braces on the same property, stated on the BINDING rather than the read:
+    a surviving `args.index(...)` anywhere would mean a hand-rolled index still exists even
+    if its subscript happens to be written in a shape the sweep does not match."""
+    import ast
+    src = open(os.path.join(_HERE, 'configuration.py'), encoding='utf-8').read()
+    assert 'argparse' in src, "configuration.py no longer uses argparse"
+    hits = []
+    for n in ast.walk(ast.parse(src)):
+        if (isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                and n.func.attr == 'index'
+                and isinstance(n.func.value, ast.Name) and n.func.value.id == 'args'):
+            hits.append(n.lineno)
+    assert not hits, "args.index(...) survives at line(s) %s" % hits
+
+
+# --------------------------------------------------------------------------- #
+#  The argparse parser: the FLAG INVENTORY, pinned as a specification.         #
+#  This is the set of flags the hand-rolled parser accepted.  It is pinned by  #
+#  NAME and by VALUED-vs-PRESENCE, because those two facts are what a          #
+#  behaviour-preserving refactor must not move: dropping a flag makes it       #
+#  silently ignored (there is no unknown-flag error -- see the leniency test   #
+#  below), and flipping valued<->presence is the truthiness footgun that       #
+#  `ALLOW_MERGE_CONTENT_MISMATCH=0` was (a `0` meaning "off" turning the       #
+#  thing ON).                                                                  #
+# --------------------------------------------------------------------------- #
+_VALUED_FLAGS = {
+    '-tickerfilter', '-datasource', '-mcapAbove', '-mcapBelow', '-sectorfilter',
+    '-period', '-nrperiods', '-nrTaT', '-compyear', '-fsMAnumber',
+    '-nrScorePeriods', '-ntopagg', '-ntopxlsx', '-savebometric', '-saveboresults',
+    '-loadbometric', '-loadboresults', '-symbolChangeRestock', '-bometricfilename',
+    '-boresultsfilename', '-manelimtickers', '-manelimfilename', '-asof',
+    '-delisted_max_pages', '-portfolioTest', '-backtest_buy_years',
+    '-backtest_eval_years', '-backtest_topn', '-run_estimation', '-transfer_dir',
+}
+#  Truth comes from PRESENCE ALONE for these -- they take NO value, so no value
+#  can ever be misread as a truth.  `-startfromlastindex` is the named example.
+_PRESENCE_FLAGS = {
+    '-newOnly', '-ingest_delisted', '-startfromlastindex', '-runbacktest',
+    '-no_transfer',
+}
+
+
+def _parser_actions():
+    p = cfg._build_parser()
+    return p, {opt: a for a in p._actions for opt in a.option_strings}
+
+
+def test_every_flag_the_old_parser_accepted_is_STILL_accepted():
+    _p, by_opt = _parser_actions()
+    missing = sorted((_VALUED_FLAGS | _PRESENCE_FLAGS) - set(by_opt))
+    assert not missing, (
+        "flag(s) dropped by the refactor -- they would now be SILENTLY IGNORED, not "
+        "rejected: %s" % missing)
+    extra = sorted(set(by_opt) - (_VALUED_FLAGS | _PRESENCE_FLAGS))
+    assert not extra, "flag(s) added by the refactor (behaviour change): %s" % extra
+
+
+def test_presence_only_flags_take_NO_VALUE_and_valued_flags_take_ONE():
+    """The truthiness boundary, pinned.  A presence flag has nargs == 0, so
+    `-startfromlastindex 0` can never mean "off" by supplying a value -- exactly as before,
+    where presence alone decided it.  A valued flag must NOT become a presence flag, or
+    `-savebometric 0` / `-manelimtickers 0` would start meaning ON."""
+    _p, by_opt = _parser_actions()
+    for flag in sorted(_PRESENCE_FLAGS):
+        assert by_opt[flag].nargs == 0, \
+            "%s must be PRESENCE-only (nargs 0), got nargs=%r" % (flag, by_opt[flag].nargs)
+    for flag in sorted(_VALUED_FLAGS):
+        assert by_opt[flag].nargs != 0, \
+            "%s must take a VALUE -- as a presence flag, a '0' value would mean ON" % flag
+
+
+def test_a_zero_value_still_DISABLES_every_valued_boolean():
+    """The ALLOW_MERGE_CONTENT_MISMATCH footgun, checked on this module's own flags:
+    the value 0 must mean OFF, not "flag present therefore on"."""
+    for flag, key in (('-savebometric', 'saveBoMetric'), ('-saveboresults', 'saveBoResults'),
+                      ('-loadbometric', 'loadBoMetric'), ('-loadboresults', 'loadBoResults'),
+                      ('-symbolChangeRestock', 'symbchRestock'),
+                      ('-manelimtickers', 'manelimtickersbool'),
+                      ('-run_estimation', 'run_estimation')):
+        off = cfg.getDataFetchConfiguration(['x', flag, '0'])
+        assert off[key] == 0, "%s 0 must DISABLE %s, got %r" % (flag, key, off[key])
+    for flag, key in (('-savebometric', 'saveBoMetric'), ('-loadbometric', 'loadBoMetric'),
+                      ('-symbolChangeRestock', 'symbchRestock'),
+                      ('-run_estimation', 'run_estimation')):
+        on = cfg.getDataFetchConfiguration(['x', flag, '1'])
+        assert on[key] == 1, "%s 1 must ENABLE %s, got %r" % (flag, key, on[key])
+
+
+def test_presence_flags_are_INT_1_0_not_bool():
+    """`configdic` carried ints, and callers/pickled run records compare on them.  argparse's
+    store_true yields True/False, so the conversion back to 1/0 is load-bearing for type
+    identity, not cosmetic."""
+    on = cfg.getDataFetchConfiguration(
+        ['x', '-newOnly', '-ingest_delisted', '-runbacktest', '-startfromlastindex'])
+    off = cfg.getDataFetchConfiguration(['x'])
+    for key in ('newOnly', 'ingest_delisted', 'runbacktest', 'startfromlastindex'):
+        assert type(on[key]) is int and on[key] == 1, (key, on[key], type(on[key]))
+        assert type(off[key]) is int and off[key] == 0, (key, off[key], type(off[key]))
+
+
+# --------------------------------------------------------------------------- #
+#  The four old-parser behaviours argparse does NOT give by default.           #
+#  Each of these would be a REGRESSION, and each is cheap to lose in a later   #
+#  edit (a stray `parse_args`, a default `add_help`), so each is pinned.       #
+# --------------------------------------------------------------------------- #
+def test_the_parser_NEVER_exits_the_process():
+    """THE serious regression risk: stock argparse prints usage and calls sys.exit(2).  This
+    module is IMPORTED (by this suite, by baseline_tools/test_delisted_ingest.py, and by five
+    pipeline modules), so a hard exit would kill the caller.  SystemExit is a BaseException, so
+    it would also slip through `except Exception` handlers AND through pytest.raises(Exception).
+    """
+    p = cfg._build_parser()
+    with pytest.raises(Exception) as ei:
+        p.error('boom')
+    assert not isinstance(ei.value, SystemExit), "parser.error() still exits the process"
+    with pytest.raises(Exception) as ei2:
+        p.exit(2, 'boom')
+    assert not isinstance(ei2.value, SystemExit), "parser.exit() still exits the process"
+
+
+def test_UNKNOWN_flags_are_still_silently_ignored():
+    """The old `'-flag' in args` scan never looked at anything else, so unknown flags and
+    stray positionals passed silently -- and the suite's own convention is a leading dummy
+    token (`['x', ...]`), which stock parse_args rejects as "unrecognized arguments"."""
+    base = cfg.getDataFetchConfiguration(['x'])
+    for argv in (['x', '-notAFlagAtAll'], ['x', '-notAFlagAtAll', 'value'],
+                 ['x', 'y', 'z'], ['-period', 'quarter', '-bogus', 'junk']):
+        got = cfg.getDataFetchConfiguration(argv)
+        assert set(got) == set(base), argv
+
+
+def test_dash_h_does_NOT_trigger_a_help_dump_and_exit():
+    """`-h` / `--help` are just unknown tokens today.  argparse's default help action would
+    print usage and terminate the interpreter -- inside a pipeline entry point."""
+    for argv in (['x', '-h'], ['x', '--help']):
+        got = cfg.getDataFetchConfiguration(argv)
+        assert got['period'] == 'quarter' and got['sectorfilter'] == 'all', argv
+
+
+def test_a_REPEATED_flag_keeps_its_FIRST_value():
+    """`args.index()` returned the FIRST match, so `-period quarter -period annual` yielded
+    'quarter'.  argparse keeps the LAST value by default -- a silent behaviour change on an
+    invocation that parses cleanly both before and after, which is the dangerous kind."""
+    from datetime import datetime
+    assert cfg.getDataFetchConfiguration(
+        ['x', '-period', 'quarter', '-period', 'annual'])['period'] == 'quarter'
+    assert cfg.getDataFetchConfiguration(
+        ['x', '-ntopagg', '10', '-ntopagg', '20'])['ntopagg'] == 10
+    assert cfg.getDataFetchConfiguration(
+        ['x', '-compyear', 'lastYear', '-compyear', 'thisYear'])['compyear'] == \
+        datetime.now().year - 1
+
+
+def test_flags_are_matched_EXACTLY_no_abbreviation():
+    """argparse abbreviates long options by default (`-nrp` -> `-nrperiods`).  The old parser
+    matched exactly, so an abbreviation was an ignored unknown token; accepting it now would
+    be a new, and ambiguous, behaviour."""
+    base = cfg.getDataFetchConfiguration(['x'])
+    got = cfg.getDataFetchConfiguration(['x', '-nrp', '99'])
+    assert got['nrperiods'] == base['nrperiods'] == 24, got['nrperiods']
+
+
+def test_a_valued_flag_with_NO_value_raises_a_CATCHABLE_error_naming_the_flag():
+    """Five flags bounds-checked with a bespoke message before; the rest raised an opaque
+    `IndexError: list index out of range`.  All now report in the bespoke style, and the five
+    original messages are preserved verbatim (checked below).  Every one must remain a plain
+    Exception -- never SystemExit."""
+    for flag in sorted(_VALUED_FLAGS):
+        with pytest.raises(Exception) as ei:
+            cfg.getDataFetchConfiguration(['x', flag])
+        assert not isinstance(ei.value, SystemExit), flag
+        assert flag in str(ei.value), (flag, str(ei.value))
+
+
+@pytest.mark.parametrize("argv,msg", [
+    (['-asof'], '-asof requires a date argument (YYYY-MM-DD)'),
+    (['-manelimtickers'], '-manelimtickers requires a 0/1 argument'),
+    (['-manelimfilename'], '-manelimfilename requires a filename argument'),
+    (['-run_estimation'], '-run_estimation requires an integer argument (0 or 1)'),
+    (['-transfer_dir'], '-transfer_dir requires a directory path argument'),
+])
+def test_the_five_PRE_EXISTING_bounds_check_messages_are_preserved_verbatim(argv, msg):
+    with pytest.raises(Exception) as ei:
+        cfg.getDataFetchConfiguration(argv)
+    assert str(ei.value) == msg, str(ei.value)
 
 
 # --------------------------------------------------------------------------- #

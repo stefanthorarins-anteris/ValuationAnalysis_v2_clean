@@ -85,7 +85,16 @@ POSTRANK_METRIC_READERS = {
     "backtest_ols_analysis.py": "same shared helper (detected by the DERIVED route -- it "
                                 "builds its column list from dtypes, which the literal-only "
                                 "scan missed)",
-    "carveOut.py": "reads source/AggScore only (partition + dedup)",
+    # "carveOut.py" REMOVED 2026-08-02 -- it no longer matches the scan, so keeping it here
+    # would fail test_every_allowlist_entry_matches_something as a stale claim.  It only ever
+    # tripped the LITERAL route: it named all 21 metrics in COHORT_WEIGHTS while also
+    # mentioning postRank once, and the cleared reason was "reads source/AggScore only
+    # (partition + dedup)" -- i.e. a true clearance of a false positive.  The weight vectors
+    # moved to `scoringWeights.py` (single-source refactor), so the literals are gone and
+    # carveOut drops off the scan.  `scoringWeights.py` does NOT take its place on this list:
+    # it never mentions postRank, so the scan skips it before the literal check -- the metric
+    # NAMES are not the trigger, reaching postRank's columns is.  Re-verified: the scan's
+    # offender set is empty and this is the only entry that went stale.
     "generate_presentation.py": "sources metrics from cdx_df / a raw recompute, not postRank",
     "reviewReference.py": "uses postScoreMetric_raw by design",
     "postBoRank.py": "the producer, and the home of the un-weighting helper",

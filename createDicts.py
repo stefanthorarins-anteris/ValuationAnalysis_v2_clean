@@ -10,6 +10,42 @@ from collections import defaultdict
 # Sales to inventory should probably be S' - I' > 0, not (S/I)' > 0
 
 import macroConditions as mcond
+import scoringWeights as sw          # SINGLE SOURCE OF TRUTH for every scoring weight
+
+
+# --- KNOWN DUPLICATE STAGE-1 CRITERION (made explicit, 2026-08-02) ------------
+# `EPS` and `netIncomePerShare` in BoMetric_diff_dict are BYTE-IDENTICAL criterion
+# specs -- same Upper ('netIncomePerShare'), same Lower ('Identity'), same Sign (+1) --
+# differing ONLY in Tier: 'B' (w = 0.5) vs 'N' (w = 0).  So the panel carries two
+# byte-identical columns, dEPS and dNetIncomePerShare (verified `.equals()` True on the
+# 2026-07-17 panel, 148,172 rows, zero NaN mismatches), and the Tier-N one is scored at
+# weight 0.
+#
+# MEASURED, not assumed (2026-08-02): calcScore.calcByTier maps any tier outside
+# S/A/B/C/D to w = 0, so the criterion returns exactly 0.0 for every name (max = min =
+# 0.0 over 400 names, no NaN), and deleting the registry entry outright leaves Stage-1
+# BITWISE identical on the saved panel (identical source order, max |score diff| = 0.0).
+# So Tier N genuinely contributes nothing TODAY.
+#
+# IT IS STILL NOT DELETED, deliberately.  A registry entry is cheap; the risk is one
+# tier edit away.  If a future re-weighting promotes `netIncomePerShare` off Tier N, the
+# SAME criterion would silently score TWICE -- 0.5 + its new weight on one quantity --
+# and nothing in the pipeline would say so.  Keeping the entry and declaring the pair
+# here means `test_scoring_weights_single_source.py` fails the moment both carry weight,
+# which is a decision prompt rather than a silent double-count.
+#
+# Removing one entry is ALSO not free of side effects, which is the other reason to
+# leave it: it drops a column from BoMetric_df (so an older saved panel and a newer one
+# no longer have the same schema, and calcScore's schema gate is column-EXACT on what it
+# needs), and it changes the Stage-1 NaN-accounting readout's per-name criterion COUNT
+# and name list (the `_nan_acct` readout in calcScore.simpleScore_fromDict, fed by
+# calcByTier's `nan_sink`) even though the summed tier weight it reports is
+# unaffected.  Neither touches a score, but both are visible output.
+#
+# Each entry is (BoMetric_diff_dict key that CARRIES the weight, the inert TWIN).
+DUPLICATE_DIFF_CRITERIA = (('EPS', 'netIncomePerShare'),)
+
+
 def getDicts():
     # sub dicts
     # Possible entries later:
@@ -159,10 +195,15 @@ def getDicts():
         # than either infinity.
         'freeCashFlowToEquity':         {'Upper': 'freeCashFlow',                           'Lower': 'totalStockholdersEquity', 'Tier': 'B', 'Sign': 1},
         'CFOtoMarketCap':               {'Upper': 'netCashProvidedByOperatingActivities',   'Lower': 'marketCap',               'Tier': 'B', 'Sign': 1},
+        # DUPLICATE OF 'EPS' BELOW -- byte-identical spec, differing only in Tier ('N',
+        # w = 0, so inert today).  See DUPLICATE_DIFF_CRITERIA at the top of this module
+        # before giving this a tier: promoting it double-counts the same quantity.
         'netIncomePerShare':            {'Upper': 'netIncomePerShare',                      'Lower': 'Identity',                'Tier': 'N', 'Sign': 1},
         'pbRatio':                      {'Upper': 'pbRatio',                                'Lower': 'Identity',                'Tier': 'B', 'Sign': -1},
         'revenue':                      {'Upper': 'revenue',                                'Lower': 'Identity',                'Tier': 'A', 'Sign': 1},
         'sharesOutstanding':            {'Upper': 'weightedAverageShsOut',                  'Lower': 'Identity',                'Tier': 'B', 'Sign': -1},
+        # THE WEIGHT-BEARING half of the duplicate pair (the other is
+        # 'netIncomePerShare' above, Tier 'N').  See DUPLICATE_DIFF_CRITERIA.
         'EPS':                          {'Upper': 'netIncomePerShare',                      'Lower': 'Identity',                'Tier': 'B', 'Sign': 1}
                              }
 
@@ -217,91 +258,50 @@ def getBaseMeanDiffUnitySpecialDicts():
     preReq_dict, BoMetric_Calc_dict, BoMetric_base_dict, BoMetric_mean_dict, BoMetric_diff_dict, BoMetric_unity_dict, BoMetric_special_dict = getDicts()
 
     return BoMetric_base_dict, BoMetric_mean_dict, BoMetric_diff_dict, BoMetric_unity_dict, BoMetric_special_dict
-def getPostDict(macroAdj=1):
-    # DECISIONAL weights. Promoted 2026-07-14 (MD directive, valuation-specialist
-    # theory prior) to the mu THEORY-PRIOR vector that produced the certified 38.5%
-    # target-cell beat-rate (top-20, 36mo, pooled buy2021+buy2022) -- up from the 30.0%
-    # baseline under the legacy double-counted defaults. This is exactly
-    # tune_run.MU_GENERAL (GP=0.100 primary variant): the LOCKED effective weights
-    # mapped onto these getPostDict keys and normalized Sigma=1. ONLY the weight VALUES
-    # changed vs the legacy vector -- every metric key / eqMet / scoring path / ordering
-    # is identical, so the as_of=None machinery invariant holds: only the picks move.
-    # Three metrics zeroed (DcfToPrice / BoScore / priceGrowth -- two drops + the
-    # priceGrowth bug); CycleHeat stays NEGATIVE (late-cycle penalty). Legacy defaults
-    # preserved in getPostDict_legacy() for A/B -- NOT deleted.
-    postBmRankingDict = {'RoA':                 {'eqMet': 'returnOnAssets',         'w': 0.060},   # legacy 2
-                         'earnYield':           {'eqMet': 'earningsYield',          'w': 0.0605},  # legacy 2
-                         'grahamNumberToPrice': {'eqMet': 'grahamNumberToPrice',    'w': 0.033},   # legacy 1
-                         'bVpRatio':            {'eqMet': 'pbRatio',                'w': 0.033},   # legacy 0.25
-                         'revenueGrowth':       {'eqMet': 'revenue',                'w': 0.027},   # legacy 1
-                         # incomeQuality: the KEY and the WEIGHT are unchanged, but the
-                         # QUANTITY changed on 2026-08-01 (audit D2, CEO-approved).  It is no
-                         # longer FMP's CFO/NI ratio -- which inverts for loss-makers and
-                         # explodes as NI->0 -- but (CFO - netIncome)/totalAssets, the
-                         # sign-safe scale-free form (stage2_metrics.income_quality_accruals).
-                         # Stage-1 got this treatment in July (CFOlessEarnings, below);
-                         # Stage-2 was missed until now.
-                         # WEIGHT PROVENANCE, recorded rather than quietly fixed: 0.072 was
-                         # FITTED AGAINST THE RATIO, so it is a weight INHERITED by a
-                         # different quantity.  Re-fitting is a separate exercise and is NOT
-                         # authorised; this is a known, accepted consequence of correcting the
-                         # metric in isolation.  Sign VERIFIED to still be high-is-good:
-                         # spearman(new, old) = +0.32 on the healthy NI>0/CFO>0 pool, so
-                         # +0.072 keeps its meaning where the old metric was not inverted.
-                         'incomeQuality':       {'eqMet': 'incomeQuality',          'w': 0.072},   # legacy 1
-                         'returnOnEquity':      {'eqMet': 'returnOnEquity',         'w': 0.030},   # legacy 1
-                         'returnOnCapitalEmployed': {'eqMet': 'returnOnCapitalEmployed', 'w': 0.060},  # legacy 1
-                         'currentRatio':        {'eqMet': 'currentRatio',           'w': 0.038},   # legacy 0.35
-                         'grossProfitMargin':   {'eqMet': 'grossProfitMargin',      'w': 0.100}    # legacy 0.75
-                         }
+def _buildPostDicts(weights):
+    """Assemble the two Stage-2 ranking dicts from a flat {metric: w} vector.
 
-    postNewRankingDict =    {'freeCashFlowYield':           {'w': 0.0605},  # legacy 2
-                             'freeCashFlowPerShareGrowth':  {'w': 0.043},   # legacy 1.5
-                             'DcfToPrice':                  {'w': 0.000},   # legacy 0.35 -- DROPPED (BoDCF broken / no PIT DCF)
-                             'marketCapRevQuants':          {'w': 0.080},   # legacy 0.25
-                             'Altman-Z':                    {'w': 0.062},   # legacy 0.5
-                             'Piotroski':                   {'w': 0.072},   # legacy 0.75
-                             'tbVpRatio':                   {'w': 0.033},   # legacy 0.5
-                             'BoScore':                     {'w': 0.000},   # legacy 0.1 -- DROPPED
-                             'EPStoEPSmean':                {'w': 0.056},   # legacy 0.5
-                             'priceGrowth':                 {'w': 0.000},   # legacy 0.5 -- DROPPED (sign/seasonality bug)
-                             'CycleHeat':                   {'w': -0.080}   # legacy -0.5 -- NEGATIVE: penalizes hot late-cycle stocks
-                             }
-
+    THE SHAPE IS THE CONTRACT.  postBoRank consumes these as
+    `pd.DataFrame(columns=postBmRankingDict.keys())`, so the key ORDER is load-bearing;
+    it is taken from scoringWeights.POSTBM_EQMET / POSTNEW_KEYS, which is the same
+    order these dicts have always been written in.  Fresh inner dicts are built on
+    every call so a caller that mutates the result cannot reach the canon.
+    """
+    postBmRankingDict = {k: {'eqMet': eq, 'w': weights[k]}
+                         for k, eq in sw.POSTBM_EQMET.items()}
+    postNewRankingDict = {k: {'w': weights[k]} for k in sw.POSTNEW_KEYS}
     return postBmRankingDict, postNewRankingDict
+
+
+def getPostDict(macroAdj=1):
+    """DECISIONAL Stage-2 weights -- the deployed mu theory prior.
+
+    THE NUMBERS AND THEIR FULL PROVENANCE LIVE IN `scoringWeights.DEPLOYED`, which is
+    the SINGLE SOURCE OF TRUTH for every scoring weight in the repo (single-source
+    refactor, 2026-08-02).  Read that file to change a weight or to find out where
+    0.072 on incomeQuality came from, which three metrics are deliberately zeroed and
+    why, and why CycleHeat is negative -- all of it moved there VERBATIM, not
+    summarised, so there is exactly one place to look.
+
+    Nothing about this function's OUTPUT changed in the move: same two dicts, same keys
+    in the same order, same eqMet mapping, same 'w' values and types.  Only the source
+    of the numbers moved.  `getPostDict_legacy()` still holds the pre-2026-07-14
+    vector for A/B.  `macroAdj` is unused, as before.
+    """
+    return _buildPostDicts(sw.DEPLOYED)
 
 
 def getPostDict_legacy(macroAdj=1):
     """Pre-2026-07-14 double-counted DEFAULT weights (the certified 30.0% target-cell
     baseline). Retained for A/B against the promoted mu theory prior now decisional in
     getPostDict(); NOT decisional. Identical keys/eqMet/ordering to getPostDict -- only
-    the 'w' values differ, so swapping this in reproduces the pre-promotion picks."""
-    postBmRankingDict = {'RoA':                 {'eqMet': 'returnOnAssets',         'w': 2},
-                         'earnYield':           {'eqMet': 'earningsYield',          'w': 2},
-                         'grahamNumberToPrice': {'eqMet': 'grahamNumberToPrice',    'w': 1},
-                         'bVpRatio':            {'eqMet': 'pbRatio',                'w': 0.25},
-                         'revenueGrowth':       {'eqMet': 'revenue',                'w': 1},
-                         'incomeQuality':       {'eqMet': 'incomeQuality',          'w': 1},
-                         'returnOnEquity':      {'eqMet': 'returnOnEquity',         'w': 1},
-                         'returnOnCapitalEmployed': {'eqMet': 'returnOnCapitalEmployed', 'w': 1},
-                         'currentRatio':        {'eqMet': 'currentRatio',           'w': 0.35},
-                         'grossProfitMargin':   {'eqMet': 'grossProfitMargin',      'w': 0.75}
-                         }
+    the 'w' values differ, so swapping this in reproduces the pre-promotion picks.
 
-    postNewRankingDict =    {'freeCashFlowYield':           {'w': 2},
-                             'freeCashFlowPerShareGrowth':  {'w': 1.5},
-                             'DcfToPrice':                  {'w': 0.35},
-                             'marketCapRevQuants':          {'w': 0.25},
-                             'Altman-Z':                    {'w': 0.5},
-                             'Piotroski':                   {'w': 0.75},
-                             'tbVpRatio':                   {'w': 0.5},
-                             'BoScore':                     {'w': 0.1},
-                             'EPStoEPSmean':                {'w': 0.5},
-                             'priceGrowth':                 {'w': 0.5},
-                             'CycleHeat':                   {'w': -0.5}  # Negative weight penalizes hot late-cycle stocks
-                             }
-
-    return postBmRankingDict, postNewRankingDict
+    Values in `scoringWeights.LEGACY` (same single source; the two vectors are held on
+    ONE canonical key set so neither can silently drift off the other).  Note it keeps
+    DcfToPrice = 0.35 where the deployed vector has 0.000 -- a real, deliberate
+    difference, pinned by test_scoring_weights_single_source.py."""
+    return _buildPostDicts(sw.LEGACY)
 
 def getMetricDicts():
     preReqDict, BoMetric_Calc_dict, BoMetric_base_dict, BoMetric_mean_dict, BoMetric_diff_dict,BoMetric_unity_dict, BoMetric_special_dict = getDicts()

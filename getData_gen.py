@@ -568,9 +568,30 @@ def filter_tickers(ticker_df, colname, cond, mcap, api_key):
 
     return ntdf
 
+#  How many of the MOST RECENT periods must carry a price for a ticker to be scoreable.
+PRICE_GATE_ROWS = 10
+
+
 def checkIfValidFS(fs):
+    """The ingest PRICE GATE: reject a ticker with any missing price in its most recent
+    PRICE_GATE_ROWS periods.  A ticker failing here lands in `pricefail` and never reaches
+    scoring (getData_fmp.get_fundamentals_fmp; ~523 names on the 07-17 universe, ~72% non-US).
+
+    ROW ORDER IS LOAD-BEARING AND IS *ASSUMED*, NOT ESTABLISHED HERE (documented 2026-08-02).
+    `fs[...][0:PRICE_GATE_ROWS]` is a POSITIONAL slice, so it means "the ten most recent
+    periods" ONLY because `fs` is the per-ticker frame straight off the FMP statements, which
+    arrive NEWEST-FIRST.  If that frame ever arrived oldest-first -- or were re-sorted by the
+    caller -- this gate would silently police the ten OLDEST periods instead, i.e. it would
+    admit a ticker whose recent prices are all missing and reject one whose ancient prices
+    are.  That is the same defect shape as moatIdentifier's head(n) on oldest-first rows.
+    The order is NOT normalised here deliberately: re-sorting would change WHICH rows the gate
+    reads on any frame that is not already newest-first, and therefore which tickers enter the
+    universe -- a behaviour change, not a refactor.  Stated as an explicit precondition so the
+    assumption is visible at the boundary instead of being rediscovered; use
+    reporting_period.assert_newest_first at the call site if it ever needs observing.
+    """
     retbool = True
-    if any(fs['price'][0:10].isna()):
+    if any(fs['price'][0:PRICE_GATE_ROWS].isna()):
         retbool = False
 
     return retbool

@@ -15,6 +15,13 @@ This module is the ONE place that decides, per source, whether a row is a quarte
 half.  Callers ask for `rows_per_year` and parameterise their window with it; nothing
 forks into a duplicated semi-annual code path.
 
+It also owns the OTHER half of "how to read a per-source panel": the ROW-ORDER contract
+(`to_newest_first` / `assert_newest_first`, at the bottom of this file).  Row order and
+window length are the same kind of fact -- both decide WHICH rows a metric sees -- and both
+had been remembered at each call site instead of stated at a boundary, which is how
+`moatIdentifier` came to read a name's OLDEST rows and two log blocks came to print the
+oldest three under the label "first 3".
+
 CLASSIFICATION, in priority order
 ---------------------------------
 1. THE `period` FIELD (primary, authoritative).  Captured at ingest since 2026-07-19
@@ -51,6 +58,15 @@ DEFAULT_ROWS_PER_YEAR = 4          # UNKNOWN -> quarterly path (unchanged behavi
 CADENCE_SEMIANNUAL_MIN_DAYS = 150.0   # >= this -> semi-annual
 CADENCE_QUARTERLY_MAX_DAYS = 120.0    # <= this -> quarterly
 CADENCE_MIN_GAPS = 3                  # need >=3 gaps (4 rows) before trusting a median
+
+# --- the fetch HISTORY GATE, in CALENDAR years --------------------------------------
+# `failTests.testForAPIFaults_fmp` rejects a ticker with less than FETCH_HISTORY_YEARS of
+# history, expressed as `rows_per_year(freq) * FETCH_HISTORY_YEARS` rows -- 16 quarterly OR
+# 8 semi-annual, i.e. the same calendar span either way.  It lives HERE, beside the other
+# per-frequency window constants, because CLASSIFY_RECENT_DAYS is deliberately the SAME
+# span (see its note) and the two must not drift: the classifier should look at the same
+# history the gate demands.  The gate used to spell the 4 out as a bare literal.
+FETCH_HISTORY_YEARS = 4
 
 # --- `period`-label thresholds ------------------------------------------------------
 # A quarterly filer with a very short history could show only Q2/Q4 by chance; require a
@@ -170,8 +186,9 @@ CLASSIFIER_PRIORITY = 'period'
 # 4-row floor and ~7 gaps against a 3-gap floor; a quarterly filer gets ~16 rows and ~8
 # separate Q1/Q3 sightings, so a missing quarter cannot flip it) and ~3x clearance under the
 # upper one.  It is also exactly the calendar span the pipeline's own history gate already
-# demands (failTests.py: rows_per_year x 4 = 4 years), so the classifier now looks at the same
-# span the fetch gate requires rather than at whatever depth was fetched.
+# demands (FETCH_HISTORY_YEARS, consumed by failTests.testForAPIFaults_fmp as
+# rows_per_year x FETCH_HISTORY_YEARS rows), so the classifier now looks at the same span the
+# fetch gate requires rather than at whatever depth was fetched.
 #
 # ANCHORED TO THE SOURCE'S OWN NEWEST ROW, NOT TO TODAY.  A dead/delisted name in the
 # survivorship-clean dead-merged universe, and every point-in-time `as_of` reproduction, has a
@@ -527,7 +544,8 @@ def scale_window(n, rpy, minimum=1):
     CONTRACT: the result is NEVER LARGER than `n`.  A `minimum=2` floor used to violate
     exactly that (review H1, 2026-07-25): scale_window(1, rpy=2) returned 2 -- a window
     TWICE the quarterly one, on the metric family with the smallest window in the
-    pipeline.  Production runs `fsMAnumber = 1` (configuration.py:111), so every
+    pipeline.  Production runs `fsMAnumber = 1` (its default in
+    configuration.getDataFetchConfiguration), so every
     semi-annual name's calc_diff ran `rolling(2).mean()` -- a 12-month smoothing -- where
     a quarterly name ran `rolling(1)`, i.e. no smoothing at all.  That silently altered
     all 18 d* columns (44.5% of Stage-1 summed weight) for 14.4% of the universe.
@@ -610,6 +628,154 @@ def stage1_flow_factor(key, rpy):
     leg, mode = spec
     f = per_quarter_factor(rpy) if mode == 'per_quarter' else annualize_factor(rpy)
     return f if leg == 'flow_num' else 1.0 / f
+
+
+# =========================================================================== #
+#  ROW ORDER: ONE CONTRACT, STATED AT THE BOUNDARY                             #
+# =========================================================================== #
+# WHY THIS SECTION EXISTS.  Every recency window in this pipeline is positional --
+# `head(n)`, `iloc[0]`, `iloc[lag]`, `pct_change(-1)`, `shift(-rpy)` -- so a frame's ROW
+# ORDER is as load-bearing as its window LENGTH, and it was being REMEMBERED at each call
+# site rather than stated once.  Two shipped defects came from exactly that:
+#   * `postBo.moatIdentifier` read each name's OLDEST rows, because cdx_df arrives
+#     OLDEST-first (data_quality sorts ascending; 7,752 of 7,752 sources) and nothing
+#     re-sorted before `head(n)`.  Median window lag from the newest filing was 1.00 year
+#     for a quarterly filer and 7.00 years for a semi-annual one once `rpy` scaling
+#     shortened the window; moatScore differed on 50.2% of 400 real names, by up to +-7
+#     points on an 0-11 scale.
+#   * two `postBoWrapper` log blocks printed the OLDEST three rows under the label
+#     "first 3" -- ~2020 rows presented as the newest data in the line the CEO reads to
+#     judge whether the fetch picked up the current quarter.
+#
+# THE TWO POLICIES ARE BOTH CORRECT, FOR DIFFERENT CALLERS -- so the policy is a REQUIRED
+# argument with NO DEFAULT.  That is the whole design decision here: a single permissive
+# helper everywhere would be wrong, and a single strict helper everywhere was wrong (review
+# L4 -- it let a LOG LINE abort Stage-2 and every deliverable of a 12-hour fetch).
+#   ON_BAD_DATE_RAISE  -- FORENSICS.  `detectManipulation` / `forensicFlags` back the
+#       Beneish/Montier year-over-year shifts off this order; an unparseable date there
+#       must FAIL LOUDLY rather than sort as NaT and silently mis-pair two years.
+#   ON_BAD_DATE_COERCE -- DIAGNOSTICS.  A print-only sample must never be able to cost the
+#       run, so it coerces (NaT sorted LAST) and degrades to "possibly mis-ordered".
+#
+# There is exactly ONE strict sort implementation in the pipeline and it is
+# `detectManipulation._toNewestFirst`; the strict branch below DELEGATES to it rather than
+# re-implementing it, so the two can never drift.  The import is deliberately LAZY:
+# detectManipulation imports this module, so a top-level import would be circular.
+NEWEST_FIRST = 'newest_first'          # row 0 = the MOST RECENT period
+OLDEST_FIRST = 'oldest_first'          # row 0 = the OLDEST period (how cdx_df is stored)
+
+ON_BAD_DATE_RAISE = 'raise'
+ON_BAD_DATE_COERCE = 'coerce'
+_BAD_DATE_POLICIES = (ON_BAD_DATE_RAISE, ON_BAD_DATE_COERCE)
+
+#  Attribute the row-order contract is stamped under, so a frame can DECLARE its order
+#  instead of a reader having to know it.  Measured on pandas 2.3.1: `df.attrs` is PRESERVED
+#  by copy / pickle / head / boolean mask / reset_index / set_index / assign / drop / apply,
+#  and DROPPED by merge and by concat whose inputs' attrs differ.  So an absent stamp means
+#  "not declared" -- never "oldest-first".  The stamp is a convenience for checking, not the
+#  guarantee; the guarantee is the sort at the boundary.
+ROW_ORDER_ATTR = 'va_row_order'
+
+
+def to_newest_first(df, on_bad_date, date_col='date'):
+    """A per-source frame re-sorted NEWEST-FIRST (row 0 = most recent period).
+
+    `on_bad_date` is REQUIRED and has no default -- see the section note.  Pass
+    ON_BAD_DATE_RAISE for anything a wrong pairing would corrupt (the forensic YoY
+    shifts), ON_BAD_DATE_COERCE for anything that only prints.
+
+    Returns a NEW frame with a reset index; the input is never mutated.  The result is
+    stamped with its order (ROW_ORDER_ATTR) so a downstream reader can assert it rather
+    than assume it.
+    """
+    if on_bad_date not in _BAD_DATE_POLICIES:
+        raise ValueError(
+            'to_newest_first: on_bad_date must be %r (forensics -- an unparseable date '
+            'MUST fail) or %r (diagnostics -- a print must never abort the run), got %r. '
+            'There is deliberately NO default: the two callers need different answers.'
+            % (ON_BAD_DATE_RAISE, ON_BAD_DATE_COERCE, on_bad_date))
+    if on_bad_date == ON_BAD_DATE_RAISE:
+        # ONE strict implementation for the whole pipeline (see the section note).
+        from detectManipulation import _toNewestFirst
+        out = _toNewestFirst(df) if date_col == 'date' else (
+            df.sort_values(date_col, key=lambda s: pd.to_datetime(s), ascending=False)
+              .reset_index(drop=True))
+    else:
+        d = df.copy()
+        _k = '_rp_order_key'
+        d[_k] = pd.to_datetime(d[date_col], errors='coerce')
+        out = (d.sort_values(_k, ascending=False, na_position='last')
+                .drop(columns=[_k]).reset_index(drop=True))
+    return stamp_row_order(out, NEWEST_FIRST)
+
+
+def stamp_row_order(df, order):
+    """Declare `df`'s row order on the frame itself.  Returns the same frame."""
+    if order not in (NEWEST_FIRST, OLDEST_FIRST):
+        raise ValueError('stamp_row_order: unknown order %r' % (order,))
+    try:
+        df.attrs[ROW_ORDER_ATTR] = order
+    except Exception:                   # a stamp must never be able to break a caller
+        pass
+    return df
+
+
+def row_order_of(df):
+    """The declared row order, or None when the frame does not declare one.
+
+    None means UNDECLARED -- never "oldest-first".  `attrs` is dropped by concat/merge, so
+    a missing stamp is uninformative and a caller must not read a verdict into it.
+    """
+    try:
+        v = df.attrs.get(ROW_ORDER_ATTR)
+    except Exception:
+        return None
+    return v if v in (NEWEST_FIRST, OLDEST_FIRST) else None
+
+
+def newest_first_violations(df, date_col='date', by=None):
+    """How many rows sit OUT OF newest-first order -- a CHECK, not a re-sort.
+
+    Non-mutating and non-raising by construction: it coerces for its own comparison and
+    ignores unparseable dates, because its job is to report on the frame it was handed,
+    not to gate it.  `by` groups the check (e.g. 'source') so a multi-source panel is
+    checked per source.  Returns (n_violations, n_compared).
+    """
+    try:
+        if df is None or date_col not in getattr(df, 'columns', []):
+            return 0, 0
+        d = pd.to_datetime(df[date_col], errors='coerce')
+        groups = ([d] if by is None or by not in df.columns
+                  else [g for _k, g in d.groupby(df[by], sort=False)])
+        bad = cmp = 0
+        for g in groups:
+            g = g.dropna()
+            if len(g) < 2:
+                continue
+            cmp += len(g) - 1
+            bad += int((g.diff().dropna() > pd.Timedelta(0)).sum())
+        return bad, cmp
+    except Exception:
+        return 0, 0
+
+
+def assert_newest_first(df, label, date_col='date', by=None, verbose=True):
+    """Report (never raise) when a frame that is SUPPOSED to be newest-first is not.
+
+    Deliberately a REPORT and not an exception: this is called on the production scoring
+    path, and the pipeline's own standing rule is that a check on a print/diagnostic path
+    must not be able to cost a 12-hour run.  The loud line is what converts "row order is
+    remembered" into "row order is observed".  Returns True when the frame is in order.
+    """
+    bad, cmp = newest_first_violations(df, date_col=date_col, by=by)
+    if bad and verbose:
+        print('!' * 78, flush=True)
+        print('!!! ROW ORDER: %s is NOT newest-first -- %d of %d adjacent row pair(s) go '
+              'FORWARD in time. Every head(n)/iloc[0] window on this frame is reading the '
+              'WRONG END (this is the moatIdentifier / "first 3" defect class).'
+              % (label, bad, cmp), flush=True)
+        print('!' * 78, flush=True)
+    return bad == 0
 
 
 def describe_counts(freq_map, source_of_truth='cadence'):

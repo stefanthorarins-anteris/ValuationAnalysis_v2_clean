@@ -37,8 +37,13 @@ import pandas as pd
 from scipy.stats import spearmanr
 
 warnings.filterwarnings("ignore")
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_REPO = os.path.dirname(_HERE)
+for _p in (_REPO, _HERE):        # _REPO added so `scoringWeights` resolves directly
+    if _p not in sys.path:       # rather than as a side effect of another import
+        sys.path.insert(0, _p)
 import model_vs_metric as mvm
+import scoringWeights as sw
 
 REAL = os.path.join(os.path.dirname(os.path.abspath(__file__)), "price_data", "real_prices.csv")
 
@@ -86,28 +91,60 @@ W_CLUSTERCAP = {m: CFG[m][2] for m in CFG}
 
 # THEORY-SET effective weights (CEO-steered, valuation-theory; Sigma=1). Signs stay
 # in CFG (CycleHeat -1, _logmcap -1). These OVERRIDE effW for the scheme under test.
-W_THEORY = {
-    "grossProfitMargin":          0.100,
-    "Piotroski":                  0.072,
-    "incomeQuality":              0.072,
-    "earnYield":                  0.0605,
-    "freeCashFlowYield":          0.0605,
-    "Altman-Z":                   0.062,
-    "RoA":                        0.060,
-    "returnOnCapitalEmployed":    0.060,
-    "CycleHeat":                  0.080,
-    "_logmcap":                   0.080,
-    "EPStoEPSmean":               0.056,
-    "freeCashFlowPerShareGrowth": 0.043,
-    "currentRatio":               0.038,
-    "bVpRatio":                   0.033,
-    "tbVpRatio":                  0.033,
-    "grahamNumberToPrice":        0.033,
-    "returnOnEquity":             0.030,
-    "revenueGrowth":              0.027,
+#
+# DERIVED from `scoringWeights.DEPLOYED`, not copied (single-source refactor,
+# 2026-08-02).  W_THEORY was never an independent vector: it is the DEPLOYED Stage-2
+# vector with three mechanical adjustments, each of which is now stated in code instead
+# of being silently baked into 18 literals that had to track a re-weighting by hand.
+#   1. MAGNITUDES ONLY.  The bench carries each metric's sign in CFG (CycleHeat -1,
+#      _logmcap -1), so the weight here is |w| -- deployed CycleHeat -0.080 -> 0.080.
+#      Applying the sign twice would flip the metric.
+#   2. RENAME.  marketCapRevQuants (a quartile) is replaced in this bench by the
+#      CONTINUOUS log10(marketCap) channel `_logmcap` -- the redesign wants no
+#      quantization -- at the SAME weight and the same economic direction (small=good).
+#   3. THREE METRICS EXCLUDED.  The bench has 18 channels, not 21.  Each excluded metric
+#      is asserted to be 0.000 in the deployed vector, so dropping it is score-neutral:
+#      a re-weighting that resurrects one REFUSES here rather than quietly benching a
+#      different scheme than the pipeline ships.
+# KEY ORDER IS PART OF THE BEHAVIOUR HERE, so it is pinned rather than inherited from
+# scoringWeights.METRIC_KEYS: `_weighted()` builds `pd.DataFrame({m: w[m]*equalc[m] for m
+# in wdict})`, whose COLUMN order is this dict's key order, and then row-sums it.  Float
+# addition is not associative, so re-ordering the keys moves S_th in the last bit or two
+# -- immaterial to an IC, but enough to flip an exact tie inside a
+# `.rank(method="first")`.  This is the bench's original hand-set order (descending
+# effective weight, with the 0.062 / 0.0605 pair as originally written), preserved so the
+# refactor cannot perturb a printed number.
+_BENCH_KEY_ORDER = (
+    "grossProfitMargin", "Piotroski", "incomeQuality", "earnYield", "freeCashFlowYield",
+    "Altman-Z", "RoA", "returnOnCapitalEmployed", "CycleHeat", "_logmcap",
+    "EPStoEPSmean", "freeCashFlowPerShareGrowth", "currentRatio", "bVpRatio",
+    "tbVpRatio", "grahamNumberToPrice", "returnOnEquity", "revenueGrowth",
+)
+_BENCH_RENAME = {"marketCapRevQuants": "_logmcap"}
+_BENCH_EXCLUDED = {
+    "DcfToPrice":  "no point-in-time DCF exists offline (stage2_pit.DROP_METRICS)",
+    "BoScore":     "a composite of the other metrics, not an independent channel",
+    "priceGrowth": "no CFG channel; M = CycleHeat only (weights-proposal s6.3 RESOLVE-1)",
 }
+_deployed = sw.deployed_weights()
+for _k, _why_excluded in _BENCH_EXCLUDED.items():
+    assert float(_deployed[_k]) == 0.0, (
+        "new_scorer_bench excludes %r (%s) on the premise that it carries w = 0.000 in "
+        "the deployed vector, but it now carries %r. The bench has no channel for it, so "
+        "it cannot silently drop it -- add a CFG channel or re-decide the exclusion."
+        % (_k, _why_excluded, _deployed[_k]))
+_derived = {_BENCH_RENAME.get(k, k): abs(float(w))
+            for k, w in _deployed.items() if k not in _BENCH_EXCLUDED}
+assert set(_derived) == set(_BENCH_KEY_ORDER), (
+    "_BENCH_KEY_ORDER has drifted off the derived channel set: only-in-order=%s "
+    "only-in-derived=%s" % (sorted(set(_BENCH_KEY_ORDER) - set(_derived)),
+                            sorted(set(_derived) - set(_BENCH_KEY_ORDER))))
+W_THEORY = {k: _derived[k] for k in _BENCH_KEY_ORDER}
 assert abs(sum(W_THEORY.values()) - 1.0) < 1e-9, sum(W_THEORY.values())
-assert set(W_THEORY) == set(METRICS18)
+assert set(W_THEORY) == set(METRICS18), (
+    "W_THEORY no longer covers the bench's 18 channels: only-in-weights=%s "
+    "only-in-CFG=%s" % (sorted(set(W_THEORY) - set(METRICS18)),
+                        sorted(set(METRICS18) - set(W_THEORY))))
 
 REAL_DATES = ["2018-12-31", "2019-12-31", "2020-12-28", "2021-12-31",
               "2022-12-27", "2023-12-29", "2024-12-31"]  # 2024-12-28 Saturday excluded
@@ -258,7 +295,15 @@ def old_composite(panel, D, lag_days=0):
     sub["_q"] = sub.groupby("source").cumcount()
     src = sub["source"]
     keep16 = sub["_q"] < 16
-    weights = dict(mvm.WEIGHTS)   # 18 panel metrics incl priceGrowth (as-coded), excl size
+    # 18 panel metrics incl priceGrowth (as-coded), excl size.
+    # NOT single-sourced, deliberately, and FLAGGED (2026-08-02): mvm.WEIGHTS is the
+    # pre-2026-07-14 LEGACY vector despite its comment claiming it is "from
+    # createDicts.getPostDict" -- see the PRE-EXISTING DISAGREEMENT note in
+    # scoringWeights.py.  For THIS arm ("OLD") the legacy numbers are plausibly what is
+    # intended, so nothing is changed here; the 0.25 below is likewise the LEGACY
+    # marketCapRevQuants weight (deployed is 0.080).  Whether the OLD arm should be
+    # legacy or deployed is a research call for the CEO, not a refactor.
+    weights = dict(mvm.WEIGHTS)
     means = {}
     for m in weights:
         x = pd.to_numeric(sub[m], errors="coerce")

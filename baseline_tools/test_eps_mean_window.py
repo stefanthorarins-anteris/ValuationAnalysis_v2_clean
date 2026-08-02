@@ -473,12 +473,36 @@ def test_the_SIGN_matches_the_existing_POSITIVE_weight():
 
 def test_the_window_and_frequency_scaling_match_the_neighbouring_metrics():
     """flow/stock, so it takes the per-quarter normalisation earnYield and RoA take -- a
-    semi-annual filer's 6-month CFO over a point-in-time asset base would otherwise read ~2x."""
+    semi-annual filer's 6-month CFO over a point-in-time asset base would otherwise read ~2x.
+
+    ASSERTED THROUGH `postbm_metric`, NOT through `income_quality_accruals` (updated
+    2026-08-02).  The per-quarter factor used to be applied INSIDE the metric function, which
+    is exactly why `incomeQuality` was absent from the table that was supposed to list every
+    flow-corrected metric: the table could not see a correction the function was hiding.  The
+    factor now comes from STAGE2_METRIC_SPEC via `flow_factor`, so the property belongs at the
+    level that applies it.  The companion test below pins that the bare function is
+    frequency-NEUTRAL, so the two together say where the correction lives.
+    """
     q = _iq_frame([50.0] * 24, [60.0] * 24, [1000.0] * 24, months=3)
     s = _iq_frame([100.0] * 24, [120.0] * 24, [1000.0] * 24, months=6)   # 2x the 6-month flow
-    assert sm.income_quality_accruals(q, 16, rpy=4) == pytest.approx(
-        sm.income_quality_accruals(s, 16, rpy=2), rel=1e-12)
+    assert sm.postbm_metric("incomeQuality", "incomeQuality", q, 16, rpy=4) == pytest.approx(
+        sm.postbm_metric("incomeQuality", "incomeQuality", s, 16, rpy=2), rel=1e-12)
     assert rp.scale_window(16, 2) == 8
+
+
+def test_the_bare_accruals_function_applies_NO_frequency_factor_of_its_own():
+    """The other half of the pair above: `income_quality_accruals` must NOT double-apply.
+
+    If the factor is ever put back inside the function while the registry entry stays, a
+    semi-annual filer gets x0.25 and the defect is silent -- the quarterly path (x1.0 twice)
+    stays bit-identical, so nothing on the current panel would look wrong.
+    """
+    f = _iq_frame([100.0] * 24, [120.0] * 24, [1000.0] * 24, months=6)
+    bare = sm.income_quality_accruals(f, 16, rpy=2)
+    scored = sm.postbm_metric("incomeQuality", "incomeQuality", f, 16, rpy=2)
+    assert scored == pytest.approx(bare * 0.5, rel=1e-12), (bare, scored)
+    assert sm.flow_factor("incomeQuality", 2) == 0.5
+    assert sm.flow_factor("incomeQuality", 4) == 1.0
 
 
 def test_the_old_RATIO_is_no_longer_read_anywhere_in_stage2():

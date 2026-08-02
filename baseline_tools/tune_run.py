@@ -42,6 +42,7 @@ import rebalance_engine as reb
 import tuner as T
 
 import createDicts as cdic
+import scoringWeights as sw
 import calcScore as csf
 import postBoRank as pbr
 import dead_merge as dm
@@ -56,15 +57,16 @@ PRICES = os.path.join(_HERE, "price_data", "real_prices.csv")
 PRICES_2025 = os.path.join(_HERE, "price_data", "real_prices_2025.csv")
 
 # --- real priors (MD 2026-07-14, mapped from the LOCKED effective weights) -------
-MU_GENERAL = {
-    "RoA": 0.060, "returnOnCapitalEmployed": 0.060, "returnOnEquity": 0.030,
-    "grossProfitMargin": 0.100, "earnYield": 0.0605, "freeCashFlowYield": 0.0605,
-    "bVpRatio": 0.033, "tbVpRatio": 0.033, "grahamNumberToPrice": 0.033,
-    "incomeQuality": 0.072, "Piotroski": 0.072, "EPStoEPSmean": 0.056,
-    "marketCapRevQuants": 0.080, "Altman-Z": 0.062, "currentRatio": 0.038,
-    "freeCashFlowPerShareGrowth": 0.043, "revenueGrowth": 0.027, "CycleHeat": -0.080,
-    "DcfToPrice": 0.000, "BoScore": 0.000, "priceGrowth": 0.000,
-}
+# DERIVED, not copied (single-source refactor, 2026-08-02).  The mu prior IS the deployed
+# vector -- it always was, written out here as a second set of literals that had to be
+# kept in step by hand.  It now reads `scoringWeights.DEPLOYED`, so a re-weighting cannot
+# leave the tuner priming off a stale mu.  Every VALUE is bit-identical to the literal it
+# replaces.  The key ORDER does change (the old literal listed them by theme; this is the
+# canonical emission order) and that is verified inert: `run_general` re-keys everything
+# through `keys = sorted(prior.keys())`, `make_boxes`/`l1_mask_for` take `keys`
+# explicitly, the step scale goes through `np.median`, and `_finish` iterates the metric
+# COLUMNS -- so no float sum is ever taken in this dict's order.
+MU_GENERAL = sw.deployed_weights()
 MU_GP_MODERATED = dict(MU_GENERAL, grossProfitMargin=0.070)   # GP/assets-vs-GP/revenue lineage variant
 
 # L1 partition (enforced as box constraints so L1 respects the floors)

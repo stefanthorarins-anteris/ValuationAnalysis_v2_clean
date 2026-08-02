@@ -26,6 +26,20 @@ production formula.
 Pure functions only: they take pandas objects in and return a scalar (or, for
 add_mcap_quants, a Series).  No network, no I/O, no DataFrame mutation of the
 caller's frames.
+
+TWO PRECONDITIONS ON EVERY `tempcdx` PASSED IN HERE, both owned by the caller:
+
+  1. ROW ORDER = reporting_period.NEWEST_FIRST (row 0 = the most recent period).  Every
+     window below is POSITIONAL -- head(w), iloc[0], iloc[lag], pct_change(-1),
+     shift(-rpy) -- so the wrong orientation reads the wrong end of the history silently.
+     The boundary that guarantees it is postBoRank._sort_cdx_newest_first for the live
+     scorer and the equivalent sort in baseline_tools/stage2_pit for the offline path;
+     the shared vocabulary and the check live in reporting_period ("ROW ORDER" section).
+     These functions do NOT re-sort: re-sorting per metric would hide a mis-oriented
+     caller and would change tie order on duplicate-dated rows.
+  2. `rpy` is THIS source's rows-per-year.  What each metric does with it -- window basis
+     and frequency treatment -- is declared ONCE in STAGE2_METRIC_SPEC below, not decided
+     at the call sites.
 """
 
 import numpy as np
@@ -33,26 +47,181 @@ import pandas as pd
 
 import reporting_period as rp
 
-# Stage-2 metrics whose numerator is a per-period FLOW over a STOCK, so a semi-annual
-# filer reads ~2x a quarterly peer purely from its reporting convention (valuation-
-# specialist annualization ruling, 2026-07-25).  Every one of these is z-scored
-# cross-sectionally in normalizeAndDropNA, which is invariant to multiplying ALL rows by
-# one constant -- so only the SEMI-ANNUAL/QUARTERLY ratio matters and the correction is
-# expressed on a common PER-QUARTER basis (x1 quarterly = exact no-op, x0.5 semi-annual).
-# NOT corrected, per the same ruling: flow/flow ratios (grossProfitMargin,
-# netProfitMargin, incomeQuality) and stock/stock ratios (bVpRatio, tbVpRatio,
-# currentRatio) -- the scale cancels; grahamNumberToPrice (already corrected at ingest via
-# EPS_ttm, and it carries sqrt(2) not 2x, so re-correcting would overshoot); revenueGrowth
-# and freeCashFlowPerShareGrowth (handled by the YoY window); CycleHeat (self-normalised);
-# priceGrowth (a period SPAN, w=0.000).
-STAGE2_FLOW_OVER_STOCK = ('RoA', 'earnYield', 'returnOnEquity',
-                          'returnOnCapitalEmployed')
-
-# EVERY window below is written for QUARTERLY rows and scaled by `rpy` (rows per year:
-# 4 quarterly, 2 semi-annual -- reporting_period).  rpy defaults to 4 everywhere, so a
-# caller that passes nothing is BIT-IDENTICAL to the pre-2026-07-25 behaviour; only a
-# source classified semi-annual takes a different window.  The scaling is always
+# =========================================================================== #
+#  THE STAGE-2 METRIC REGISTRY -- THE AUTHORITY, NOT A DESCRIPTION             #
+# =========================================================================== #
+# WHY THIS TABLE EXISTS, AND WHY IT DRIVES rather than DOCUMENTS.  Frequency/window
+# knowledge used to live at the CALL SITES, with a tuple beside it that merely *claimed* to
+# say which metrics get the flow correction.  Three shipped consequences:
+#   * `CycleHeat` received NEITHER `nq` NOR `rpy` -- the only metric in the block taking
+#     neither -- so a semi-annual filer's self-reference baseline spanned 11.04 years
+#     against a quarterly peer's 5.53 off the same ~22.5 rows (~14% of the universe, 31 of
+#     57 rendered deck pages);
+#   * `EPStoEPSmean` was the LAST uncapped window: its baseline WAS the fetch depth, so at
+#     `-nrperiods 80` it became a ~20-year growth penalty;
+#   * the old `STAGE2_FLOW_OVER_STOCK` tuple was WRONG -- `incomeQuality` was NOT in it and
+#     yet DID receive the per-quarter correction, because `postbm_metric` special-cased the
+#     key and applied the factor inside the metric function.  A reader checking "does
+#     incomeQuality get the flow correction?" against the tuple got the wrong answer, and
+#     that is exactly the reasoning path that let the Stage-1/Stage-2 accruals divergence
+#     hide for a month.
+# So the table is now the single authority and the code READS it: `flow_factor()` and
+# `window_quarters()` below are the only places a per-metric frequency decision is made, and
+# `unregistered_metrics()` -- checked once per pool by postBoScoreRanking -- REFUSES the run
+# for a metric that has no entry rather than defaulting it silently.  Adding a metric to
+# createDicts.getPostDict() without adding it here is a LOUD failure by design.
+#
+# EVERY window in this module is written for QUARTERLY rows and scaled by `rpy` (rows per
+# year: 4 quarterly, 2 semi-annual -- reporting_period).  rpy defaults to 4 everywhere, so a
+# caller that passes nothing is BIT-IDENTICAL to the pre-2026-07-25 behaviour; only a source
+# classified semi-annual takes a different window.  The scaling is always
 # CALENDAR-equivalent: a 4-row YoY becomes 2 rows, a head(16) window becomes head(8).
+
+# --- window basis: WHICH window the metric is defined over ---------------------------
+WINDOW_SCORING = 'scoring_nq'        # the ambient scoring window (`nq`, 16 quarters today)
+WINDOW_CYCLEHEAT_BASE = 'cycleheat_base_nq'   # CYCLEHEAT_BASE_NQ -- a business cycle
+WINDOW_EPS_MEAN_BASE = 'eps_mean_base_nq'     # EPS_MEAN_BASE_NQ -- a business cycle
+WINDOW_POINT_IN_TIME = 'point_in_time'        # newest row only (+ a `rpy` YoY lag)
+WINDOW_NONE = 'none'                          # not a windowed quantity at all
+
+# --- frequency treatment: WHAT the reporting convention does to the value -------------
+# PER_QUARTER is the only one that produces a multiplicative factor (rp.per_quarter_factor:
+# x1.0 quarterly -- an exact no-op -- x0.5 semi-annual).  The others are declarations that
+# NO factor is correct, each with its own reason, so that "no correction" is a recorded
+# decision rather than an omission.
+FREQ_PER_QUARTER = 'per_quarter'     # flow / stock -> reads ~2x on a semi-annual filer
+FREQ_SCALE_FREE = 'scale_free'       # flow/flow or stock/stock -> the scale cancels
+FREQ_YOY_WINDOW = 'yoy_window'       # handled by the `rpy`-row YoY shift itself
+FREQ_SELF_NORMALISED = 'self_normalised'      # measured against the name's own history
+FREQ_ANNUAL_SUM = 'annual_sum'       # trailing full-year sum inside the metric (Altman)
+FREQ_PERIOD_SPAN = 'period_span'     # a per-period SPAN the window cannot fix (priceGrowth)
+FREQ_CORRECTED_UPSTREAM = 'corrected_upstream'  # already corrected at ingest
+FREQ_NOT_A_TIME_SERIES = 'not_a_time_series'   # pool-level / pass-through, no periods
+
+_FREQ_TREATMENTS = (FREQ_PER_QUARTER, FREQ_SCALE_FREE, FREQ_YOY_WINDOW,
+                    FREQ_SELF_NORMALISED, FREQ_ANNUAL_SUM, FREQ_PERIOD_SPAN,
+                    FREQ_CORRECTED_UPSTREAM, FREQ_NOT_A_TIME_SERIES)
+_WINDOW_BASES = (WINDOW_SCORING, WINDOW_CYCLEHEAT_BASE, WINDOW_EPS_MEAN_BASE,
+                 WINDOW_POINT_IN_TIME, WINDOW_NONE)
+
+#  key -> (window basis, frequency treatment, why the frequency treatment is what it is)
+#  EVERY key of createDicts.getPostDict() must appear here (test_stage2_registry pins it,
+#  and postBoScoreRanking refuses the run otherwise).
+STAGE2_METRIC_SPEC = {
+    # ---- postBmRankingDict ----------------------------------------------------------
+    'RoA':                  (WINDOW_SCORING, FREQ_PER_QUARTER,
+                             'netIncome (flow) / totalAssets (stock)'),
+    'earnYield':            (WINDOW_SCORING, FREQ_PER_QUARTER,
+                             'earnings (flow) / marketCap (stock)'),
+    'returnOnEquity':       (WINDOW_SCORING, FREQ_PER_QUARTER,
+                             'netIncome (flow) / equity (stock)'),
+    'returnOnCapitalEmployed': (WINDOW_SCORING, FREQ_PER_QUARTER,
+                             'EBIT (flow) / capital employed (stock)'),
+    'incomeQuality':        (WINDOW_SCORING, FREQ_PER_QUARTER,
+                             '(CFO - netIncome) (flow) / totalAssets (stock) -- the entry '
+                             'the old tuple was MISSING while the code applied the factor '
+                             'anyway; the factor is now applied HERE, from this table'),
+    'grossProfitMargin':    (WINDOW_SCORING, FREQ_SCALE_FREE, 'flow / flow'),
+    'currentRatio':         (WINDOW_SCORING, FREQ_SCALE_FREE, 'stock / stock'),
+    'bVpRatio':             (WINDOW_SCORING, FREQ_SCALE_FREE, 'stock / stock'),
+    'grahamNumberToPrice':  (WINDOW_SCORING, FREQ_CORRECTED_UPSTREAM,
+                             'grahamNumber already uses the frequency-corrected EPS_ttm at '
+                             'ingest, and it carries sqrt(2) not 2x -- re-correcting here '
+                             'would OVERSHOOT'),
+    'revenueGrowth':        (WINDOW_SCORING, FREQ_YOY_WINDOW,
+                             'pct_change(-rpy) is one YEAR for either frequency'),
+    # ---- postNewRankingDict ---------------------------------------------------------
+    'freeCashFlowYield':    (WINDOW_SCORING, FREQ_PER_QUARTER,
+                             'FCF (flow) / marketCap (stock)'),
+    'freeCashFlowPerShareGrowth': (WINDOW_SCORING, FREQ_YOY_WINDOW,
+                             'pct_change(-rpy) is one YEAR for either frequency'),
+    'tbVpRatio':            (WINDOW_SCORING, FREQ_SCALE_FREE, 'stock / stock'),
+    'priceGrowth':          (WINDOW_SCORING, FREQ_PERIOD_SPAN,
+                             'a semi-annual period IS a 6-month move -- a LEVEL difference '
+                             'the window cannot fix; w = 0.000, so nothing rests on it'),
+    'EPStoEPSmean':         (WINDOW_EPS_MEAN_BASE, FREQ_SELF_NORMALISED,
+                             "a deviation from the name's own EPS baseline, divided by "
+                             '|that baseline| -- dimensionless; the window carries the '
+                             'frequency'),
+    'CycleHeat':            (WINDOW_CYCLEHEAT_BASE, FREQ_SELF_NORMALISED,
+                             "a z-score against the name's own EPS history -- the window "
+                             'IS the correction'),
+    'Altman-Z':             (WINDOW_POINT_IN_TIME, FREQ_ANNUAL_SUM,
+                             'x3/x5 are TRUE trailing full-year sums over rpy rows, '
+                             'because Altman coefficients are absolute'),
+    'Piotroski':            (WINDOW_POINT_IN_TIME, FREQ_YOY_WINDOW,
+                             'six of nine criteria compare row 0 against row rpy'),
+    'marketCapRevQuants':   (WINDOW_POINT_IN_TIME, FREQ_NOT_A_TIME_SERIES,
+                             'a POOL-level market-cap quartile code read off the newest row'),
+    'DcfToPrice':           (WINDOW_SCORING, FREQ_NOT_A_TIME_SERIES,
+                             'a head(nq) mean of a DCF frame with its own cadence, not the '
+                             'fundamentals panel; w = 0.000'),
+    'BoScore':              (WINDOW_NONE, FREQ_NOT_A_TIME_SERIES,
+                             'a straight pass-through of the Stage-1 score; w = 0.000'),
+}
+
+
+def _spec(key):
+    """The registry row for `key`, or a LOUD failure.  The whole point of the table."""
+    try:
+        return STAGE2_METRIC_SPEC[key]
+    except KeyError:
+        raise KeyError(
+            "Stage-2 metric %r has NO entry in stage2_metrics.STAGE2_METRIC_SPEC. Add one "
+            "-- declare its WINDOW basis (%s) and its FREQUENCY treatment (%s) -- rather "
+            "than letting it default silently: an unregistered metric is how CycleHeat "
+            "shipped with no window and EPStoEPSmean shipped uncapped."
+            % (key, '/'.join(_WINDOW_BASES), '/'.join(_FREQ_TREATMENTS)))
+
+
+def flow_factor(key, rpy):
+    """The multiplicative frequency correction for `key`, FROM THE REGISTRY.
+
+    rp.per_quarter_factor(rpy) for a flow-over-stock metric (1.0 quarterly = exact no-op,
+    0.5 semi-annual); 1.0 for every other declared treatment.  Raises on an unregistered
+    key -- see _spec.
+    """
+    _window, freq, _why = _spec(key)
+    if freq not in _FREQ_TREATMENTS:
+        raise ValueError('stage2_metrics: %r declares unknown frequency treatment %r'
+                         % (key, freq))
+    return rp.per_quarter_factor(rpy) if freq == FREQ_PER_QUARTER else 1.0
+
+
+def window_quarters(key, scoring_nq):
+    """The window `key` is defined over, IN QUARTERS, before `rp.scale_window` scales it.
+
+    `scoring_nq` is the caller's ambient scoring window (production passes 16).  A metric
+    whose baseline is a business cycle takes its OWN constant instead, which is why the
+    fetch depth can no longer decide it.  Returns None for a metric that has no window.
+    """
+    window, _freq, _why = _spec(key)
+    if window == WINDOW_SCORING:
+        return scoring_nq
+    if window == WINDOW_CYCLEHEAT_BASE:
+        return CYCLEHEAT_BASE_NQ
+    if window == WINDOW_EPS_MEAN_BASE:
+        return EPS_MEAN_BASE_NQ
+    if window in (WINDOW_POINT_IN_TIME, WINDOW_NONE):
+        return None
+    raise ValueError('stage2_metrics: %r declares unknown window basis %r' % (key, window))
+
+
+def unregistered_metrics(keys):
+    """Which of `keys` have NO registry entry.  Empty list = the vector is fully declared.
+
+    Called once per pool by postBoScoreRanking, which REFUSES the run when it is non-empty:
+    a metric added to getPostDict() without a registry entry must not be scored on a
+    silently-defaulted window, which is the defect class this table exists to close.
+    """
+    return [k for k in keys if k not in STAGE2_METRIC_SPEC]
+
+
+#  BACKWARDS-COMPATIBLE VIEW, now DERIVED from the registry rather than hand-maintained
+#  beside it -- which is what made it wrong (incomeQuality was absent from the tuple while
+#  receiving the correction).  Read-only: nothing decides behaviour from this name any more.
+STAGE2_FLOW_OVER_STOCK = tuple(k for k, (_w, f, _y) in STAGE2_METRIC_SPEC.items()
+                               if f == FREQ_PER_QUARTER)
 
 
 # --------------------------------------------------------------------------- #
@@ -96,7 +265,8 @@ MCAP_QUANT_MISSING = 0.0
 
 def add_mcap_quants(cdxtop):
     """Pool-level marketCap quartile code, mapped to [-0.5 .. +0.5] with the
-    sign flipped so SMALLER caps score HIGHER (postBoRank.py mcapQuants).
+    sign flipped so SMALLER caps score HIGHER (set by
+    postBoRank._compute_ticker_metrics as `marketCapRevQuants`).
 
     Cut over the USD market cap (see _mcap_for_quants), NOT the mixed-currency raw
     field.
@@ -132,27 +302,44 @@ def add_mcap_quants(cdxtop):
 #  postBmRankingDict metrics                                                  #
 # --------------------------------------------------------------------------- #
 def postbm_metric(key, met, tempcdx, nq, rpy=rp.DEFAULT_ROWS_PER_YEAR):
-    """One postBmRankingDict metric for a single ticker (postBoRank.py:205-219).
+    """One postBmRankingDict metric for a single ticker (postBoRank._compute_ticker_metrics).
 
-    grahamNumberToPrice / bVpRatio / revenueGrowth are special-cased; every
-    other key is the head(nq) mean of its ``eqMet`` column.
+    grahamNumberToPrice / bVpRatio / revenueGrowth / incomeQuality are special-cased in the
+    ARITHMETIC; every other key is the head(window) mean of its ``eqMet`` column.
 
-    `nq` is scaled to `rpy` so the averaging window spans the same CALENDAR time for a
-    semi-annual filer, and revenueGrowth's YoY shift is `rpy` rows (4 quarters OR 2
-    halves) instead of a hard-coded 4 -- on a semi-annual name a 4-row shift measured
-    TWO-year growth and called it annual.
+    THE WINDOW AND THE FREQUENCY FACTOR BOTH COME FROM THE REGISTRY, not from this function:
+    `window_quarters(key, nq)` and `flow_factor(key, rpy)`.  That is the point of the table
+    -- there is no branch here that can apply a correction the table does not declare, and
+    no key can reach the arithmetic without an entry (`_spec` raises).  `incomeQuality` used
+    to get its factor INSIDE income_quality_accruals, which is why the tuple that was
+    supposed to list the corrected metrics did not list it.
+
+    The window is scaled to `rpy` so the average spans the same CALENDAR time for a
+    semi-annual filer, and revenueGrowth's YoY shift is `rpy` rows (4 quarters OR 2 halves)
+    instead of a hard-coded 4 -- on a semi-annual name a 4-row shift measured TWO-year
+    growth and called it annual.
     """
-    w = rp.scale_window(nq, rpy)
-    # Flow/stock keys are put on a common per-quarter basis; everything else is x1.0.
-    ff = rp.per_quarter_factor(rpy) if key in STAGE2_FLOW_OVER_STOCK else 1.0
+    _wq = window_quarters(key, nq)
+    if _wq is None:
+        # The registry says this metric has NO window (point-in-time / pass-through), so it
+        # cannot be computed as a head(w) mean.  Loud, because the silent alternative --
+        # rp.scale_window(None, rpy) raising a bare TypeError deep in the arithmetic, or worse
+        # a defaulted window -- is the failure mode the registry exists to remove.
+        raise ValueError(
+            "stage2_metrics.postbm_metric was asked for %r, which STAGE2_METRIC_SPEC declares "
+            "as window basis %r -- it has no averaging window, so it cannot be computed here. "
+            "Either it belongs in the postNewRankingDict block with its own function, or its "
+            "registered window basis is wrong." % (key, _spec(key)[0]))
+    w = rp.scale_window(_wq, rpy)
+    ff = flow_factor(key, rpy)          # x1.0 unless the registry says flow-over-stock
     if key == "grahamNumberToPrice":
-        return (tempcdx["grahamNumber"] / tempcdx["price"]).head(w).mean()
+        return (tempcdx["grahamNumber"] / tempcdx["price"]).head(w).mean() * ff
     elif key == "bVpRatio":
-        return (1 / tempcdx[met]).head(w).mean()
+        return (1 / tempcdx[met]).head(w).mean() * ff
     elif key == "revenueGrowth":
-        return tempcdx[met].pct_change(-int(rpy), fill_method=None).head(w).mean()
+        return tempcdx[met].pct_change(-int(rpy), fill_method=None).head(w).mean() * ff
     elif key == "incomeQuality":
-        return income_quality_accruals(tempcdx, nq, rpy=rpy)
+        return income_quality_accruals(tempcdx, nq, rpy=rpy) * ff
     else:
         return tempcdx[met].head(w).mean() * ff
 
@@ -224,8 +411,24 @@ def income_quality_accruals(tempcdx, nq, rpy=rp.DEFAULT_ROWS_PER_YEAR):
     sign-flipping-denominator defect being fixed.  Total assets cannot go negative -- a
     NEGATIVE-EQUITY company still has positive assets, because equity, not assets, is what
     goes negative -- and no source in the universe lacks them entirely.  It is also the
-    denominator the accruals literature uses (Sloan 1996) and the one this pipeline's own
-    `forensicFlags.sloanAccruals` already uses, so the two agree on basis by construction.
+    denominator the accruals literature uses (Sloan 1996).
+
+    THEY DO NOT "AGREE ON BASIS BY CONSTRUCTION" WITH forensicFlags.sloanAccruals -- an
+    earlier version of this docstring claimed that, and it is FALSE (corrected 2026-08-02,
+    re-read off forensicFlags.buildSloanAccruals).  The two share only the DENOMINATOR
+    VARIABLE, `totalAssets`, and differ on every other axis a basis is made of:
+      * numerator period : PER-PERIOD (CFO - NI) here, TTM sums over `rpy` rows there;
+      * denominator      : the POINT-IN-TIME totalAssets of the same row here, the AVERAGE
+                           of the closing and one-year-earlier levels there;
+      * reduction        : a mean over the scoring window here, the single most recent value
+                           there;
+      * SIGN             : OPPOSITE.  This metric is (CFO - NI), high = GOOD; sloanAccruals
+                           is (NI - CFO), high = more accruals = BAD.
+    So they are two different quantities that happen to be scaled by the same field name, and
+    a reader who took the "agree by construction" line at face value would have read their
+    signs the same way round.  Nothing in this function depends on them agreeing -- the claim
+    was load-bearing only as reassurance, which is exactly why a wrong one is worse than none.
+
     A zero/NaN/negative TA row yields NaN, which normalizeAndDropNA maps to z = 0 = neutral --
     the Stage-2 convention for "not computable", never a real score.
 
@@ -240,6 +443,15 @@ def income_quality_accruals(tempcdx, nq, rpy=rp.DEFAULT_ROWS_PER_YEAR):
     point-in-time asset base would otherwise read ~2x a quarterly peer's.  x1.0 for quarterly,
     so the quarterly path is unchanged by the frequency correction itself.
 
+    THAT FACTOR IS APPLIED BY THE CALLER, FROM THE REGISTRY -- `postbm_metric` multiplies by
+    `flow_factor('incomeQuality', rpy)`, and STAGE2_METRIC_SPEC declares this metric
+    FREQ_PER_QUARTER.  It is deliberately NOT applied inside this function any more (moved
+    2026-08-02): while it lived here, `incomeQuality` was absent from the table that was
+    supposed to list every flow-corrected metric, so the table said the opposite of what the
+    code did.  A DIRECT caller of this function therefore gets the UNCORRECTED per-period
+    value -- which is the honest thing for a function that takes no view on frequency
+    treatment -- and must apply `flow_factor` itself if it wants the scored quantity.
+
     WEIGHT PROVENANCE, stated because it is a real caveat and not a defect to hide: 0.072 was
     fitted against the RATIO.  It is therefore a weight INHERITED by a different quantity.
     Re-fitting is a separate, unauthorised exercise; this is a known and accepted consequence
@@ -251,14 +463,14 @@ def income_quality_accruals(tempcdx, nq, rpy=rp.DEFAULT_ROWS_PER_YEAR):
     ta = ta.where(ta > _IQ_MIN_ASSETS)          # 0 / negative / NaN -> NaN, never a divisor
     val = (cfo - ni) / ta
     return (val.replace([np.inf, -np.inf], np.nan)
-               .head(rp.scale_window(nq, rpy)).mean() * rp.per_quarter_factor(rpy))
+               .head(rp.scale_window(nq, rpy)).mean())
 
 
 # --------------------------------------------------------------------------- #
 #  postNewRankingDict metrics                                                 #
 # --------------------------------------------------------------------------- #
 def free_cash_flow_yield(tempfcf, tempmcap, nq, rpy=rp.DEFAULT_ROWS_PER_YEAR):
-    """FCF / marketCap, head(nq) mean (postBoRank.py:234).
+    """FCF / marketCap, head(nq) mean (call site: postBoRank._compute_ticker_metrics).
 
     FLOW/STOCK: a semi-annual row's FCF is a 6-month flow over a point-in-time market
     cap, so the per-row yield reads ~2x a quarterly peer's.  The value is z-scored
@@ -271,7 +483,8 @@ def free_cash_flow_yield(tempfcf, tempmcap, nq, rpy=rp.DEFAULT_ROWS_PER_YEAR):
 
 def free_cash_flow_per_share_growth(tempfcf, tempshares, nq,
                                     rpy=rp.DEFAULT_ROWS_PER_YEAR):
-    """YoY growth of FCF-per-share over `rpy` rows, head(nq) mean (postBoRank.py:240-242).
+    """YoY growth of FCF-per-share over `rpy` rows, head(nq) mean
+    (call site: postBoRank._compute_ticker_metrics).
 
     `rpy` rows back is one YEAR for either frequency; the hard-coded 4 was two years for
     a semi-annual filer."""
@@ -281,7 +494,8 @@ def free_cash_flow_per_share_growth(tempfcf, tempshares, nq,
 
 
 def tbv_p_ratio(tempcdx, nq, rpy=rp.DEFAULT_ROWS_PER_YEAR):
-    """Tangible book value per share / price, head(nq) mean (postBoRank.py:304-306).
+    """Tangible book value per share / price, head(nq) mean
+    (call site: postBoRank._compute_ticker_metrics).
     Both inputs are point-in-time STOCKS, so only the averaging window scales."""
     return (tempcdx["tangibleBookValuePerShare"] / tempcdx["price"]
             ).head(rp.scale_window(nq, rpy)).mean()
@@ -323,12 +537,18 @@ EPS_MEAN_FLOOR_FRAC = 0.01
 #  quarterly name today, which is the regression that matters.  It is kept as its OWN
 #  constant rather than an alias of CYCLEHEAT_BASE_NQ: these are two different metrics with
 #  two different baselines, and one must not move silently when the other is retuned.
+#
+#  DECLARED IN THE REGISTRY as STAGE2_METRIC_SPEC['EPStoEPSmean'] -> WINDOW_EPS_MEAN_BASE, and
+#  `window_quarters('EPStoEPSmean', nq)` returns THIS constant.  The registry decides WHICH
+#  window basis the metric uses; this constant is the VALUE of that basis and keeps the
+#  reasoning above.  test_stage2_registry pins the two together so the default below cannot
+#  drift from the declaration.
 EPS_MEAN_BASE_NQ = 28
 
 
 def eps_to_eps_mean(tempcdx, nq=EPS_MEAN_BASE_NQ, rpy=rp.DEFAULT_ROWS_PER_YEAR):
     """Exponentially-weighted recent EPS vs its baseline-window mean, expressed as a
-    FRACTION OF THAT MEAN (postBoRank.py:248-256).
+    FRACTION OF THAT MEAN (call site: postBoRank._compute_ticker_metrics).
 
       (epsmean - ewma_recent_eps) / |epsmean|
 
@@ -398,7 +618,8 @@ def eps_to_eps_mean(tempcdx, nq=EPS_MEAN_BASE_NQ, rpy=rp.DEFAULT_ROWS_PER_YEAR):
 
 
 def price_growth(tempcdx, nq, rpy=rp.DEFAULT_ROWS_PER_YEAR):
-    """Per-period price appreciation, head(nq) mean (postBoRank.py:411-428).
+    """Per-period price appreciation, head(nq) mean
+    (call site: postBoRank._compute_ticker_metrics).
 
     cdx is NEWEST-first, so pct_change(-1) = (newer - older)/older is POSITIVE
     when the price rose.  NO negation (the leading '-' was a sign bug removed in
@@ -417,7 +638,8 @@ def price_growth(tempcdx, nq, rpy=rp.DEFAULT_ROWS_PER_YEAR):
 
 
 def altman_z(tempcdx, rpy=rp.DEFAULT_ROWS_PER_YEAR):
-    """Altman-Z from fundamentals, most-recent row (postBoRank.py:310-349).
+    """Altman-Z from fundamentals, most-recent row
+    (call site: postBoRank._compute_ticker_metrics).
 
     Z = 1.2*x1 + 1.4*x2 + 3.3*x3 + 0.6*x4 + 1.0*x5.  NaN when unusable.
 
@@ -478,7 +700,8 @@ _PIOTROSKI_YOY_LAG = 4          # quarterly default; see piotroski(rpy=...)
 
 def piotroski(tempcdx, rpy=rp.DEFAULT_ROWS_PER_YEAR):
     """Piotroski F-score (9 binary criteria) from fundamentals, current vs the
-    SAME QUARTER ONE YEAR EARLIER (postBoRank.py:353-402).  NaN when unusable.
+    SAME QUARTER ONE YEAR EARLIER (call site:
+    postBoRank._compute_ticker_metrics).  NaN when unusable.
 
     YEAR-OVER-YEAR, not quarter-over-quarter (audit C2 fix, 2026-07-19).  Six of
     the nine criteria (p3 dROA, p5 dLeverage, p6 dLiquidity, p7 dilution, p8
@@ -526,7 +749,8 @@ def piotroski(tempcdx, rpy=rp.DEFAULT_ROWS_PER_YEAR):
 
 def cycleheat_zscore(eps_clean, eps_current):
     """CycleHeat's core: self-normalised z-score of ``eps_current`` vs the
-    stock's own EPS history ``eps_clean`` (postBoRank.py:456-483).
+    stock's own EPS history ``eps_clean`` (callers: cycleheat below, and
+    baseline_tools.stage2_pit).
 
     This is the drift-prone FORMULA -- shared so the live scorer and the offline
     reproduction can never disagree on it.  It deliberately does NOT decide the
@@ -613,12 +837,18 @@ def prepare_eps_series(tempcdx):
 #  cycle (the quantity the metric is named for), and it must be >= the ~24 rows a quarterly
 #  filer carries on the CURRENT panel so it CANNOT BIND there -- making this change bit-identical
 #  for every quarterly name today, which is the regression that matters.  7 years satisfies both.
+#
+#  DECLARED IN THE REGISTRY as STAGE2_METRIC_SPEC['CycleHeat'] -> WINDOW_CYCLEHEAT_BASE, and
+#  `window_quarters('CycleHeat', nq)` returns THIS constant.  The registry decides WHICH window
+#  basis the metric uses; this constant is the VALUE of that basis and keeps the reasoning
+#  above.  test_stage2_registry pins the two together so the default below cannot drift from
+#  the declaration.
 CYCLEHEAT_BASE_NQ = 28
 
 
 def cycleheat(tempcdx, nq=CYCLEHEAT_BASE_NQ, rpy=rp.DEFAULT_ROWS_PER_YEAR):
     """CycleHeat for BOTH the live scorer and the offline reproduction
-    (postBoRank.py:433-488).
+    (call site: postBoRank._compute_ticker_metrics).
 
     Uses the shared canonical EPS history (prepare_eps_series) -- one row per
     date, restatement tie broken to the last-ingested figure -- TRUNCATED to the most recent
@@ -644,7 +874,8 @@ def cycleheat(tempcdx, nq=CYCLEHEAT_BASE_NQ, rpy=rp.DEFAULT_ROWS_PER_YEAR):
 
 
 def dcf_to_price(dcf, nq):
-    """DCF fair value / price from a per-ticker DCF frame (postBoRank.py:261-288).
+    """DCF fair value / price from a per-ticker DCF frame
+    (call site: postBoRank._compute_ticker_metrics).
 
     PRODUCTION-ONLY: the offline PIT reproduction has no point-in-time DCF, so it
     drops this metric (DcfToPrice is weight 0 in the live vector).  Kept here for

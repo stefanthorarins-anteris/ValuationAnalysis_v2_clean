@@ -2,7 +2,6 @@ import calcScore as cs
 import getData_gen as gdg
 import postBoRank as pbr
 import reporting_period as rp
-from detectManipulation import _toNewestFirst
 import forensicFlags as ff
 import pandas as pd
 import requests
@@ -22,25 +21,24 @@ warnings.filterwarnings('ignore', message='.*concatenation with empty or all-NA 
 def _diag_newest_rows(df, n=3):
     """The most recent `n` rows of a per-source frame, for a PRINT-ONLY diagnostic.
 
-    WHY THIS IS NOT JUST `_toNewestFirst(df).head(n)` (review L4, 2026-07-31).  The audit-C5
-    fix replaced `head(n)` -- which cannot raise -- with `_toNewestFirst`, whose
+    WHY THIS IS NOT THE STRICT SORT (review L4, 2026-07-31).  The audit-C5 fix replaced
+    `head(n)` -- which cannot raise -- with the forensic `_toNewestFirst`, whose
     `pd.to_datetime(s)` has NO `errors='coerce'`.  A single unparseable date in the first
     source's rows therefore raised ValueError inside `postBoWrapper`'s diagnostic block, which
     is unguarded, aborting Stage-2 and every deliverable.  Making a LOG LINE able to kill the
     run is a strictly worse defect than the mislabelling it fixed.
 
-    `_toNewestFirst` itself is deliberately NOT loosened: it is the shared forensic helper
-    behind the Beneish/Montier YoY shifts, where an unparseable date SHOULD fail loudly rather
-    than sort as NaT.  Coercion belongs here, in the diagnostic, not there.
+    The strict sort is deliberately NOT loosened: it backs the Beneish/Montier YoY shifts,
+    where an unparseable date SHOULD fail loudly rather than sort as NaT.  Coercion belongs
+    HERE, in the diagnostic -- and that distinction is now expressed by the policy argument
+    to the shared helper (rp.ON_BAD_DATE_COERCE vs rp.ON_BAD_DATE_RAISE) instead of by which
+    of two look-alike helpers the site happened to call.
 
     Falls back to the original `head(n)` if even the coerced sort fails, so the diagnostic
     degrades to "possibly mis-ordered" rather than to "no run".
     """
     try:
-        d = df.copy()
-        d['_diag_dt'] = pd.to_datetime(d['date'], errors='coerce')
-        return (d.sort_values('_diag_dt', ascending=False, na_position='last')
-                 .drop(columns=['_diag_dt']).head(n))
+        return rp.to_newest_first(df, rp.ON_BAD_DATE_COERCE).head(n)
     except Exception:
         return df.head(n)
 
@@ -96,6 +94,15 @@ def postBoWrapper(dmdic, as_of=None):
     
     bmdf = dmdic['BoMetric_df']
     bmav = dmdic.get('BoMetric_ave', {})
+    # UNEXERCISED OPTION, KEPT DELIBERATELY (marked 2026-08-02).  `bmda` is
+    # `BoMetric_dateAve` -- the PER-DATE median baseline -- and it is threaded all the way
+    # into `calcScore.simpleScore_fromDict` as a positional parameter that the function body
+    # NEVER REFERENCES: Stage-1 scores every metric against the FULL-PERIOD median
+    # (`BoMetric_ave`) only, so no per-date baseline reaches any score today.  This is
+    # capability, not a defect, and it is NOT removed: the CEO has an open item about wiring
+    # it up (a per-date baseline is what makes the Stage-1 score point-in-time rather than
+    # full-sample), and deleting the plumbing would mean rebuilding it. The marker exists so
+    # the next reader does not spend time working out whether it is live -- it is not.
     bmda = dmdic.get('BoMetric_dateAve', pd.DataFrame())
     cdx_df = dmdic.get('cdx_df', pd.DataFrame())
     n = dmdic.get('nrScorePeriods', 8)
@@ -213,6 +220,7 @@ def postBoWrapper(dmdic, as_of=None):
     # frequency_by_source decodes the stamped rp.FREQ_CONFLICT_COLUMN -- before that fix this
     # banner could only ever report zero, whatever the data said.
     _freq_map = rp.frequency_by_source(dmdic.get('cdx_df'), verbose=True, csv=True)
+    # bmda is passed but UNUSED inside simpleScore_fromDict -- see the note at its assignment.
     BoScore_df = cs.simpleScore_fromDict(bmdf, bmav, bmda, n, as_of=as_of,
                                         freq_map=_freq_map)
 
@@ -297,6 +305,13 @@ def postBoWrapper(dmdic, as_of=None):
     # only, so psbrfilter currently filters zero names. Left in place per CEO decision
     # (2026-07-14) pending a future decision to either wire it in (would require a soundness
     # review of the -1.5 cutoff on these 6 metrics) or remove it.
+    # NOT REMOVED AS DEAD CODE (2026-08-02), and the reason is mechanical rather than a
+    # judgement call: `psbrfilter` is STORED IN resdic, so deleting it changes the contents of
+    # a saved artifact that other tools read. That makes it a CEO decision, not a cleanup.
+    # NOTE the cutoff is applied to postRank's metric columns, which are z x w, NOT z --
+    # so -1.5 is -1.5 WEIGHTED units, i.e. a different threshold per metric. That is part of
+    # the soundness review this filter is waiting for, not something to "fix" while it is
+    # inert (fixing it would change a stored artifact's contents).
     metricList = ['earnYield', 'grahamNumberToPrice', 'RoA', 'EPStoEPSmean', 'freeCashFlowYield', 'revenueGrowth']
     cutoff = 1.5
     psbrfilter = pbr.postBoRankingPassFilter(rankdic['postRank'],metricList,-cutoff,np.inf)
@@ -356,7 +371,15 @@ def regressMetricsOnROR(rankdic):
     # 'rankOfRanks' -> 'rankOfRanks_diag' (postBoRank.ROR_COLUMN): the emitted column was
     # renamed to mark it a DIAGNOSTIC, not a competing ranking (audit M1).
     ror = pbr.ROR_COLUMN
-    regressors = list(set(rankdic['postRank'].columns) - set([ror, 'rankOfRanks', 'AggScore', 'source']))
+    # DETERMINISTIC column order (2026-08-02).  `list(set(...))` here made the OLS design
+    # matrix's column order hash-seed dependent, so the printed R^2 and coefficients moved
+    # in their last digits between runs of the same data -- and the reader has no way to tell
+    # that from a real change.  PRINT-ONLY (this function returns None and touches no
+    # artifact), so unlike getAggScore nothing downstream depends on it; it is fixed because
+    # it is the same pattern and the fix is free.  The `zip(regressors, coef)` pairing below
+    # was always internally consistent -- the order was arbitrary, not mismatched.
+    regressors = pbr.deterministic_column_order(
+        rankdic['postRank'].columns, exclude=(ror, 'rankOfRanks', 'AggScore', 'source'))
     regressant = [ror]
     df = rankdic['postRank']
     X = df[regressors]
@@ -845,8 +868,9 @@ def writeBoAggToCSV(fb_df, mscore, cscore, baseurl, api_key, ntopagg, fname_AggS
     # CycleHeat -- PUBLISHED FROM THE RAW FRAME, NOT FROM postRank (fix, 2026-07-29).
     #
     # THE DEFECT THIS REPLACES.  `fb_df` is resdic['postRank'], and postBoRank multiplies
-    # every metric column by its weight BEFORE assembling that frame
-    # (postBoRank.py:110-118), so postRank['CycleHeat'] is `z x (-0.080)` -- NOT the metric.
+    # every metric column by its weight BEFORE assembling that frame (the weighting loop in
+    # postBoRank.postBoScoreRanking, just above its getAggScore call), so
+    # postRank['CycleHeat'] is `z x (-0.080)` -- NOT the metric.
     # Because CycleHeat is winsor-EXEMPT (bounded/discrete), its z is an exact affine
     # function of the raw value, so multiplying by a NEGATIVE weight inverts it EXACTLY:
     # measured on the 2026-07-17 panel, corr(published, true) = -1.000000 and median ratio
@@ -864,14 +888,23 @@ def writeBoAggToCSV(fb_df, mscore, cscore, baseurl, api_key, ntopagg, fname_AggS
     #   * backtest_outputs.save_stock_picks      -- 7 columns, now renamed *_weighted_contrib;
     #   * backtest_unified / backtest_ols_analysis -- regressed on `z x w`, so CycleHeat's
     #     coefficient was reported sign-flipped; both now un-weight first.
-    #   * moatScore -- SAFE, and deliberately left as-is: merged into postRank at
-    #     Sbocker.py:467, i.e. AFTER getAggScore has run, so never weighted, never summed into
-    #     AggScore, and not a weight_series key.  Verified: integral values.
+    #   * moatScore -- SAFE, and deliberately left as-is: merged into postRank by Sbocker
+    #     (`resdic['postRank'].merge(moat_merge, ...)`, after the postBoWrapper call), i.e.
+    #     AFTER getAggScore has run, so never weighted, never summed into AggScore, and not a
+    #     weight_series key.  Verified: integral values.  Pinned by
+    #     test_published_columns.test_moatScore_is_raw_because_it_is_merged_after_scoring,
+    #     which asserts the ORDER of those two Sbocker statements.
     # A first inspection found only two of the three sites; the frozen inventory in
     # baseline_tools/test_published_columns.py now fails on any unreviewed reader, because
     # "every metric column here is z x w" means a new reader is wrong BY DEFAULT.
     # That is why this now reads from `raw_df` and REFUSES to fall back to postRank.
     if raw_df is not None and 'CycleHeat' in getattr(raw_df, 'columns', []):
+        # STRUCTURAL, not just by variable name: raw_df must DECLARE the raw basis
+        # (postBoRank stamps it), so pointing this at a weighted frame is now caught here
+        # instead of publishing an exactly sign-inverted column again.  An UNDECLARED frame
+        # passes -- attrs are dropped by concat/merge -- which is why the frozen inventory in
+        # baseline_tools/test_published_columns.py stays as the backstop.
+        pbr.assert_metric_basis(raw_df, pbr.BASIS_RAW, label='writeBoAggToCSV raw_df')
         _cyc = raw_df.set_index('source')['CycleHeat']
         BoComp_tocsv['CycleHeat'] = [_cyc.get(s, np.nan) for s in symblist]
     elif 'CycleHeat' in fbdf_tocsv.columns:
@@ -883,7 +916,8 @@ def writeBoAggToCSV(fb_df, mscore, cscore, baseurl, api_key, ntopagg, fname_AggS
               '!!! SIGN-INVERTED against the metric. Publishing a gap, not a wrong number.'
               % fname_AggScoretop, flush=True)
         print('!' * 78, flush=True)
-    # moatScore -- raw by construction (merged post-weighting at Sbocker.py:467); see above.
+    # moatScore -- raw by construction (merged post-weighting by Sbocker, after the
+    # postBoWrapper call); see above.
     if 'moatScore' in fbdf_tocsv.columns:
         BoComp_tocsv['moatScore'] = fbdf_tocsv['moatScore'].values
 
@@ -1163,6 +1197,31 @@ def format_num(x):
     return "{:.4f}".format(x)
 
 def moatIdentifier(symblist, cdx_df, n=20, freq_map=None):
+    """Per-name 0-11 moat criteria count.  DISPLAY-ONLY (merged into postRank AFTER
+    getAggScore, so it is never weighted and never summed into AggScore) -- but it reaches
+    the CEO as an absolute count, so its windows matter.
+
+    RUN-KILLER FIXED 2026-08-02 (CEO-authorised error-path change).  The per-symbol re-sort
+    uses rp.ON_BAD_DATE_RAISE, and the production call site
+    (Sbocker: `pb.moatIdentifier(resdic['BoScore_df']['source'], resdic['cdx_df'])`) is
+    UNGUARDED and runs over the FULL universe (~7.7k names).  One unparseable date on ANY
+    name used to raise out of this function and take down everything after it in Sbocker --
+    detectManipulation, writeResWrapper, and with it every deliverable of a 12-hour fetch.
+    Same shape as the `_FailedResponse.text` outage, and invisible to every bit-identity
+    check, because it fires only on a rare data shape that no saved panel contains.
+
+    THE FIX IS PER-NAME CONTAINMENT, NOT A LOOSER DATE POLICY and NOT a guard at the call
+    site.  Each name is scored inside its own try; a failure yields that name's row with
+    every criterion and moatScore NaN, and the loop continues.  The distinction is
+    deliberate:
+      * relaxing ON_BAD_DATE_RAISE would score the name off a NaT-sorted window -- a wrong
+        number instead of a missing one, on a figure the CEO reads as an absolute count;
+      * a try/except around the Sbocker call would save the run but silently drop the moat
+        score for the ENTIRE universe.  This drops ONE name and names it.
+    Failures are reported at the end of the loop -- loudly with every name when there are
+    any, and as an affirmative "0 per-name failures" line when there are none, so a dead
+    guard is distinguishable from a healthy one.
+    """
     #moatdf = pd.DataFrame(columns=['source','moatScore'])
     #for symb in symbollist:
     # calculate FCFyield (>5-10%), Gross Margin (GrossProfit/Revenue>30%)
@@ -1196,6 +1255,10 @@ def moatIdentifier(symblist, cdx_df, n=20, freq_map=None):
     moat_criteria = ['FCFyield', 'GrossMargin', 'RevtoASS', 'RoE', 'RoA', 'ROIC',
                      'SGAtoGP', 'DeptoGP', 'NetMargin', 'CapExtoEarnings', 'TLtoEquity']
     _n_quarterly = n            # the caller's window, expressed in QUARTERS
+    #  PER-NAME CONTAINMENT (fix, 2026-08-02) -- see the docstring.  One company's bad data
+    #  must cost THAT COMPANY's moat row, never the other ~7,700 names and everything
+    #  Sbocker runs after this call.
+    _failed = []
     for symb in symblist:
         # .copy() -- audit M2 fix (2026-07-19).  `tempdf = tempdf_orig` bound the SAME
         # one-row frame every iteration, so the PREVIOUS ticker's moatScore was still
@@ -1217,63 +1280,115 @@ def moatIdentifier(symblist, cdx_df, n=20, freq_map=None):
         # head(10) for rpy=2) AMPLIFIED the pre-existing defect by anchoring a shorter
         # window at the wrong end.  moatScore differed on 50.2% of 400 real names, by up
         # to +-7 points on an 0-11 scale.
-        # Uses detectManipulation._toNewestFirst -- the same helper every sibling cdx
-        # consumer uses -- rather than a fresh sort, so there is ONE definition of
-        # "newest-first" in the pipeline.  It sorts by PARSED date, so it is robust to
-        # however the rows happen to arrive.
-        cdx_temp = _toNewestFirst(cdx_df[cdx_df['source'] == symb])
-        _rpy = rp.rows_per_year(freq_map, symb)
-        n = rp.scale_window(_n_quarterly, _rpy)
-        # ANNUALIZE the FLOW-over-STOCK comparators (specialist ruling, 2026-07-25).
-        # Every bar below is an ANNUAL rule of thumb -- FCF yield > 10%, sales/assets >
-        # 0.75, RoE > 15%, RoA > 10%, ROIC > 15% -- but the ratios were per-PERIOD, so a
-        # quarterly filer was being asked to earn a full YEAR's return in three months.
-        # Five of the eleven comparators were therefore near-unpassable by construction.
-        # `af` is a TRUE annualisation (x4 quarterly, x2 semi-annual) because these
-        # thresholds are ABSOLUTE; it deliberately changes quarterly names too, and
-        # moatScores rise materially as a result.
-        # NOT annualized (flow/flow or stock/stock -- scale cancels): GrossMargin,
-        # SGAtoGP, DeptoGP, NetMargin, CapExtoEarnings, TLtoEquity.
-        af = rp.annualize_factor(_rpy)
-        tempdf['source'] = symb
-        fcfmask = cdx_temp['pfcfRatio'] != 0
-        fcfyield_filter = cdx_temp['pfcfRatio'][fcfmask]
-        tempdf['FCFyield'] = (1/fcfyield_filter).head(n).mean()*af-0.1
-        tempdf['GrossMargin'] = cdx_temp['grossProfitMargin'].head(n).mean()-0.3
-        tempdf['RevtoASS'] = (cdx_temp['revenue']/cdx_temp['totalAssets']).head(n).mean()*af-0.75
-        tempdf['RoE'] = cdx_temp['returnOnEquity'].head(n).mean()*af-0.15
-        tempdf['RoA'] = cdx_temp['returnOnAssets'].head(n).mean()*af-0.1
-        tempdf['ROIC'] = cdx_temp['returnOnCapitalEmployed'].head(n).mean()*af - 0.15
-        gpmask = cdx_temp['grossProfit'] != 0
-        gp_filter = cdx_temp['grossProfit'][gpmask]
-        tempdf['SGAtoGP'] = 0.15-(cdx_temp['sellingGeneralAndAdministrativeExpenses'][gpmask]/gp_filter).head(n).mean()
-        tempdf['DeptoGP'] = 0.1 - (cdx_temp['depreciationAndAmortization'][gpmask]/gp_filter).head(n).mean()
-        #tempdf['InteresttoOI'] = 0.15 - (cdx_df['interestExpense']/cdx_df['operatingIncome']).head(n).mean()
-        tempdf['NetMargin'] = cdx_temp['netProfitMargin'].head(n).mean() - 0.2
-        # CapEx/Earnings: |capex| / |NI| < 0.20, GATED ON NI > 0 (domain review S8, fixed
-        # 2026-07-26).  It was `0.2 - mean(capexPerShare/netIncomePerShare)`, which
-        # free-passed 100.0% of loss-makers vs 44.5% of profitable names.
-        # NOTE the audit's stated MECHANISM was wrong and would have produced the wrong fix:
-        # it blamed "FMP capexPerShare negative", but on this panel capexPerShare is POSITIVE
-        # on 86.5% of 176,604 rows and negative on 0.0000% (median +0.084).  The real cause is
-        # the DENOMINATOR -- for NI < 0 the ratio is negative on 83.4% of rows, so
-        # `0.2 - negative > 0` is an automatic tick.
-        # "Capex is a small share of earnings" is UNDEFINED when there are no earnings, so a
-        # loss-making period is NOT-COMPUTABLE (NaN), not a pass: NaN > 0 is False, so it
-        # neither ticks the box nor counts against the other ten comparators.
-        _ni_ps = pd.to_numeric(cdx_temp['netIncomePerShare'], errors='coerce')
-        _cx_ps = pd.to_numeric(cdx_temp['capexPerShare'], errors='coerce')
-        _prof = _ni_ps > 0
-        tempdf['CapExtoEarnings'] = (0.2 - (_cx_ps[_prof].abs()
-                                            / _ni_ps[_prof].abs()).head(n).mean())
-        tempdf['TLtoEquity'] = 0.8 - (cdx_temp['totalLiabilities']/cdx_temp['totalStockholdersEquity']).head(n).mean()
-        # Count ONLY the 11 criteria -- never moatScore itself, and never any column that
-        # happens to be numeric.  NaN > 0 is False, so a non-computable criterion does not
-        # pass (an unchanged property of the old code).
-        mask = tempdf[moat_criteria].apply(pd.to_numeric, errors='coerce') > 0
-        tempdf['moatScore'] = mask.sum(axis=1)
+        # Goes through the SHARED row-order boundary (reporting_period, "ROW ORDER") with the
+        # policy stated in the call, rather than a fresh sort or a bare helper name: there is
+        # ONE definition of "newest-first" in the pipeline and one place that decides what an
+        # unparseable date means.  It sorts by PARSED date, so it is robust to however the
+        # rows happen to arrive.
+        #
+        # ON_BAD_DATE_RAISE is deliberately KEPT (2026-08-02).  moatScore's comparators are
+        # all `head(n)` recency windows, so a date that will not parse means THIS NAME's
+        # window cannot be trusted -- the strict policy is right, and relaxing it here would
+        # silently score the name off a NaT-sorted window.  What was wrong was the BLAST
+        # RADIUS, not the strictness: the raise escaped an unguarded call site and cost every
+        # other name.  It is now contained per name (see the `except` at the end of this
+        # loop), so the strict verdict costs exactly the company it is about.
+        try:
+            cdx_temp = rp.to_newest_first(cdx_df[cdx_df['source'] == symb],
+                                          rp.ON_BAD_DATE_RAISE)
+            _rpy = rp.rows_per_year(freq_map, symb)
+            n = rp.scale_window(_n_quarterly, _rpy)
+            # ANNUALIZE the FLOW-over-STOCK comparators (specialist ruling, 2026-07-25).
+            # Every bar below is an ANNUAL rule of thumb -- FCF yield > 10%, sales/assets >
+            # 0.75, RoE > 15%, RoA > 10%, ROIC > 15% -- but the ratios were per-PERIOD, so a
+            # quarterly filer was being asked to earn a full YEAR's return in three months.
+            # Five of the eleven comparators were therefore near-unpassable by construction.
+            # `af` is a TRUE annualisation (x4 quarterly, x2 semi-annual) because these
+            # thresholds are ABSOLUTE; it deliberately changes quarterly names too, and
+            # moatScores rise materially as a result.
+            # NOT annualized (flow/flow or stock/stock -- scale cancels): GrossMargin,
+            # SGAtoGP, DeptoGP, NetMargin, CapExtoEarnings, TLtoEquity.
+            af = rp.annualize_factor(_rpy)
+            tempdf['source'] = symb
+            fcfmask = cdx_temp['pfcfRatio'] != 0
+            fcfyield_filter = cdx_temp['pfcfRatio'][fcfmask]
+            tempdf['FCFyield'] = (1/fcfyield_filter).head(n).mean()*af-0.1
+            tempdf['GrossMargin'] = cdx_temp['grossProfitMargin'].head(n).mean()-0.3
+            tempdf['RevtoASS'] = (cdx_temp['revenue']/cdx_temp['totalAssets']).head(n).mean()*af-0.75
+            tempdf['RoE'] = cdx_temp['returnOnEquity'].head(n).mean()*af-0.15
+            tempdf['RoA'] = cdx_temp['returnOnAssets'].head(n).mean()*af-0.1
+            tempdf['ROIC'] = cdx_temp['returnOnCapitalEmployed'].head(n).mean()*af - 0.15
+            gpmask = cdx_temp['grossProfit'] != 0
+            gp_filter = cdx_temp['grossProfit'][gpmask]
+            tempdf['SGAtoGP'] = 0.15-(cdx_temp['sellingGeneralAndAdministrativeExpenses'][gpmask]/gp_filter).head(n).mean()
+            tempdf['DeptoGP'] = 0.1 - (cdx_temp['depreciationAndAmortization'][gpmask]/gp_filter).head(n).mean()
+            #tempdf['InteresttoOI'] = 0.15 - (cdx_df['interestExpense']/cdx_df['operatingIncome']).head(n).mean()
+            tempdf['NetMargin'] = cdx_temp['netProfitMargin'].head(n).mean() - 0.2
+            # CapEx/Earnings: |capex| / |NI| < 0.20, GATED ON NI > 0 (domain review S8, fixed
+            # 2026-07-26).  It was `0.2 - mean(capexPerShare/netIncomePerShare)`, which
+            # free-passed 100.0% of loss-makers vs 44.5% of profitable names.
+            # NOTE the audit's stated MECHANISM was wrong and would have produced the wrong fix:
+            # it blamed "FMP capexPerShare negative", but on this panel capexPerShare is POSITIVE
+            # on 86.5% of 176,604 rows and negative on 0.0000% (median +0.084).  The real cause is
+            # the DENOMINATOR -- for NI < 0 the ratio is negative on 83.4% of rows, so
+            # `0.2 - negative > 0` is an automatic tick.
+            # "Capex is a small share of earnings" is UNDEFINED when there are no earnings, so a
+            # loss-making period is NOT-COMPUTABLE (NaN), not a pass: NaN > 0 is False, so it
+            # neither ticks the box nor counts against the other ten comparators.
+            _ni_ps = pd.to_numeric(cdx_temp['netIncomePerShare'], errors='coerce')
+            _cx_ps = pd.to_numeric(cdx_temp['capexPerShare'], errors='coerce')
+            _prof = _ni_ps > 0
+            tempdf['CapExtoEarnings'] = (0.2 - (_cx_ps[_prof].abs()
+                                                / _ni_ps[_prof].abs()).head(n).mean())
+            tempdf['TLtoEquity'] = 0.8 - (cdx_temp['totalLiabilities']/cdx_temp['totalStockholdersEquity']).head(n).mean()
+            # Count ONLY the 11 criteria -- never moatScore itself, and never any column that
+            # happens to be numeric.  NaN > 0 is False, so a non-computable criterion does not
+            # pass (an unchanged property of the old code).
+            mask = tempdf[moat_criteria].apply(pd.to_numeric, errors='coerce') > 0
+            tempdf['moatScore'] = mask.sum(axis=1)
+        except Exception as _e:
+            # PER-NAME CONTAINMENT (fix, 2026-08-02).  This loop runs over the FULL universe
+            # (~7.7k names) from an UNGUARDED Sbocker call site, so an exception here used to
+            # propagate out and take down detectManipulation, writeResWrapper and every
+            # deliverable of a 12-hour fetch -- one company's malformed date destroying the
+            # expensive work done for every other company.  That is the same failure shape as
+            # `_FailedResponse.text` aborting Stage-2 for all six pools.
+            #
+            # CONTAINED PER NAME, NOT AT THE CALL SITE, and the difference matters: a guard
+            # around the call in Sbocker would also save the run, but it would silently lose
+            # the moat score for the WHOLE UNIVERSE.  This loses ONE name and says which.
+            #
+            # The row is rebuilt from the pristine NaN template so a PARTIALLY-written tempdf
+            # can never be emitted as if it were scored: every criterion is NaN, and because
+            # `NaN > 0` is False the name would score 0 anyway -- so moatScore is left NaN
+            # rather than 0, which is the honest 'not computable' and is what the downstream
+            # `merge(..., how='left')` already produces for an absent name.
+            tempdf = tempdf_orig.copy()
+            tempdf['source'] = symb
+            _failed.append((symb, '%s: %s' % (type(_e).__name__, _e)))
 
         moatdf = pd.concat([moatdf, tempdf]).reset_index(drop=True)
+
+    # ZERO IS REPORTED AS A RESULT, NOT AS SILENCE -- the same standard as the
+    # reporting-frequency watchdog (reporting_period.log_conflicts), and for the same reason:
+    # a guard that is silent when healthy cannot be told apart from a guard that is dead, and
+    # a SILENTLY skipped name is exactly how a defect hides.  One line on the happy path, a
+    # banner naming every casualty otherwise.
+    if _failed:
+        print('!' * 78, flush=True)
+        print('!!! moatIdentifier: %d of %d name(s) could NOT be scored and carry moatScore =\n'
+              '!!! NaN. The run CONTINUES -- these are per-name failures, contained so one\n'
+              '!!! company\'s data cannot cost the other %d. Most likely cause: a date that will\n'
+              '!!! not parse (the recency window is unusable, so the name is not scored).'
+              % (len(_failed), len(moatdf), max(0, len(moatdf) - len(_failed))), flush=True)
+        for _s, _why in _failed[:40]:
+            print('!!!   %-16s %s' % (_s, _why), flush=True)
+        if len(_failed) > 40:
+            print('!!!   ... (+%d more)' % (len(_failed) - 40), flush=True)
+        print('!' * 78, flush=True)
+    else:
+        print('moatIdentifier: %d name(s) scored, 0 per-name failures.' % len(moatdf),
+              flush=True)
 
     moatdf.sort_values(by='moatScore', ascending=False, inplace=True)
 

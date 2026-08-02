@@ -78,3 +78,9 @@ baseline_tools/resdic_*.pickle
 baseline_tools/cache_panel_*
 baseline_tools/cache_stage1_*
 baseline_tools/psm_*.pickle
+
+# generated analysis / diagnostic outputs (never source)
+loo_*.csv
+baseline_tools/loo_*.csv
+MissingDataFillReport_*.csv
+ReportingFrequencyConflicts_*.csv
