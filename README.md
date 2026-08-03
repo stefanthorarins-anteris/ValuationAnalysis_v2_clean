@@ -43,11 +43,32 @@ python .\Sbocker.py
 python .\Sbocker.py -loadbometric 1 -bometricfilename <your_pickle_filename>
 ```
 
-4) Run a small test pipeline (processes only first 50 tickers to verify the pipeline):
+4) Run a small test pipeline — use the **curated TEST universe**, not `-nrTaT`:
 
 ```powershell
-python .\Sbocker.py -nrTaT 50
+python .\Sbocker.py -tickerfilter stock_TEST1
 ```
+
+142 fixed, checked-in names (~713 API calls, ~12 minutes) chosen to span both reporting
+frequencies, every exchange in `stock_NA1_EU1` including the restored European ones, all
+five carve-out cohorts, the market-cap bands down to sub-$50M, and the known edge cases
+(duplicate-dated rows, zero market cap, history-gate failures, preferred/warrant lines).
+Cross-listing issuer groups are closed wherever closing them does not require re-importing a
+preferred or notes line; the handful that would are DECLARED in `universes.TEST_UNIVERSE_OPEN_GROUPS`
+and reconciled against a fresh derivation by test, so dedup divergence from production is bounded
+and named rather than assumed away.
+Membership is frozen, so two iterations are comparable. Run
+`python .\verify_test_universe.py` to see the coverage measured rather than asserted.
+
+> **`-nrTaT 50` is NOT a substitute.** It keeps the *first* N rows of FMP's ticker list —
+> an arbitrary positional prefix that under-represents semi-annual filers, non-USD
+> reporters and whole cohorts, and whose membership shifts whenever FMP reorders the list.
+> It is fine for "does the process start"; it is not fine for iterating on behaviour.
+>
+> **Scores from `stock_TEST1` are not production scores.** Z-scores, percentile cuts,
+> cohort scoring and the top-20/top-5 selections all depend on pool composition, so a
+> 142-name pool produces numbers that are not comparable to a full run. The run banner
+> says so on every invocation.
 
 5) Load both metrics and results (pure report generation, no fetch or recompute):
 
@@ -73,9 +94,34 @@ python .\rolling_backtest.py
 - `-bometricfilename <name>`: specify the metrics pickle to load.
 - `-loadboresults 1`: load saved results pickle instead of recomputing.
 - `-boresultsfilename <name>`: specify the results pickle to load.
-- `-nrTaT <N>`: limit to first N tickers processed (useful for testing; e.g., `-nrTaT 50` for a quick 50-ticker run).
+- `-nrTaT <N>`: limit to the first N tickers processed. A *positional prefix*, not a sample — for a small representative run use `-tickerfilter stock_TEST1` instead (see step 4).
 - `-startfromlastindex 1`: resume from the last read index (uses `lastIndexOfRead_*` file).
-- `-tickerfilter <name>`: choose exchange/region filter (e.g., `stock_NA1`, `stock_US1_EU1`). Defaults to `stock_NA1_EU1`.
+- `-tickerfilter <name>`: **choose the universe.** Defaults to `stock_NA1_EU1`. Definitions live in
+  `universes.py` (one source of truth; exchange codes verified against live FMP data 2026-08-02):
+
+  Counts measured 2026-08-02 against the live FMP lists. **`pre-filter`** = the sum over the
+  universe's exchange codes; **`resolved`** = what a run actually fetches, after the type filter,
+  the share-class/instrument filter and the delisted prune. The two differ by ~7%; don't quote one
+  as the other.
+
+  | name | scope | pre-filter | resolved |
+  |---|---|---|---|
+  | `stock_TEST1` | curated TEST universe, 142 fixed names — **use this for iteration** | 142 | 140 |
+  | `stock_US1` | US only: NYSE + NASDAQ | 6,141 | 5,393 |
+  | `stock_NA1` | North America: + TSX | 6,803 | 6,009 |
+  | `stock_US1_EU2` | US + Euronext (PAR AMS BRU LIS) | 6,963 | 6,215 |
+  | `stock_WW1_TV` | US + LSE + XETRA + Euronext | 9,900 | 9,149 |
+  | `stock_US1_EU1` | US + Europe | 10,835 | 10,077 |
+  | `stock_NA1_EU1` | **default** — North America + Europe | 11,497 | 10,693 |
+  | `stock_FULL1` | everything FMP serves with statements (incl. OTC + Asia) — **not** the default | — | 49,071 |
+
+  ⚠️ **`stock_NA1_EU1`, `stock_US1_EU1`, `stock_US1_EU2` and `stock_WW1_TV` changed meaning on
+  2026-08-02.** They filtered on `EURONEXT` and `OSE`, which are not FMP exchange codes and matched
+  **zero** rows; the real codes are `PAR`/`AMS`/`BRU`/`LIS` and `OSL`. That restored **1,046
+  statement-bearing common stocks** no run had ever fetched. Artifacts written before that date carry
+  the same *name* but a different *membership*, so do not compare them on membership or on any pooled
+  statistic (z-score, percentile, top-100, beat-rate). Every artifact is now stamped with a
+  `universe_fingerprint`; match on that, not on the name.
 - `-period <quarter|annual>`: set data period. Defaults to `quarter`.
 - `-nrperiods <N>`: number of periods to fetch. Defaults to 24 (6 years of quarters).
 - `-compyear <lastYear|thisYear>`: comparison year for metrics. Defaults to last year.

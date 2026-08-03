@@ -259,6 +259,96 @@ def print_transfer_launch_status(configdic, verbose=True):
     return {'enabled': True, 'ok': probe['ok'], 'detail': probe['detail']}
 
 
+_UNIVERSE_KEYS = ('universe', 'universe_label', 'universe_fingerprint',
+                  'universe_exchanges', 'universe_symbols', 'universe_every_exchange',
+                  'universe_expected_count', 'universe_definition_changed',
+                  'universe_previous_exchanges', 'universe_codes_verified',
+                  'universe_note')
+
+
+def universe_provenance_for_run(configdic, loaded=None, verbose=True):
+    """The universe stamp THIS run's artifacts should carry -- honest on the load path.
+
+    ON THE FETCH PATH the answer is simply the active `-tickerfilter`'s definition: the
+    data was just pulled for it.
+
+    ON THE LOAD PATH IT IS NOT (2026-08-03).  `-loadbometric` re-scores a panel that was
+    fetched for whatever universe built it, and the CURRENT `-tickerfilter` may be
+    something else entirely.  Stamping the current filter onto loaded data would
+    manufacture provenance -- the precise failure the stamp exists to prevent, committed
+    by the stamp itself.  So:
+
+      * loaded panel CARRIES a stamp -> that stamp wins, and a disagreement with the
+        active `-tickerfilter` is announced LOUDLY (the artifact FILENAME will be built
+        from the active filter, so the two would otherwise silently contradict);
+      * loaded panel carries NO stamp (anything built before 2026-08-02) -> stamp it
+        `unknown-unstamped-panel` and say so. An honest "unknown" is worth more than a
+        confident wrong answer, because a reader comparing two runs can at least see
+        that one basis is unestablished.
+    """
+    import universes as un
+    fetch_stamp = {k: configdic.get(k) for k in _UNIVERSE_KEYS}
+    if loaded is None:
+        return fetch_stamp
+
+    loaded_fp = (loaded or {}).get('universe_fingerprint')
+    active = configdic.get('universe')
+    bang = '!' * 78
+    if loaded_fp:
+        stamp = {k: loaded.get(k) for k in _UNIVERSE_KEYS}
+        # COMPARE FINGERPRINTS, NOT NAMES (fixed 2026-08-03).  This originally tested
+        # `loaded['universe'] != active`, i.e. the NAME -- which made it blind to the one
+        # case the fingerprint was introduced for: two panels both called
+        # `stock_NA1_EU1`, one from either side of the 2026-08-02 restoration, differing
+        # by 1,046 members. Same name, different universe, and the banner said nothing.
+        # The name is still reported (it is what the output FILENAMES are built from), but
+        # the DISAGREEMENT is decided on the fingerprint.
+        active_fp = configdic.get('universe_fingerprint')
+        if verbose and (loaded_fp != active_fp or loaded.get('universe') != active):
+            msg = '\n'.join([
+                '', bang,
+                '!!! UNIVERSE MISMATCH: the LOADED panel and the active -tickerfilter '
+                'disagree.',
+                '!!!   loaded panel : %s  (fingerprint %s)'
+                % (loaded.get('universe'), loaded_fp),
+                '!!!   -tickerfilter: %s  (fingerprint %s)' % (active, active_fp),
+                '!!!   differ by     : %s'
+                % ('DEFINITION (same name, different membership -- e.g. either side of '
+                   'the 2026-08-02 restoration)' if loaded.get('universe') == active
+                   else 'NAME' if loaded_fp == active_fp else 'NAME and DEFINITION'),
+                '!!! The DATA is the loaded panel, so the loaded stamp is what the '
+                'artifacts',
+                '!!! carry -- but the output FILENAMES are built from -tickerfilter, so '
+                'they',
+                '!!! will name a universe this run did not actually score. Pass the '
+                'matching',
+                '!!! -tickerfilter, or read the fingerprint rather than the filename.',
+                bang, ''])
+            print(msg, file=sys.stderr, flush=True)
+            print(msg, flush=True)
+        return stamp
+
+    if verbose:
+        msg = '\n'.join([
+            '', bang,
+            '!!! LOADED PANEL CARRIES NO UNIVERSE STAMP (built before 2026-08-02).',
+            '!!! Its membership CANNOT be established from the artifact, so this run is',
+            '!!! stamped universe_fingerprint=unknown-unstamped-panel rather than being',
+            '!!! attributed to the active -tickerfilter (%s), which would be a guess'
+            % active,
+            '!!! dressed as provenance. Anything compared against this run is comparing',
+            '!!! against an UNESTABLISHED basis -- re-fetch for anything decisional.',
+            bang, ''])
+        print(msg, file=sys.stderr, flush=True)
+        print(msg, flush=True)
+    stamp = {k: None for k in _UNIVERSE_KEYS}
+    stamp['universe'] = loaded.get('tickerfilter') or 'unknown'
+    stamp['universe_fingerprint'] = 'unknown-unstamped-panel'
+    stamp['universe_note'] = ('panel predates universe stamping (2026-08-02); membership '
+                              'not establishable from the artifact')
+    return stamp
+
+
 def main():
     import sys
     import configuration as cf
@@ -377,6 +467,25 @@ def main():
                      len(manualelim_applied), len(newmanelimtckrs), len(manualelim_applied)),
                   flush=True)
 
+            # UNIVERSE PROVENANCE (2026-08-02).  The universe_* keys arrive via configdic
+            # (configuration.getDataFetchConfiguration -> universes.provenance) and reach
+            # the saved pickle through the configdic spread above.  Re-asserted and
+            # ANNOUNCED here for the same reason the manual-elim stamp is: the artifact
+            # filename carries only the universe NAME, and four names now denote a
+            # different membership than they did before this date, so the definition
+            # FINGERPRINT is the only thing that lets a later comparison be checked
+            # rather than assumed.  Failing to state it is how this project ended up with
+            # two irreconcilable beat-rate figures.
+            datandmetricdic['universe_resolved_members'] = int(len(Tickers_df))
+            datandmetricdic.update(universe_provenance_for_run(configdic))
+            print('UNIVERSE PROVENANCE: %s (fingerprint %s), %d members resolved; '
+                  'definition changed 2026-08-02: %s. Stamped into the saved artifact.'
+                  % (configdic.get('universe', 'n/a'),
+                     configdic.get('universe_fingerprint', 'n/a'),
+                     len(Tickers_df),
+                     configdic.get('universe_definition_changed', 'n/a')),
+                  flush=True)
+
             # Apply data quality filter to freshly fetched data
             datandmetricdic = dq.apply_data_quality_filter(datandmetricdic, verbose=True, save_log=True)
 
@@ -414,6 +523,23 @@ def main():
             # therefore runs ~2x loose.  Nothing announced it.  One loud banner does.
             utils.check_panel_basis(datandmetricdic,
                                     configdic['loadBoMetricfname'])
+
+            # UNIVERSE PROVENANCE ON THE LOAD PATH (2026-08-03).  The fetch-path stamp
+            # sits inside `if not loadBoMetricbool:`, and the configdic spread that
+            # carries the universe_* keys is fetch-only too -- so a `-loadbometric` run
+            # emitted its deliverables with NO universe provenance at all, which is the
+            # half of the stamp that mattered most (re-scoring a saved panel is exactly
+            # when two runs get compared). Stamped HERE, after the reload, because the
+            # reload replaces `datandmetricdic` wholesale and would discard an earlier
+            # stamp. Resolved from the LOADED panel, never from the active
+            # -tickerfilter -- see universe_provenance_for_run.
+            _loaded_stamp = universe_provenance_for_run(configdic, loaded=datandmetricdic)
+            datandmetricdic.update(_loaded_stamp)
+            print('UNIVERSE PROVENANCE (load path): %s (fingerprint %s) -- taken from '
+                  'the LOADED panel, not from -tickerfilter (%s).'
+                  % (_loaded_stamp.get('universe'),
+                     _loaded_stamp.get('universe_fingerprint'),
+                     configdic.get('universe')), flush=True)
 
         # Apply data quality filter (remove corrupted/invalid price data)
         # This must happen BEFORE any scoring to prevent garbage from affecting calculations
@@ -456,6 +582,16 @@ def main():
                 loadresdic = {'loadBoResults': loadBoResultbool, 'loadBoResultsfname': configdic['loadBoResultsfname']}
                 resdic = utils.loadWrapper('results', loadresdic)
 
+        # UNIVERSE STAMP ON `resdic`, ON EVERY PATH (2026-08-03).  `resdic` is what
+        # `writeResWrapper` turns into the CSV/XLSX deliverables and what the postRank
+        # pickle is built from, so it is the one object that must always carry the stamp.
+        # It arrives via the datandmetricdic merge on the compute path, but the
+        # -loadboresults path replaces resdic wholesale, so normalise here rather than
+        # trusting one branch. An already-present stamp WINS (it describes the data);
+        # only a missing one is resolved.
+        if not resdic.get('universe_fingerprint'):
+            resdic.update(universe_provenance_for_run(configdic, loaded=resdic))
+
         resdic = pb.findHighestOfEachSector(resdic)
 
         moatdf = pb.moatIdentifier(resdic['BoScore_df']['source'],resdic['cdx_df'])
@@ -493,6 +629,16 @@ def main():
             'datasource': configdic['datasource'],
             'tickerfilter': configdic['tickerfilter']
         }
+        # UNIVERSE STAMP ON THE postRank PICKLE (2026-08-03).  This is the artifact the
+        # BACKTEST reads, i.e. the one most likely to be compared across runs -- and it
+        # carried only `tickerfilter`, a NAME whose meaning changed on 2026-08-02. Two
+        # postRank pickles could therefore claim the same universe while describing
+        # different pools, which is exactly how this project acquired two irreconcilable
+        # beat-rate figures. Taken from `resdic`, NOT re-derived from configdic: resdic's
+        # stamp already accounts for the load paths (where the data's universe is the
+        # LOADED panel's, not the active -tickerfilter's), so all three artifacts agree
+        # by construction rather than by two call sites happening to match.
+        postrank_data.update({k: resdic.get(k) for k in _UNIVERSE_KEYS})
         import pandas as pd
         pd.to_pickle(postrank_data, postrank_fname)
         print(f"PostRank saved to: {postrank_fname}")

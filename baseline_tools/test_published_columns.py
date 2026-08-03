@@ -141,6 +141,23 @@ POSTRANK_METRIC_READERS = {
         "other `pr[...]` access is pr['source'] or pr['AggScore'], neither of which is a "
         "metric column. The file's own output states the z*w basis in prose. Exempt because it "
         "is CORRECT about the basis, not because it is out of scope.",
+    "per_exchange_completeness.py":
+        "CLEARED by audit 2026-08-03 (per-exchange completeness analysis, dispatched "
+        "alongside the universe/EURONEXT work; read-only, no network). LITERAL-NAME FALSE "
+        "POSITIVE, same class as loo_weight_influence.py: the guard matches 18 metric "
+        "names, but every one of them is a key this script ASSIGNS while RECOMPUTING the "
+        "metrics itself from cdx_df via stage2_metrics -- `r['Altman-Z'] = sm.altman_z`, "
+        "`r['EPStoEPSmean'] = sm.eps_to_eps_mean`, and so on, each called on tempcdx -- so "
+        "they are outputs of its own recompute, not reads of postRank. (Written without "
+        "call parentheses on purpose: the sibling guard in test_eps_mean_window.py is a "
+        "plain text scan for that function name followed by `(`, and an earlier draft of "
+        "this very comment tripped it.) Verified by enumerating EVERY postRank "
+        "access in the file: there are exactly two, `postRank['source']` at :362 and "
+        "`list(postRank['source'])` at :507, and 'source' is not a metric column. The "
+        "derived/dtype route is not triggered either (the scan reports derived=False), so "
+        "it never iterates or subsets postRank's columns. Exempt because it does not read "
+        "the weighted columns at all -- if a future edit makes it read `postRank[<metric>]`, "
+        "the exemption is void and this entry must be re-audited, not extended.",
 }
 
 

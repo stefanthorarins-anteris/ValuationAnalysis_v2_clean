@@ -163,7 +163,20 @@ def writeManElimToFile(dmdic,manualelimtickers):
         writer.writerow(manualelimtickers)
 
 def get_lastIndexRead(lastindex_fn):
-    allowedfn = ['lastIndexOfRead_fmp_stock_US1.txt','lastIndexOfRead_fmp_stock_NA1_EU1.txt', 'lastIndexOfRead_fmp_stock_NA1.txt', 'lastIndexOfRead_fmp_stock_WW1_TV.txt']
+    """Resume index for a universe's `lastIndexOfRead_<ds>_<filter>.txt`.
+
+    THE WHITELIST IS NOW DERIVED, NOT HARDCODED (2026-08-02).  It used to be a literal
+    list of four filenames, and `configuration` accepted SIX filter names -- so
+    `-startfromlastindex` with `stock_US1_EU1` or `stock_US1_EU2` raised
+    'Not Implemented' for a filter the CLI had just validated.  A hardcoded whitelist
+    beside a growing set of universes is a defect generator: every universe added would
+    be born unresumable, and the failure surfaces only on the RESUME, i.e. after a
+    partial multi-hour fetch has already been paid for.
+    `universes.resume_filenames()` contains every historical name verbatim, so no
+    resume file already on disk is orphaned; the two previously-missing ones now work.
+    """
+    import universes as un
+    allowedfn = un.resume_filenames('fmp')
     if lastindex_fn in allowedfn:
         if not os.path.exists(lastindex_fn):
             with open(lastindex_fn, "w") as file:
@@ -175,7 +188,8 @@ def get_lastIndexRead(lastindex_fn):
                 lines_list = f.readlines()
                 startindex = int(lines_list[0])
     else:
-        raise Exception('Not Implemented')
+        raise Exception('Not Implemented: %r is not a resume file for any known universe. '
+                        'Expected one of: %s' % (lastindex_fn, ', '.join(allowedfn)))
 
     return startindex
 

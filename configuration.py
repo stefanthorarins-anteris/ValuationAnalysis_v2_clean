@@ -3,6 +3,7 @@ import argparse
 import csv
 import os
 import utils
+import universes as un
 
 # ===========================================================================
 #  ARGUMENT PARSING (argparse refactor, 2026-08-02)
@@ -137,14 +138,25 @@ def getDataFetchConfiguration(args):
     # behaviour #2); `_unknown` is intentionally unused.
     ns, _unknown = _build_parser().parse_known_args(list(args))
 
-    # Assign tickerfilter
-    tickerfilterlist = ['stock_NA1', 'stock_US1', 'stock_WW1_TV','stock_NA1_EU1', 'stock_US1_EU1', 'stock_US1_EU2']
+    # Assign tickerfilter (= the UNIVERSE SCOPE).
+    #
+    # THE VALID NAMES ARE NO LONGER A LITERAL HERE (2026-08-02).  This used to be a
+    # hand-maintained list whose index 3 was the default, sitting a whole module away
+    # from `getData_gen.tickerfilterWrapper`, which held the EXCHANGE CODES those names
+    # stood for.  Two lists, one meaning: a name present here but absent there fell
+    # through the wrapper's `if/elif` chain and returned the ENTIRE ~50,000-name
+    # pre-filter table with no error.  Both now read `universes.UNIVERSES`, so a name
+    # that validates is a name that resolves, and `tickerfilterlist[3]` -- a default
+    # pinned by LIST POSITION, which any insertion would have silently moved -- is
+    # replaced by a NAMED default.
+    tickerfilterlist = un.names()
     if _given(ns, 'tickerfilter'):
         tickerfilter = _require(ns, 'tickerfilter', '-tickerfilter requires an argument')
         if tickerfilter not in tickerfilterlist:
-            raise Exception('-tickerfilter argument not valid')
+            raise Exception('-tickerfilter argument not valid: %r. Valid universes: %s'
+                            % (tickerfilter, ', '.join(tickerfilterlist)))
     else:
-        tickerfilter = tickerfilterlist[3]
+        tickerfilter = un.DEFAULT_UNIVERSE
 
     # Assign datasource
     datasourcelist = ['fmp']
@@ -224,6 +236,22 @@ def getDataFetchConfiguration(args):
         nrTaT = int(_require(ns, 'nrTaT', '-nrTaT requires an argument'))
     else:
         nrTaT = -1
+
+    # -nrTaT IS A POSITIONAL PREFIX, NOT A SAMPLE.  getData_fmp applies it as
+    # `Tickers_df.iloc[startindex:]` then breaks at `cntr == nrTaT`, so it keeps the
+    # first N rows in available-traded/list order.  That systematically drops
+    # semi-annual filers, non-USD reporters and whole cohorts, which is exactly what
+    # the curated stock_TEST1 universe exists to avoid -- so combining the two silently
+    # throws away the representativeness the test universe was built for, and the
+    # surviving subset is an arbitrary prefix of the curated list.  Warned rather than
+    # rejected: a deliberate 5-ticker smoke test of the test universe is legitimate.
+    if nrTaT > 0 and un.symbols(tickerfilter) is not None:
+        print('WARNING: -nrTaT %d truncates the CURATED universe %s to an arbitrary '
+              'positional prefix of %d, discarding the frequency / exchange / cohort / '
+              'edge-case coverage it was constructed to provide. Drop -nrTaT to run the '
+              'whole curated list (%d names, ~%d API calls).'
+              % (nrTaT, tickerfilter, nrTaT, len(un.symbols(tickerfilter)),
+                 5 * len(un.symbols(tickerfilter)) + 3))
 
     # Get comparison year (default last year)
     if _given(ns, 'compyear'):
@@ -513,7 +541,11 @@ def getDataFetchConfiguration(args):
     if loadBoMetric or loadBoResults:
         print('Note that loading might overwrite other arguments.')
 
-    lastindex_fn = 'lastIndexOfRead_' + datasource + '_' + tickerfilter + '.txt'
+    # Built by `universes` rather than concatenated here, so this string and the
+    # whitelist `utils.get_lastIndexRead` checks it against cannot disagree.  The format
+    # is UNCHANGED (`lastIndexOfRead_<ds>_<filter>.txt`), so every resume file already
+    # on disk keeps resolving.
+    lastindex_fn = un.resume_filename(tickerfilter, datasource)
     if ns.startfromlastindex:
         startindex = utils.get_lastIndexRead(lastindex_fn)
     else:
@@ -541,5 +573,20 @@ def getDataFetchConfiguration(args):
                  'startfromlastindex': startfromlastindex, 'transfer_dir': transfer_dir,
                  'transfer_disabled_reason': transfer_disabled_reason,
                  'run_estimation': run_estimation}
+
+    # UNIVERSE-DEFINITION PROVENANCE (2026-08-02).
+    #
+    # The filter NAME alone is no longer sufficient provenance.  `stock_NA1_EU1` denotes
+    # 11,497 members today and denoted 10,451 before the dead EURONEXT/OSE codes were
+    # replaced, so two artifacts can carry the identical name and the identical
+    # `_len<N>` stamp shape while describing DIFFERENT universes -- and every pooled
+    # statistic (z-score, percentile cut, top-100 pool, beat-rate) differs across that
+    # boundary for that reason alone.  Stamping the DEFINITION, fingerprint included,
+    # means a later comparison can be checked instead of assumed.
+    #
+    # Injected into configdic specifically because Sbocker spreads configdic LAST into
+    # the dict handed to utils.saveWrapper, so the stamp reaches every saved artifact
+    # without a second insertion point that could be forgotten.
+    configdic.update(un.provenance(tickerfilter))
 
     return configdic

@@ -109,6 +109,15 @@ _NAME_BANK = re.compile(r'bancshares|bancorp|\bbank\b', re.IGNORECASE)
 
 REIT_SECTOR = 'Real Estate'
 MINING_SECTOR = 'Basic Materials'
+
+# Sector-map COVERAGE thresholds for partition_universe's guard (2026-08-02).
+# Measured, not chosen: the live maps cover 87.1% of the 2026-01-08 panel's 9,012
+# sources; a map authored by the 142-name test universe would cover 1.6% of that same
+# pool. Two orders of magnitude apart, so these cuts separate "healthy" from "wrong
+# artifact" without firing on a normal run. See the guard for the full reasoning.
+SECTOR_COVERAGE_ABORT_BELOW = 0.50
+SECTOR_COVERAGE_WARN_BELOW = 0.75
+SECTOR_COVERAGE_HEALTHY_REF = 0.871
 FINANCIAL_SECTOR = 'Financial Services'
 # Financial-Services sub-cohort labels
 FIN1_VEHICLE = 'InvestmentVehicle'
@@ -1084,6 +1093,65 @@ def partition_universe(BoScore_df, cdx_df, tickers_df,
         print(banner, file=sys.stderr, flush=True)
         print(banner, flush=True)
         raise RuntimeError(msg)
+
+    # COVERAGE GUARD (2026-08-02).  "Non-empty" is NOT the property this carve needs.
+    # The abort above only catches a map that is entirely absent, so a map that is
+    # merely WRONG-SIZED -- e.g. built from a 142-name subset universe and then applied
+    # to a 10,693-name pool -- passed straight through it while REIT and Mining leaked
+    # wholesale, which is the exact failure the abort exists to prevent, reached by a
+    # different route. So check what the map actually COVERS of the pool in hand.
+    #
+    # THRESHOLDS ARE GROUNDED IN MEASUREMENT, NOT PICKED (2026-08-02, live maps vs the
+    # 2026-01-08 panel): a HEALTHY run covers 87.1% of its pool by sector (13% of names
+    # legitimately have no FMP profile and fall to 'general'), and 98.9% by industry.
+    # The poisoned-subset case measures 1.4%. Those are two orders of magnitude apart,
+    # so any cut between them separates them cleanly:
+    #   < 50% -> ABORT. Not a degradation, a wrong artifact. Same reasoning as the
+    #            empty-map abort: refuse to ship a pool that only LOOKS carved.
+    #   < 75% -> WARN loudly and proceed. Well below the measured 87.1% norm, so this
+    #            does not fire on a healthy run, but a real erosion becomes visible.
+    _pool = [s for s in symbols if isinstance(s, str)]
+    _covered = sum(1 for s in _pool if s in sector_map)
+    _frac = (_covered / len(_pool)) if _pool else 1.0
+    if _pool and _frac < SECTOR_COVERAGE_ABORT_BELOW:
+        msg = ("carveOut: sector map covers only %d of %d pool sources (%.1f%%) -- far "
+               "below the ~87%% a healthy run shows. The map on disk was almost "
+               "certainly built from a DIFFERENT (smaller) universe than the one being "
+               "scored; rebuild it from a full universe." % (_covered, len(_pool), 100 * _frac))
+        bang = "!" * 78
+        banner = "\n".join([
+            "", bang,
+            "!!! CARVE-OUT ABORTED -- SECTOR MAP DOES NOT COVER THIS POOL !!!",
+            "!!!   pool sources : %d" % len(_pool),
+            "!!!   with a sector: %d  (%.1f%%)   healthy runs measure ~%.0f%%"
+            % (_covered, 100 * _frac, 100 * SECTOR_COVERAGE_HEALTHY_REF),
+            "!!! A non-empty but WRONG-SIZED map is the empty-map failure wearing a",
+            "!!! disguise: REIT & Mining would be carved from a fraction of the pool",
+            "!!! and the rest would leak into general, while the output still LOOKS",
+            "!!! carved. Refusing to proceed.",
+            "!!! LIKELY CAUSE: the maps were authored by a SUBSET run (e.g.",
+            "!!! -tickerfilter stock_TEST1). Delete them and rebuild from a full",
+            "!!! exchange-defined universe, or call findAllSectorsViaProfile.",
+            "!!! " + msg, bang, ""])
+        print(banner, file=sys.stderr, flush=True)
+        print(banner, flush=True)
+        raise RuntimeError(msg)
+    if _pool and _frac < SECTOR_COVERAGE_WARN_BELOW:
+        bang = "!" * 78
+        wbanner = "\n".join([
+            "", bang,
+            "!!! CARVE-OUT WARNING -- THIN SECTOR-MAP COVERAGE !!!",
+            "!!!   %d of %d pool sources have a sector (%.1f%%); healthy ~%.0f%%."
+            % (_covered, len(_pool), 100 * _frac, 100 * SECTOR_COVERAGE_HEALTHY_REF),
+            "!!! Uncovered names cannot be carved and fall to the GENERAL pool, so",
+            "!!! some miners/REITs are probably leaking. Run PROCEEDS -- but treat",
+            "!!! the cohort counts as understated and consider rebuilding the map.",
+            bang, ""])
+        print(wbanner, file=sys.stderr, flush=True)
+        print(wbanner, flush=True)
+    else:
+        print('CARVE-OUT sector-map coverage: %d of %d pool sources (%.1f%%).'
+              % (_covered, len(_pool), 100 * _frac), flush=True)
 
     industry_map = _load_industry_map(industry_pickle)
     if not industry_map:

@@ -146,17 +146,89 @@ def buildSectorIndustryMaps(symbols, baseurl, api_key, batch_size=100, pace=None
         sectordic.setdefault(sec, []).append(sym)
 
     newsectordic = _normalize_sector_dic(sectordic)
+
+    # MERGE, NEVER OVERWRITE (2026-08-02).  These two pickles are SHARED,
+    # UNIVERSE-INDEPENDENT artifacts: `sectorsdic_fmp.pickle` is a symbol->sector map
+    # for the whole world, and the next run to read it may be scoring a much larger
+    # pool than the one that built it.  A bare `pd.to_pickle` made the artifact's
+    # CONTENT a function of whichever universe happened to run last, so a small run
+    # could SHRINK the map and every later run would carve against the remnant --
+    # non-empty, so it sails past carveOut's empty-map abort, "while the output still
+    # LOOKS carved" (carveOut's own words about exactly this failure).  Unioning makes
+    # the map monotonically non-shrinking, which is the property the consumers assume.
+    # Newly-fetched entries WIN on conflict: they are fresher, and a company's sector
+    # really does get reclassified.
+    prev_sector = _read_pickle_or_none('sectorsdic_fmp.pickle')
+    prev_industry = _newest_industry_pickle()
+    merged_sector, n_kept_s = _merge_sector_dics(prev_sector, newsectordic)
+    merged_industry, n_kept_i = _merge_industry_dics(
+        _read_pickle_or_none(prev_industry) if prev_industry else None, industrydic)
+
     fidag = datetime.today().strftime('%Y-%m-%d')
-    pd.to_pickle(newsectordic, 'sectorsdic_fmp.pickle')
-    pd.to_pickle(industrydic, f'industrydic_fmp_{fidag}.pickle')
-    print(f'[sector/industry build] {len(industrydic)} symbols -> '
+    pd.to_pickle(merged_sector, 'sectorsdic_fmp.pickle')
+    pd.to_pickle(merged_industry, f'industrydic_fmp_{fidag}.pickle')
+    print(f'[sector/industry build] {len(industrydic)} symbols fetched -> '
           f"sectorsdic_fmp.pickle + industrydic_fmp_{fidag}.pickle "
           f'({n_calls} batched profile call(s); {len(missing)} requested symbol(s) '
           f'had no profile -- tolerated, under threshold; key {_mask_key(api_key)})')
-    return newsectordic, industrydic
+    print(f'[sector/industry build] MERGED with the existing maps: kept {n_kept_s} '
+          f'pre-existing sector entr(ies) and {n_kept_i} industry entr(ies) that this '
+          f'batch did not cover -> {_sector_symbol_count(merged_sector)} sector / '
+          f'{len(merged_industry)} industry symbols on disk (never shrinks).')
+    return merged_sector, merged_industry
 
 
-def ensure_sector_industry_maps(symbols, baseurl, api_key, batch_size=100, pace=None):
+def _read_pickle_or_none(path):
+    try:
+        return pd.read_pickle(path) if path and os.path.exists(path) else None
+    except Exception:
+        return None
+
+
+def _newest_industry_pickle():
+    cands = sorted(glob.glob('industrydic_fmp_*.pickle'))
+    return cands[-1] if cands else None
+
+
+def _sector_symbol_count(sectordic):
+    return len({s for syms in (sectordic or {}).values() for s in syms})
+
+
+def _merge_sector_dics(previous, new):
+    """Union two sector->[symbols] maps; `new` wins where a symbol appears in both.
+
+    Returns (merged, n_symbols_kept_from_previous).  Kept separate from
+    `_normalize_sector_dic` because the on-disk map is ALREADY normalized -- re-running
+    the <10-member floor over the union could collapse a real sector that only looks
+    thin in this batch."""
+    if not previous:
+        return new, 0
+    new_syms = {s for syms in new.values() for s in syms}
+    merged = {}
+    kept = set()
+    for sector, syms in previous.items():
+        keep = [s for s in syms if s not in new_syms]
+        kept.update(keep)
+        if keep:
+            merged[sector] = list(keep)
+    for sector, syms in new.items():
+        merged.setdefault(sector, [])
+        merged[sector] = list(dict.fromkeys(merged[sector] + list(syms)))
+    return merged, len(kept)
+
+
+def _merge_industry_dics(previous, new):
+    """Union two symbol->industry maps; `new` wins.  Returns (merged, n_kept)."""
+    if not previous:
+        return new, 0
+    merged = dict(previous)
+    kept = len([s for s in previous if s not in new])
+    merged.update(new)
+    return merged, kept
+
+
+def ensure_sector_industry_maps(symbols, baseurl, api_key, batch_size=100, pace=None,
+                                universe_is_subset=False, universe_name=None):
     """GENERATE-IF-MISSING hook for the ingestion layer.
 
     If BOTH the sector map (undated sectorsdic_fmp.pickle) and an industry map
@@ -171,11 +243,52 @@ def ensure_sector_industry_maps(symbols, baseurl, api_key, batch_size=100, pace=
     (industry-missing -> loud degrade to the keyword rule; sector-missing -> the
     existing loud abort). It never introduces a NEW hard dependency or abort.
 
+    `universe_is_subset` -- SET IT when `symbols` is a deliberately small, curated
+    subset rather than a whole exchange-defined universe (i.e. the `stock_TEST1`
+    explicit-membership universe).  Such a run MUST NOT author these shared maps:
+
+      * the maps are SHARED and UNIVERSE-INDEPENDENT, and a 142-symbol map applied to a
+        later 10,693-name pool covers 1.3% of it -- non-empty, so it slips straight past
+        carveOut's empty-map abort while REIT and Mining leak wholesale;
+      * `_normalize_sector_dic`'s <10-member floor is calibrated for the FULL universe.
+        MEASURED on the 142-name list: 8 of 12 sector keys collapse and 34.4% of the
+        batch lands in 'Unspecified'. NOTE THE LIMIT OF THAT CLAIM -- `Real Estate` (13)
+        and `Basic Materials` (16), the only two sectors the carve actually CONSUMES,
+        SURVIVE the floor. So the result would be a THIN carve, not NO carve; an earlier
+        draft of this comment said 'no carve at all', which overstated it.
+
+    So on a subset universe this SKIPS the build and says so loudly.  It does not
+    fabricate a map, and (because `buildSectorIndustryMaps` now merges rather than
+    overwrites) it cannot shrink one either.  If no map exists at all, carveOut's
+    pre-existing empty-map abort fires with its own banner -- the correct outcome: the
+    operator builds the maps once from a full universe (any exchange-defined
+    `-tickerfilter`, or `findAllSectorsViaProfile`) and every later run reuses them.
+
     Returns True iff a build ran and wrote the maps; False otherwise."""
     sector_present = os.path.exists('sectorsdic_fmp.pickle')
     industry_present = bool(glob.glob('industrydic_fmp_*.pickle'))
     if sector_present and industry_present:
         return False  # idempotent skip -- reuse cached pickles, no rebuild
+
+    if universe_is_subset:
+        bar = '!' * 78
+        print('\n' + bar)
+        print('!!! SECTOR/INDUSTRY MAP BUILD SKIPPED -- the active universe is a SUBSET')
+        print('!!!   universe : %s  (%d symbols)' % (universe_name or '<unnamed>',
+                                                     len(list(symbols))))
+        print('!!!   missing  : %s%s'
+              % ('sectorsdic_fmp.pickle ' if not sector_present else '',
+                 'industrydic_fmp_*.pickle' if not industry_present else ''))
+        print('!!! These maps are SHARED and universe-independent. Building them from a')
+        print('!!! curated subset would leave a map covering ~1% of a later full run --')
+        print('!!! non-empty, so it would slip past carveOut\'s empty-map abort while')
+        print('!!! REIT/Mining leaked into the general pool. Refusing to author them.')
+        print('!!! FIX: run once with a full exchange-defined universe (e.g.')
+        print('!!!      -tickerfilter stock_NA1_EU1), or call')
+        print('!!!      findAllSectors.findAllSectorsViaProfile(baseurl, api_key).')
+        print('!!! This run will hit carveOut\'s existing loud abort/degrade instead.')
+        print(bar + '\n', flush=True)
+        return False
 
     try:
         buildSectorIndustryMaps(symbols, baseurl, api_key,

@@ -1,3 +1,27 @@
+!!! DO NOT USE THIS FILE AS A SOURCE OF EXCHANGE CODES (annotated 2026-08-02) !!!
+================================================================================
+It is STALE and in places ACTIVELY WRONG. Verified against the live FMP
+`available-traded/list` on 2026-08-02:
+
+  * line "KSC - Kuwait Stock Exchange"        -- WRONG. FMP's KSC is KOREA (KOSPI),
+                                                 857 statement-bearing stocks, .KS.
+  * line "ICE - ICE (Intercontinental Exchange)" -- WRONG. FMP's ICE is ICELAND
+                                                 (Nasdaq Iceland), 20 stocks, .IC.
+  * Brussels appears THREE times with three different codes (EBS, BRU, EUX) and
+    Lisbon twice (ENX, LIS). Only BRU and LIS are real FMP codes.
+
+WHERE THE CODES ACTUALLY LIVE: `universes.py` -- one registry, each code recorded with
+the live member count it was verified against. To re-verify, intersect
+`v3/available-traded/list` with `v3/financial-statement-symbol-lists`, keep
+`type == 'stock'`, and count by `exchangeShortName` (2 API calls).
+
+FOR THE RECORD, because it is the natural assumption and it is FALSE: the
+EURONEXT/OSE defect fixed on 2026-08-02 did NOT come from this file. This file
+correctly lists PAR, AMS, BRU, LIS and OSL; the strings `EURONEXT` and `OSE` that
+`getData_gen` filtered on appear NOWHERE here. They were plausible-looking guesses,
+and they matched zero rows for the life of the project.
+================================================================================
+
 KOE - Korea Exchange
 BER - Berlin Stock Exchange
 SET - Stock Exchange of Thailand

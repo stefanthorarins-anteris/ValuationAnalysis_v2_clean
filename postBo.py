@@ -480,7 +480,11 @@ def writeResWrapper(resdic):
     try:
         flag_df = writeBoAggToCSV(fb_df, mscore, cscore, baseurl, api_key, ntopagg,
                                   fname_AggScoretop, flag_df,
-                                  raw_df=resdic.get('postScoreMetric_raw'))
+                                  raw_df=resdic.get('postScoreMetric_raw'),
+                                  universe_stamp={
+                                      'universe': resdic.get('universe'),
+                                      'universe_fingerprint':
+                                          resdic.get('universe_fingerprint')})
     except Exception as _e:
         print(f'WARNING: AggScore CSV stage failed ({type(_e).__name__}: {_e}); '
               f'{fname_AggScoretop} may be missing or partial and the API sector '
@@ -575,15 +579,63 @@ def writeResWrapper(resdic):
     except Exception as _e:
         print(f'WARNING: review-reference artifacts skipped ({type(_e).__name__}: {_e})')
 
+    # ------------------------------------------------------------------------------ #
+    #  UNIVERSE-PROVENANCE SIDECAR (2026-08-03).                                       #
+    #                                                                                #
+    #  The universe stamp reached the three PICKLES but none of the human-readable      #
+    #  deliverables -- and those are what actually get opened, mailed and compared.     #
+    #  Every one of them is named `<kind>-<date>_<ds>_<tickerfilter>`, i.e. by a         #
+    #  universe NAME whose meaning changed on 2026-08-02, so two files could carry       #
+    #  identical names while describing different pools.                                #
+    #                                                                                #
+    #  A SIDECAR rather than in-file stamping, deliberately:                            #
+    #    * the XLSX is produced by a 160 KB generator with its own sheet layout, and     #
+    #      threading a stamp through it risks the deck for no extra information;         #
+    #    * the CSVs have consumers (baseline_tools, the backtest) that select columns    #
+    #      by name, and a sidecar cannot break any of them;                             #
+    #    * it covers EVERY deliverable this run wrote, including ones added later,       #
+    #      because it lists them by filename.                                           #
+    #  Guarded: a sidecar failure must never cost a deliverable.                         #
+    # ------------------------------------------------------------------------------ #
+    deliverables = ([fname_AggScoretop, fname_presentationtop, fname_forensic]
+                    + sidelist_fnames + band_fnames + reviewref_fnames)
+    try:
+        import json as _json
+        _prov = {k: resdic.get(k) for k in (
+            'universe', 'universe_label', 'universe_fingerprint', 'universe_exchanges',
+            'universe_every_exchange', 'universe_expected_count',
+            'universe_definition_changed', 'universe_previous_exchanges',
+            'universe_codes_verified', 'universe_note', 'universe_resolved_members')}
+        # The explicit member list is recorded for a curated universe -- it IS the
+        # definition there, and 144 symbols is cheap.
+        if resdic.get('universe_symbols'):
+            _prov['universe_symbols'] = list(resdic['universe_symbols'])
+        _prov.update({'run_date': fidag, 'datasource': datasource,
+                      'tickerfilter_flag': tickerfilter,
+                      'deliverables': list(deliverables)})
+        if not _prov.get('universe_fingerprint'):
+            _prov['universe_fingerprint'] = 'unknown-not-stamped'
+            _prov['warning'] = ('this run carried no universe stamp; its membership is '
+                                'NOT establishable from the artifacts')
+        fname_prov = f'RunProvenance-{fidag}_{datasource}_{tickerfilter}.json'
+        with open(fname_prov, 'w') as _f:
+            _json.dump(_prov, _f, indent=1, default=str)
+        deliverables = deliverables + [fname_prov]
+        print(f'Universe provenance sidecar written to: {fname_prov} '
+              f"(universe={_prov.get('universe')} "
+              f"fingerprint={_prov.get('universe_fingerprint')})", flush=True)
+    except Exception as _e:
+        print(f'WARNING: universe-provenance sidecar skipped '
+              f'({type(_e).__name__}: {_e}); deliverables unaffected.', flush=True)
+
     # Return the human-readable top-N deliverables just written (same pattern as
     # utils.saveWrapper returning its pickle name) so Sbocker.main can copy them to
     # the Drive-synced transfer dir at the pre-ingestion phase boundary. Data-only:
     # nothing here changes scoring/ranking/forensic output.
-    return ([fname_AggScoretop, fname_presentationtop, fname_forensic]
-            + sidelist_fnames + band_fnames + reviewref_fnames)
+    return deliverables
 
 def writeBoAggToCSV(fb_df, mscore, cscore, baseurl, api_key, ntopagg, fname_AggScoretop,
-                    flag_df=None, raw_df=None):
+                    flag_df=None, raw_df=None, universe_stamp=None):
     """raw_df : resdic['postScoreMetric_raw'] -- the UNWEIGHTED, UN-NORMALISED metric
     frame.  Required to publish any metric under its own name: `fb_df` is postRank,
     whose metric columns are all `z x w` (see the CycleHeat note below)."""
@@ -934,6 +986,21 @@ def writeBoAggToCSV(fb_df, mscore, cscore, baseurl, api_key, ntopagg, fname_AggS
                          'sloanAccruals', 'sloan_worstQuintile_inShortlist', 'forensicTag']
         keep = [c for c in forensic_cols if c in flag_df.columns]
         BoComp_tocsv = BoComp_tocsv.merge(flag_df[keep], on='source', how='left')
+
+    # UNIVERSE STAMP IN THE RANKED CSV ITSELF (2026-08-03), not only in the sidecar.
+    # This is the artifact most often read standalone, and its FILENAME carries only a
+    # universe name whose meaning changed on 2026-08-02 -- so a reader comparing two
+    # AggScore CSVs had nothing to compare bases on. Two constant columns, APPENDED, so
+    # no existing consumer that selects columns by name is affected. Guarded: a stamp
+    # must never cost the deliverable.
+    try:
+        BoComp_tocsv['universe'] = universe_stamp.get('universe') if universe_stamp else None
+        BoComp_tocsv['universe_fingerprint'] = (
+            (universe_stamp or {}).get('universe_fingerprint') or 'unknown-not-stamped')
+    except Exception as _se:
+        print(f'WARNING: universe stamp not added to {fname_AggScoretop} '
+              f'({type(_se).__name__}: {_se}); CSV otherwise unaffected.', flush=True)
+
     BoComp_tocsv.to_csv(fname_AggScoretop)
     pbar.close()
     return flag_df

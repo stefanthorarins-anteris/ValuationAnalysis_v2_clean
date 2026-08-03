@@ -332,6 +332,19 @@ def test_the_call_site_inventory_is_COMPLETE():
         # CORRECT, not because the file is out of scope -- this guard firing on it was the
         # guard working.
         os.path.join("baseline_tools", "verify_part5_defects.py"),
+        # Per-exchange completeness analysis (dispatched alongside the universe/EURONEXT
+        # work; read-only, no network).  CLEARED by audit 2026-08-03: its single call is
+        # `sm.eps_to_eps_mean(tempcdx, rpy=_rpy)` at per_exchange_completeness.py:249 --
+        # it passes `rpy=` and does NOT pass the ambient scoring `nq`, so it inherits the
+        # 28-quarter EPS_MEAN_BASE_NQ cap exactly as the two production sites do.  Note
+        # this is a DELIBERATE asymmetry in that file rather than an accident: the calls
+        # around it DO forward `nq` where the signature takes one (`sm.tbv_p_ratio(tempcdx,
+        # nq, rpy=_rpy)` at :246), and eps_to_eps_mean alone is given only `rpy`.  Its
+        # `_rpy` comes from `rp.rows_per_year(freq_map, ticker)` (:230), the same source
+        # production uses, so a semi-annual filer gets the same 14-row window as in the
+        # live scorer.  Exempt because the call is CORRECT, not because the file is out of
+        # scope -- this guard firing on it was the guard working.
+        os.path.join("baseline_tools", "per_exchange_completeness.py"),
     }
     expected = {p for p, _n in EPS_MEAN_CALL_SITES} | ALLOWED_ELSEWHERE
     found = set()

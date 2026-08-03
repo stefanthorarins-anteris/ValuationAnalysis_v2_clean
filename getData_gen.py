@@ -221,7 +221,54 @@ def get_tickers(ds, baseurl, api_key, manual_elim=None, tfilt='stock_NA1',sfilt=
         maskAT = resp_stockAT_cmp_df['symbol'].isin(resp_tckr_df['symbol'])
         tickersAT_df = resp_stockAT_cmp_df[maskAT].drop_duplicates(subset='symbol').reset_index(drop=True)
 
+        # LOUD UNIVERSE BANNER, printed HERE -- the point where the universe definition
+        # is actually applied -- so every caller (Sbocker, delisted_ingest) gets it, and
+        # so it lands BEFORE the multi-hour fundamentals fetch rather than after.  It
+        # states the definition fingerprint and, for the four names whose meaning changed
+        # on 2026-08-02, that artifacts carrying the same name are NOT comparable on
+        # membership.  See universes.run_banner.
+        import universes as un
+        print(un.run_banner(tfilt), flush=True)
+
         df = tickerfilterWrapper(tickersAT_df, tfilt, sfilt, mcapf, baseurl, api_key)
+
+        # RESOLVED count against the live-verified expectation.  A run legitimately lands
+        # UNDER the expectation (the instrument filter, the sector filter and the delisted
+        # prune all remove members after the exchange filter), so this is a sanity read,
+        # not a gate -- but a resolved count of ZERO, or one wildly off the expectation,
+        # is the exact signature of the dead-exchange-code defect and must be visible.
+        _exp = un.expected_count(tfilt)
+        print('UNIVERSE %s RESOLVED: %d members (fingerprint %s%s)'
+              % (tfilt, len(df), un.definition_fingerprint(tfilt),
+                 '' if _exp is None else ', pre-filter expectation ~%d' % _exp),
+              flush=True)
+        if len(df) == 0:
+            print('!!! UNIVERSE %s RESOLVED TO ZERO MEMBERS -- this is the signature of '
+                  'an exchange code that matches nothing (the EURONEXT/OSE defect). '
+                  'Check universes.UNIVERSES against the live exchange list before '
+                  'spending a fetch.' % tfilt, flush=True)
+
+        # PER-CODE FLOOR.  A universe-level total cannot see a dead exchange code -- that
+        # is exactly how EURONEXT/OSE hid for the life of the project (the universe still
+        # resolved to thousands of names). Per code, a dead code loses 100% of ITSELF and
+        # is unmissable. See universes.check_resolved_counts for the measured thresholds.
+        if 'exchangeShortName' in getattr(df, 'columns', []):
+            _by_code = df['exchangeShortName'].value_counts().to_dict()
+            _codes = un.exchanges(tfilt)
+            if _codes:
+                print('  per-exchange resolved: %s'
+                      % ', '.join('%s %d/%d' % (c, int(_by_code.get(c, 0)),
+                                                un._VERIFIED_COUNTS.get(c, 0))
+                                  for c in _codes), flush=True)
+            for _c, _v, _r, _sf in un.check_resolved_counts(tfilt, _by_code):
+                print('!!! UNIVERSE %s: exchange code %r returned %d names against a '
+                      'verified %d -- %.0f%% SHORT (natural attrition from the instrument '
+                      'filter and delisted prune is at most ~%.0f%%). Either the code was '
+                      'renamed by FMP or its venue shrank; a code that matches NOTHING is '
+                      'the EURONEXT/OSE defect. Re-verify against the live exchange list '
+                      'before spending a fetch.'
+                      % (tfilt, _c, _r, _v, 100 * _sf,
+                         100 * un.RESOLVED_WORST_NATURAL_SHORTFALL), flush=True)
 
         # GENERATE-IF-MISSING (self-heal the carve-out's sector + industry maps).
         # A fresh git checkout ships neither pickle (both gitignored) and the producer
@@ -234,9 +281,21 @@ def get_tickers(ds, baseurl, api_key, manual_elim=None, tfilt='stock_NA1',sfilt=
         # universe via batched profile calls. Best-effort: a fetch failure logs a masked
         # warning and falls through to carveOut's existing degrade path -- it never
         # aborts the universe build.
+        # SUBSET UNIVERSES MUST NOT AUTHOR THE SHARED MAPS (2026-08-02).  This hook is
+        # handed the FILTERED universe, and `buildSectorIndustryMaps` used to overwrite
+        # `sectorsdic_fmp.pickle` outright -- so once an explicit-membership universe
+        # (stock_TEST1, 142 names) could shrink `df`, a test run on a machine lacking the
+        # maps would author a 142-symbol map and the NEXT FULL RUN would carve 10,693
+        # names against it: non-empty, so past carveOut's empty-map abort, with REIT and
+        # Mining leaking wholesale. That hazard is NEW with the selectable-universe work
+        # -- `-nrTaT` never shrank `df` here (the cap applies downstream in
+        # getData_fmp) -- so the guard belongs with it. `universes.symbols()` is exactly
+        # the "membership is an explicit curated list" test.
         try:
             from findAllSectors import ensure_sector_industry_maps
-            ensure_sector_industry_maps(list(df['symbol']), baseurl, api_key, pace=15)
+            ensure_sector_industry_maps(list(df['symbol']), baseurl, api_key, pace=15,
+                                        universe_is_subset=(un.symbols(tfilt) is not None),
+                                        universe_name=tfilt)
         except Exception as _e:
             print(f"WARNING: sector/industry map self-heal hook error (non-fatal): {_e}")
 
@@ -462,46 +521,254 @@ def filter_non_common_instruments(df, verbose=True, log_csv=True):
     return df[~drop].reset_index(drop=True)
 
 
-def tickerfilterWrapper(tickdf,tfilt,sfilt,mcapf,baseurl,api_key):
-    df = tickdf
-    if tfilt == 'stock_US1':
-        tickers_df_stock = filter_tickers(tickdf, 'type', 'stock', mcapf, api_key)
-        tickers_df_stock_US1 = filter_tickers(tickers_df_stock, 'exchangeShortName', ['NYSE', 'NASDAQ'], mcapf, api_key)
-        df = tickers_df_stock_US1
-    if tfilt == 'stock_NA1':
-        tickers_df_stock = filter_tickers(tickdf, 'type', 'stock', mcapf, api_key)
-        tickers_df_stock_NA1 = filter_tickers(tickers_df_stock, 'exchangeShortName', ['NYSE', 'NASDAQ', 'TSX'], mcapf,
-                                              api_key)
-        df = tickers_df_stock_NA1
-    if tfilt == 'stock_WW1_TV':
-        tickers_df_stock = filter_tickers(tickdf, 'type', 'stock', mcapf, api_key)
-        tickers_df_stock_WW1_TV = filter_tickers(tickers_df_stock, 'exchangeShortName',
-                                                 ['NYSE', 'NASDAQ', 'EURONEXT', 'LSE', 'XETRA'], mcapf, api_key)
-        df = tickers_df_stock_WW1_TV
-    elif tfilt == 'stock_NA1_EU1':
-        tickers_df_stock = filter_tickers(tickdf, 'type', 'stock', mcapf, api_key)
-        tickers_df_stock_NA1_EU1 = filter_tickers(tickers_df_stock, 'exchangeShortName',
-                                                   ['NYSE', 'NASDAQ', 'EURONEXT', 'LSE', 'TSX', 'XETRA', 'STO', 'OSE',
-                                                    'ICE'], mcapf, api_key)
-        df = tickers_df_stock_NA1_EU1
-    elif tfilt == 'stock_US1_EU1':
-        tickers_df_stock = filter_tickers(tickdf, 'type', 'stock', mcapf, api_key)
-        tickers_df_stock_US1_EU1 = filter_tickers(tickers_df_stock, 'exchangeShortName',
-                                                   ['NYSE', 'NASDAQ', 'EURONEXT', 'LSE', 'XETRA', 'STO', 'OSE',
-                                                    'ICE'], mcapf, api_key)
-        df = tickers_df_stock_US1_EU1
-    elif tfilt == 'stock_US1_EU2':
-        tickers_df_stock = filter_tickers(tickdf, 'type', 'stock', mcapf, api_key)
-        tickers_df_stock_US1_EU2 = filter_tickers(tickers_df_stock, 'exchangeShortName',
-                                                   ['NYSE', 'NASDAQ', 'EURONEXT'], mcapf, api_key)
-        df = tickers_df_stock_US1_EU2
+# =========================================================================== #
+#  ISIN-BASED SAME-ISSUER DETECTOR -- BUILT, DOCUMENTED, DELIBERATELY NOT WIRED  #
+#  (2026-08-02).  Per the CEO's standing practice: write the logic we want, and   #
+#  do not apply it until it is decided.  Wiring a NEW removal rule changes the    #
+#  production universe, which is a product call, not a bug fix.                   #
+#                                                                               #
+#  WHY IT EXISTS.  `filter_non_common_instruments`' three rules are all ANGLO:    #
+#  rule A is English debt/preferred vocabulary, rule B is the US/Nordic           #
+#  `-P<letters>` symbol suffix, rule C needs the instrument symbol to be a        #
+#  shorter sibling's symbol PLUS a whitelisted tail.  Restoring 1,046 Continental #
+#  European names, the filter removed EXACTLY ZERO of them -- which is equally     #
+#  consistent with "clean venues" and "blind filter".  It is the blind filter.    #
+#  Measured on the live 2026-08-02 list (1 batched profile call):                 #
+#                                                                               #
+#    ADMITTED NON-COMMON LINES (different ISIN, IDENTICAL company name, trading   #
+#    at a discount to the common -- i.e. the Korean-preferred failure mode):      #
+#      CBE.PA    Robertet S.A.  FR0000045601 vs RBT.PA   FR0000039091  -17.9%     #
+#                (a French `certificat d'investissement` -- non-voting)           #
+#      PREVA.AS  Value8 N.V.    NL0015118803 vs VALUE.AS NL0010661864  -29.9%     #
+#                (`PREferente Aandelen` -- cumulative preference shares)          #
+#                                                                               #
+#    ADMITTED LITERAL DUPLICATES (SAME ISIN, two symbols, ~0.1-0.3% apart --      #
+#    two ranking slots for one economic bet):                                     #
+#      HAFNIO.OL / HAFNI.OL    Hafnia Limited  SGXZ53070850                       #
+#      CATG.PA   / ALCAT.PA    S.A. Catana Group FR0010193052                     #
+#                                                                               #
+#  NO SYMBOL-SHAPE RULE CAN EVER CATCH THE FIRST TWO: `CBE` shares no prefix with  #
+#  `RBT`, and `PREVA` shares none with `VALUE`.  ISIN is the only available         #
+#  discriminator -- and the pipeline ALREADY FETCHES IT: `v3/profile` returns       #
+#  `isin`, and `findAllSectors._fetch_profiles_batched` pulls profiles for the      #
+#  whole universe to build the sector/industry maps.  So the blocker here is        #
+#  NEITHER data NOR cost -- it is the product decision.                            #
+#                                                                               #
+#  CORRECTLY LEFT ALONE by these rules, and the reason each must survive:          #
+#    HEIA.AS / HEIO.AS   Heineken N.V. vs Heineken HOLDING N.V. -- the normaliser   #
+#                        strips "Holding" so the NAMES collide, but these are two   #
+#                        separate issuers with separate financials. Different ISIN  #
+#                        AND different fundamentals, so `same_name_different_isin`  #
+#                        would flag them: THIS IS WHY THE RULE IS NOT WIRED.       #
+#    WWI.OL / WWIB.OL    Wilh. Wilhelmsen A/B -- dual-class COMMONS, must survive.  #
+#    CAT31.PA, CRBP2.PA  Credit Agricole regional mutuals: a `certificat            #
+#                        cooperatif d'investissement` is the ONLY listed equity of  #
+#                        a cooperative, exactly as units are for an LP (which the   #
+#                        repo explicitly keeps). Not duplicates -- keep.            #
+#                                                                               #
+#  The Heineken case is the whole argument for not auto-applying this: the         #
+#  same-name-different-ISIN signal has a REAL false positive on the very first     #
+#  universe it was tested against, and deleting a common is the expensive error.   #
+#  A safe version needs a fundamentals check (do the two lines report the same     #
+#  revenue/assets?) on top of the ISIN signal -- which is `carveOut`'s existing     #
+#  issuer-fingerprint idea, and belongs there rather than here.                    #
+# =========================================================================== #
+def isin_same_issuer_groups(symbols, names, isins):
+    """(duplicate_isin_groups, same_name_different_isin_groups).
 
-    # Drop debt/preferred/warrant/rights lines that FMP types as 'stock' (audit M-5).
-    # Placed here, AFTER the type+exchange filters and BEFORE the sector filter, so it
-    # applies to every tfilt branch on one code path and so nothing downstream -- the
-    # Stage-2 z-pool, the mean-relative Stage-1 baselines, the carve dedup -- ever sees
-    # an instrument line.
-    df = filter_non_common_instruments(df)
+    NOT CALLED BY THE PIPELINE.  Present so that acting on the finding above is a
+    wiring change with the logic already written and tested, not a re-derivation.
+
+    duplicate_isin        -- {isin: [symbols]} where one ISIN carries >1 symbol. These
+                             are literal duplicate listings; collapsing them is safe.
+    same_name_different_isin -- {normalised_name: [(symbol, isin)]} where one issuer
+                             name spans >1 ISIN. These are CANDIDATES ONLY: a genuine
+                             parent/subsidiary pair (Heineken N.V. vs Heineken Holding
+                             N.V.) looks identical to a common/preferred pair here, so
+                             this MUST be confirmed against fundamentals before any
+                             removal. Deleting a common is the expensive error.
+    """
+    try:
+        import carveOut as _co
+        norm = _co._norm_issuer_name
+    except Exception:
+        norm = lambda x: (x or '').strip().lower()
+
+    by_isin, by_name = {}, {}
+    for sym, nm, isin in zip(symbols, names, isins):
+        if not isinstance(sym, str) or not sym:
+            continue
+        if isinstance(isin, str) and isin.strip():
+            by_isin.setdefault(isin.strip(), []).append(sym)
+        n = norm(nm)
+        if n:
+            by_name.setdefault(n, []).append((sym, isin))
+
+    dup_isin = {k: sorted(v) for k, v in by_isin.items() if len(v) > 1}
+    multi = {}
+    for n, pairs in by_name.items():
+        distinct = {i for _s, i in pairs if isinstance(i, str) and i.strip()}
+        if len(distinct) > 1:
+            multi[n] = sorted(pairs)
+    return dup_isin, multi
+
+
+#  The four symbols the detector was verified to flag on the live 2026-08-02 list.
+#  Recorded as data so the finding is testable and cannot decay into a comment.
+ISIN_DETECTOR_VERIFIED_FINDINGS = {
+    'duplicate_isin': (('HAFNI.OL', 'HAFNIO.OL'), ('ALCAT.PA', 'CATG.PA')),
+    'non_common_admitted': (('CBE.PA', 'RBT.PA', -17.9), ('PREVA.AS', 'VALUE.AS', -29.9)),
+    'known_false_positive': (('HEIA.AS', 'HEIO.AS'),),
+}
+
+# =========================================================================== #
+#  KNOWN GAPS IN `filter_non_common_instruments` -- PRE-EXISTING, NOT INTRODUCED  #
+#  BY THE UNIVERSE WORK.  Found 2026-08-03 while auditing the curated test        #
+#  universe, which is precisely what a reference list is for.  Recorded as data    #
+#  so they are testable and cannot decay into prose; NOT fixed here, because       #
+#  widening a removal rule changes the production universe (a product decision)    #
+#  and because deleting a common is the expensive error.                          #
+#                                                                               #
+#  Each of these SURVIVES in production today and is scored on its sibling         #
+#  common's fundamentals -- the same defect class as the Korean preferreds.        #
+# =========================================================================== #
+SHARE_CLASS_FILTER_KNOWN_GAPS = {
+    # rule C's tail whitelist is `^(P[A-Z]?|[A-Z]?[RUWZ]|[PRUWZ][A-Z])$`. A bare
+    # single letter outside RUWZ is not admitted, so a `<common>+D` / `+L` preferred or
+    # notes line is invisible even though the sibling common IS in the pool.
+    'unwhitelisted-single-letter-tail': (
+        ('WHLRD', 'WHLR', 'Wheeler REIT Series D preferred; tail "D" not whitelisted'),
+        ('WHLRL', 'WHLR', 'Wheeler REIT notes line; tail "L" not whitelisted'),
+    ),
+    # FMP TRUNCATES some company names ("Babcock & Wilcox Enterprises, I"), so the
+    # normalised name does NOT match the sibling's and the line falls out of rule C's
+    # (name, exchange) group ENTIRELY -- no tail rule can help. This one defeats
+    # name-based grouping itself, which is why an audit keyed on names missed it too.
+    'truncated-company-name': (
+        ('BWNB', 'BW', 'Babcock & Wilcox senior notes; FMP name truncated to '
+                       '"Babcock & Wilcox Enterprises, I" so it never joins BW\'s group'),
+    ),
+    # Continental conventions -- see the ISIN detector note above for the measured
+    # discounts. Neither rule A (English vocabulary) nor rule B (`-P<letters>`) nor
+    # rule C (shared symbol prefix) can reach these.
+    'continental-convention': (
+        ('CBE.PA', 'RBT.PA', "Robertet certificat d'investissement, -17.9% vs the common"),
+        ('PREVA.AS', 'VALUE.AS', 'Value8 cumulative preference shares, -29.9%'),
+    ),
+}
+
+
+def tickerfilterWrapper(tickdf,tfilt,sfilt,mcapf,baseurl,api_key):
+    """Apply a named universe scope from `universes.UNIVERSES` to the pre-filter table.
+
+    WAS A SIX-BRANCH if/elif CHAIN WITH THE CODES INLINE (rewritten 2026-08-02).  Three
+    things were wrong with that shape and all three are structural, not cosmetic:
+
+      1. THE CODES WERE WRONG AND NOTHING COULD NOTICE.  Four of the six branches
+         filtered on `'EURONEXT'` and two on `'OSE'`.  FMP serves neither string, so
+         those entries matched ZERO rows and 1,046 statement-bearing common stocks
+         (Paris 577, Oslo 224, Brussels 107, Amsterdam 103, Lisbon 35) were absent from
+         every run ever made -- silently, because a filter that matches nothing looks
+         exactly like a filter whose exchange happens to be small.  `stock_US1_EU2` was
+         reduced to US-only.  The codes now live in `universes.py` beside the LIVE
+         counts they were verified against, so "does this code match anything" is a
+         checked fact rather than an assumption.
+
+      2. AN UNKNOWN NAME RETURNED THE WHOLE WORLD.  `df = tickdf` was the initial value
+         and the chain had no `else`, so any tfilt the chain did not recognise fell
+         through and returned the ENTIRE ~50,000-name pre-filter table -- unfiltered,
+         un-warned, and 5x the intended fetch.  `configuration` validated the name
+         against its OWN separate list, so the two lists drifting was the only thing
+         standing between the operator and that outcome.  Both now read one registry,
+         and an unknown name RAISES.
+
+      3. `if` / `if` / `if`+`elif` MIXED.  The first three branches were bare `if`s and
+         only the last four formed a chain, so the code read as though the branches were
+         exclusive when two of them were not chained at all.  Harmless only because the
+         values happened to be distinct.
+
+    Stage order is type -> INSTRUMENT FILTER (on the full table) -> membership ->
+    sector filter -> delisted prune.  The instrument filter MOVED AHEAD of membership
+    selection on 2026-08-02; see the note at its call site for why that makes
+    "a subset is filtered as well as the whole" true by construction.
+    """
+    import universes as un
+
+    # RESOLVE THE NAME FIRST, before any filtering or API work: an unknown universe must
+    # fail immediately, not after `filter_tickers` has already run (and, with a positive
+    # mcap floor, already spent per-symbol profile calls).
+    explicit = un.symbols(tfilt)          # raises on an unknown name
+    every = un.is_every_exchange(tfilt)
+    codes = un.exchanges(tfilt)
+
+    tickers_df_stock = filter_tickers(tickdf, 'type', 'stock', mcapf, api_key)
+
+    # ------------------------------------------------------------------------------ #
+    #  INSTRUMENT FILTER FIRST, ON THE FULL TABLE, THEN INTERSECT (moved 2026-08-02).  #
+    #                                                                                #
+    #  It used to run AFTER membership selection, on the already-narrowed frame. That  #
+    #  made its completeness depend on WHICH UNIVERSE WAS ACTIVE, because rule C is    #
+    #  PAIRWISE: it recognises an instrument line only by comparing it to a shorter     #
+    #  same-name, same-EXCHANGE-SUFFIX sibling. Suffix maps 1:1 to exchange code with   #
+    #  one big exception -- every US ticker has NO suffix, so NYSE, NASDAQ, AMEX, OTC    #
+    #  and PNK all share the empty one. An enabling sibling can therefore sit on an      #
+    #  exchange the active universe excludes, and the instrument line then survives.     #
+    #                                                                                #
+    #  MEASURED on the live 2026-08-02 table: filtering the full table removes ZCARW    #
+    #  (a Zoomcar warrant on NASDAQ) from every US-containing universe, because its     #
+    #  enabling common ZCAR trades on OTC, which no universe wires. Exactly one name,   #
+    #  and it is a genuine warrant -- so this is a strict improvement, not a rebalance:  #
+    #  nothing that used to be kept is newly dropped except that warrant, and nothing   #
+    #  that used to be dropped is newly kept (verified for all 8 universes).            #
+    #                                                                                #
+    #  Filtering first also retires the risk BY CONSTRUCTION rather than by luck: the   #
+    #  removal set no longer depends on the active universe at all, so no future subset  #
+    #  can be less well filtered than the whole. That property is what matters here --   #
+    #  the curated test universe exists to behave like production, and a filter whose    #
+    #  strength varied with pool size would have quietly broken that.                    #
+    # ------------------------------------------------------------------------------ #
+    tickers_df_stock = filter_non_common_instruments(tickers_df_stock)
+
+    if explicit is not None:
+        # EXPLICIT-MEMBERSHIP universe (the curated test universe).  Selected by
+        # symbol, NOT by exchange, and deliberately NOT by `-nrTaT N`: nrTaT keeps the
+        # first N rows of available-traded/list, i.e. an arbitrary positional prefix
+        # that under-represents semi-annual filers, non-USD reporters and whole
+        # cohorts.  A frozen list is the only way two iterations are comparable.
+        want = list(explicit)
+        df = tickers_df_stock[tickers_df_stock['symbol'].isin(want)]
+        absent = sorted(set(want) - set(df['symbol']))
+        if absent:
+            # NOT an error: a member can legitimately leave the live list (delisted,
+            # moved to OTC, renamed).  But it must be VISIBLE, because a curated
+            # universe that quietly shrinks stops covering the categories it was built
+            # to cover -- and the coverage claim is the entire value of the list.
+            shown = absent[:25]
+            print('UNIVERSE %s: %d of %d listed member(s) absent from the live '
+                  'type==stock list -- %s%s'
+                  % (tfilt, len(absent), len(want), ', '.join(shown),
+                     ' (+%d more)' % (len(absent) - len(shown)) if len(absent) > len(shown)
+                     else ''), flush=True)
+            # A handful is attrition; a large fraction means the list no longer matches
+            # what FMP serves, and the run would silently be a different experiment.
+            if len(absent) > 0.1 * len(want):
+                print('!!! UNIVERSE %s: %.0f%% of the curated list is missing from the '
+                      'live universe -- re-curate before trusting this run\'s coverage '
+                      '(run `python verify_test_universe.py`).'
+                      % (tfilt, 100.0 * len(absent) / len(want)), flush=True)
+    elif every:
+        # FULL universe: no exchange filter at all, by definition.
+        df = tickers_df_stock
+    else:
+        df = filter_tickers(tickers_df_stock, 'exchangeShortName', list(codes),
+                            mcapf, api_key)
+
+    # The debt/preferred/warrant/rights filter (audit M-5) has ALREADY run, above, on the
+    # FULL type=='stock' table -- see the note there. It used to run HERE, after the
+    # membership filters, which is what made its completeness depend on the active
+    # universe. It still applies to every tfilt branch on one code path, and nothing
+    # downstream -- the Stage-2 z-pool, the mean-relative Stage-1 baselines, the carve
+    # dedup -- ever sees an instrument line.
 
     if sfilt != 'all':
         df = filterBySector(df, sfilt)
