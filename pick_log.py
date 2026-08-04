@@ -65,7 +65,24 @@ PICK_LOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'pick_l
 #
 #  `entry_industry_median_PE` is the peer yardstick: a P/E of 14 means opposite things in Marine
 #  Shipping and in Software, so an absolute multiple alone cannot support a "re-rated" judgement.
-PICK_LOG_COLUMNS = ['as_of', 'logged_at', 'filter_commit', 'list', 'rank',
+#
+#  UNIVERSE PROVENANCE (added 2026-08-04, audit H-5).  Every OTHER artifact the pipeline emits
+#  carries the universe stamp (the saved panel, `resdic`, the postRank pickle, RunProvenance.json)
+#  -- this file, the only one that cannot be regenerated, carried NOTHING.  A pick made against
+#  the 140-name curated TEST universe was therefore indistinguishable from a production pick in
+#  the exact instrument the forward beat-rate target rests on, and since the log is append-only
+#  the omission would have been permanent for every row already written.
+#
+#  BOTH FIELDS, NOT ONE.  The NAME alone is insufficient and that is the whole reason the
+#  fingerprint exists: `stock_NA1_EU1` denotes a DIFFERENT universe before and after the
+#  2026-08-02 European restoration (1,046 names apart), so two rows can share a name and describe
+#  different pools.  The name is what the deliverable FILENAMES are built from (so it is what a
+#  reader will try to match on); the FINGERPRINT is what actually settles whether two rows are
+#  comparable.  Both are read from `resdic` -- the same object Sbocker stamps for the postRank
+#  pickle -- never re-derived from configdic, so all artifacts of a run agree by construction
+#  rather than by two call sites happening to match (see Sbocker's stamp comment).
+PICK_LOG_COLUMNS = ['as_of', 'logged_at', 'filter_commit',
+                    'universe', 'universe_fingerprint', 'list', 'rank',
                     'ticker', 'company', 'aggscore',
                     'reporting_currency',
                     'entry_periodend_price_reporting_ccy',
@@ -165,6 +182,56 @@ def _warn_empty_general(frame):
         + "!" * 78 + "\n")
     print(banner, file=sys.stderr, flush=True)
     print(banner, flush=True)
+
+
+#  Sentinels for a run whose universe could NOT be established from `resdic`.  Sbocker stamps
+#  `resdic` on EVERY path (fetch, -loadbometric, -loadboresults), so a missing stamp means
+#  something upstream of here broke -- and a BLANK universe column would silently reintroduce
+#  exactly the defect these columns were added to close, permanently, on an append-only row.
+#  An explicit "unknown" is worth more than a blank: a blank reads as "not applicable", an
+#  unknown reads as "unestablished", which is the truth. Distinct from Sbocker's
+#  `unknown-unstamped-panel` (a LOADED panel that predates stamping -- a legitimate, differently
+#  -caused unknown) so the two cases stay tellable apart in the log.
+UNKNOWN_UNIVERSE = 'unknown'
+UNKNOWN_UNIVERSE_FINGERPRINT = 'unknown-unstamped-resdic'
+
+
+def _warn_unstamped_universe(name):
+    """LOUD warning (BOTH streams) when this run's picks are logged with no establishable
+    universe fingerprint. Not fatal -- a pick recorded with an honest `unknown` provenance is
+    still worth more than no forward record at all -- but it can never pass quietly, because
+    the rows are permanent and a later grader has no way to ask what pool they came from."""
+    banner = (
+        "\n" + "!" * 78 + "\n"
+        "!!! PICK-LOG WARNING -- NO UNIVERSE FINGERPRINT ON THIS RUN'S PICKS !!!\n"
+        "!!! resdic carries no 'universe_fingerprint' (universe name seen: %r).\n"
+        "!!! Sbocker stamps resdic on every path, so this indicates an upstream    !!!\n"
+        "!!! provenance failure. The rows are still logged -- APPEND-ONLY, so they !!!\n"
+        "!!! are permanent -- but stamped %r, meaning a later\n"
+        "!!! grader CANNOT establish which pool these picks came from. Do NOT treat !!!\n"
+        "!!! them as comparable to a stamped run.                                   !!!\n"
+        % (name or '', UNKNOWN_UNIVERSE_FINGERPRINT)
+        + "!" * 78 + "\n")
+    print(banner, file=sys.stderr, flush=True)
+    print(banner, flush=True)
+
+
+def _universe_stamp(resdic):
+    """(universe_name, universe_fingerprint) for this run, READ FROM `resdic`.
+
+    Deliberately not re-derived from configdic/universes: `resdic`'s stamp already accounts for
+    the load paths, where the data's universe is the LOADED panel's and NOT the active
+    `-tickerfilter` (stamping the current filter onto loaded data would manufacture provenance).
+    Reading the same key Sbocker wrote is what makes the pick-log row agree with the postRank
+    pickle and the deliverables by construction."""
+    name = resdic.get('universe')
+    fp = resdic.get('universe_fingerprint')
+    name = '' if name is None else str(name).strip()
+    fp = '' if fp is None else str(fp).strip()
+    if not fp:
+        _warn_unstamped_universe(name)
+        return (name or UNKNOWN_UNIVERSE), UNKNOWN_UNIVERSE_FINGERPRINT
+    return (name or UNKNOWN_UNIVERSE), fp
 
 
 _VAL_COLS = ['reporting_currency',
@@ -301,12 +368,14 @@ def build_pick_log_rows(resdic, as_of=None, logged_at=None, filter_commit=None):
       GENERAL     -> ntopxlsx (the presentation top-N; =20 by default) from resdic['postRank']
       side-lists  -> ntopagg  (the side-list CSV depth; =100 by default) from
                      resdic['carveout_sidelists'][label]['postRank']
-    Every row carries the same run-level as_of / logged_at / filter_commit stamps."""
+    Every row carries the same run-level as_of / logged_at / filter_commit / universe /
+    universe_fingerprint stamps."""
     as_of_str = _resolve_as_of(as_of)
     if logged_at is None:
         logged_at = datetime.now().isoformat()
     if filter_commit is None:
         filter_commit = _git_short_hash()
+    universe, universe_fp = _universe_stamp(resdic)
     names = _names_map(resdic)
     vals = entry_valuations(resdic)
 
@@ -339,7 +408,8 @@ def build_pick_log_rows(resdic, as_of=None, logged_at=None, filter_commit=None):
     # Stamp the run-level columns onto every row.
     rows = []
     for p in partial:
-        row = {'as_of': as_of_str, 'logged_at': logged_at, 'filter_commit': filter_commit}
+        row = {'as_of': as_of_str, 'logged_at': logged_at, 'filter_commit': filter_commit,
+               'universe': universe, 'universe_fingerprint': universe_fp}
         row.update(p)
         rows.append(row)
     return rows
@@ -361,20 +431,54 @@ def append_pick_log(rows, path=PICK_LOG_PATH):
     # pick-log block is recoverable, a log whose columns mean different things in different
     # blocks is not.  Checked ONLY on the append path (a fresh file writes its own header).
     # This was added at the one moment it cost nothing: before any pick_log.csv existed.
+    #
+    # IT NOW HAS A REAL CASE TO CATCH (2026-08-04).  The universe columns widened the schema from
+    # 15 to 17, so a pick_log.csv written before that date -- on the CEO's home machine, or from a
+    # restored backup -- WILL trip this.  That is the intended outcome: REFUSE, never migrate
+    # silently.  A forensic record that stops and complains is recoverable; one that has been
+    # quietly half-migrated (old rows with no universe, new rows shifted two columns, nothing on
+    # disk saying which is which) is not, and nothing here is permitted to rewrite the old rows to
+    # find out.  Migration-with-backfill was considered and REJECTED: the only honest backfill
+    # value for a pre-2026-08-04 row is "unknown" -- it cannot be recovered from the row, because
+    # not knowing the universe is precisely the defect -- so a backfill buys a uniform schema at
+    # the cost of rewriting an append-only forensic file for no information gain. Moving the old
+    # file aside keeps its bytes intact and readable, which is strictly more than a backfill.
     if file_exists and size > 0 and not write_header:
+        _hdr_err = None
         try:
             with open(path, 'r', encoding='utf-8', newline='') as hf:
                 existing = next(csv.reader(hf), None)
-        except Exception:
+        except Exception as _he:
             existing = None
-        if existing and list(existing) != list(PICK_LOG_COLUMNS):
+            _hdr_err = '%s: %s' % (type(_he).__name__, _he)
+        # An UNREADABLE / absent header on a non-empty file is not a pass (tightened 2026-08-04).
+        # It used to fall through to the append, which is the same permanent mis-alignment the
+        # guard exists to prevent -- just arrived at by not knowing rather than by knowing.
+        # Cannot establish the on-disk schema => must not append to it.
+        if not existing:
+            raise RuntimeError(
+                'PICK-LOG HEADER UNREADABLE: %s is %d byte(s) long but no header row could be '
+                'read from it (%s). The on-disk schema therefore cannot be established, and '
+                'appending would risk permanently mis-aligning an append-only forensic record. '
+                'FIX: inspect the file by hand; move it aside (e.g. to '
+                '_quarantine/pick_log_<reason>_<YYYY-MM-DD>.csv) to let the next run create a '
+                'fresh log. Do NOT hand-edit it into shape.'
+                % (path, size, _hdr_err or 'file has no parseable first row'))
+        if list(existing) != list(PICK_LOG_COLUMNS):
             _missing = [c for c in existing if c not in PICK_LOG_COLUMNS]
             _added = [c for c in PICK_LOG_COLUMNS if c not in existing]
             raise RuntimeError(
                 'PICK-LOG SCHEMA DRIFT: %s already has a header of %d column(s) but the writer '
                 'now has %d. Appending would mis-align every future row against a header that '
                 'can never be rewritten (append-only). Removed: %s. Added: %s. '
-                'FIX: start a NEW dated log file rather than appending to this one.'
+                'NOTHING WAS WRITTEN and the existing file is UNTOUCHED. '
+                'FIX: move the existing log aside -- rename it to e.g. '
+                '_quarantine/pick_log_preuniverse_<YYYY-MM-DD>.csv -- and re-run; the writer '
+                'then creates a fresh pick_log.csv with the current header, and the old file '
+                'stays readable as its own complete record. Do NOT hand-edit the old header or '
+                'pad its rows: that rewrites an append-only forensic file. (If Added is exactly '
+                "['universe', 'universe_fingerprint'], this is a log written before 2026-08-04, "
+                'when universe provenance was added -- see PICK_LOG_COLUMNS.)'
                 % (path, len(existing), len(PICK_LOG_COLUMNS), _missing, _added))
 
     # LOW-2 -- trailing-partial-row seam: if a PRIOR run was crash-truncated mid-row (its

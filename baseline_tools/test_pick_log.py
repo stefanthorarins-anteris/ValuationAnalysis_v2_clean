@@ -57,7 +57,23 @@ def _fake_resdic():
         'Tickers_df': tickers,
         'ntopxlsx': 20,
         'ntopagg': 100,
+        # Universe stamp as Sbocker puts it on resdic (universe_provenance_for_run); the writer
+        # reads THESE keys, never configdic.
+        'universe': 'stock_NA1_EU1',
+        'universe_fingerprint': 'aaaa1111bbbb',
     }
+
+
+#  The EXACT header of a pick_log.csv written before 2026-08-04, i.e. before the universe columns
+#  existed (copied from the quarantined test-universe log). Hardcoded on purpose: derived from
+#  PICK_LOG_COLUMNS it would silently follow a future schema change and stop being the regression
+#  fixture it is meant to be.
+_PRE_UNIVERSE_HEADER = [
+    'as_of', 'logged_at', 'filter_commit', 'list', 'rank', 'ticker', 'company', 'aggscore',
+    'reporting_currency', 'entry_periodend_price_reporting_ccy',
+    'entry_periodend_trailing_PE', 'entry_periodend_PB_fmp_basis',
+    'entry_periodend_grahamNumberToPrice', 'entry_industry_median_periodend_PE',
+    'entry_industry_median_n']
 
 
 def _read(path):
@@ -219,6 +235,161 @@ def test_truncated_prior_row_gets_newline_padded():
     print("  [ok] crash-truncated prior row is newline-padded, no row merge")
 
 
+def test_universe_provenance_on_every_row():
+    """H-5: every row carries the universe NAME and FINGERPRINT, POPULATED -- not blank, not
+    'unknown'. This is the only artifact that cannot be regenerated, so an unstamped row is a
+    permanent provenance hole."""
+    resdic = _fake_resdic()
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, 'pick_log.csv')
+        plog.write_pick_log(resdic, as_of='2026-08-05', path=path,
+                            logged_at='T1', filter_commit='c1')
+        df = pd.read_csv(path)
+
+    assert 'universe' in df.columns and 'universe_fingerprint' in df.columns, df.columns.tolist()
+    assert set(df['universe']) == {'stock_NA1_EU1'}, set(df['universe'])
+    assert set(df['universe_fingerprint']) == {'aaaa1111bbbb'}, set(df['universe_fingerprint'])
+    # populated on EVERY row of EVERY list, and not a placeholder.
+    assert df['universe_fingerprint'].notna().all() and (df['universe_fingerprint'] != '').all()
+    assert not df['universe_fingerprint'].astype(str).str.startswith('unknown').any()
+    assert len(set(df['list'])) == 6, set(df['list'])
+    print(f"  [ok] universe + fingerprint populated on all {len(df)} rows (6 lists)")
+
+
+def test_test_universe_row_distinguishable_by_fingerprint():
+    """A test-universe pick must be tellable from a production pick BY FINGERPRINT -- including
+    the case the fingerprint exists for: the SAME name denoting a different universe (the
+    2026-08-02 European restoration moved stock_NA1_EU1 by 1,046 names)."""
+    prod = _fake_resdic()                                   # stock_NA1_EU1 / aaaa1111bbbb
+    test_u = _fake_resdic()
+    test_u['universe'] = 'stock_TEST1'
+    test_u['universe_fingerprint'] = '6f8b8825dc90'         # real curated-test fingerprint
+    renamed = _fake_resdic()                                # SAME name, different definition
+    renamed['universe_fingerprint'] = 'cccc3333dddd'
+
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, 'pick_log.csv')
+        plog.write_pick_log(prod, as_of='2026-08-05', path=path,
+                            logged_at='PROD', filter_commit='c1')
+        plog.write_pick_log(test_u, as_of='2026-08-06', path=path,
+                            logged_at='TEST', filter_commit='c1')
+        plog.write_pick_log(renamed, as_of='2026-08-07', path=path,
+                            logged_at='RESTORED', filter_commit='c1')
+        df = pd.read_csv(path)
+
+    by_run = df.groupby('logged_at')[['universe', 'universe_fingerprint']].first()
+    # test-universe block is separable from production.
+    assert by_run.loc['TEST', 'universe_fingerprint'] == '6f8b8825dc90'
+    assert by_run.loc['PROD', 'universe_fingerprint'] == 'aaaa1111bbbb'
+    # THE case the fingerprint exists for: name is IDENTICAL, universe is NOT.
+    assert by_run.loc['PROD', 'universe'] == by_run.loc['RESTORED', 'universe']
+    assert (by_run.loc['PROD', 'universe_fingerprint']
+            != by_run.loc['RESTORED', 'universe_fingerprint'])
+    # so grouping by NAME alone would have merged two different pools; by fingerprint it does not.
+    assert df['universe'].nunique() == 2 and df['universe_fingerprint'].nunique() == 3
+    print("  [ok] test vs production separable by fingerprint; same-name/different-definition too")
+
+
+def test_missing_universe_stamp_warns_loudly_and_logs_unknown():
+    """A resdic with NO universe stamp must NOT log a blank (which reads as 'not applicable'):
+    it logs an explicit unknown and shouts, because the rows are permanent."""
+    import contextlib
+    import io
+    resdic = _fake_resdic()
+    del resdic['universe']
+    del resdic['universe_fingerprint']
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, 'pick_log.csv')
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            plog.write_pick_log(resdic, as_of='2026-08-05', path=path,
+                                logged_at='T1', filter_commit='c1')
+        out = buf.getvalue()
+        df = pd.read_csv(path)
+    assert 'NO UNIVERSE FINGERPRINT' in out, out[-600:]
+    assert set(df['universe']) == {plog.UNKNOWN_UNIVERSE}, set(df['universe'])
+    assert set(df['universe_fingerprint']) == {plog.UNKNOWN_UNIVERSE_FINGERPRINT}
+    # the picks themselves are still recorded -- an honest unknown beats no forward record.
+    assert len(df) > 20 and 'GENERAL' in set(df['list'])
+    print("  [ok] unstamped resdic -> loud banner + explicit unknown (rows still logged)")
+
+
+def test_old_schema_log_is_refused_not_migrated():
+    """A pre-2026-08-04 (no-universe-columns) pick_log.csv must be REFUSED, not appended to and
+    not migrated: the old bytes stay identical, no row is added, and the message says what to do."""
+    resdic = _fake_resdic()
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, 'pick_log.csv')
+        with open(path, 'w', encoding='utf-8', newline='') as f:
+            f.write(','.join(_PRE_UNIVERSE_HEADER) + '\n')
+            f.write('2026-08-04,T0,c0,GENERAL,1,OLY.TO,Olympia,0.61,CAD,119.0,16.3,6.2,0.46,,\n')
+        before = _read(path)
+
+        try:
+            plog.write_pick_log(resdic, as_of='2026-08-05', path=path,
+                                logged_at='T1', filter_commit='c1')
+            raise AssertionError("old-schema log was APPENDED TO instead of refused!")
+        except RuntimeError as e:
+            msg = str(e)
+
+        after = _read(path)
+
+    assert after == before, "the old-schema file was MODIFIED -- it must be left untouched!"
+    assert 'SCHEMA DRIFT' in msg, msg
+    # names the mismatch concretely...
+    assert "'universe'" in msg and "'universe_fingerprint'" in msg, msg
+    assert '15' in msg and str(len(plog.PICK_LOG_COLUMNS)) in msg, msg
+    # ...and tells the operator what to do, without suggesting a hand-edit.
+    assert 'FIX:' in msg and 'move the existing log aside' in msg, msg
+    assert 'Do NOT hand-edit' in msg, msg
+    print("  [ok] old-schema log REFUSED, file byte-identical, message actionable")
+
+
+def test_old_schema_refusal_surfaces_through_the_guarded_stage():
+    """The refusal must actually REACH the operator: the pipeline stage swallows exceptions so a
+    pick-log problem can't kill the run, so it has to print the loud banner and return None --
+    otherwise the refusal would be silent, which is worse than the corruption it prevents."""
+    import contextlib
+    import io
+    resdic = _fake_resdic()
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, 'pick_log.csv')
+        with open(path, 'w', encoding='utf-8', newline='') as f:
+            f.write(','.join(_PRE_UNIVERSE_HEADER) + '\n')
+        before = _read(path)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rv = plog.run_pick_log_stage(resdic, as_of='2026-08-05', path=path)
+        out = buf.getvalue()
+        after = _read(path)
+    assert rv is None, rv
+    assert after == before, "the guarded stage still modified the old-schema file!"
+    assert 'PICK-LOG STAGE FAILED' in out, out[-800:]
+    assert 'SCHEMA DRIFT' in out, out[-800:]
+    print("  [ok] refusal surfaces via the guarded stage (loud banner, returns None, run lives)")
+
+
+def test_unreadable_header_is_refused():
+    """A non-empty file from which no header row can be read must also be refused -- an
+    unestablishable on-disk schema is the same permanent mis-alignment risk as a known-wrong one."""
+    resdic = _fake_resdic()
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, 'pick_log.csv')
+        with open(path, 'wb') as f:
+            f.write(b'\n')          # non-empty, but no parseable header row
+        before = _read(path)
+        try:
+            plog.write_pick_log(resdic, as_of='2026-08-05', path=path,
+                                logged_at='T1', filter_commit='c1')
+            raise AssertionError("a file with no readable header was appended to!")
+        except RuntimeError as e:
+            msg = str(e)
+        after = _read(path)
+    assert after == before, "the unreadable file was MODIFIED!"
+    assert 'HEADER UNREADABLE' in msg and 'FIX:' in msg, msg
+    print("  [ok] unreadable/absent header on a non-empty file is refused")
+
+
 def test_git_hash_never_raises():
     h = plog._git_short_hash()
     assert isinstance(h, str) and h, h
@@ -253,6 +424,12 @@ if __name__ == '__main__':
     test_non_cp1252_company_name_survives()
     test_empty_general_warns_loudly()
     test_truncated_prior_row_gets_newline_padded()
+    test_universe_provenance_on_every_row()
+    test_test_universe_row_distinguishable_by_fingerprint()
+    test_missing_universe_stamp_warns_loudly_and_logs_unknown()
+    test_old_schema_log_is_refused_not_migrated()
+    test_old_schema_refusal_surfaces_through_the_guarded_stage()
+    test_unreadable_header_is_refused()
     test_git_hash_never_raises()
     test_sbocker_wiring_present()
     print("ALL PICK-LOG SELF-CHECKS PASSED")
