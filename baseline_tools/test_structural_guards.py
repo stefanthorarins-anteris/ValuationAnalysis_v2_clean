@@ -821,8 +821,15 @@ def test_postbm_metric_returns_NaN_on_an_EMPTY_per_ticker_frame_rather_than_rais
     """A source can reach the scorer with no rows (a name whose panel was fully pruned).  The
     head(w).mean() of nothing is NaN, which normalizeAndDropNA maps to pool-neutral."""
     a, _b = cdic.getPostDict()
+    #  Every column a postbm_metric BRANCH reads beyond its own `eqMet`.  Kept explicit so
+    #  that adding an input to a branch has to be declared here -- which is how the
+    #  `totalStockholdersEquity` entry arrived: the `returnOnEquity` branch reads it for the
+    #  negative-equity sign guard (2026-08-04), and the branch accesses it HARD rather than
+    #  leniently, deliberately, so a missing column raises instead of silently disabling the
+    #  guard and scoring a loss-over-a-deficit as a high return.
     cols = ["grahamNumber", "price", "netIncome",
-            "netCashProvidedByOperatingActivities", "totalAssets"]
+            "netCashProvidedByOperatingActivities", "totalAssets",
+            "totalStockholdersEquity"]
     empty = pd.DataFrame({c: pd.Series(dtype="float64")
                           for c in cols + [a[k]["eqMet"] for k in a]})
     for k in a:
@@ -837,7 +844,10 @@ def test_postbm_metric_propagates_NaN_and_does_not_manufacture_a_value():
     n = 8
     df = pd.DataFrame({c: [np.nan] * n for c in
                        ["grahamNumber", "price", "netIncome", "totalAssets",
-                        "netCashProvidedByOperatingActivities"]
+                        "netCashProvidedByOperatingActivities",
+                        #  read by the returnOnEquity branch's sign guard -- see the
+                        #  companion test above for why the access is hard, not lenient.
+                        "totalStockholdersEquity"]
                        + [a[k]["eqMet"] for k in a]})
     for k in a:
         for rpy in (2, 4):

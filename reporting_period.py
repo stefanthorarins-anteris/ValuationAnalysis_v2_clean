@@ -606,15 +606,23 @@ def annualize_factor(rpy):
 
 # Stage-1 metric keys whose ratio must be flow-corrected, and how.
 #   'flow_num'  : flow / stock  -> multiply the ratio (earningsYield, salesToMarketCap)
-#   'flow_den'  : stock / flow  -> DIVIDE the ratio (pfcfRatio, netDebtToEBITDA)
+#   'flow_den'  : stock / flow  -> DIVIDE the ratio (netDebtToEBITDA)
 # The MODE ('per_quarter' vs 'annualize') follows the test's threshold type, per above.
+#
+# THE LEG IS A PROPERTY OF THE RATIO'S ORIENTATION, SO INVERTING A METRIC MOVES IT.  When
+# `pfcfRatio` (price/FCF, flow in the DENOMINATOR) was inverted to `freeCashFlowToMarketCap`
+# (FCF/marketCap, flow in the NUMERATOR) on 2026-08-04, this entry had to move from 'flow_den'
+# to 'flow_num' with it.  Leaving the old leg would have applied the semi-annual correction
+# BACKWARDS -- x2.0 where x0.5 is needed, a 4x error on every semi-annual name, silently,
+# because the key still resolved and still returned a plausible factor.  If you ever inverse a
+# Stage-1 ratio, check this table in the same edit.
 STAGE1_FLOW_CORRECTION = {
     # mean tests: cross-sectional vs the median -> scale-free -> per-quarter basis
-    'earningsYield':    ('flow_num', 'per_quarter'),
-    'pfcfRatio':        ('flow_den', 'per_quarter'),
-    'salesToMarketCap': ('flow_num', 'per_quarter'),   # w=0, corrected for consistency
+    'earningsYield':            ('flow_num', 'per_quarter'),
+    'freeCashFlowToMarketCap':  ('flow_num', 'per_quarter'),   # was pfcfRatio / 'flow_den'
+    'salesToMarketCap':         ('flow_num', 'per_quarter'),   # w=0, corrected for consistency
     # unity test against an ABSOLUTE 1.0 -> must be a real year of EBITDA
-    'netDebtToEBITDA':  ('flow_den', 'annualize'),
+    'netDebtToEBITDA':          ('flow_den', 'annualize'),
 }
 
 

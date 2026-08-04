@@ -72,12 +72,31 @@ def test_rows_per_year_and_factors():
     # Stage-1 flow factors: direction matters and is asserted, not assumed.
     assert rp.stage1_flow_factor('earningsYield', 4) == 1.0
     assert rp.stage1_flow_factor('earningsYield', 2) == 0.5      # flow/stock -> scale down
-    assert rp.stage1_flow_factor('pfcfRatio', 4) == 1.0
-    assert rp.stage1_flow_factor('pfcfRatio', 2) == 2.0          # stock/flow -> scale UP
+    # `freeCashFlowToMarketCap` REPLACED `pfcfRatio` when the criterion was inverted to yield
+    # form (2026-08-04), and the flow moved from the DENOMINATOR to the NUMERATOR with it -- so
+    # the factor flipped from x2.0 to x0.5 on a semi-annual filer.  Both are asserted, and the
+    # retired key is asserted to be GONE: a stale 'pfcfRatio' entry would still resolve and
+    # still return a plausible-looking 2.0, applying the correction backwards in silence.
+    assert rp.stage1_flow_factor('freeCashFlowToMarketCap', 4) == 1.0
+    assert rp.stage1_flow_factor('freeCashFlowToMarketCap', 2) == 0.5   # flow/stock -> down
+    assert 'pfcfRatio' not in rp.STAGE1_FLOW_CORRECTION, \
+        'the inverted metric is freeCashFlowToMarketCap; a leftover pfcfRatio entry would ' \
+        'scale semi-annual names by 2.0 instead of 0.5 -- a 4x error, silently'
     assert rp.stage1_flow_factor('netDebtToEBITDA', 4) == 0.25   # absolute unity threshold
     assert rp.stage1_flow_factor('netDebtToEBITDA', 2) == 0.5
     assert rp.stage1_flow_factor('grossProfitMargin', 2) == 1.0  # flow/flow -> untouched
     assert rp.stage1_flow_factor('not_a_metric', 2) == 1.0
+    # EVERY key in the correction table must be a live Stage-1 criterion.  This is the general
+    # form of the assertion above: renaming or retiring a metric without touching this table
+    # leaves an orphan that silently corrects nothing, or a missing entry that silently
+    # corrects nothing -- neither raises.
+    import createDicts as _cdic
+    _keys = set()
+    for _d in _cdic.getBaseMeanDiffUnitySpecialDicts():
+        _keys |= set(_d)
+    _orphans = sorted(set(rp.STAGE1_FLOW_CORRECTION) - _keys)
+    assert not _orphans, ('STAGE1_FLOW_CORRECTION names metrics that are not Stage-1 criteria: '
+                          '%s -- the correction is dead for those keys' % _orphans)
     print('PASS test_rows_per_year_and_factors')
 
 

@@ -1,0 +1,635 @@
+"""SIGN CONVENTIONS AND DOMAIN GUARDS -- the pins for the 2026-08-04 sign-inversion fix.
+
+WHAT THIS FILE EXISTS TO PREVENT, stated first because it is the reason the tests look the way
+they do.  A Stage-1 criterion's SIGN lives in TWO registries (`BoMetric_Calc_dict`, which builds
+the column schema, and the four operational dicts, which drive the arithmetic and the score),
+and its DIRECTION is only realised at a THIRD place -- `calcScore.calcByTier`, which evaluates
+`Sign * value > 0`.  A sign fix applied at two of those three places changes the score with no
+error anywhere, and inverting a consumer that was already correct by double negation is this
+project's worst historical bug.
+
+So the tests below come in three layers, deliberately:
+
+  1. REGISTRY AGREEMENT -- the two declarations cannot drift apart.
+  2. DECLARED SPEC -- each fixed criterion's (Upper, Lower, Sign, Guard) is pinned literally,
+     so a silent re-edit fails loudly and a deliberate one has to update a test that says why.
+  3. BEHAVIOUR AT THE CONSUMER -- for each criterion, a synthetic row carrying the ADVERSE
+     condition is pushed through the REAL `calcByTier` and must FAIL, and (where there is one)
+     a row carrying the GENUINE-but-superficially-similar condition must still PASS.  This is
+     the layer that actually catches a wrong sign: layers 1 and 2 only check that the code says
+     what it says, layer 3 checks that what it says is right.
+
+Run: pytest test_sign_conventions.py -v
+"""
+
+import numpy as np
+import pandas as pd
+import pytest
+
+import calcMetrics as cm
+import calcScore as cs
+import createDicts as cdic
+import getData_fmp as gdf
+import reporting_period as rp
+import stage2_metrics as sm
+import utils
+
+
+# --------------------------------------------------------------------------- #
+#  1. THE TWO SIGN REGISTRIES CANNOT DRIFT                                    #
+# --------------------------------------------------------------------------- #
+_OP_FOR_KIND = {'base': 'n', 'mean': 'm', 'diff': 'd', 'unity': 'u'}
+
+
+def _operational_signs():
+    """{metric key: {operation letter: Sign}} over the four operational dicts."""
+    base, mean, diff, unity, _special = cdic.getBaseMeanDiffUnitySpecialDicts()
+    out = {}
+    for kind, d in (('base', base), ('mean', mean), ('diff', diff), ('unity', unity)):
+        for k, v in d.items():
+            out.setdefault(k, {})[_OP_FOR_KIND[kind]] = v['Sign']
+    return out
+
+
+def test_sign_registries_agree():
+    """`BoMetric_Calc_dict` (schema + a second copy of Sign) vs the operational dicts.
+
+    THE FAILURE THIS CATCHES IS SILENT.  `utils.initBoMetric_fromDict` builds BoMetric_df's
+    COLUMNS from BoMetric_Calc_dict, while `calcScore.simpleScore_fromDict` reads the SIGN from
+    the operational dicts.  Flip one and not the other and the pipeline runs, the columns exist,
+    and the score is wrong -- there is no exception to catch.
+    """
+    _pre, calc, *_rest = cdic.getDicts()
+    op = _operational_signs()
+
+    missing_from_calc = sorted(set(op) - set(calc))
+    assert not missing_from_calc, (
+        'these metrics are scored but have no BoMetric_Calc_dict entry, so their COLUMNS are '
+        'never created: %s' % missing_from_calc)
+    orphan_in_calc = sorted(set(calc) - set(op))
+    assert not orphan_in_calc, (
+        'these metrics create columns but are in no operational dict, so nothing scores them: '
+        '%s' % orphan_in_calc)
+
+    for k in sorted(op):
+        assert set(op[k]) == set(calc[k]['Operation']), (
+            "%s: operational dicts define operations %s but BoMetric_Calc_dict declares %s -- "
+            "the column set and the scored set disagree"
+            % (k, sorted(op[k]), sorted(calc[k]['Operation'])))
+        for letter, sign in op[k].items():
+            assert sign == calc[k]['Sign'], (
+                "%s ('%s' form): operational Sign %+d but BoMetric_Calc_dict Sign %+d. A sign "
+                "fix was applied to one registry and not the other -- exactly the silent "
+                "failure this test exists for." % (k, letter, sign, calc[k]['Sign']))
+
+
+def test_every_declared_guard_has_a_predicate():
+    """A `Guard` naming a predicate that does not exist must not be ignorable."""
+    dicts = cdic.getBaseMeanDiffUnitySpecialDicts()
+    declared = {k: v['Guard'] for d in dicts for k, v in d.items() if v.get('Guard')}
+    assert declared, 'the sign-inversion fix declares guards; none found'
+    for metric, guard in declared.items():
+        assert guard in cm.STAGE1_DOMAIN_GUARDS, (
+            '%s declares Guard %r, which is not in calcMetrics.STAGE1_DOMAIN_GUARDS. The '
+            'criterion would score its out-of-domain rows with nothing to say so.'
+            % (metric, guard))
+
+
+def test_unknown_guard_raises_rather_than_passing_through():
+    df = pd.DataFrame({'totalStockholdersEquity': [1.0, 2.0]})
+    with pytest.raises(KeyError, match='no guard named'):
+        cm.apply_domain_guard(df, [1.0, 2.0], 'not_a_guard')
+
+
+def test_guard_length_mismatch_raises():
+    df = pd.DataFrame({'totalStockholdersEquity': [1.0, 2.0, 3.0]})
+    with pytest.raises(ValueError, match='flags for'):
+        cm.apply_domain_guard(df, [1.0, 2.0], 'equity_positive')
+
+
+# --------------------------------------------------------------------------- #
+#  2. THE DECLARED SPEC OF EVERY FIXED CRITERION, PINNED LITERALLY            #
+# --------------------------------------------------------------------------- #
+#  (which dict, key, Upper, Lower, Tier, Sign, Guard)
+#  Sign is the column that matters here: the two INVERTED metrics flipped -1 -> +1 because
+#  their good direction reversed; the four GUARDED ones did NOT flip, because a guard shrinks
+#  the domain without reversing anything.  Mixing those two up is the bug.
+_EXPECTED = [
+    # --- INVERTED to yield form: Sign FLIPPED from -1 to +1 --------------------
+    ('mean',  'freeCashFlowToMarketCap', 'freeCashFlow',            'marketCap', 'S', +1, None),
+    #  The two `bookToPrice` forms carry DIFFERENT guards, deliberately: the inversion fixes the
+    #  LEVEL test outright, but on the DIFF form both legs invert on negative equity so a rising
+    #  market cap manufactures a pass (review blocker 1).  Guarding the mean form would drop real
+    #  negative observations from its pool median and move the bar for everyone.
+    ('mean',  'bookToPrice',        'totalStockholdersEquity',      'marketCap', 'B', +1, None),
+    ('diff',  'bookToPrice',        'totalStockholdersEquity',      'marketCap', 'B', +1,
+     'equity_positive'),
+    # --- GUARDED: Sign UNCHANGED ----------------------------------------------
+    ('mean',  'debtEquityRatio',    'debtEquityRatio',   'Identity', 'C', -1, 'equity_positive'),
+    ('diff',  'freeCashFlowToEquity', 'freeCashFlow',
+     'totalStockholdersEquity', 'B', +1, 'equity_positive'),
+    ('unity', 'netDebtToEBITDA',    'netDebtToEBITDA',   'Identity', 'A', -1, 'ebitda_positive'),
+    ('diff',  'effectiveTaxRate',   'effectiveTaxRate',  'Identity', 'C', -1,
+     'tax_rate_nonnegative'),
+]
+
+
+def _dict_by_kind(kind):
+    base, mean, diff, unity, special = cdic.getBaseMeanDiffUnitySpecialDicts()
+    return {'base': base, 'mean': mean, 'diff': diff, 'unity': unity,
+            'special': special}[kind]
+
+
+@pytest.mark.parametrize('kind,key,upper,lower,tier,sign,guard', _EXPECTED,
+                         ids=[f'{k}:{n}' for k, n, *_ in _EXPECTED])
+def test_fixed_criterion_spec(kind, key, upper, lower, tier, sign, guard):
+    spec = _dict_by_kind(kind)[key]
+    assert spec['Upper'] == upper, '%s %s Upper' % (kind, key)
+    assert spec['Lower'] == lower, '%s %s Lower' % (kind, key)
+    assert spec['Tier'] == tier, (
+        '%s %s Tier changed -- tiers and weights are a CEO decision, not part of this fix'
+        % (kind, key))
+    assert spec['Sign'] == sign, (
+        '%s %s Sign is %+d, expected %+d. An INVERTED metric must be +1 (its direction '
+        'reversed); a GUARDED metric keeps its original sign (a guard shrinks the domain, it '
+        'does not reverse anything).' % (kind, key, spec['Sign'], sign))
+    assert spec.get('Guard') == guard, '%s %s Guard' % (kind, key)
+
+
+def test_PEG_special_spec():
+    special = _dict_by_kind('special')['PEG']
+    assert special['Tier'] == 'C'
+    assert special['Sign'] == +1, (
+        'PEG is GUARDED, not inverted -- the criterion is 1/PEG - 1 > 0 and its direction is '
+        'unchanged')
+    assert special['Guard'] == 'peg_growth_defined'
+
+
+def test_PEG_guard_is_TWO_SIDED_on_the_growth_leg():
+    """Both legs of `eps_t / eps_{t-1}` must be positive, not just the current period.
+
+    The vendor's growth leg is a SEQUENTIAL quarter-over-quarter ratio, so a sign change in
+    EITHER period makes it not a growth rate.  Asserted directly on the predicate, over the
+    four sign states, because a one-sided guard passes every other test in this file.
+    """
+    g = cm.STAGE1_DOMAIN_GUARDS['peg_growth_defined']
+    #  NEWEST-FIRST: row 0 is the current period, row 1 is one period OLDER.
+    def admissible(eps_now, eps_prev):
+        df = pd.DataFrame({'netIncomePerShare': [eps_now, eps_prev, eps_prev]})
+        return bool(g(df).fillna(False).iloc[0])
+
+    assert admissible(1.0, 0.8) is True, 'both positive -> PEG is defined'
+    assert admissible(-1.0, 0.8) is False, 'eps_t < 0 -> PE leg negative -> refuse'
+    assert admissible(-1.0, -0.8) is False, 'both negative -> refuse'
+    assert admissible(1.0, -0.8) is False, (
+        'TURNAROUND (eps_t > 0, eps_prev < 0) must be REFUSED -- the growth ratio flips sign, '
+        'so this is undefined, not bad. A ONE-SIDED eps_t guard would wrongly admit it.')
+    assert admissible(1.0, 0.0) is False, 'a zero base is division by zero'
+    assert admissible(0.0, 1.0) is False
+
+    #  the OLDEST row has no predecessor -> inadmissible, never silently admitted
+    df = pd.DataFrame({'netIncomePerShare': [1.0, 1.0]})
+    assert bool(g(df).fillna(False).iloc[-1]) is False
+
+
+def test_PEG_criterion_fails_on_every_undefined_growth_state():
+    """End to end through the real Stage-1 construction and the real scorer.
+
+    A raw PEG inside (0,1) is supplied throughout, so every case isolates the GUARD rather than
+    the 0 < PEG < 1 threshold.  The frames are built so that EVERY row of the scoring window
+    sits in the state under test -- an ALTERNATING eps series puts each row in one of the two
+    MIXED states (eps_t<0/eps_prev>0 and the eps_t>0/eps_prev<0 turnaround), which is the only
+    way to hold a sign-CHANGE condition on every row at once.
+    """
+    alternating = [(-0.5 if i % 2 == 0 else 0.8) for i in range(_ROWS)]
+    for series, label in ((alternating, 'both MIXED states (deterioration + TURNAROUND)'),
+                          ([-0.5] * _ROWS, 'both periods negative')):
+        bm = _stage1(_frame(netIncomePerShare=series, priceEarningsToGrowthRatio=0.5))
+        assert np.isnan(bm['PEG']).all(), 'PEG admitted an undefined growth state: %s' % label
+        assert _score(bm, 'PEG', 'special', 'PEG') == 0.0, label
+
+    #  and the DEFINED state still scores normally -- the guard must not just fail everything
+    ok = _stage1(_frame(netIncomePerShare=0.5, priceEarningsToGrowthRatio=0.5))
+    assert _score(ok, 'PEG', 'special', 'PEG') == _weight('special', 'PEG')
+    #  PEG outside (0,1) still fails on the threshold, which this fix does not touch
+    rich = _stage1(_frame(netIncomePerShare=0.5, priceEarningsToGrowthRatio=2.5))
+    assert _score(rich, 'PEG', 'special', 'PEG') == 0.0
+
+
+def test_eps_fields_are_captured_at_ingest():
+    """`eps` / `epsdiluted` ride free in the income-statement response and are wanted for exact
+    parity with the vendor PEG.  Pinned so a prereq tidy-up cannot silently drop them."""
+    prereq = cdic.getPreReqDict()
+    for f in ('eps', 'epsdiluted'):
+        assert f in prereq['inc'], (
+            '%s dropped from the income-statement prereq list. It costs no extra API call and '
+            'is the basis the vendor PEG is built from.' % f)
+    #  and the guard must still be running on the DECLARED proxy, not silently switched
+    assert cm._PEG_EPS_FIELD == 'netIncomePerShare', (
+        'the PEG guard basis changed. That is allowed, but it moves the guard boundary -- '
+        're-measure the four sign cells in the same edit rather than letting it drift.')
+
+
+def test_returnOnEquity_special_spec():
+    special = _dict_by_kind('special')['returnOnEquity']
+    assert special['Tier'] == 'C'
+    assert special['Sign'] == +1, (
+        'returnOnEquity is GUARDED, not inverted -- higher return on equity is still better, '
+        'so the sign must not flip')
+    assert special['Guard'] == 'equity_positive'
+
+
+def test_retired_criteria_are_gone_from_the_schema():
+    """The pre-inversion columns must not survive anywhere.
+
+    A leftover `mPfcfRatio` would be scored at Tier S ALONGSIDE its replacement -- the same
+    double-count hazard DUPLICATE_DIFF_CRITERIA documents, but with opposite signs.
+    """
+    cols = set(utils.initBoMetric_fromDict()['BoMetric_df'].columns)
+    for retired in ('mPfcfRatio', 'mPbRatio', 'dPbRatio'):
+        assert retired not in cols, (
+            '%s is the PRE-FIX column and is still in the schema; it would be scored beside '
+            'its inverted replacement' % retired)
+    for live in ('mFreeCashFlowToMarketCap', 'mBookToPrice', 'dBookToPrice'):
+        assert live in cols, '%s missing from the BoMetric schema' % live
+
+
+def test_salesToInventory_stays_weight_zero():
+    """dSalesToInventory is the ONE recorded member of the family left unfixed, and the ONLY
+    thing making that safe is w = 0.
+
+    inventory -> 0 gives +infinity, which lands on this criterion's GOOD side, so an
+    inventory-free business would PASS an inventory-TURN test.  47.1% of sources and 26 of the
+    100 deployed pool names have at least one such row.  Activating the criterion must therefore
+    be a VISIBLE EVENT: this test fails the moment it leaves Tier N, which routes whoever did it
+    to the reasoning in createDicts rather than letting a re-weighting turn +inf into a pass in
+    silence.  IT IS NOT A CLAIM THAT TIER N IS CORRECT FOREVER -- it is a tripwire.
+    """
+    spec = _dict_by_kind('diff')['salesToInventory']
+    assert spec['Tier'] == 'N', (
+        "dSalesToInventory has left Tier N (now %r), so revenue/inventory now carries weight "
+        "and inventory == 0 -> +inf -> PASS is live. Read the entry in createDicts: either "
+        "guard the zero-inventory rows or invert the ratio BEFORE giving this weight."
+        % spec['Tier'])
+    from calcScore import calcByTier
+    assert calcByTier('diff', spec['Tier'], spec['Sign'],
+                      pd.Series([np.inf] * 8), 0.0, 'salesToInventory', 8) == 0.0, \
+        'Tier N must score exactly 0 whatever the value'
+
+
+# --------------------------------------------------------------------------- #
+#  3. BEHAVIOUR AT THE CONSUMER -- the layer that catches a wrong sign        #
+# --------------------------------------------------------------------------- #
+#  Each case: a synthetic single-source statement frame is pushed through the REAL Stage-1
+#  construction (`getData_fmp.build_bometric_rows`, i.e. calc_simpleRatio + the flow factor +
+#  the guard + calc_diff) and the REAL scorer (`calcScore.calcByTier`), and the resulting
+#  pass/fail is asserted.  Nothing here re-implements a formula.
+_ROWS = 12          # > 8 + rpy so the head(8) window is full after the history trim
+
+_BASE_ROW = {
+    # every preReq field the Stage-1 dicts read, at a bland, healthy, in-domain value
+    'totalAssets': 1000.0, 'longTermDebt': 100.0, 'inventory': 50.0,
+    'totalStockholdersEquity': 500.0, 'totalLiabilities': 500.0,
+    'totalCurrentAssets': 300.0, 'totalCurrentLiabilities': 150.0,
+    'propertyPlantEquipmentNet': 200.0, 'otherCurrentAssets': 10.0,
+    'netIncome': 50.0, 'grossProfit': 200.0, 'revenue': 800.0,
+    'weightedAverageShsOut': 100.0, 'weightedAverageShsOutDil': 100.0,
+    'depreciationAndAmortization': 30.0,
+    'sellingGeneralAndAdministrativeExpenses': 80.0, 'operatingIncome': 90.0,
+    'interestExpense': 5.0,
+    'freeCashFlow': 60.0, 'netCashProvidedByOperatingActivities': 90.0,
+    'netCashUsedProvidedByFinancingActivities': -10.0, 'dividendsPaid': -5.0,
+    'netIncomePerShare': 0.5, 'pbRatio': 2.0, 'earningsYield': 0.05, 'pfcfRatio': 15.0,
+    'grahamNumber': 8.0, 'grahamNetNet': 1.0, 'marketCap': 1000.0,
+    'returnOnTangibleAssets': 0.05, 'incomeQuality': 1.5, 'bookValuePerShare': 5.0,
+    'netDebtToEBITDA': 0.5, 'daysSalesOutstanding': 40.0, 'capexPerShare': 0.3,
+    'tangibleBookValuePerShare': 4.0, 'dividendYield': 0.02, 'payoutRatio': 0.2,
+    'returnOnEquity': 0.10, 'debtEquityRatio': 0.4, 'currentRatio': 2.0,
+    'grossProfitMargin': 0.25, 'netProfitMargin': 0.0625, 'effectiveTaxRate': 0.25,
+    'returnOnCapitalEmployed': 0.08, 'returnOnAssets': 0.05,
+    'priceEarningsToGrowthRatio': 0.8, 'daysOfInventoryOutstanding': 30.0,
+    'capitalExpenditureCoverageRatio': -3.0, 'price': 10.0,
+}
+
+
+def _frame(**overrides):
+    """One synthetic source, NEWEST-FIRST, `_ROWS` identical rows with `overrides` applied.
+
+    Identical rows are deliberate: it makes every DIFF exactly zero, so a diff criterion's
+    pass/fail is decided purely by the guard (a zero diff is not > 0, i.e. a fail), and it keeps
+    the LEVEL criteria unambiguous.  Where a diff's sign is what is under test the caller
+    overrides a column with a per-row sequence.
+    """
+    rows = []
+    for i in range(_ROWS):
+        r = dict(_BASE_ROW)
+        for k, v in overrides.items():
+            r[k] = v[i] if isinstance(v, (list, tuple)) else v
+        r['date'] = pd.Timestamp('2026-03-31') - pd.DateOffset(months=3 * i)
+        rows.append(r)
+    return pd.DataFrame(rows).reset_index(drop=True)
+
+
+def _stage1(tempfund, rpy=4):
+    """`tempfund` through the REAL Stage-1 construction -> the BoMetric frame."""
+    dicts = cdic.getDicts()
+    packed = (dicts[2], dicts[3], dicts[5], dicts[4], dicts[6])   # base, mean, unity, diff, spec
+    tmp = pd.DataFrame(columns=list(utils.initBoMetric_fromDict()['BoMetric_df'].columns))
+    tmp['date'] = tempfund['date'].values
+    tmp['source'] = 'TEST'
+    return gdf.build_bometric_rows(tempfund.copy(), tmp, rpy, n=1, dicts=packed)
+
+
+def _score(bm, column, kind, key, avec=0.0, n=8):
+    """The criterion's share of its tier weight, via the REAL scorer."""
+    base, mean, diff, unity, special = cdic.getBaseMeanDiffUnitySpecialDicts()
+    spec = {'base': base, 'mean': mean, 'diff': diff, 'unity': unity,
+            'special': special}[kind][key]
+    return cs.calcByTier(kind, spec['Tier'], spec['Sign'], bm[column], avec, key, n)
+
+
+def _weight(kind, key):
+    spec = _dict_by_kind(kind)[key]
+    return {'S': 1.0, 'A': 0.75, 'B': 0.5, 'C': 0.3, 'D': 0.1}.get(spec['Tier'], 0.0)
+
+
+# ---- the headline: negative FCF must not read as cheap ---------------------
+def test_negative_fcf_fails_the_tier_S_cheapness_criterion():
+    """THE defect this whole change exists for.
+
+    Pre-fix, `mPfcfRatio` = price/FCF went NEGATIVE on a cash-burning company, and a mean test
+    with Sign -1 reads "below the pool median" as CHEAP -- so 75.9% of the highest-weighted
+    cheapness criterion's passes were cash burners.  The yield form must fail them, and must
+    still pass a genuinely cheap cash generator.
+    """
+    med = 0.04      # a plausible positive panel median FCF yield
+    burn = _stage1(_frame(freeCashFlow=-60.0))
+    assert _score(burn, 'mFreeCashFlowToMarketCap', 'mean', 'freeCashFlowToMarketCap',
+                  avec=med) == 0.0, \
+        'negative free cash flow still earns the Tier-S cheapness criterion'
+
+    cheap = _stage1(_frame(freeCashFlow=120.0))       # 12% yield, well above the median
+    assert _score(cheap, 'mFreeCashFlowToMarketCap', 'mean', 'freeCashFlowToMarketCap',
+                  avec=med) == _weight('mean', 'freeCashFlowToMarketCap'), \
+        'a genuinely high FCF yield must still pass -- the fix must not just fail everything'
+
+    # AND THE DIRECTION IS NOW MONOTONE IN THE RIGHT WAY: more cash flow scores more.
+    lo = _stage1(_frame(freeCashFlow=10.0))
+    assert _score(lo, 'mFreeCashFlowToMarketCap', 'mean', 'freeCashFlowToMarketCap',
+                  avec=med) == 0.0
+
+
+def test_negative_equity_fails_book_to_price_both_forms():
+    """price/book went negative on negative equity and read as maximally cheap, in the mean
+    form AND in the diff form (an equity base collapsing through zero looked like a big fall
+    in P/B)."""
+    med = 0.5
+    neg = _stage1(_frame(totalStockholdersEquity=-500.0))
+    assert _score(neg, 'mBookToPrice', 'mean', 'bookToPrice', avec=med) == 0.0
+    pos = _stage1(_frame(totalStockholdersEquity=900.0))
+    assert _score(pos, 'mBookToPrice', 'mean', 'bookToPrice', avec=med) == \
+        _weight('mean', 'bookToPrice')
+
+    # DIFF form: equity falling THROUGH zero must not score as an improving book yield.
+    # Newest-first, so index 0 is the latest: 500 -> -100 is a DETERIORATION.
+    collapsing = _stage1(_frame(totalStockholdersEquity=[-100.0] * 6 + [500.0] * 6))
+    assert _score(collapsing, 'dBookToPrice', 'diff', 'bookToPrice') == 0.0, \
+        'an equity base collapsing through zero scored as a rising book-to-price'
+    # ... while a genuinely rising book yield still passes.
+    rising = _stage1(_frame(totalStockholdersEquity=[900.0] * 6 + [400.0] * 6))
+    assert _score(rising, 'dBookToPrice', 'diff', 'bookToPrice') > 0.0
+
+
+def test_dBookToPrice_refuses_negative_equity_including_the_MARKET_CAP_leg():
+    """REVIEW BLOCKER 1: inverting to yield form does NOT fix the diff form on negative equity,
+    because BOTH legs of equity/marketCap invert.
+
+    With equity < 0, a RISING market cap drives the negative ratio toward zero, so the diff is
+    POSITIVE and the row passes -- a company getting MORE EXPENSIVE, with its equity deficit
+    flat or worse, passing a CHEAPNESS criterion.  Measured on the real panel: 444 of the 1,313
+    post-inversion negative-equity passes (33.8%) were driven by the market-cap leg alone, 434
+    of them with market cap rising against flat-or-worse equity.
+
+    This is the case an earlier check MISSED by validating "did book-to-price rise", which is
+    the pass condition itself.  So it is asserted here on the LEG that moved, holding equity
+    FIXED so only the market cap can explain a pass.
+    """
+    #  equity constant and NEGATIVE; market cap RISING (newest-first: 800 now, 2000 before).
+    #  Pre-guard this passed: -500/800 = -0.625 vs -500/2000 = -0.25 -> diff -0.375 ... so the
+    #  perverse direction is a FALLING market cap; a RISING one gives the positive diff:
+    #  newest 2000 -> -0.25, prior 800 -> -0.625, diff = +0.375 > 0 = PASS.
+    mcap_rising = _stage1(_frame(totalStockholdersEquity=-500.0,
+                                 marketCap=[2000.0] * 6 + [800.0] * 6))
+    assert np.isnan(mcap_rising['dBookToPrice']).all(), (
+        'dBookToPrice is still defined on negative equity -- a rising market cap can therefore '
+        'still manufacture a positive diff')
+    assert _score(mcap_rising, 'dBookToPrice', 'diff', 'bookToPrice') == 0.0, \
+        'a company getting MORE EXPENSIVE on negative equity passed a cheapness criterion'
+
+    #  and the guard is TWO-SIDED for free: NaN propagates through calc_diff, so one bad period
+    #  is enough.  Newest period fine, PRIOR period negative -> no defined change.
+    prior_bad = _stage1(_frame(totalStockholdersEquity=[600.0] * 6 + [-500.0] * 6))
+    assert np.isnan(prior_bad['dBookToPrice']).iloc[:6].any(), (
+        'a diff spanning a negative-equity period must be refused -- there is no defined change '
+        'in a quantity that was undefined')
+
+
+def test_mBookToPrice_is_NOT_guarded_so_its_ruler_keeps_real_observations():
+    """The asymmetry between the two forms is deliberate and load-bearing.
+
+    The LEVEL test needs no guard: the inversion already makes negative equity a negative book
+    yield, which fails the mean test on its own (measured: 0 passes on equity < 0, from 3,657).
+    Guarding it anyway would DROP those rows from the pool median -- and this criterion is scored
+    as `value - median(column)`, so removing 3,661 legitimate observations would MOVE THE BAR for
+    every name that was always in domain.  A negative book yield is a true measurement, not a
+    domain error.
+
+    This test is what stops someone "tidying up" the asymmetry by adding a guard to both.
+    """
+    neg = _stage1(_frame(totalStockholdersEquity=-500.0))
+    assert not np.isnan(neg['mBookToPrice']).all(), (
+        'mBookToPrice has been guarded. It does not need to be (it already fails), and guarding '
+        'it removes real negative observations from the pool median, moving the bar for every '
+        'other name. Read the createDicts entry before changing this.')
+    #  ... and it still FAILS, which is the whole reason no guard is needed.
+    assert _score(neg, 'mBookToPrice', 'mean', 'bookToPrice', avec=0.5) == 0.0
+
+
+def test_guards_are_applied_PER_FORM_not_once_per_key():
+    """`bookToPrice` lives in BOTH the mean and diff dicts, and they now carry DIFFERENT guards.
+
+    `build_bometric_rows` iterates a MERGED dict where the last entry wins, so reading the guard
+    from the merged entry would force one domain on both forms.  This pins the per-form
+    behaviour: same key, same source frame, one column NaN and the other not.
+    """
+    bm = _stage1(_frame(totalStockholdersEquity=-500.0))
+    assert np.isnan(bm['dBookToPrice']).all(), 'diff form must be guarded'
+    assert not np.isnan(bm['mBookToPrice']).all(), 'mean form must NOT be guarded'
+
+
+def test_shared_keys_agree_on_basis_or_are_declared_exceptions():
+    """A key in two operational dicts is built ONCE, from the MERGED entry (last wins).
+
+    So if two forms of the same key declare different Upper/Lower, one of them is a lie. There is
+    exactly one such case today and it is a KNOWN, REPORTED defect awaiting a ruling -- pinned
+    here rather than silently fixed, because correcting it changes the basis of a Tier-S w=1.0
+    criterion.  A NEW disagreement must fail this test.
+    """
+    _pre, _calc, base, mean, diff, unity, _spec = cdic.getDicts()
+    dicts = {'base': base, 'mean': mean, 'unity': unity, 'diff': diff}
+    #  key -> the reason its two forms legitimately disagree on basis.  Do not extend this
+    #  without a ruling; the point of the dict is that additions are visible.
+    KNOWN = {
+        'returnOnAssets': 'base declares netIncome/totalAssets but the merged diff entry '
+                          'supplies FMP returnOnAssets; measured near-equivalent (median ratio '
+                          '1.0000, 97.3% within 1%). Spec-vs-code defect, not a scoring one.',
+    }
+    for key in {k for d in dicts.values() for k in d}:
+        forms = {n: d[key] for n, d in dicts.items() if key in d}
+        if len(forms) < 2:
+            continue
+        bases = {(s['Upper'], s['Lower']) for s in forms.values()}
+        if len(bases) > 1:
+            assert key in KNOWN, (
+                "%s declares different Upper/Lower in %s -- the ratio is built ONCE from the "
+                "merged dict, so only one of them is real. Either align them or declare the "
+                "exception with its reason." % (key, sorted(forms)))
+    #  and the known exception must still BE one -- if someone fixes it, remove it from KNOWN.
+    ra_bases = {(base['returnOnAssets']['Upper'], base['returnOnAssets']['Lower']),
+                (diff['returnOnAssets']['Upper'], diff['returnOnAssets']['Lower'])}
+    assert len(ra_bases) > 1, (
+        'returnOnAssets no longer disagrees on basis -- good, but remove it from KNOWN above so '
+        'the exception list stays honest.')
+
+
+# ---- the guards: adverse row refused, GENUINE row preserved ---------------
+def test_negative_equity_refused_by_debt_equity_and_fcf_to_equity():
+    neg = _stage1(_frame(totalStockholdersEquity=-500.0, debtEquityRatio=-0.4))
+    assert np.isnan(neg['mDebtEquityRatio']).all(), \
+        'negative equity must make debt/equity out of domain, not "unlevered"'
+    assert _score(neg, 'mDebtEquityRatio', 'mean', 'debtEquityRatio', avec=0.43) == 0.0
+    assert np.isnan(neg['dFreeCashFlowToEquity']).all()
+    assert _score(neg, 'dFreeCashFlowToEquity', 'diff', 'freeCashFlowToEquity') == 0.0
+
+    # THE DOUBLE NEGATIVE specifically: FCF < 0 AND equity < 0 gave a POSITIVE ratio.
+    dn = _stage1(_frame(totalStockholdersEquity=-500.0, freeCashFlow=-60.0))
+    assert np.isnan(dn['dFreeCashFlowToEquity']).all()
+
+    # and a debt-free, positive-equity name is NOT refused -- the guard is on equity only.
+    free = _stage1(_frame(debtEquityRatio=0.0))
+    assert not np.isnan(free['mDebtEquityRatio']).all(), \
+        'a DEBT-FREE company must stay in domain; refusing it would re-create the defect ' \
+        'assetsToLongTermLiabilities was inverted to fix'
+    assert _score(free, 'mDebtEquityRatio', 'mean', 'debtEquityRatio', avec=0.43) == \
+        _weight('mean', 'debtEquityRatio'), 'debt-free must PASS a leverage-safety test'
+
+
+def test_netDebtToEBITDA_refuses_perverse_cell_and_keeps_genuine_net_cash():
+    """THE most load-bearing test in this file.
+
+    This criterion has four sign cells and only ONE is the defect.  A careless guard breaks the
+    37.8%-of-passes cell that is genuinely correct, so both are asserted here:
+
+      netDebt > 0, EBITDA < 0  ->  ratio NEGATIVE -> passes `< 1` -> PERVERSE, must be refused
+      netDebt < 0, EBITDA > 0  ->  ratio NEGATIVE -> passes `< 1` -> GENUINE, must SURVIVE
+
+    Both have exactly ONE negative operand, so nothing that counts negatives can separate them;
+    only the DENOMINATOR's sign can.
+    """
+    # PERVERSE: EBITDA <= 0 (operatingIncome + D&A <= 0) with debt outstanding.
+    perverse = _stage1(_frame(operatingIncome=-60.0, depreciationAndAmortization=30.0,
+                              netDebtToEBITDA=-2.0))
+    assert np.isnan(perverse['uNetDebtToEBITDA']).all(), \
+        'EBITDA <= 0 must be out of domain'
+    assert _score(perverse, 'uNetDebtToEBITDA', 'unity', 'netDebtToEBITDA') == 0.0, \
+        'a levered company with no earnings still scores as the safest on the balance sheet'
+
+    # GENUINE net cash: EBITDA > 0, ratio negative because NET DEBT is negative.
+    genuine = _stage1(_frame(netDebtToEBITDA=-1.5))
+    assert not np.isnan(genuine['uNetDebtToEBITDA']).all(), \
+        'the guard has refused a row with POSITIVE EBITDA -- it must key on the denominator'
+    assert _score(genuine, 'uNetDebtToEBITDA', 'unity', 'netDebtToEBITDA') == \
+        _weight('unity', 'netDebtToEBITDA'), \
+        'GENUINE NET CASH (37.8% of this criterion\'s passes) has been broken by the guard'
+
+    # and ordinary low leverage still passes, high leverage still fails.
+    assert _score(_stage1(_frame(netDebtToEBITDA=0.5)), 'uNetDebtToEBITDA', 'unity',
+                  'netDebtToEBITDA') == _weight('unity', 'netDebtToEBITDA')
+    assert _score(_stage1(_frame(netDebtToEBITDA=4.0)), 'uNetDebtToEBITDA', 'unity',
+                  'netDebtToEBITDA') == 0.0
+
+
+def test_negative_effective_tax_rate_refused():
+    neg = _stage1(_frame(effectiveTaxRate=-0.5))
+    assert np.isnan(neg['dEffectiveTaxRate']).all(), \
+        'a negative effective tax rate must not read as improving tax efficiency'
+    # a rate FALLING within the admissible domain still passes (Sign -1 on the diff)
+    falling = _stage1(_frame(effectiveTaxRate=[0.15] * 6 + [0.30] * 6))
+    assert _score(falling, 'dEffectiveTaxRate', 'diff', 'effectiveTaxRate') > 0.0
+    # a ZERO rate is a real answer and stays in domain
+    zero = _stage1(_frame(effectiveTaxRate=0.0))
+    assert not np.isnan(zero['dEffectiveTaxRate']).all()
+
+
+def test_returnOnEquity_double_negative_refused_stage1():
+    """netIncome < 0 AND equity < 0 gave a POSITIVE ROE that cleared the 12% hurdle."""
+    dn = _stage1(_frame(netIncome=-50.0, totalStockholdersEquity=-500.0,
+                        returnOnEquity=0.10))     # FMP reports +10% from two negatives
+    assert np.isnan(dn['returnOnEquity']).all()
+    assert _score(dn, 'returnOnEquity', 'special', 'returnOnEquity') == 0.0, \
+        'a loss-making, book-insolvent company cleared a 12% ROE hurdle'
+    ok = _stage1(_frame(returnOnEquity=0.20))
+    assert _score(ok, 'returnOnEquity', 'special', 'returnOnEquity') == \
+        _weight('special', 'returnOnEquity')
+    # BELOW the hurdle still fails -- the hurdle itself is untouched by this fix.
+    assert _score(_stage1(_frame(returnOnEquity=0.01)), 'returnOnEquity', 'special',
+                  'returnOnEquity') == 0.0
+
+
+def test_returnOnEquity_guarded_in_stage2_too():
+    """Stage-1 and Stage-2 both score returnOnEquity; one fix, both halves.
+
+    Stage-2 RANKS the value, so an unguarded negative-equity name did not merely pass a test --
+    it sat ABOVE the pool median on the column.
+    """
+    n = 8
+    dn = pd.DataFrame({'returnOnEquity': [0.25] * n,
+                       'totalStockholdersEquity': [-500.0] * n})
+    assert np.isnan(sm.postbm_metric('returnOnEquity', 'returnOnEquity', dn, n)), \
+        'Stage-2 still ranks a return on NEGATIVE equity as a high return'
+
+    ok = pd.DataFrame({'returnOnEquity': [0.25] * n,
+                       'totalStockholdersEquity': [500.0] * n})
+    assert sm.postbm_metric('returnOnEquity', 'returnOnEquity', ok, n) == pytest.approx(0.25)
+
+    # PARTIAL: the admissible rows carry the metric (the income_quality_accruals convention).
+    mixed = pd.DataFrame({'returnOnEquity': [0.25] * 4 + [9.99] * 4,
+                          'totalStockholdersEquity': [500.0] * 4 + [-500.0] * 4})
+    assert sm.postbm_metric('returnOnEquity', 'returnOnEquity', mixed, n) == pytest.approx(0.25)
+
+
+# --------------------------------------------------------------------------- #
+#  4. THE INVERSION IS EQUIVALENT TO THE OLD METRIC WHERE THE OLD ONE WAS OK  #
+# --------------------------------------------------------------------------- #
+def test_inversion_preserves_ordering_on_the_admissible_domain():
+    """An inversion is only a legitimate fix if it AGREES with the old metric wherever the old
+    metric was well-defined -- otherwise it is a different criterion wearing a bug fix's
+    clothes.  On positive FCF / positive equity, price/X and X/price are strictly
+    order-REVERSING, so `cheaper on price/X` and `higher yield on X/price` must select the same
+    rows.  Asserted on a grid rather than argued.
+    """
+    fcf = np.array([5.0, 10.0, 20.0, 40.0, 80.0])
+    mcap = 1000.0
+    pfcf = mcap / fcf                      # the PRE-FIX quantity
+    yld = fcf / mcap                       # the POST-FIX quantity
+    # Sign -1 on (pfcf - median) and Sign +1 on (yield - median) must agree row for row.
+    old_pass = (-1 * (pfcf - np.median(pfcf))) > 0
+    new_pass = (+1 * (yld - np.median(yld))) > 0
+    assert (old_pass == new_pass).all(), (
+        'the yield form disagrees with price/FCF on the domain where price/FCF was VALID -- '
+        'the inversion has changed the criterion, not just fixed its sign')
+
+    eq = np.array([100.0, 250.0, 500.0, 1000.0, 2000.0])
+    pb = mcap / eq
+    b2p = eq / mcap
+    assert (((-1 * (pb - np.median(pb))) > 0) == ((+1 * (b2p - np.median(b2p))) > 0)).all()

@@ -287,8 +287,15 @@ def fillPreReqdf(tempfund,preReq_dict,bs,inc,cf,km,fr,conflicts=None,fallbacks=N
                 #
                 # It used to be derived as quarterly-PE * quarterly-EPS:
                 #   fr['priceEarningsRatio'] * (inc['netIncome'] / inc['weightedAverageShsOut'])
-                # but FMP's QUARTERLY priceEarningsRatio is ANNUALISED (price / TTM-ish EPS)
-                # while the EPS factor here is a SINGLE quarter, so the product came out at
+                # but FMP's QUARTERLY priceEarningsRatio is ANNUALISED -- and the basis is an
+                # ANNUALISED SINGLE QUARTER, `price / (4 * eps_quarter)`, NOT a trailing sum.
+                # (An earlier version of this comment said "price / TTM-ish EPS": the x4 it
+                # proved is real, the TTM reading of it was wrong.  Established arithmetically
+                # on nine deliberately-seasonal quarters -- implied earnings pin to 4.00 x
+                # NI_quarter within 0.7% on all nine, while the TTM ratio swings 0.63-1.51.
+                # `priceEarningsRatio` and `peRatio` are bit-identical in the response, so this
+                # settles both.  See calcMetrics._peg_growth_defined, which depends on the same
+                # finding.)  The EPS factor here is a SINGLE quarter, so the product came out at
                 # ~1/4 of the real share price.  Proven on the 2026-07-17 panel:
                 # marketCap / (price * shares) had median 3.99992 and 69% of all 176,193
                 # usable rows inside +-1% of exactly 4.0.
@@ -401,22 +408,61 @@ def build_bometric_rows(tempfund, tempMetric_df, rpy, n=1, dicts=None):
         _ff = rp.stage1_flow_factor(key, rpy)
         if _ff != 1.0:
             tf = [(v * _ff) if v is not None else v for v in tf]
+        # DOMAIN GUARD (sign-inversion fix, 2026-08-04).  A ratio whose adverse quantity is
+        # in the DENOMINATOR inverts sign instead of failing, and where the ratio cannot be
+        # rewritten in yield form the out-of-domain rows are refused here.  Declared per
+        # metric in createDicts (`Guard`), predicate in calcMetrics.STAGE1_DOMAIN_GUARDS.
+        #
+        # THE GUARD IS APPLIED PER *FORM*, NOT ONCE FOR THE KEY, and that is a correctness
+        # requirement rather than tidiness.  `ratioOpCalcDicts` above is a MERGED dict, so a key
+        # living in two dicts (bookToPrice in mean+diff, currentRatio in unity+diff,
+        # grossProfitMargin in mean+diff, returnOnAssets in base+diff) collapses to ONE entry --
+        # the LAST one wins.  Reading the guard from the merged entry would therefore force the
+        # SAME domain on a LEVEL test and a CHANGE test, and those genuinely differ:
+        # `mBookToPrice` on negative equity is a real, correctly-FAILING observation that must
+        # stay in the pool median, while `dBookToPrice` on negative equity is UNDEFINED (both
+        # legs of equity/marketCap invert, so a rising market cap drives the diff positive and
+        # a company getting MORE expensive passes a cheapness test).  Each form now reads its
+        # OWN dict's `Guard`.
+        #
+        # THE RATIO ITSELF IS STILL BUILT FROM THE MERGED ENTRY -- deliberately unchanged.
+        # `returnOnAssets` declares `netIncome/totalAssets` in the base dict but the merged
+        # entry supplies FMP's `returnOnAssets` field, so the base column has ALWAYS been the
+        # FMP field.  Measured near-equivalent on the panel (median ratio 1.0000, 97.3% of
+        # 175,699 rows within 1%, 99.7% sign agreement), i.e. a SPEC-vs-CODE defect rather than
+        # a scoring one -- but fixing it would change the basis of a Tier-S w=1.0 criterion, so
+        # it is REPORTED and pinned (test_sign_conventions.test_shared_keys_...), not quietly
+        # corrected here.  Guards are per-form; Upper/Lower are not. Do not "finish the job"
+        # without a ruling.
+        #
+        # POSITION IS LOAD-BEARING: AFTER the flow factor, and BEFORE the diff -- calc_diff must
+        # never difference ACROSS a refused row, and because NaN propagates through the
+        # subtraction, a per-ROW level guard automatically makes the diff two-sided (NaN
+        # whenever EITHER period is inadmissible), which is the honest reading.
+        def _guarded(values, spec):
+            g = spec.get('Guard')
+            return values if g is None else cm.apply_domain_guard(tempfund, values, g)
+
         if key in BoMetric_base_dict:
-            tempMetric_df[restr] = tf
+            tempMetric_df[restr] = _guarded(tf, BoMetric_base_dict[key])
         if key in BoMetric_mean_dict:
             mrestr = "m" + restr[0].upper() + restr[1:]
-            tempMetric_df[mrestr] = tf
+            tempMetric_df[mrestr] = _guarded(tf, BoMetric_mean_dict[key])
         if key in BoMetric_unity_dict:
             urestr = "u" + restr[0].upper() + restr[1:]
-            tempMetric_df[urestr] = tf
+            tempMetric_df[urestr] = _guarded(tf, BoMetric_unity_dict[key])
         if key in BoMetric_diff_dict:
-            tempdf['forDiff'] = tf
+            tempdf['forDiff'] = _guarded(tf, BoMetric_diff_dict[key])
             tf = cm.calc_diff(tempdf, 'forDiff', n, rpy=rpy)
             drestr = "d" + restr[0].upper() + restr[1:]
             tempMetric_df[drestr] = tf
 
     for key1 in BoMetric_special_dict.keys():
-        tf = cm.calc_special(tempfund, key1, n, rpy=rpy)
+        # `Guard` is forwarded rather than applied here: the special criteria are formulas, not
+        # Upper/Lower ratios, so they never enter the loop above.  Same declaration, same
+        # predicate registry -- one place to read a criterion's domain.
+        tf = cm.calc_special(tempfund, key1, n, rpy=rpy,
+                             guard=BoMetric_special_dict[key1].get('Guard'))
         tempMetric_df[key1] = tf
 
     # Drop the OLDEST rows whose YoY/diff windows have no counterpart:

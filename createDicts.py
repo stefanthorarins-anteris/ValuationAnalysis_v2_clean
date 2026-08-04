@@ -46,6 +46,101 @@ import scoringWeights as sw          # SINGLE SOURCE OF TRUTH for every scoring 
 DUPLICATE_DIFF_CRITERIA = (('EPS', 'netIncomePerShare'),)
 
 
+# --- THE SIGN-INVERTING CRITERIA (fixed 2026-08-04) ---------------------------
+# THE DEFECT, in one line: a ratio whose ADVERSE quantity sits in the DENOMINATOR does not
+# fail -- it INVERTS SIGN and reads as the best possible value.
+#
+#   `earnings/price`, `book/price`, `FCF/price`  -- the YIELD forms -- go NEGATIVE when the
+#   numerator is adverse, and a negative yield fails on its own.  Self-correcting.
+#   `price/earnings`, `price/book`, `price/FCF`, `debt/equity`, `netDebt/EBITDA`, `NI/equity`
+#   go negative and read as CHEAP / UNLEVERED / PROFITABLE.  Perverse.
+#
+# That asymmetry is why Stage-2 was nearly clean (it is written in yield form throughout) and
+# Stage-1 was not (it carried five price-in-numerator forms, three at the top three tiers).
+# MEASURED over the 61,481 head(8) rows of the 7,729-source 2026-07-17 CORRECTED panel:
+#   mPfcfRatio            Tier S, w 1.0  23,034 of 30,386 passes (75.8%) had NEGATIVE FCF
+#   uNetDebtToEBITDA      Tier A, w 0.75 11,824 of 31,352 passes (37.7%) had EBITDA <= 0 -- and
+#                                        THIS IS THE LARGEST SINGLE CHANGE IN THE SET in weight
+#                                        terms, larger than the mPfcfRatio headline.  It is TWO
+#                                        cells, and an earlier version of this comment counted
+#                                        only the first: 6,319 (20.2%) are the perverse
+#                                        netDebt>0/EBITDA<0 case, and a further 5,276 (16.8%) are
+#                                        the net-cash-with-negative-EBITDA case.  Both are
+#                                        removed; see the unity-dict entry for the full 4-cell
+#                                        decomposition and why refusing the second is a judgment
+#                                        call rather than a bug fix.
+#   PEG                   Tier C         11,665 of 24,292 passes (48.0%) on an UNDEFINED growth
+#                                        leg -- the second-largest behavioural change in the set
+#   dEffectiveTaxRate     Tier C         7,734 of 26,311 passes (29.4%) had a NEGATIVE rate
+#   mPbRatio / dPbRatio   Tier B         3,657 / 1,816 passes on NEGATIVE equity
+#   mDebtEquityRatio      Tier C         3,658 of 30,598 passes (12.0%) on NEGATIVE equity
+#   returnOnEquity        Tier C         2,255 of 22,402 passes (10.1%) on equity<0 AND NI<0
+#   dFreeCashFlowToEquity Tier B         1,746 passes on NEGATIVE equity
+# `mPfcfRatio` was the headline: Stage-1's HIGHEST-weighted cheapness criterion awarded three
+# quarters of its passes to cash-BURNING rows, unbounded below, and 59 of the 100 deployed
+# pool names collected at least one.  Nobody ever meant "burning cash makes you cheap".
+#
+# TWO FIXES, AND WHICH ONE IS USED IS NOT A STYLE CHOICE:
+#
+#  1. INVERT to the yield form -- used where the numerator CANNOT go negative (price, debt),
+#     so only the denominator flips.  Inverting moves the sign-crossing quantity into the
+#     NUMERATOR over a strictly-positive denominator, and the criterion then self-corrects
+#     with no guard, no NaN and no new state.  THE SIGN NECESSARILY FLIPS (-1 -> +1): the
+#     metric's good direction reverses.  Applied to `pfcfRatio` -> `freeCashFlowToMarketCap`
+#     and `pbRatio` -> `bookToPrice`.  This also removes a Stage-1/Stage-2 convention
+#     divergence: Stage-2 already scores `freeCashFlowYield` and `bVpRatio` (= 1/pbRatio).
+#
+#  2. GUARD the denominator (the `Guard` key below) -- used where inverting is UNAVAILABLE or
+#     would introduce a fresh defect.  The out-of-domain rows become NaN, which
+#     calcScore.calcByTier already scores as a fail.  THE SIGN DOES NOT CHANGE, because the
+#     metric's direction does not change -- only its domain shrinks.  Getting that distinction
+#     wrong per criterion is the failure this comment exists to prevent.
+#
+# WHY THE FOUR GUARDED ONES ARE NOT INVERTED -- measured, not asserted:
+#   debtEquityRatio        equity/debt would be +inf on the 5.02% of head(8) rows that are
+#                          DEBT-FREE (debtEquityRatio == 0 exactly; 6.20% of the panel), and
+#                          +inf -> NaN -> FAIL means a debt-free balance sheet fails a
+#                          leverage-SAFETY test.  That is precisely the defect
+#                          `assetsToLongTermLiabilities` was inverted to FIX (see its entry),
+#                          so inverting here would re-create it in a new place.
+#   freeCashFlowToEquity   the inverse is equity/FCF, which puts a SIGN-CROSSING FLOW in the
+#                          denominator -- strictly worse than the ratio it replaces.  There is
+#                          no inversion that fixes a ratio whose BOTH operands cross zero.
+#   netDebtToEBITDA        same: net cash and negative EBITDA both occur, so neither operand
+#                          is safe as a denominator.
+#   returnOnEquity         equity/NI is not a return on anything, and NI crosses zero.
+#
+# WHAT WAS DELIBERATELY *NOT* CHANGED, so a future reader does not read the omission as an
+# oversight:
+#   `dSalesToInventory`  -- inventory -> 0 gives +inf, which would PASS.  Different defect
+#       (the limit lands on the GOOD side, not an inversion) and no inventory is a BUSINESS
+#       MODEL, not an adverse condition.  Tier N, w = 0, inert.  Pinned by
+#       test_sign_conventions.py::test_salesToInventory_stays_weight_zero.
+#   `dReturnOnCapitalEmployed`, `dReturnOnTangibleAssets` -- measured members of the same
+#       family, REPORTED and left alone.  Both are small: capitalEmployed (= totalAssets -
+#       totalCurrentLiabilities) goes negative on 813 head(8) rows and contributes 395 passes
+#       (1.28%); tangible assets go negative on 90 rows and contribute 30 passes (0.10%).
+#       Neither is guarded, and neither is claimed fixed.
+#   `returnOnAssets` -- NOT a member of this family, but a SPEC-vs-CODE defect found while
+#       fixing it, recorded here because it sits in the same registry.  Its base-dict entry
+#       declares `netIncome / totalAssets`, but build_bometric_rows builds the ratio from the
+#       MERGED dict, where the diff entry (FMP's `returnOnAssets` field) wins -- so the Tier-S
+#       w=1.0 base column has always been the FMP field, not the declared expression.  Measured
+#       near-equivalent (median ratio 1.0000, 97.3% of 175,699 rows within 1%, 99.7% sign
+#       agreement), so it is a documentation defect today and NOT a scoring one.  Left alone:
+#       changing it would change a w=1.0 criterion's basis.  Pinned by
+#       test_sign_conventions.test_shared_keys_agree_on_basis_or_are_declared_exceptions.
+#
+# `PEG` WAS in this list and IS NOW FIXED (follow-up, same day) -- its vendor formula was
+# established arithmetically, so the guard condition became determinable.  See its entry in
+# BoMetric_special_dict.  It is the second-largest behavioural change in the set at -48.0% of
+# its passes.  (This paragraph exists because the earlier text said "DO NOT tidy it in" and
+# survived the follow-up that did exactly that, on purpose.)
+#
+# The `Guard` values name predicates in `calcMetrics.STAGE1_DOMAIN_GUARDS`; the declaration
+# lives HERE, beside the metric, and the arithmetic lives THERE, beside the ratio code.
+
+
 def getDicts():
     # sub dicts
     # Possible entries later:
@@ -57,6 +152,29 @@ def getDicts():
                           'totalCurrentAssets', 'totalCurrentLiabilities','propertyPlantEquipmentNet', 'otherCurrentAssets'],
                    'inc': ['netIncome', 'grossProfit', 'revenue', 'weightedAverageShsOut', 'weightedAverageShsOutDil', 'depreciationAndAmortization',
                            'sellingGeneralAndAdministrativeExpenses', 'operatingIncome','interestExpense',
+                           # eps / epsdiluted: ALREADY IN the paid v3/income-statement response and
+                           # discarded at ingest until now, so capturing them costs ZERO extra API
+                           # calls -- the same free capture as `period` / `reportedCurrency` below.
+                           #
+                           # WHY THEY ARE WANTED.  `eps` is income available to COMMON, and it is the
+                           # field FMP's own `priceEarningsToGrowthRatio` is built from (established
+                           # arithmetically -- see calcMetrics._peg_growth_defined).  Exact parity with
+                           # that field therefore needs `eps`; `netIncomePerShare` is a near-perfect
+                           # proxy but NOT identical (sign agreement 92.8%, median absolute error
+                           # 2.5%), and the PEG domain guard currently runs on the proxy.
+                           #
+                           # THEY POPULATE ON THE NEXT FULL FETCH AND ARE ABSENT FROM EVERY SAVED
+                           # PICKLE, like the four provenance fields below.  Nothing reads them yet, so
+                           # that absence costs nothing today -- do NOT add a consumer that requires
+                           # them without checking the panel actually carries them.
+                           #
+                           # AND ONE REASON TO EVENTUALLY COMPUTE PEG OURSELVES RATHER THAN CONSUME
+                           # THE FIELD: the vendor's growth denominator is a DIFFERENCE OF TWO
+                           # 2-DECIMAL-ROUNDED EPS FIGURES, so for small sequential changes its PEG is
+                           # dominated by quantisation noise, and 179 of 2,969 rows carry an exact-zero
+                           # growth artifact.  Rebuilding it from an unrounded per-share series removes
+                           # that noise.
+                           'eps', 'epsdiluted',
                            # reportedCurrency: the statement's reporting currency (USD/SEK/EUR/...).
                            # Captured (was discarded at ingest) so marketCap -- stored in this same
                            # reporting currency -- can be converted to USD for market-cap banding
@@ -104,16 +222,29 @@ def getDicts():
 
 
     #n is > 0; d is difference > 0; m is larger than the mean; u is larger than unity
+    #
+    # THIS DICT IS THE COLUMN SCHEMA AND IT CARRIES A SECOND COPY OF `Sign`.
+    # `utils.initBoMetric_fromDict` builds BoMetric_df's columns from the keys + 'Operation'
+    # here, while the ARITHMETIC and the SCORED sign come from the four operational dicts
+    # below.  So every key's Sign exists in TWO places, and a sign fix applied to only one of
+    # them is silent -- the score changes with no error anywhere.  That is this project's worst
+    # historical bug class, so it is now PINNED: test_sign_conventions.py asserts the two
+    # registries agree on Sign, on Operation, and on key set, for every criterion.  Change a
+    # Sign here and you must change it below (or the test fails, which is the point).
     BoMetric_Calc_dict =   {'currentRatio':                 {'Operation': ['u', 'd'],   'Sign': 1},
                             'returnOnAssets':               {'Operation': ['n','d'],    'Sign': 1},
                             'debtEquityRatio':              {'Operation': ['m'],        'Sign': -1},
                             'effectiveTaxRate':             {'Operation': ['d'],        'Sign': -1},
                             'returnOnCapitalEmployed':      {'Operation': ['d'],        'Sign': 1},
                             'grossProfitMargin':            {'Operation': ['d','m'],    'Sign': 1},
-                            'pfcfRatio':                    {'Operation': ['m'],        'Sign': -1},
+                            # WAS 'pfcfRatio' (price/FCF), Sign -1 -- INVERTED to the yield
+                            # form 2026-08-04, so Sign is now +1.  See the mean-dict entry.
+                            'freeCashFlowToMarketCap':      {'Operation': ['m'],        'Sign': 1},
                             'earningsYield':                {'Operation': ['m'],        'Sign': 1},
                             'returnOnTangibleAssets':       {'Operation': ['d'],        'Sign': 1},
-                            'pbRatio':                      {'Operation': ['m', 'd'],   'Sign': -1},
+                            # WAS 'pbRatio' (price/book), Sign -1 -- INVERTED to the yield
+                            # form 2026-08-04, so Sign is now +1.  See the mean/diff entries.
+                            'bookToPrice':                  {'Operation': ['m', 'd'],   'Sign': 1},
                             'grahamNetNet':                 {'Operation': ['n'],        'Sign': 1},
                             'netIncomePerShare':            {'Operation': ['d'],        'Sign': 1},
                             'grossProfitToAssets':          {'Operation': ['d'],        'Sign': 1},
@@ -124,6 +255,9 @@ def getDicts():
                             'assetsToLongTermLiabilities':  {'Operation': ['d'],        'Sign': -1},
                             'salesToMarketCap':             {'Operation': ['m'],        'Sign': 1},
                             'CFO':                          {'Operation': ['n'],        'Sign': 1},
+                            # DELIBERATELY UNCHANGED -- see the diff-dict entry.  Tier N (w=0)
+                            # and the defect there is inventory -> 0 giving +inf on the GOOD
+                            # side, which is not the sign-inversion defect and is not adverse.
                             'salesToInventory':             {'Operation': ['d'],        'Sign': 1},
                             'grossProfit':                  {'Operation': ['d'],        'Sign': 1},
                             'freeCashFlowToEquity':         {'Operation': ['d'],        'Sign': 1},
@@ -155,10 +289,46 @@ def getDicts():
         # means w = 0, so it cannot move a score; and for a services firm inventory == 0 means
         # the ratio is NOT APPLICABLE rather than infinitely good, so NaN is the more honest
         # reading than a synthetic best-case. Revisit if this metric is ever given weight.
+        #
+        # RE-EXAMINED AND DELIBERATELY LEFT UNCHANGED by the 2026-08-04 sign-inversion fix.
+        # It is NOT a member of that family, on two counts, and both matter:
+        #  1. THE FAILURE IS THE OPPOSITE SHAPE.  The sign-inversion defect is a ratio going
+        #     NEGATIVE and reading as best-in-class.  Here nothing goes negative -- revenue and
+        #     inventory are both >= 0.  The limit as inventory -> 0 is +INFINITY, which lands on
+        #     the metric's BEST side and would score a PASS: an inventory-free business acing an
+        #     inventory-TURN test.  The project's boundary rule refuses exactly this case
+        #     ("where the limit lands at the metric's BEST value, the rule does not apply and
+        #     the metric must be REFUSED"), and w = 0 already achieves the refusal.
+        #  2. NO INVENTORY IS A BUSINESS MODEL, NOT AN ADVERSE CONDITION.  A consultancy has no
+        #     inventory because of what it is, not because something went wrong.  Guarding it
+        #     would be asserting a deterioration that did not happen.
+        # SCALE, so nobody has to re-measure it to decide: 3,641 sources (47.1%) and 26 of the
+        # 100 deployed pool names have at least one such row.  INERT TODAY at Tier N (w = 0) --
+        # and that inertness is the ONLY thing keeping it harmless.
+        # PINNED: test_sign_conventions.py::test_salesToInventory_stays_weight_zero fails the
+        # moment this leaves Tier N, so activating it is a VISIBLE EVENT with this comment
+        # attached rather than a silent re-weighting that quietly turns +inf into a pass.
         'salesToInventory':             {'Upper': 'revenue',                                'Lower': 'inventory',               'Tier': 'N', 'Sign': 1},
         'salesToAssets':                {'Upper': 'revenue',                                'Lower': 'totalAssets',             'Tier': 'N', 'Sign': 1},
         'grossProfitMargin':            {'Upper': 'grossProfitMargin',                      'Lower': 'Identity',                'Tier': 'A', 'Sign': 1},
-        'effectiveTaxRate':             {'Upper': 'effectiveTaxRate',                       'Lower': 'Identity',                'Tier': 'C', 'Sign': -1},
+        # GUARDED, not inverted (sign-inversion fix, 2026-08-04).  effectiveTaxRate is
+        # incomeTaxExpense / incomeBeforeTax, so a PRE-TAX LOSS (or a tax credit) makes the
+        # rate NEGATIVE -- and this is a DIFF test with Sign -1, i.e. a FALLING tax rate
+        # scores.  A name going from +25% to -50% therefore reads as a large improvement in
+        # tax efficiency when what actually happened is that it started losing money.
+        # MEASURED: 7,736 of 26,313 passes (29.4%) sit on a rate < 0.
+        # The admissible domain of a tax RATE is >= 0, so the guard refuses the negative rows
+        # and the diff then has no defined change to score.  SIGN STAYS -1 -- the direction
+        # (lower tax is better) is unchanged; only the domain shrinks.
+        # LIMIT, stated because it bounds what this fix can claim: NEITHER operand
+        # (incomeTaxExpense, incomeBeforeTax) is in preReq_dict, so they are not on cdx_df and
+        # the OPERAND signs cannot be recovered -- only the ratio's own sign.  So the
+        # both-operands-negative case (a tax CREDIT on a PRE-TAX LOSS, which yields a
+        # NORMAL-LOOKING POSITIVE rate) is NOT detectable here and is NOT fixed.  It is a
+        # separate, unmeasured channel that needs those two fields at ingest.
+        # A rate > 1 is also out of the natural domain but is NOT the inversion defect and is
+        # NOT guarded here: 1,267 head(8) rows, contributing only 63 passes (0.24%).
+        'effectiveTaxRate':             {'Upper': 'effectiveTaxRate',                       'Lower': 'Identity',                'Tier': 'C', 'Sign': -1, 'Guard': 'tax_rate_nonnegative'},
         'currentRatio':                 {'Upper': 'currentRatio',                           'Lower': 'Identity',                'Tier': 'B', 'Sign': 1},
         # INVERTED: longTermDebt/totalAssets, Sign -1 (ruling Q1.2, 2026-07-26).
         # It was totalAssets/longTermDebt with Sign +1.  longTermDebt == 0 on 17,824 of
@@ -193,13 +363,56 @@ def getDicts():
         # so there is no single 'good side' to point at.  Zero book equity is also an
         # economically degenerate state (technically insolvent), which NaN describes better
         # than either infinity.
-        'freeCashFlowToEquity':         {'Upper': 'freeCashFlow',                           'Lower': 'totalStockholdersEquity', 'Tier': 'B', 'Sign': 1},
+        #
+        # GUARDED equity > 0 (sign-inversion fix, 2026-08-04).  Q1.2 above ruled on equity
+        # == 0; the defect fixed here is equity < 0, which Q1.2 did not consider.  BOTH
+        # operands cross zero, so this is a genuine double-negative ratio: FCF < 0 with
+        # equity < 0 gives a POSITIVE FCF-to-equity, and the diff then scores a deteriorating
+        # cash position as an improving one.  MEASURED on the head(8) window, by sign cell:
+        #     FCF>0 equity>0   35,067 rows   pass 0.6224     (the normal case)
+        #     FCF<0 equity>0   21,026 rows   pass 0.2929     (correctly penalised)
+        #     FCF>0 equity<0    1,469 rows   pass 0.3376
+        #     FCF<0 equity<0    2,106 rows   pass 0.5921  <- BOTH NEGATIVE, passing MORE often
+        #                                                   than the FCF<0 equity>0 case
+        # 1,743 passes total on equity < 0.  The last two cells are what the guard removes.
+        # SIGN STAYS +1: the direction (rising cash-to-equity is good) is unchanged; the
+        # denominator is not moved, so nothing reverses.  This is the criterion where getting
+        # that right matters most -- it sits next to two entries whose Sign DID flip.
+        'freeCashFlowToEquity':         {'Upper': 'freeCashFlow',                           'Lower': 'totalStockholdersEquity', 'Tier': 'B', 'Sign': 1, 'Guard': 'equity_positive'},
         'CFOtoMarketCap':               {'Upper': 'netCashProvidedByOperatingActivities',   'Lower': 'marketCap',               'Tier': 'B', 'Sign': 1},
         # DUPLICATE OF 'EPS' BELOW -- byte-identical spec, differing only in Tier ('N',
         # w = 0, so inert today).  See DUPLICATE_DIFF_CRITERIA at the top of this module
         # before giving this a tier: promoting it double-counts the same quantity.
         'netIncomePerShare':            {'Upper': 'netIncomePerShare',                      'Lower': 'Identity',                'Tier': 'N', 'Sign': 1},
-        'pbRatio':                      {'Upper': 'pbRatio',                                'Lower': 'Identity',                'Tier': 'B', 'Sign': -1},
+        # INVERTED from `pbRatio` (price/book, Sign -1) to book/price, Sign +1, AND GUARDED
+        # equity > 0 (sign-inversion fix + review blocker 1, 2026-08-04).
+        #
+        # THE INVERSION ALONE DOES NOT FIX THE DIFF FORM, and this was caught in review after
+        # being wrongly reported as cleared.  When equity < 0 BOTH LEGS of equity/marketCap
+        # invert, so a RISING MARKET CAP drives a negative ratio toward zero, the diff comes out
+        # POSITIVE, and the row passes -- i.e. a company getting MORE EXPENSIVE while its equity
+        # deficit is flat or worsening passes a CHEAPNESS criterion.  MEASURED on the 1,313
+        # post-inversion passes that still sat on equity < 0: only 869 (66.2%) were
+        # equity-driven; 444 (33.8%) passed on the market-cap leg alone, 434 of them with market
+        # cap RISING against flat-or-worse equity.
+        # METHOD NOTE, because the first check was wrong: an earlier pass validated these rows
+        # by testing whether "book-to-price rose", which IS THE PASS CONDITION -- a tautology
+        # that returned 99.7% and cleared nothing.  A residual has to be decomposed by WHICH LEG
+        # moved, never by re-asking the criterion.
+        # So the DIFF form is REFUSED when equity <= 0: the change in a book YIELD is undefined
+        # when the book value has no meaningful sign.  Because the guard is applied to the LEVEL
+        # and NaN propagates through calc_diff's subtraction, this is automatically TWO-SIDED --
+        # refused whenever EITHER period is inadmissible, which is what "no defined change"
+        # means.
+        # THE MEAN FORM IS DELIBERATELY *NOT* GUARDED -- see the BoMetric_mean_dict entry.
+        # 1,816 of 31,017 passes (5.9%) sat on equity < 0 before the inversion.
+        # Basis: totalStockholdersEquity / marketCap, the RAW fields, rather than 1/pbRatio --
+        # same reasoning as the in-pipeline grahamNumber (see stamp_frequency_and_graham): do
+        # not depend on an undocumented FMP per-share convention that could change.  VERIFIED
+        # equivalent on the panel: median(equity/marketCap over 1/pbRatio) = 1.0000, 98.7% of
+        # 175,723 rows within 1%, 99.98% same sign.
+        # Stock/stock, so NO flow-scale correction -- as `pbRatio` had none.
+        'bookToPrice':                  {'Upper': 'totalStockholdersEquity',                'Lower': 'marketCap',               'Tier': 'B', 'Sign': 1, 'Guard': 'equity_positive'},
         'revenue':                      {'Upper': 'revenue',                                'Lower': 'Identity',                'Tier': 'A', 'Sign': 1},
         'sharesOutstanding':            {'Upper': 'weightedAverageShsOut',                  'Lower': 'Identity',                'Tier': 'B', 'Sign': -1},
         # THE WEIGHT-BEARING half of the duplicate pair (the other is
@@ -208,11 +421,53 @@ def getDicts():
                              }
 
     BoMetric_mean_dict =    {
-        'pbRatio':              {'Upper': 'pbRatio',                    'Lower': 'Identity',    'Tier': 'B', 'Sign': -1},
+        # INVERTED from `pbRatio`, Sign -1 -> Sign +1.  See the diff-dict `bookToPrice` entry
+        # for the basis choice and the measured equivalence; 3,657 of this criterion's 32,349
+        # passes (11.3%) sat on NEGATIVE equity reading as maximally cheap.
+        #
+        # NO GUARD HERE, AND THAT ASYMMETRY WITH THE DIFF FORM IS THE POINT (review blocker 1).
+        # The inversion ALREADY fixes the LEVEL test outright: negative equity gives a negative
+        # book yield, which loses the mean test against a positive panel median on its own.
+        # MEASURED post-inversion: 0 passes on equity < 0, from 3,657 before.  So there is
+        # nothing left to guard, and guarding anyway would COST something real -- a guarded row
+        # leaves the pool median, and this criterion is scored as `value - median(column)`, so
+        # dropping 3,661 legitimate negative observations would MOVE THE BAR for every name that
+        # was always in domain.  A negative book yield is a true measurement of a real company,
+        # not a domain error; it belongs in the ruler.  Stage-2's `bVpRatio` keeps them for the
+        # same reason.
+        # The DIFF form is different because there the level's sign corrupts the CHANGE, which
+        # the inversion cannot repair -- so it is guarded and this is not.
+        'bookToPrice':          {'Upper': 'totalStockholdersEquity',    'Lower': 'marketCap',   'Tier': 'B', 'Sign': 1},
         'salesToMarketCap':     {'Upper': 'revenue',                    'Lower': 'marketCap',   'Tier': 'N', 'Sign': 1},
         'earningsYield':        {'Upper': 'earningsYield',              'Lower': 'Identity',    'Tier': 'S', 'Sign': 1},
-        'debtEquityRatio':      {'Upper': 'debtEquityRatio',            'Lower': 'Identity',    'Tier': 'C', 'Sign': -1},
-        'pfcfRatio':            {'Upper': 'pfcfRatio',                  'Lower': 'Identity',    'Tier': 'S', 'Sign': -1},
+        # GUARDED equity > 0, NOT inverted (sign-inversion fix, 2026-08-04).  debtEquityRatio
+        # is totalDebt/totalStockholdersEquity, so NEGATIVE equity makes it negative, which on
+        # a Sign -1 test reads as LESS levered than any real company -- 3,658 of 30,598 passes
+        # (12.0%).  A book-insolvent balance sheet scoring as unlevered is the inversion.
+        # NOT inverted, and this is measured rather than preferred: equity/debt is +inf on the
+        # 5.02% of head(8) rows with debtEquityRatio == 0 exactly (DEBT-FREE names; 6.20% of
+        # the panel), and +inf -> NaN -> FAIL would make a debt-free company fail a leverage
+        # test -- the same defect `assetsToLongTermLiabilities` was inverted to fix.  Trading
+        # a 12.0% inversion for a 5.02% new one is not a fix.
+        # SIGN STAYS -1: less leverage is still better.  Only the domain shrinks.
+        'debtEquityRatio':      {'Upper': 'debtEquityRatio',            'Lower': 'Identity',    'Tier': 'C', 'Sign': -1, 'Guard': 'equity_positive'},
+        # INVERTED from `pfcfRatio` (price/FCF, Sign -1) to FCF/marketCap, Sign +1
+        # (sign-inversion fix, 2026-08-04).  THIS WAS THE LARGEST DEFECT MEASURED IN THE
+        # PIPELINE: Stage-1's highest-weighted cheapness criterion (Tier S, w = 1.0) awarded
+        # 23,041 of its 30,378 passes (75.9%) to rows with NEGATIVE free cash flow, because
+        # price/FCF goes negative -- and unbounded below, so a small cash burn reads as
+        # arbitrarily cheap.  59 of the 100 deployed pool names collected at least one.
+        # The yield form is self-correcting: negative FCF over a positive market cap is a
+        # negative yield, which loses the mean test against a positive panel median.
+        # Basis: the RAW freeCashFlow / marketCap, not 1/pfcfRatio (same reasoning as
+        # bookToPrice).  VERIFIED equivalent: median ratio 1.0000, 95.6% of 171,273 rows
+        # within 1%, 99.56% same sign.
+        # THE FLOW LEG MOVES WITH THE INVERSION: reporting_period.STAGE1_FLOW_CORRECTION
+        # carried 'pfcfRatio' as ('flow_den', 'per_quarter') because the flow was the
+        # DENOMINATOR; it is now the NUMERATOR, so the entry is ('flow_num', 'per_quarter').
+        # Leaving the old leg would have applied the semi-annual correction BACKWARDS -- x2
+        # where x0.5 was needed, a 4x error on every semi-annual name.
+        'freeCashFlowToMarketCap': {'Upper': 'freeCashFlow',            'Lower': 'marketCap',   'Tier': 'S', 'Sign': 1},
         'EquityToAssets':       {'Upper': 'totalStockholdersEquity',    'Lower': 'totalAssets', 'Tier': 'D', 'Sign': 1},
         'grossProfitMargin':    {'Upper': 'grossProfitMargin',          'Lower': 'Identity',    'Tier': 'B', 'Sign': 1},
         'netProfitMargin':      {'Upper': 'netProfitMargin',            'Lower': 'Identity',    'Tier': 'C', 'Sign': 1},
@@ -221,7 +476,44 @@ def getDicts():
     BoMetric_unity_dict =    {
         'currentRatio':         {'Upper': 'currentRatio',       'Lower': 'Identity',    'Tier': 'S', 'Sign': 1},
         'grahamNumberToPrice':  {'Upper': 'grahamNumber',       'Lower': 'price',       'Tier': 'S', 'Sign': 1},
-        'netDebtToEBITDA':      {'Upper': 'netDebtToEBITDA',    'Lower': 'Identity',    'Tier': 'A', 'Sign': -1}
+        # GUARDED EBITDA > 0, NOT inverted (sign-inversion fix, 2026-08-04).
+        #
+        # THE GUARD KEYS ON THE DENOMINATOR ALONE, AND THAT IS THE WHOLE POINT.  This
+        # criterion has FOUR sign cells and only ONE of them is the defect.  Measured over the
+        # 61,481 head(8) rows (sign(netDebt) recovered as sign(ratio) x sign(EBITDA proxy)):
+        #   netDebt>0 EBITDA>0  33,615 rows  pass 0.2222  23.8% of passes  normal, correct
+        #   netDebt<0 EBITDA>0  11,844 rows  pass 0.9998  37.8% of passes  GENUINE NET CASH,
+        #                                                                 CORRECT, MUST SURVIVE
+        #   netDebt>0 EBITDA<0   6,324 rows  pass 0.9992  20.2% of passes  THE DEFECT: has debt
+        #                                                                 AND no earnings, and
+        #                                                                 scores as safest
+        #   netDebt<0 EBITDA<0   9,200 rows  pass 0.5739  16.8% of passes  net cash + loss
+        #
+        # Both the GENUINE and the PERVERSE cell have exactly ONE negative operand -- they are
+        # told apart by WHICH operand, never by HOW MANY.  A "both operands negative" rule
+        # would miss the entire 20.2% defect and instead transform the 16.8% cell, which was
+        # never the measured defect.  Guarding the DENOMINATOR leaves the 11,844 genuine
+        # net-cash rows untouched BY CONSTRUCTION, because their denominator is admissible --
+        # not by a carve-out that could rot.  VERIFIED end to end: 11,842 of 11,842 genuine
+        # passes survive, 0 of 2,990 sources lose one.
+        #
+        # THE TOTAL REMOVED IS 11,824 OF 31,352 PASSES (37.7%), NOT 20.2%.  Guarding the
+        # denominator refuses EVERY row with EBITDA <= 0, so it takes BOTH negative-EBITDA
+        # cells: the 6,319 perverse ones AND the 5,276 net-cash-with-negative-EBITDA ones (plus
+        # ~229 zero-EBITDA rows).  Stated explicitly because quoting only the 20.2% understates
+        # this change by ~1.9x and it is, in weight terms (w = 0.75), THE LARGEST SINGLE CHANGE
+        # in the sign-inversion batch -- larger than the mPfcfRatio headline.
+        # THE SECOND CELL IS A JUDGMENT CALL, NOT A BUG FIX, and is flagged as such: a company
+        # with net CASH and negative EBITDA has nothing to service, so one could argue it should
+        # pass.  It is refused here because |netCash|/|EBITDA loss| < 1 is not a debt-service
+        # measurement of anything -- with no EBITDA there is no service capacity to measure --
+        # and refusing never rewards.  Reversible: admit `EBITDA <= 0 AND netDebt < 0` if ruled
+        # otherwise.
+        # EBITDA is the `operatingIncome + depreciationAndAmortization` PROXY (FMP does not
+        # give the EBITDA behind its own netDebtToEBITDA), so the cell counts are indicative
+        # near zero; the guard's DIRECTION does not depend on the proxy.
+        # SIGN STAYS -1: less net debt per unit of EBITDA is still better.
+        'netDebtToEBITDA':      {'Upper': 'netDebtToEBITDA',    'Lower': 'Identity',    'Tier': 'A', 'Sign': -1, 'Guard': 'ebitda_positive'}
                              }
 
     BoMetric_special_dict ={
@@ -247,8 +539,49 @@ def getDicts():
         # better earnings quality.  Profitability is tested separately and at Tier S by
         # returnOnAssets and the CFO>0 base test.
         'CFOlessEarnings':                  {'Tier': 'S', 'Sign': 1},
-        'PEG':                              {'Tier': 'C', 'Sign': 1},
-        'returnOnEquity':                   {'Tier': 'C', 'Sign': 1},
+        # GUARDED, TWO-SIDED (sign-inversion fix, follow-up, 2026-08-04).  The criterion is
+        # `1/PEG - 1 > 0`, i.e. exactly 0 < PEG < 1.  An earlier review cleared PEG by verifying
+        # that its pass count equals the count of rows with raw PEG in (0,1) -- which is TRUE and
+        # tests nothing about whether those values are legitimate.  They frequently are not.
+        #
+        # THE BASIS IS SETTLED ARITHMETICALLY (no vendor docs exist), on nine deliberately
+        # seasonal quarters:  PEG = [price/(4*eps_t)] / [100*(eps_t/eps_{t-1} - 1)].  The PE leg
+        # is ONE QUARTER ANNUALISED x4 (implied earnings pin to 4.00 x NI_quarter within 0.7% on
+        # all nine, while the TTM hypothesis swings 0.63-1.51), and the growth leg is SEQUENTIAL
+        # quarter-over-quarter on reported `eps` (matched to all printed digits; netIncome QoQ
+        # does NOT match).  Both operands are single-period, so the guard keys on the SINGLE
+        # PERIOD -- not TTM.  That choice is worth 214 of 1,223 passes (17.5%) on the TEST1 panel
+        # and 2,391 of 24,298 on this one, and it resolves in favour of single-period.
+        #
+        # BOTH legs of the growth ratio must be positive or the ratio is not a growth rate.
+        # The four states, MEASURED (61,472 head(8) rows):
+        #   eps_t>0 eps_prev>0   34,398 rows  pass 0.3671   DEFINED
+        #   eps_t<0 eps_prev>0    5,129 rows  pass 0.8830   FALSE PASS (PE<0 x growth<0)
+        #   eps_t<0 eps_prev<0   16,902 rows  pass 0.4218   FALSE PASS (same cancellation)
+        #   eps_t>0 eps_prev<0    5,040 rows  pass 0.0006   TURNAROUND, wrongly FAILED
+        # 11,659 of 24,292 passes (48.0%) came from the two false-pass cells -- the largest
+        # share of any criterion in this family.
+        #
+        # READ THE TURNAROUND ROW HONESTLY: the guard does NOT recover it.  Stage-1 scores a
+        # refused row as a FAIL, so those 5,037 wrongly-failed rows stay failed; the guard only
+        # makes the reason honest and removes the 3 that passed on the sign flip.  Two-sided vs
+        # one-sided is a 3-pass difference.  The turnaround defect is RECORDED here and NOT
+        # fixed -- it needs Stage-1's NaN rule changed (out of scope) or PEG recomputed locally.
+        # SIGN STAYS +1.  The guard uses the `netIncomePerShare` PROXY for `eps`; see
+        # calcMetrics._PEG_EPS_FIELD for why switching to `eps` must be a deliberate edit.
+        'PEG':                              {'Tier': 'C', 'Sign': 1, 'Guard': 'peg_growth_defined'},
+        # GUARDED equity > 0 (sign-inversion fix, 2026-08-04) -- applied inside
+        # calcMetrics.calc_special, since this criterion has a formula rather than a ratio spec.
+        # ROE = netIncome/equity, so NEGATIVE equity with a NEGATIVE net income gives a
+        # POSITIVE ROE that CLEARS THE 12% HURDLE while the company is losing money.  This is
+        # the family's clean double negative, and the measurement says so: of the 22,402
+        # passes, 2,255 (10.1%) are netIncome<0 AND equity<0 (that cell passes at 0.9295),
+        # while netIncome>0 with equity<0 passes ZERO times out of 1,235 rows.  So guarding the
+        # denominator and detecting the double negative remove the SAME 2,255 rows here -- the
+        # two rules coincide on this criterion, and the guard is chosen for consistency with
+        # the rest of the family.
+        # SIGN STAYS +1: higher return on equity is still better.
+        'returnOnEquity':                   {'Tier': 'C', 'Sign': 1, 'Guard': 'equity_positive'},
         'capitalExpenditureCoverageRatio':  {'Tier': 'C', 'Sign': 1},
                             }
 
