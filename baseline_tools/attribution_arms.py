@@ -15,8 +15,19 @@ by the arc:
        about +0.067 of AggScore, handed to every name with no market cap.
        (stage2_metrics.add_mcap_quants; 746 rows on the 07-17 panel.)
   (ii) The z-path NaN fill.  `fillna(0)` puts an unavailable metric at the winsorized MEAN,
-       which on a right-skewed column is ABOVE the median -- measured at +0.1616 of
-       AggScore for full missingness, against a 0.134 median-to-top-20 distance.
+       which on a right-skewed column is ABOVE the median.
+       THE MAGNITUDE, CORRECTED 2026-08-03.  This line read "+0.1616 of AggScore for full
+       missingness, against a 0.134 median-to-top-20 distance" -- i.e. >100%, missingness
+       alone reaching the shortlist.  Both figures were stale.  Re-measured on
+       resdic_2026-07-17_CORRECTED.pickle (general top-100), advantage := 0 - sum_c w_c *
+       median(z_c over OBSERVED cells): +0.0739 against a 0.2560 median->rank-20 distance,
+       i.e. 29%, not >100%.  The DIRECTION -- a real reward, big enough to be a rival
+       explanation for the sign flip, which is all this arm needs -- is unchanged; the size is
+       ~3.6x smaller than stated.  PANEL-DEPENDENT: do not re-quote either number without its
+       panel.  (For the record, mechanism (ii) no longer exists in the tree: E-1 centres each
+       column on its observed median as of 2026-08-03, which puts the measured advantage at
+       ~2e-18.  These arms still reproduce the PRE-ARC path from dumped frames, so they are
+       unaffected -- but "the z-path rewards missingness" is now a statement about history.)
 
 Data-poor global micro-caps were annihilated over 2023-25, so a score that rewards
 missingness would be expected to look ANTI-predictive on this window without any metric

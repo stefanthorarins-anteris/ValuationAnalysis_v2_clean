@@ -315,8 +315,12 @@ def run_deployed(cdx, bm, ablation, verbose=False):
         import postBoRank as pbr
         real_n = pbr.normalizeAndDropNA
 
-        def prearc(df, weight_series=None, winsor_sigma=None, method=None,
-                   rank_bounded=True):
+        #  **_kw so this historical stand-in keeps accepting whatever the LIVE
+        #  normalizeAndDropNA's signature grows (it took `winsor_sigma` in 2026-07, takes
+        #  `huber_c` / `squash_k` / `pool_label` since the 2026-08-03 E-1 change).  The
+        #  stand-in reproduces the PRE-ARC path deliberately and must not track those
+        #  parameters -- but a TypeError on an added keyword would silently kill the ablation.
+        def prearc(df, weight_series=None, method=None, rank_bounded=True, **_kw):
             d = df.copy().reset_index(drop=True)
             mc = [c for c in d.columns if c != "source"]
             for c in mc:

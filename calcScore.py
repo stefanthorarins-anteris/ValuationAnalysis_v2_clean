@@ -141,10 +141,24 @@ def simpleScore_fromDict(bm_df,bm_ave,bm_da,n=8,as_of=None,freq_map=None):
     pbar.close()
     # NaN-WEIGHT READOUT (ruling Q1.5).  For every source, how many Stage-1 criteria were
     # scored on an entirely non-computable window, and what tier weight that adds up to.
-    # This is what makes the Stage-2 missingness coupling visible (a fully-NaN Stage-2 name
-    # would gain +0.1394 AggScore vs a 0.134 median->top-20 distance), and it is the
-    # precondition for any future gate-width experiment -- widening head(100) would activate
-    # that latent reward, so the incidence has to be measured before anyone widens it.
+    # This is what makes the Stage-2 missingness coupling visible, and it is the precondition
+    # for any future gate-width experiment -- widening head(100) would activate that latent
+    # reward, so the incidence has to be measured before anyone widens it.
+    #
+    # THE MISSINGNESS REWARD IS NOW ~ZERO, AND THE NUMBERS THAT SAID OTHERWISE WERE STALE ON
+    # BOTH SIDES (corrected 2026-08-03; the old pair read "+0.1394 AggScore vs a 0.134
+    # median->top-20 distance", i.e. it claimed missingness ALONE reached the shortlist).
+    # Re-measured on baseline_tools/resdic_2026-07-17_CORRECTED.pickle, general top-100, with
+    # advantage := 0 - sum_c w_c * median(z_c over OBSERVED cells):
+    #     pre-E-1 ruler (winsorized mean-centred z)  advantage +0.0739  distance 0.2560  29%
+    #     E-1 ruler     (median-centred robust z)    advantage  ~2e-18  distance 0.2396   0%
+    # So the old figure overstated the reward by ~3.6x, and the E-1 median-centring retires it
+    # outright: 0 IS the observed median of every column now, so an unavailable metric is
+    # scored exactly at the typical name (columns whose fill beats their own median: 14 of 18
+    # before, 0 of 18 after, at a 1e-12 tolerance).  BOTH FIGURES ARE PANEL-DEPENDENT -- do not
+    # re-quote either without its panel; a number with no panel attached is how the stale pair
+    # survived for weeks.  What remains latent is the OTHER half: this Stage-1 gate is what
+    # keeps a name with nothing computable out of the pool in the first place.
     if _nan_acct:
         _tot_w = sum(v[1] for v in _nan_acct.values())
         _worst = sorted(_nan_acct.items(), key=lambda kv: -kv[1][1])[:15]
@@ -192,11 +206,18 @@ def calcByTier(dict,Tier,Sign,metvec,avec,met,n,nan_sink=None):
     #     no published definition at all.  "Undefined" is a real answer about the company,
     #     not a gap in the data.
     #  2. THE COMPLETENESS-FILTER ROLE.  Stage-1 failing NaN is what keeps incomplete names
-    #     out of the top-100, and that is load-bearing for Stage-2: there, a NaN metric is
-    #     mean-imputed to z = 0, which sits at the 52nd-65th percentile on 15 of 17
-    #     weighted columns.  A name with NOTHING computable would collect +0.1394 AggScore
-    #     against a median->top-20 distance of 0.134 -- i.e. reach the top-20 on
-    #     missingness alone.  That reward is latent ONLY because this gate filters first.
+    #     out of the top-100, and that mattered doubly while Stage-2 REWARDED missingness:
+    #     a NaN metric is imputed at z = 0, and under the pre-E-1 mean-centred ruler 0 sat
+    #     ABOVE the typical name on 14 of 18 weighted columns, worth +0.0739 AggScore for full
+    #     missingness against a median->rank-20 distance of 0.2560 -- 29% of the way to the
+    #     shortlist [resdic_2026-07-17_CORRECTED, general top-100].  (An earlier note here said
+    #     "+0.1394 against 0.134", i.e. >100% and reaching the top-20 on missingness alone;
+    #     both figures were stale, and the pair overstated the reward ~3.6x.)
+    #     SINCE 2026-08-03 THAT HALF IS GONE: E-1 centres each column on its observed MEDIAN,
+    #     so z = 0 IS the median and the measured advantage is ~2e-18, i.e. zero to float dust,
+    #     with 0 of 18 columns rewarding missingness.  THE COMPLETENESS-FILTER ARGUMENT DOES
+    #     NOT DEPEND ON THAT REWARD and still stands on its own: a name scored on nothing is
+    #     scored on the pool, not on itself, whether or not the pool's centre flatters it.
     #  3. EXCLUDING NaN FROM THE MEAN IS ADVERSELY SELECTED.  head(n) with NaN dropped
     #     scores a name on its SELECTED rows: a loss-maker's computable Graham rows are
     #     exactly its profitable quarters, so it would earn the full Tier-S w=1.0 on 2 of 8

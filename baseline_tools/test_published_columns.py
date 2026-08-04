@@ -46,7 +46,14 @@ def test_every_metric_column_in_postRank_is_weighted_not_raw():
     import inspect
     src = inspect.getsource(pbr.postBoScoreRanking)
     # the production sequence: normalise, multiply by weight_series, THEN getAggScore
-    assert "normalizeAndDropNA(postScoreMetric_df" in src
+    #  WHITESPACE-INSENSITIVE on the call, deliberately (2026-08-03).  This read
+    #  `"normalizeAndDropNA(postScoreMetric_df" in src` and broke when the E-1 change wrapped
+    #  that call over two lines to add `pool_label=` -- a pure reformat failing a test about
+    #  ORDER is a false alarm, and a test that cries wolf on formatting gets weakened rather
+    #  than heeded.  The call and its argument are still both pinned.
+    _flat = " ".join(src.split())
+    assert "normalizeAndDropNA( postScoreMetric_df" in _flat \
+        or "normalizeAndDropNA(postScoreMetric_df" in _flat
     assert "temp_normpsmdf_weighted[col] = postScoreMetric_df[col].values * w" in src
     i_w = src.index("temp_normpsmdf_weighted[col] = postScoreMetric_df[col].values * w")
     i_a = src.index("postRank = getAggScore(psmdf_normalized)")
@@ -308,10 +315,20 @@ def test_save_stock_picks_does_not_publish_the_zeroed_BoScore():
 
 
 def test_cycleheat_in_postRank_is_sign_inverted_against_the_metric():
-    """The specific mechanism: CycleHeat is winsor-exempt, so z is affine in raw, and w<0
-    makes the weighted column an EXACT negative image."""
+    """The specific mechanism: the z-path is strictly MONOTONE INCREASING in the raw metric,
+    and CycleHeat's w < 0, so the weighted column is a strictly DECREASING image of the metric
+    -- publishing it under the metric's name inverts every reading.
+
+    THE PROPERTY IS NOW RANK-EXACT, NOT LINEAR-EXACT (E-1, 2026-08-03).  It used to be
+    `corr(z*w, raw) == -1.0` to 1e-9, because CycleHeat was winsor-exempt and z was therefore
+    AFFINE in raw.  The robust path adds the concave squash k*z/sqrt(k^2+z^2), which is
+    strictly increasing but NOT affine, so Pearson is no longer exactly -1 while the inversion
+    -- the thing the misrepresentation consists of -- is unchanged.  Spearman is the invariant
+    that states it exactly; Pearson is kept as a loose sanity bound so that a real sign bug
+    (which would send it positive) still trips."""
+    from scipy.stats import spearmanr
     import postBoRank as pbr
-    assert "CycleHeat" in pbr.WINSOR_EXEMPT_BOUNDED
+    assert "CycleHeat" in pbr.BOUNDED_DISCRETE_COLUMNS
     W = _weights()
     assert W["CycleHeat"] < 0
     rng = np.random.default_rng(1)
@@ -323,9 +340,11 @@ def test_cycleheat_in_postRank_is_sign_inverted_against_the_metric():
     normed, _ = pbr.normalizeAndDropNA(psm.copy(), weight_series=W)
     published_if_buggy = normed["CycleHeat"].to_numpy() * W["CycleHeat"]
     truth = psm["CycleHeat"].to_numpy()
+    rho = float(spearmanr(published_if_buggy, truth).statistic)
+    assert rho == pytest.approx(-1.0, abs=1e-12), \
+        "expected an EXACT rank inversion, got spearman=%.9f" % rho
     r = float(np.corrcoef(published_if_buggy, truth)[0, 1])
-    assert r == pytest.approx(-1.0, abs=1e-9), \
-        "expected an exact sign inversion, got corr=%.6f" % r
+    assert r < -0.9, "sign inversion lost: pearson=%.6f" % r
 
 
 def test_writeBoAggToCSV_takes_a_raw_frame_and_refuses_to_fall_back():

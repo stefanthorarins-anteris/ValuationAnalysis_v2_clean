@@ -135,10 +135,22 @@ def test_bad_method_is_refused_loudly():
         pbr.normalizeAndDropNA(_frame().copy(), method="quantile")
 
 
-def test_rank_mode_puts_the_missing_data_fill_on_the_median_not_above_it():
-    """Finding N1, as a test.  `currentRatio` is right-skewed with 25% missing: under
-    z-scoring the fill value 0 is the MEAN and therefore sits above the median; under the
-    rank map it IS the median."""
+def test_BOTH_modes_now_put_the_missing_data_fill_on_the_median():
+    """Finding N1, as a test -- AND THE Z-PATH NOW WINS IT, which is why this test was
+    inverted on 2026-08-03 rather than deleted.
+
+    IT USED TO ASSERT THE DEFECT.  The old body was `assert pct_z > 0.55` -- i.e. it REQUIRED
+    that under z-scoring a missing `currentRatio` scored above the typical name, because 0 was
+    the winsorized MEAN of a right-skewed column, and that was the argument for the rank map.
+    The E-1 change (postBoRank.HUBER_C / normalizeAndDropNA) centres every column on its
+    observed MEDIAN, so 0 IS the median and the defect is gone from the z-path.  A test pinning
+    a fixed defect passes only until the defect is fixed; leaving it would have made a genuine
+    improvement look like a regression.
+
+    THE Z-PATH IS NOW THE STRICTER OF THE TWO, and that is the substance here.  z = (x - median)
+    / sigma has median exactly 0, and the squash is monotone with zeta(0) = 0, so it survives.
+    The RANK map centres exactly only when a column's values are DISTINCT -- ties displace the
+    centre (see `_rank_normal`'s docstring) -- so it is approximate wherever it matters most."""
     zs, _ = pbr.normalizeAndDropNA(_frame().copy(), method=pbr.NORM_ZSCORE)
     rk, _ = pbr.normalizeAndDropNA(_frame().copy(), method=pbr.NORM_RANK)
     col = "currentRatio"
@@ -146,8 +158,11 @@ def test_rank_mode_puts_the_missing_data_fill_on_the_median_not_above_it():
     have = _frame()[col].notna().to_numpy()
     pct_z = float((zs.loc[have, col].astype(float) < 0).mean())
     pct_r = float((rk.loc[have, col].astype(float) < 0).mean())
-    assert pct_z > 0.55, "z-scoring: the fill lands above the median on a skewed column"
+    assert abs(pct_z - 0.50) < 0.02, \
+        "robust z: the fill must sit AT the observed median (%.3f)" % pct_z
     assert abs(pct_r - 0.50) < 0.02, "rank: the fill IS the median (%.3f)" % pct_r
+    # exact on the z-path: the observed median of the normalised column is 0 itself
+    assert abs(float(zs.loc[have, col].astype(float).median())) < 1e-12
 
 
 def test_rank_mode_never_drops_or_reorders_rows():
@@ -161,8 +176,13 @@ def test_rank_mode_leaves_bounded_columns_raw_when_asked():
     f = _frame()
     on, _ = pbr.normalizeAndDropNA(f.copy(), method=pbr.NORM_RANK, rank_bounded=True)
     off, _ = pbr.normalizeAndDropNA(f.copy(), method=pbr.NORM_RANK, rank_bounded=False)
-    # Piotroski is in WINSOR_EXEMPT_BOUNDED
-    assert "Piotroski" in pbr.WINSOR_EXEMPT_BOUNDED
+    #  Piotroski is in BOUNDED_DISCRETE_COLUMNS (which until the 2026-08-03 E-1 change was
+    #  `WINSOR_EXEMPT_BOUNDED`; it is no longer a NORMALISATION exemption -- the z-path now
+    #  applies the same robust ruler to every column -- and `rank_bounded=False` is the only
+    #  thing left that reads it).
+    assert "Piotroski" in pbr.BOUNDED_DISCRETE_COLUMNS
+    assert not hasattr(pbr, "WINSOR_EXEMPT_BOUNDED"), \
+        "the old exemption name is back: a name list must not gate the z-path again"
     assert np.allclose(off["Piotroski"].astype(float), f["Piotroski"].astype(float))
     assert not np.allclose(on["Piotroski"].astype(float), f["Piotroski"].astype(float))
     # a NON-exempt column is mapped either way

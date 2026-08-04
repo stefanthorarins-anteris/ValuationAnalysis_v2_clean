@@ -51,7 +51,12 @@ def _tree_stamp():
         import postBoRank as pbr
         sig = inspect.signature(pbr.normalizeAndDropNA).parameters
         out["normalize_params"] = list(sig)
+        #  Three eras of the z-path, distinguishable without git metadata:
+        #    winsorizer only          -> has_winsorizer True,  has_robust_scale False
+        #    winsorizer + rank switch -> + has_rank_method True
+        #    robust ruler (2026-08-03 E-1) -> has_winsorizer False, has_robust_scale True
         out["has_winsorizer"] = hasattr(pbr, "_winsorize_raw")
+        out["has_robust_scale"] = hasattr(pbr, "robust_location_scale")
         out["has_rank_method"] = "method" in sig
     except Exception as e:
         out["normalize_params"] = "ERR %s" % e
