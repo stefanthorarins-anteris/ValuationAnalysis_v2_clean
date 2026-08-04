@@ -533,8 +533,15 @@ def test_the_constants_are_the_agreed_ones():
     assert pbr.MAD_TO_SIGMA == 1.4826
 
 
-def test_the_deployed_weights_are_untouched_by_this_change():
-    """E-1 changes the ruler, not the vector.  `_validate()` already halts import if
-    sum|w| != 1; this pins that nothing here nudged a weight."""
+def test_the_deployed_weights_still_normalise_over_the_canonical_key_set():
+    """E-1 changed the RULER, not the vector -- and this test used to say so by pinning the
+    vector's length at 21 and asserting nothing here nudged a weight.
+
+    E-2 (2026-08-04) then changed the VECTOR, deliberately, and added two keys, so the
+    original assertion is no longer the right guard: it would now fail for the intended
+    reason, which makes it noise.  What survives from it is the part that is genuinely
+    E-1's business -- the ruler must keep operating on a normalised vector over the
+    canonical key set -- so that is what is asserted, against `METRIC_KEYS` rather than
+    against a literal count that a future re-weighting will move again."""
     assert sw.sum_abs(sw.DEPLOYED) == pytest.approx(1.0, abs=1e-12)
-    assert len(sw.DEPLOYED) == 21
+    assert set(sw.DEPLOYED) == set(sw.METRIC_KEYS)

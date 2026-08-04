@@ -23,6 +23,7 @@ for _p in (_REPO, _HERE):
         sys.path.insert(0, _p)
 
 import refit
+import scoringWeights as sw
 
 
 # --------------------------------------------------------------------------- #
@@ -285,29 +286,100 @@ def test_prior_is_retained_when_improvement_does_not_clear_the_gate():
     assert all(v == 1.0 for v in mult.values()), mult
 
 
+def _opposing_clusters():
+    """The two clusters to plant a signal ACROSS, chosen BY BUDGET from the live prior.
+
+    WHY THIS IS DERIVED AND NOT NAMED (fix, 2026-08-04 -- issue E-2).  It used to hard-code
+    "cheapness up, gross_margin down", with the documented premise that the improvement must be
+    REACHABLE given the clusters' budgets and the +-33% multiplier cap.  That premise is a fact
+    about the DEPLOYED VECTOR, not about the gate: E-2 moved cheapness 0.1595 -> 0.2600 and
+    gross_margin 0.1000 -> 0.0217, and with only 0.0217 left to take away the multipliers could
+    no longer buy enough improvement to clear the gate.
+
+    THE ORIGINAL TEST WAS NOT FLAKY -- correcting my own earlier claim here, which said it was.
+    Pre-E-2 it cleared at 1.23-1.29x on EVERY floor draw, deterministically, because the binding
+    gate there was the median standard error and not the wobbling noise floor.  Post-E-2 with the
+    old pair it fails at 0.51-0.68x -- below the ENTIRE floor range.  Neither state is a coin
+    flip: it was a clean pass, then a clean fail.  (The knife-edge I measured at ~0.97x is a
+    property of THIS new pair at the OLD n=100, i.e. of my own intermediate fix -- not of the
+    test as it shipped.  See PLANTED_POOL_N.)
+
+    Silently raising `strength` until it passed would have been tuning a test to green -- and,
+    measured, it could not even have worked (the objective is saturated; see PLANTED_POOL_N).
+    The honest fix is to remove the coupling: the property under test is "a FAIL means no signal,
+    not that the gate can never fire", which is a property of the gate MACHINERY and must hold
+    against whatever vector ships.
+
+    WHY THE TWO LARGEST BUDGETS, stated with its actual limit.  A cluster's reachable swing is
+    `budget x (multiplier range)`, so ordering by budget is a good PROXY for ordering by
+    reachable swing -- it is NOT a maximum "by construction", which is what I first wrote and is
+    only true under uniform within-cluster weights.  `cheapness` is 49% `earnYield` alone, so a
+    plant spread evenly across its four members does not exploit its budget evenly.  The proxy is
+    adequate here (it is measured to clear comfortably, below) and it removes the hard-coding;
+    it is not an optimality claim.
+
+    Returns (up_cluster, down_cluster).  Today: cheapness (0.2600) vs profitability (0.1517).
+    """
+    prior = refit.prior_weights()
+    by_budget = sorted(refit.CLUSTERS,
+                       key=lambda c: -sum(abs(prior[m]) for m in refit.CLUSTERS[c]))
+    return by_budget[0], by_budget[1]
+
+
+#  POOL SIZE PER PLANTED ANCHOR.  Raised 100 -> 250 (E-2, 2026-08-04).
+#
+#  WHY NOT `strength`.  The achievable improvement is SATURATED: sweeping `strength` from 2.0 to
+#  6.0 moved it by 0.0014 (0.0591 -> 0.0605), against a gate of 0.059-0.066.  The ceiling is not
+#  how much signal is planted but how much a +-33% cluster multiplier can buy on a top-20
+#  beat-rate, so no amount of strength produces a ROBUST pass -- it can only produce a lucky one.
+#  That is measured, not asserted, and it is why the knob was rejected rather than turned.
+#
+#  n ATTACKS THE OTHER SIDE.  A deeper pool gives the top-20 objective more room, while the
+#  selection noise floor is ~80 Bernoulli draws and is barely a function of n -- so the RATIO
+#  improves.  Measured at n=250 / 4 anchors across three independent seed bases: improvement
+#  0.1095 / 0.1095 / 0.1350 against gates 0.0629 / 0.0692 / 0.0701 = 1.74x / 1.58x / 1.93x,
+#  clearing on every draw with the direction correct every time (up 1.15, down 0.875).
+#
+#  THIS IS TUNE-TO-ROBUST, NOT A MEASURED OPTIMUM -- correcting my own earlier claim.  n=150 is
+#  also 6/6 (1.25-1.64x) and is just as defensible; 250 is not special, it is simply comfortably
+#  inside the robust region.  What IS a real finding is that n=400 is WORSE (1.22x on one seed),
+#  and the mechanism is not noise: as the pool deepens the PRIOR's own beat-rate approaches its
+#  ceiling, which compresses the headroom any multiplier can add.  So "bigger is better" is false
+#  here, and that is the part worth remembering if this ever needs moving again.
+PLANTED_POOL_N = 250
+
+#  THE MARGIN THE TEST DEMANDS, so it cannot silently drift back to the knife edge.  Nothing
+#  previously pinned HOW FAR above the gate the improvement sat, which is precisely how E-2's
+#  budget change was able to walk it from a clean pass to a clean fail with no intermediate
+#  warning.  1.3x is inside the measured 1.58-1.93x band with room to spare, and a future change
+#  that erodes the margin now fails while it is still passing -- which is the point.
+PLANTED_MARGIN_X = 1.3
+
+
 def _planted_anchor(tag, n, seed, strength=2.0, noise=0.3):
     """An anchor with a REAL, exploitable relationship between score and outcome.
 
-    The outcome loads POSITIVELY on the cheapness cluster and NEGATIVELY on gross_margin, so
-    shifting weight between those two clusters -- which is exactly what the multipliers can
-    do -- genuinely improves the top-20 beat-rate.  A signal planted on ONE cluster is not
-    enough: cheapness is only 0.16 of a unit-total weight vector and the multiplier is capped
-    at 1.33x, so the achievable improvement stays under the gate (measured: 0/4 displacements
-    at every strength up to 1.6).  Opposing clusters make the effect reachable.
+    The outcome loads POSITIVELY on one cluster and NEGATIVELY on another, so shifting weight
+    between those two -- which is exactly what the multipliers can do -- genuinely improves the
+    top-20 beat-rate.  A signal planted on ONE cluster is not enough: no single cluster holds
+    enough of a unit-total weight vector for a 1.33x cap to move the objective past the gate
+    (measured: 0/4 displacements at every strength up to 1.6).  Opposing clusters make the
+    effect reachable, and `_opposing_clusters` picks WHICH two from the live prior.
     """
     rng = np.random.default_rng(seed)
-    cheap = refit.CLUSTERS["cheapness"]
-    gm = refit.CLUSTERS["gross_margin"]
-    cols = [m for c in refit.CLUSTERS.values() for m in c] + [
-        "marketCapRevQuants", "Altman-Z", "Piotroski", "incomeQuality", "currentRatio",
-        "revenueGrowth", "freeCashFlowYield", "freeCashFlowPerShareGrowth", "DcfToPrice",
-        "BoScore", "priceGrowth", "CycleHeat"]
+    up_name, down_name = _opposing_clusters()
+    up = refit.CLUSTERS[up_name]
+    down = refit.CLUSTERS[down_name]
+    #  EVERY canonical metric key, taken from the single source of truth rather than listed --
+    #  a key added to the vector and forgotten here is the drift class the weights refactor
+    #  exists to remove (E-2 added `shareCountChange` / `longTermDebtChange`).
+    cols = list(sw.METRIC_KEYS)
     src = ["%s_%03d" % (tag, i) for i in range(n)]
     d = {"source": src}
     for c in cols:
         d[c] = rng.normal(size=n)
     df = pd.DataFrame(d)
-    sig = df[cheap].mean(axis=1).to_numpy() - df[gm].mean(axis=1).to_numpy()
+    sig = df[up].mean(axis=1).to_numpy() - df[down].mean(axis=1).to_numpy()
     ex = strength * sig + rng.normal(scale=noise, size=n)
     return dict(buy=tag, eval="x", normed=df, group_of={s: s for s in src},
                 excess={s: float(v) for s, v in zip(src, ex)}, bench=0.0,
@@ -319,17 +391,21 @@ def test_gate_FIRES_on_a_planted_signal_and_finds_the_RIGHT_DIRECTION():
 
     The previous version of this test wrapped its only assertion in an `if` and passed
     without asserting anything -- the same defect class as a bare `return` in a test.  This
-    one plants a signal the multipliers can exploit and requires THREE things:
+    one plants a signal the multipliers can exploit and requires FOUR things:
       1. the prior IS displaced;
       2. the improvement genuinely clears the gate (so it fired for the right reason);
-      3. the direction is CORRECT -- cheapness up, gross_margin down, matching the plant.
-    (3) is what distinguishes "the optimiser found the signal" from "the optimiser moved".
+      3. it clears it by a STATED MARGIN, not by a hair -- see PLANTED_MARGIN_X;
+      4. the direction is CORRECT, matching the plant's own up/down clusters.
+    (4) is what distinguishes "the optimiser found the signal" from "the optimiser moved".
+    (3) is new (2026-08-04): without it the test could sit at 1.0x and nobody would know, which
+    is exactly how E-2's re-weighting walked it from a clean 1.23-1.29x pass to a clean
+    0.51-0.68x fail with no intermediate warning.
     Crossover sits at a sustained ~+2.5 to +4pp per-anchor advantage, i.e. sensibly BELOW the
     10.95pp holdout adoption bar -- the gate is meant to pass real-but-small signal through to
     the holdout test, not to pre-empt it.
     """
     prior = refit.prior_weights()
-    anchors = [_planted_anchor("P%d" % i, 100, i) for i in range(4)]
+    anchors = [_planted_anchor("P%d" % i, PLANTED_POOL_N, i) for i in range(4)]
     floor, _s = refit.selection_noise_floor(anchors, prior, lam=0.02, n_perm=25, seed=11)
     mult, g, se, _n = refit._select(anchors, prior, lam=0.02, verbose=False,
                                     noise_floor=floor)
@@ -337,16 +413,24 @@ def test_gate_FIRES_on_a_planted_signal_and_finds_the_RIGHT_DIRECTION():
     prior_obj = float(g[np.all([np.isclose(g[c], 1.0) for c in refit.CLUSTERS], axis=0)]
                       ["objective"].iloc[0])
     gate = max(se, floor)
-    assert best - prior_obj > gate, \
-        "planted signal did not clear the gate (improvement %.4f vs gate %.4f)" % (
-            best - prior_obj, gate)
+    imp = best - prior_obj
+    assert imp > gate, \
+        "planted signal did not clear the gate (improvement %.4f vs gate %.4f)" % (imp, gate)
+    assert imp > PLANTED_MARGIN_X * gate, (
+        "the gate fired, but only by %.2fx against a required %.2fx margin (improvement %.4f, "
+        "gate %.4f). The fixture has drifted toward the knife edge: read PLANTED_POOL_N before "
+        "touching anything -- `strength` is SATURATED and will not fix this, and a deeper pool "
+        "is not monotonically better (n=400 is worse than n=250)."
+        % (imp / gate, PLANTED_MARGIN_X, imp, gate))
     assert not all(v == 1.0 for v in mult.values()), \
         "improvement cleared the gate but the prior was still returned -- the gate is a " \
         "rubber stamp"
-    assert mult["cheapness"] >= 1.0 and mult["gross_margin"] <= 1.0, \
-        "the fit moved but in the WRONG direction: %s (plant was cheapness UP, " \
-        "gross_margin DOWN)" % mult
-    assert mult["cheapness"] > mult["gross_margin"], mult
+    #  DIRECTION, against the pair the plant actually used -- see `_opposing_clusters`.
+    up_name, down_name = _opposing_clusters()
+    assert mult[up_name] >= 1.0 and mult[down_name] <= 1.0, \
+        "the fit moved but in the WRONG direction: %s (plant was %s UP, %s DOWN)" % (
+            mult, up_name, down_name)
+    assert mult[up_name] > mult[down_name], mult
 
 
 def test_planted_signal_also_makes_the_overfit_diagnostic_able_to_fire():
@@ -355,7 +439,7 @@ def test_planted_signal_also_makes_the_overfit_diagnostic_able_to_fire():
     exactly why the MEAN version (an identity at 0 when all folds retain the prior) was the
     wrong quantity to gate on."""
     prior = refit.prior_weights()
-    anchors = [_planted_anchor("Q%d" % i, 100, 50 + i) for i in range(4)]
+    anchors = [_planted_anchor("Q%d" % i, PLANTED_POOL_N, 50 + i) for i in range(4)]
     folds = refit.lowo(anchors, prior, lam=0.02, verbose=False, n_perm=8)
     gaps = [abs(f["IN_sample_mean_on_other_folds"] - f["OUT_of_sample_fit"]) for f in folds]
     assert max(gaps) > 1e-9, "per-fold IN vs OUT are identical -- nothing to diagnose"

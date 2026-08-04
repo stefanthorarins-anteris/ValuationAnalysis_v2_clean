@@ -842,8 +842,49 @@ def test_the_known_non_common_lines_were_REMOVED_from_the_reference_list():
     assert 'WHLR' in members and 'BW' in members
 
 
-@pytest.mark.skipif(vtu.newest_panel() is None,
-                    reason='no saved Bometric panel on this machine (gitignored, ~140MB)')
+def test_a_CURATED_panel_can_never_stand_in_as_the_production_pool():
+    """THE REGRESSION GUARD for a live trap (fixed 2026-08-04).
+
+    `derive_divergent` reconstructs "the pool production sees" from a panel's own
+    `Tickers_df`.  Handed a CURATED-universe panel it derives that pool from the very ~140
+    names under test and then reconciles the test universe against it -- circular, and it
+    reports every declared open group as over-declared because production's siblings cannot
+    exist in a 126-name panel.  It fired for real the first time a `stock_TEST1` run wrote a
+    panel, which the README recommends as the standard iteration route.
+
+    Two things are pinned, because fixing only the first does NOT fix the bug:
+      * "newest" means newest BY DATE (it sorted lexicographically, and `stock_TEST1` beats
+        `stock_NA1_EU1` on a string compare whatever the dates);
+      * and the production-only selector EXCLUDES curated panels -- which is the operative
+        fix, since a date sort alone still picks the newer curated panel.
+    """
+    #  the discriminator is the REGISTRY's own, not a hard-coded name
+    assert vtu.is_explicit_list_panel('Bometric_dic-fmp_stock_TEST1_all_2026-08-04_len126.pickle')
+    assert not vtu.is_explicit_list_panel(
+        'Bometric_dic-fmp_stock_NA1_EU1_all_2026-01-08_len9012.pickle')
+    #  ... and the nested names resolve to the LONGEST match, not the first
+    assert vtu.panel_universe(
+        'Bometric_dic-fmp_stock_NA1_EU1_all_2026-01-08_len9012.pickle') == 'stock_NA1_EU1'
+    assert vtu.panel_universe(
+        'Bometric_dic-fmp_stock_NA1_all_2026-01-08_len9012.pickle') == 'stock_NA1'
+    #  every universe with an explicit ticker list is treated as curated, by construction
+    for name in un.names():
+        path = 'Bometric_dic-fmp_%s_all_2026-01-08_len1.pickle' % name
+        assert vtu.is_explicit_list_panel(path) == (un.symbols(name) is not None), name
+    prod = vtu.newest_panel(production_only=True)
+    if prod is not None:
+        assert not vtu.is_explicit_list_panel(prod)
+
+
+#  PRODUCTION-ONLY panel, matching what `derive_divergent` now selects (fix, 2026-08-04).
+#  Skipping on `newest_panel()` was wrong for THIS test: a machine holding only a curated
+#  `stock_TEST1` panel would not skip, and would then fail with 'reconciliation unavailable' or
+#  -- worse, before the fix -- with a circular over-declaration.  The guard must ask for the
+#  kind of panel the derivation actually needs.
+@pytest.mark.skipif(vtu.newest_panel(production_only=True) is None,
+                    reason='no saved PRODUCTION Bometric panel on this machine '
+                           '(gitignored, ~140MB; a curated test-universe panel cannot '
+                           'stand in -- see verify_test_universe.derive_divergent)')
 def test_the_declared_open_groups_RECONCILE_with_a_fresh_derivation_both_ways():
     """THE GUARD THAT REPLACES THE NO-OP.
 

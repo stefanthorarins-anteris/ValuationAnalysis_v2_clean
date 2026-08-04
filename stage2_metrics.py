@@ -151,6 +151,18 @@ STAGE2_METRIC_SPEC = {
                              'because Altman coefficients are absolute'),
     'Piotroski':            (WINDOW_POINT_IN_TIME, FREQ_YOY_WINDOW,
                              'six of nine criteria compare row 0 against row rpy'),
+    #  The two Piotroski components EXTRACTED as standalone metrics for the FIN-1
+    #  (investment vehicle) vector -- issue E-2, 2026-08-04.  Identical window and
+    #  frequency treatment to `Piotroski` itself BY CONSTRUCTION: they read the same two
+    #  rows (0 and rpy) that its p7 and p5 read, so a faithful extraction cannot declare
+    #  anything else.
+    'shareCountChange':     (WINDOW_POINT_IN_TIME, FREQ_YOY_WINDOW,
+                             'Piotroski p7 (no new shares) made continuous: row 0 against '
+                             'row rpy, one YEAR for either frequency'),
+    'longTermDebtChange':   (WINDOW_POINT_IN_TIME, FREQ_YOY_WINDOW,
+                             'Piotroski p5 (falling leverage) made continuous: the CHANGE '
+                             'in a stock/stock ratio, so scale-free on both sides; the '
+                             'rpy-row lag carries the frequency'),
     'marketCapRevQuants':   (WINDOW_POINT_IN_TIME, FREQ_NOT_A_TIME_SERIES,
                              'a POOL-level market-cap quartile code read off the newest row'),
     'DcfToPrice':           (WINDOW_SCORING, FREQ_NOT_A_TIME_SERIES,
@@ -743,6 +755,165 @@ def piotroski(tempcdx, rpy=rp.DEFAULT_ROWS_PER_YEAR):
                 p9 = 1 if at_curr > at_prev else 0
                 return p1 + p2 + p3 + p4 + p5 + p6 + p7 + p8 + p9
         return np.nan
+    except Exception:
+        return np.nan
+
+
+# =========================================================================== #
+#  TWO PIOTROSKI COMPONENTS, EXTRACTED AS STANDALONE METRICS (E-2, 2026-08-04)  #
+# =========================================================================== #
+#  WHY THEY EXIST.  For a FIN-1 investment vehicle (closed-end fund / BDC) SEVEN of
+#  Piotroski's nine components are undefined or degenerate -- and, as `piotroski` above
+#  shows line by line, an undefined component does NOT propagate NaN: a NaN input makes
+#  every `>` / `<` / `<=` comparison False, so the point scores 0, which is
+#  indistinguishable from FAILING the test.  The composite is therefore not merely
+#  uninformative in that cohort, it is SYSTEMATICALLY PUNITIVE against every member of it,
+#  which is why `Piotroski` carries no weight there at all (scoringWeights, `C` block OOD
+#  in FIN-1).
+#
+#  But two of the nine ARE meaningful for a vehicle, and they are the closest thing the
+#  pipeline has to the NAV-quality instrument that cohort otherwise entirely lacks:
+#  SHARE ISSUANCE (p7) and CHANGE IN LONG-TERM DEBT (p5).  Issuing shares below net asset
+#  value is the canonical BDC red flag -- total NAV rises while NAV PER SHARE falls, so a
+#  vehicle can look cheap on book-to-price while bleeding per-share value.
+#
+#  THE TWO DESIGN DECISIONS, both stated because either could reasonably have gone the
+#  other way:
+#
+#  1. CONTINUOUS, NOT BINARY.  Piotroski's own points are 0/1; these return the underlying
+#     SIGNED QUANTITY whose sign is that point.  Three reasons.  (a) A 1% issuance and a
+#     40% issuance are not the same red flag, and the whole purpose here is a magnitude the
+#     cross-sectional ruler can rank.  (b) A binary column on a small cohort is almost all
+#     ties, and the pool is ~25 names.  (c) It is monotone-consistent with the point it came
+#     from: sign(shareCountChange) <= 0 IS p7, sign(longTermDebtChange) < 0 IS p5, so
+#     nothing about the extraction reverses Piotroski's judgement.
+#
+#  2. AN UNDEFINED INPUT YIELDS NaN -- NEVER A PASS AND NEVER A FAIL.  This is the standing
+#     project premise ("missing data must never reward by default") and it is the specific
+#     defect the parent composite has.  These functions are deliberately NOT a "fraction of
+#     the computable tests passed": such a form would REWARD a company for having fewer
+#     tests apply to it.  NaN goes to `normalizeAndDropNA`, which median-centres the column
+#     and imputes NaN to exactly the column MEDIAN -- genuinely neutral, and neutral on the
+#     RAW scale too because the weight is negative (a NaN is not quietly credited with
+#     "did not dilute").
+#
+#  THE LIMIT, RECORDED: both are CHANGE measures, so an unlevered vehicle that stays
+#  unlevered reads 0.0 while a levered one that deleverages reads better than it.  That is
+#  the extracted component's own semantics; a LEVEL term would be a new metric, not an
+#  extraction, and is not in scope here.
+
+
+def _yoy_rows(tempcdx, rpy):
+    """(row 0, row rpy) -- this period and the SAME period one year earlier -- or None.
+
+    THE SHARED SEAM for the two extracted components, and it is deliberately the same
+    indexing `piotroski` does: newest-first frame, so row `rpy` is exactly one year older
+    than row 0 (4 rows quarterly, 2 semi-annual).  Sharing it is what makes "extracted from
+    Piotroski" true of the ROWS as well as of the formula -- a second hand-written lag here
+    is how the two would drift apart.
+    """
+    lag = int(rpy)
+    if len(tempcdx) < lag + 1:
+        return None
+    return tempcdx.iloc[0], tempcdx.iloc[lag]
+
+
+def _finite(value):
+    """`value` as a float, or None when it is absent / non-numeric / non-finite.
+
+    An ABSENT input must reach the caller as None so the metric can return NaN.  The one
+    thing it must never do is coerce to 0.0, which is how the parent composite turns
+    "unknown" into "failed".
+    """
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return None
+    return out if np.isfinite(out) else None
+
+
+def share_count_change(tempcdx, rpy=rp.DEFAULT_ROWS_PER_YEAR):
+    """Fractional YoY change in the share count -- Piotroski p7 made continuous
+    (call site: postBoRank._compute_ticker_metrics).
+
+        (shsOut_now - shsOut_one_year_ago) / shsOut_one_year_ago
+
+    POSITIVE = DILUTION (shares issued), negative = buyback, 0.0 = unchanged.  The metric
+    is deliberately named for the QUANTITY rather than for the judgement: the weight carries
+    the sign (negative in the FIN-1 vector), exactly as `CycleHeat` does, so the published
+    column always holds the change as measured.
+
+    Dimensionless (a count over a count), so no frequency factor applies -- only the lag,
+    which `rpy` supplies.
+
+    NaN when: fewer than rpy+1 rows; either share count absent / non-finite; or the prior
+    share count is <= 0 (the denominator would be meaningless, not merely large).  NaN is
+    the honest answer for "not computable" and normalizeAndDropNA imputes it to the column
+    median; returning 0.0 there would assert "did not dilute", which is a PASS awarded for
+    missing data.
+    """
+    try:
+        rows = _yoy_rows(tempcdx, rpy)
+        if rows is None:
+            return np.nan
+        curr, prev = rows
+        now = _finite(curr["weightedAverageShsOut"])
+        then = _finite(prev["weightedAverageShsOut"])
+        if now is None or then is None or then <= 0:
+            return np.nan
+        return (now - then) / then
+    except Exception:
+        return np.nan
+
+
+def long_term_debt_change(tempcdx, rpy=rp.DEFAULT_ROWS_PER_YEAR):
+    """YoY change in the long-term-debt-to-assets RATIO -- Piotroski p5 made continuous
+    (call site: postBoRank._compute_ticker_metrics).
+
+        longTermDebt_now / totalAssets_now  -  longTermDebt_then / totalAssets_then
+
+    POSITIVE = leverage ADDED, negative = deleveraging, 0.0 = unchanged.  As with
+    `share_count_change` the sign lives in the weight, not in the name.
+
+    THE RATIO, NOT THE RAW DELTA, and that is the faithful extraction: `piotroski`'s p5
+    compares `longTermDebt / totalAssets` across the two periods, so differencing that ratio
+    is the quantity whose sign p5 tests.  It also makes the metric scale-free and
+    currency-invariant on both sides, which a raw currency delta would not be -- and this
+    pool mixes GBp / SEK / USD / CAD reporters.
+
+    NaN when: fewer than rpy+1 rows; either totalAssets absent or <= 0; or either
+    longTermDebt absent / non-finite.  A REPORTED ZERO long-term debt is NOT absent -- an
+    unlevered vehicle genuinely has a leverage ratio of 0 and differencing two zeros
+    genuinely gives 0.0, so that case returns 0.0 and is a real observation.  Only a MISSING
+    field yields NaN.
+
+    MEASURED RESIDUAL ON THAT CONTRACT, recorded because it is the one way it can bite
+    (2026-08-04, local 9,012-name panel): `longTermDebt` is **0.00% NaN and 25.33% EXACTLY
+    ZERO**.  So the NaN branch above is effectively UNREACHABLE in practice -- FMP reports 0
+    rather than omitting the field.  The contract is still the right one and there is no
+    upstream zero-fill to undo, but the consequence must be stated plainly rather than left
+    implied: **if FMP's 0 ever conflates "has no long-term debt" with "did not disclose it",
+    this metric reads the second as the first, and the -0.15 weight then awards a PASS for
+    missing data -- in the one cohort where leverage IS the solvency signal.** That is the
+    exact failure mode this module refuses everywhere else (see the piotroski note above), and
+    it is unguardable from inside this function: the two cases are the same byte on the wire.
+    Distinguishing them needs a provider-level presence flag, which is a data-acquisition
+    question, not a metric one.
+    """
+    try:
+        rows = _yoy_rows(tempcdx, rpy)
+        if rows is None:
+            return np.nan
+        curr, prev = rows
+        ta_now = _finite(curr["totalAssets"])
+        ta_then = _finite(prev["totalAssets"])
+        if not ta_now or not ta_then or ta_now <= 0 or ta_then <= 0:
+            return np.nan
+        ltd_now = _finite(curr["longTermDebt"])
+        ltd_then = _finite(prev["longTermDebt"])
+        if ltd_now is None or ltd_then is None:
+            return np.nan
+        return ltd_now / ta_now - ltd_then / ta_then
     except Exception:
         return np.nan
 

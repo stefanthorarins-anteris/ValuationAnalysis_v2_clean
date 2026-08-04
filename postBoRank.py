@@ -489,6 +489,12 @@ def _compute_ticker_metrics(ticker, tempcdx, dcf, bstop, nq, tempcntr,
     setv('tbVpRatio', sm.tbv_p_ratio(tempcdx, nq, rpy=rpy))
     setv('Altman-Z', sm.altman_z(tempcdx, rpy=rpy))
     setv('Piotroski', sm.piotroski(tempcdx, rpy=rpy))
+    # The two Piotroski components extracted as standalone metrics (E-2).  They carry
+    # weight ONLY in the FIN-1 cohort vector and 0.000 in the general one, but they are
+    # computed for EVERY pool: a metric that exists in one pool and not another would make
+    # `postScoreMetric_df`'s schema pool-dependent, and every consumer reads it as fixed.
+    setv('shareCountChange', sm.share_count_change(tempcdx, rpy=rpy))
+    setv('longTermDebtChange', sm.long_term_debt_change(tempcdx, rpy=rpy))
     setv('priceGrowth', sm.price_growth(tempcdx, nq, rpy=rpy))
     # rpy MUST be passed: CycleHeat is a self-reference z-score, so its window length
     # decides the baseline. It was the only metric in this block taking neither nq nor

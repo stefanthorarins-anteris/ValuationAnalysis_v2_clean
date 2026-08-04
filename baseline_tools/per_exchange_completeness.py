@@ -86,6 +86,9 @@ STAGE2_INPUTS = {
                                    'netCashProvidedByOperatingActivities', 'longTermDebt',
                                    'currentRatio', 'weightedAverageShsOut',
                                    'grossProfitMargin', 'revenue'],
+    #  E-2's two extracted Piotroski components -- the SAME cdx fields p7 and p5 read.
+    'shareCountChange':           ['weightedAverageShsOut'],
+    'longTermDebtChange':         ['longTermDebt', 'totalAssets'],
     'tbVpRatio':                  ['tangibleBookValuePerShare', 'price'],
     'EPStoEPSmean':               ['netIncome', 'weightedAverageShsOut'],
     'CycleHeat':                  ['netIncome', 'weightedAverageShsOut', 'date'],

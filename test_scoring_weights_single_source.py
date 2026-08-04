@@ -36,9 +36,13 @@ import scoringWeights as sw
 POSTBM_ORDER = ('RoA', 'earnYield', 'grahamNumberToPrice', 'bVpRatio', 'revenueGrowth',
                 'incomeQuality', 'returnOnEquity', 'returnOnCapitalEmployed',
                 'currentRatio', 'grossProfitMargin')
+#  The last two were APPENDED by E-2 (2026-08-04) -- the two Piotroski components extracted
+#  as standalone FIN-1 metrics.  Appended, never inserted: this order IS the column order of
+#  `postScoreMetric_df`, so appending leaves every existing column where it was.
 POSTNEW_ORDER = ('freeCashFlowYield', 'freeCashFlowPerShareGrowth', 'DcfToPrice',
                  'marketCapRevQuants', 'Altman-Z', 'Piotroski', 'tbVpRatio', 'BoScore',
-                 'EPStoEPSmean', 'priceGrowth', 'CycleHeat')
+                 'EPStoEPSmean', 'priceGrowth', 'CycleHeat',
+                 'shareCountChange', 'longTermDebtChange')
 EQMET = {'RoA': 'returnOnAssets', 'earnYield': 'earningsYield',
          'grahamNumberToPrice': 'grahamNumberToPrice', 'bVpRatio': 'pbRatio',
          'revenueGrowth': 'revenue', 'incomeQuality': 'incomeQuality',
@@ -99,7 +103,11 @@ def test_the_deployed_vector_normalises_to_EXACTLY_one():
     postBm, postNew = cdic.getPostDict()
     W = {**{k: v['w'] for k, v in postBm.items()},
          **{k: v['w'] for k, v in postNew.items()}}
-    assert len(W) == 21
+    assert len(W) == 23
+    #  EXACT float equality, not a tolerance, and it survived E-2's move to a DERIVED vector:
+    #  `_block_vector` computes each weight as W_B * sigma * tau / n and the 18 results still
+    #  sum to exactly 1.0 in binary floating point.  Keeping the assertion exact is what makes
+    #  it a real guard -- `_validate()` already covers the 1e-12 case at import.
     assert sw.sum_abs(W) == 1.0, sw.sum_abs(W)
 
 
@@ -113,7 +121,7 @@ def test_every_named_vector_covers_EXACTLY_the_canonical_key_set():
     vector whose other weights are ~0.05.  scoringWeights._validate() refuses at import;
     this asserts the refusal covers every vector."""
     canon = set(sw.METRIC_KEYS)
-    assert len(sw.METRIC_KEYS) == 21
+    assert len(sw.METRIC_KEYS) == 23
     assert set(sw.DEPLOYED) == canon
     assert set(sw.LEGACY) == canon
     for label, vec in sw.COHORT_WEIGHTS_RAW.items():
@@ -205,19 +213,36 @@ def test_the_legacy_vector_is_NOT_the_deployed_one():
     assert sw.LEGACY != sw.DEPLOYED
     differ = [k for k in sw.METRIC_KEYS
               if float(sw.LEGACY[k]) != float(sw.DEPLOYED[k])]
-    assert len(differ) == 21, 'all 21 differ; got %d' % len(differ)
+    #  21 of the 23, not all 23: `shareCountChange` / `longTermDebtChange` are 0 in BOTH --
+    #  0 in LEGACY because the pre-2026-07-14 pipeline had no such columns, and 0 in DEPLOYED
+    #  because they are FIN-1-only instruments.  Two genuine agreements, not a broken derivation.
+    assert len(differ) == 21, '21 of 23 differ; got %d' % len(differ)
+    assert set(sw.METRIC_KEYS) - set(differ) == {'shareCountChange', 'longTermDebtChange'}
 
 
-def test_cohort_BoScore_stays_NON_ZERO_in_all_five_vectors():
-    """KNOWN OPEN ISSUE the CEO has not ruled on: BoScore is 0.000 in the general vector
-    (dropped) but 0.1 raw in every cohort, so cohort side-lists still weight it.  Pinned
-    to keep it from being silently 'fixed' as a side effect of some other change --
-    changing it needs a CEO decision, not a tidy-up."""
+def test_cohort_BoScore_is_now_ZERO_in_all_five_vectors():
+    """THE INVERSION OF THIS TEST IS DELIBERATE, and the old wording is kept so the change
+    is legible rather than mysterious.  It used to read:
+
+        "KNOWN OPEN ISSUE the CEO has not ruled on: BoScore is 0.000 in the general vector
+         (dropped) but 0.1 raw in every cohort... changing it needs a CEO decision, not a
+         tidy-up."
+
+    E-2 (2026-08-04) is that decision arriving, and it resolves it as a CONSEQUENCE rather
+    than a tidy-up: under the block scheme every weight is a share of a BLOCK budget, and
+    `BoScore` -- a composite of the other metrics -- belongs to no block.  A metric with no
+    block has no weight.  It is also ARITHMETICALLY FORCED: cohort vectors renormalise by
+    Sigma|w|, so leaving 0.1 on BoScore would rescale every designed cohort weight and the
+    shipped numbers would not be the ones the design argued (FIN-1's `bVpRatio` would land
+    at 0.344 rather than its designed value).
+
+    Still pinned, and for the same reason as before -- in the other direction now."""
     assert len(sw.COHORT_WEIGHTS_RAW) == 5
     for label, vec in sw.COHORT_WEIGHTS_RAW.items():
-        assert vec['BoScore'] == 0.1, (label, vec['BoScore'])
+        assert vec['BoScore'] == 0.0, (label, vec['BoScore'])
     for label, vec in sw.COHORT_WEIGHTS.items():
-        assert vec['BoScore'] > 0, (label, vec['BoScore'])
+        assert vec['BoScore'] == 0.0, (label, vec['BoScore'])
+    assert sw.DEPLOYED['BoScore'] == 0.0, 'and it was already 0 in the general vector'
 
 
 def test_cohort_priceGrowth_and_DcfToPrice_stay_zero_in_all_five():
@@ -227,18 +252,35 @@ def test_cohort_priceGrowth_and_DcfToPrice_stay_zero_in_all_five():
         assert vec['DcfToPrice'] == 0, (label, vec['DcfToPrice'])
 
 
-def test_the_five_cohort_vectors_are_UNCHANGED_and_normalise_to_one():
-    """Domain review S7.  The raw sums are a cheap checksum over 105 numbers: any single
-    cohort weight edit moves its cohort's sum, and the normalisation must still land on
-    exactly 1 so cohort AggScores stay on the general scale."""
-    expected_raw_sums = {
-        'Mining': 13.85, 'REIT': 7.10, 'InvestmentVehicle': 3.35,
-        'FinManager': 14.10, 'BalanceSheetFin': 10.35,
+def test_the_five_cohort_vectors_SPEND_what_they_should_and_normalise_to_one():
+    """Domain review S7's checksum, re-based on E-2's meaning of `_RAW`.
+
+    Before E-2 `COHORT_WEIGHTS_RAW` held RELATIVE numbers on an arbitrary scale, so its sum
+    (Mining 13.85, REIT 7.10, ...) was a pure checksum with no interpretation.  Since E-2 it
+    holds ABSOLUTE shares of a seven-block budget, so the sum IS the cohort's SPENDABLE
+    weight -- and the shortfall from 1 is that cohort's stated unpriced risk.  The checksum
+    role is unchanged (any weight edit moves it) but it now carries meaning, which is
+    strictly better: two of these numbers are load-bearing claims.
+
+      REIT 0.914   -- W_S held UNSPENT: `Altman-Z` and `currentRatio` are the wrong
+                      instruments for a business that runs negative working capital by
+                      design, so 8.6% is reported as unpriced leverage/refinancing risk.
+      FIN-3 0.8796 -- W_S held UNSPENT with ZERO members: capital adequacy is the dominant
+                      risk and the pipeline cannot see it. 12.04% unpriced.
+      FIN-1 1.0    -- and this one CHANGED with E-2: it was 0.70 (R and S both held unspent
+                      for want of any instrument) until `shareCountChange` and
+                      `longTermDebtChange` were extracted from Piotroski to carry them.
+    """
+    expected_spendable = {
+        'Mining': 1.0, 'REIT': 0.914, 'InvestmentVehicle': 1.0,
+        'FinManager': 1.0, 'BalanceSheetFin': 0.8796,
     }
-    assert set(sw.COHORT_WEIGHTS_RAW) == set(expected_raw_sums)
-    for label, want in expected_raw_sums.items():
+    assert set(sw.COHORT_WEIGHTS_RAW) == set(expected_spendable)
+    for label, want in expected_spendable.items():
         got = sw.sum_abs(sw.COHORT_WEIGHTS_RAW[label])
         assert abs(got - want) < 1e-9, (label, got, want)
+        # the unpriced-risk report is the SAME number seen from the other side
+        assert abs(sw.COHORT_UNPRICED_RISK[label] - (1.0 - want)) < 1e-9, label
         assert abs(sw.sum_abs(sw.COHORT_WEIGHTS[label]) - 1.0) < 1e-12, label
 
 

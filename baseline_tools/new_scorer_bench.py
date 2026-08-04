@@ -125,6 +125,13 @@ _BENCH_EXCLUDED = {
     "DcfToPrice":  "no point-in-time DCF exists offline (stage2_pit.DROP_METRICS)",
     "BoScore":     "a composite of the other metrics, not an independent channel",
     "priceGrowth": "no CFG channel; M = CycleHeat only (weights-proposal s6.3 RESOLVE-1)",
+    # E-2, 2026-08-04: both are FIN-1-ONLY instruments (w = 0.000 in the general vector).
+    # This bench is a GENERAL-POOL instrument -- its IC / decile machinery runs on the whole
+    # panel -- so a cohort-only channel has nothing to contribute here.  The assertion below
+    # still enforces the premise: if either ever acquires general-pool weight, the bench
+    # refuses rather than quietly benching a different scheme than the pipeline ships.
+    "shareCountChange":   "FIN-1-only extraction; no general-pool weight, no CFG channel",
+    "longTermDebtChange": "FIN-1-only extraction; no general-pool weight, no CFG channel",
 }
 _deployed = sw.deployed_weights()
 for _k, _why_excluded in _BENCH_EXCLUDED.items():

@@ -340,6 +340,19 @@ def postBoWrapper(dmdic, as_of=None):
                 wov = co.COHORT_WEIGHTS.get(label)
                 print(f"CARVE-OUT side-list '{label}': ranking {len(head)} names"
                       f"{' with per-cohort weights' if wov else ''}", flush=True)
+                # RULE UNM's OTHER HALF, reported at the point of use (E-2, 2026-08-04).
+                # A block whose question APPLIES but has no instrument keeps its budget and
+                # spends it on nothing; the spendable weights then renormalise to 1, which
+                # silently converts "we cannot measure this" into "this does not matter"
+                # unless the residue is printed.  So it is printed, per cohort, beside the
+                # ranking it qualifies.
+                import scoringWeights as sw
+                _unpriced = sw.COHORT_UNPRICED_RISK.get(label, 0.0)
+                if _unpriced > 1e-9:
+                    print(f"  UNPRICED RISK in '{label}': {_unpriced:.2%} of the cohort's "
+                          f"weight budget is HELD AND UNSPENT (Rule UNM -- the question "
+                          f"applies, no instrument exists). This cohort's score does NOT "
+                          f"price that risk; the human review must.", flush=True)
                 # pool_label=label so the missing-data fill report names THIS cohort: the
                 # cohorts are the part of that calibration nobody has measured.
                 carveout_sidelists[label] = pbr.postBoScoreRanking(bm, head, cd, dmdic['baseurl'], dmdic['api_key'],

@@ -1,4 +1,11 @@
-"""READ-ONLY bit-identity proof for the scoring-weight single-source refactor (2026-08-02).
+"""[RETIRED 2026-08-04] bit-identity proof for the single-source weight refactor (2026-08-02).
+
+RETIRED -- see the `_RETIRED_REASON` block above `main()`.  It ran no proof from 2026-08-04
+onward: E-1 replaced the normalisation ruler and E-2 replaced the weight vectors, so its
+pre-E-1 reference panel can no longer be reproduced and its weight expectations are stale by
+design.  `main()` prints the retirement and exits 0.  The original body is preserved verbatim
+as `_main_RETIRED_pre_E1`.  Everything below this paragraph describes what it USED to prove.
+
 
 The refactor moved every scoring weight into `scoringWeights.py` and made
 `createDicts.getPostDict` / `getPostDict_legacy` / `tune_run.MU_GENERAL` /
@@ -123,7 +130,65 @@ def stage2_replay(raw, W, cdxtop, names):
     return _quiet(_go)
 
 
+# =========================================================================== #
+#  RETIRED 2026-08-04 -- DO NOT RUN THIS EXPECTING A VERDICT                    #
+# =========================================================================== #
+# THIS HARNESS PROVED ONE THING: that the 2026-08-02 single-source refactor changed NO number
+# and NO behaviour, by replaying the deployed path on `resdic_2026-07-17_CORRECTED.pickle` and
+# demanding the stored artifacts back BIT FOR BIT.  That premise is dead twice over:
+#
+#   E-1 (2026-08-03) replaced the normalisation ruler, so Stage-2's replay CANNOT reproduce a
+#        pre-E-1 panel and correctly aborts.  The harness was already inoperative at 14c2ddb.
+#   E-2 (2026-08-04) replaced the weight vectors themselves, so its Stage-0 weight checks are
+#        stale BY DESIGN: 21 -> 23 keys, new cohort sums (the vectors are now absolute block
+#        shares, not relative numbers), and cohort `BoScore` deliberately 0 rather than > 0.
+#
+# WHY IT IS STOPPED RATHER THAN REFRESHED, and this is the whole judgement: left running it
+# would emit FAILs from THREE indistinguishable causes at once -- a premise already dead, three
+# by-design changes, and any genuine regression.  A reader cannot tell them apart, so the noise
+# does not merely waste time, it TRAINS THE READER TO IGNORE THE OUTPUT of the one class of
+# harness this repo relies on for scoring claims.  Stale-and-loud is worse than either retiring
+# it or refreshing it properly.
+#
+# Refreshing it is NOT a cosmetic edit: a bit-identity proof needs a POST-E-1/E-2 reference
+# panel to be identical TO, and no such saved artifact exists yet.  The first production run on
+# the E-2 vector is what creates one; at that point this file can be re-pointed and un-retired.
+# Until then the live guards are `test_scoring_weights_single_source.py` (derivations and
+# structure) and `test_e2_weight_vector.py` (the vectors' actual numbers).
+_RETIRED_REASON = (
+    "premise dead: this harness demands BIT-IDENTITY against a PRE-E-1 saved panel.\n"
+    "  E-1 (2026-08-03) replaced the normalisation ruler  -> Stage-2 replay cannot match.\n"
+    "  E-2 (2026-08-04) replaced the weight vectors       -> Stage-0 weight checks are stale\n"
+    "                                                        BY DESIGN (23 keys, new cohort\n"
+    "                                                        sums, cohort BoScore now 0).\n"
+    "  Live guards instead: test_scoring_weights_single_source.py + test_e2_weight_vector.py\n"
+    "  Un-retire by re-pointing RESDIC at a POST-E-2 reference panel once one exists (the\n"
+    "  first production run on the E-2 vector creates it), then re-baselining the Stage-0\n"
+    "  expectations in this file.")
+
+
 def main():
+    print(__doc__.split("\n")[0])
+    print("\n" + "=" * 78)
+    print("  RETIRED -- NO PROOF IS RUN, AND NO VERDICT IS EMITTED.")
+    print("=" * 78)
+    print("  %s" % _RETIRED_REASON.replace("\n", "\n  "))
+    print("=" * 78 + "\n", flush=True)
+    #  EXIT 0, deliberately.  A retired harness has not FAILED -- returning non-zero would
+    #  make it look like a regression to any wrapper that keys off the exit code, which is the
+    #  same confusion the retirement exists to remove.
+    return 0
+
+
+def _main_RETIRED_pre_E1():
+    """The original body, kept VERBATIM and unreachable.
+
+    Not deleted: it is the executable record of how the 2026-08-02 refactor was proved, and it
+    is the starting point for re-pointing the harness at a post-E-2 reference panel.  Its
+    Stage-0 expectations (21 keys, the old cohort raw sums, cohort BoScore > 0) are the
+    PRE-E-2 values on purpose -- do not "fix" them here; re-baseline them if and when this is
+    un-retired, so the diff shows what the new reference actually is.
+    """
     print(__doc__.split("\n")[0])
     print("panel: %s\n" % os.path.basename(RESDIC), flush=True)
     d = pd.read_pickle(RESDIC)

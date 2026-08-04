@@ -49,11 +49,17 @@ YAHOO_FIELDS = ['longName', 'longBusinessSummary', 'sector', 'industry', 'websit
                 'fullTimeEmployees', 'city', 'country', 'marketCap']
 YAHOO_FETCH_SPACING_S = 0.6
 
+#  A SECOND COPY of reviewReference.PLAYBOOK_METRICS, and the duplication is the hazard:
+#  `shareCountChange` / `longTermDebtChange` (E-2, 2026-08-04) had to be added in BOTH places,
+#  and the coverage guard lives in reviewReference
+#  (`assert_allow_list_covers_the_weighted_metrics`).  `test_e2_weight_vector` asserts the two
+#  lists agree, so they cannot drift apart silently again.
 PLAYBOOK_METRICS = [
     'returnOnCapitalEmployed', 'returnOnEquity', 'RoA', 'grossProfitMargin',
     'freeCashFlowYield', 'currentRatio', 'earnYield', 'revenueGrowth',
     'incomeQuality', 'Altman-Z', 'Piotroski', 'bVpRatio', 'tbVpRatio',
     'freeCashFlowPerShareGrowth', 'moatScore', 'CycleHeat',
+    'shareCountChange', 'longTermDebtChange',
 ]
 
 COHORTS = ['REIT', 'Mining', 'InvestmentVehicle', 'FinManager', 'BalanceSheetFin']

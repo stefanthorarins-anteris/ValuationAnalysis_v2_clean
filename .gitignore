@@ -92,3 +92,8 @@ loo_*.csv
 baseline_tools/loo_*.csv
 MissingDataFillReport_*.csv
 ReportingFrequencyConflicts_*.csv
+
+# quarantined generated artifacts (never source)
+_quarantine/
+ManualEliminationTickersList_fmp_*.csv
+delisted_tickers_*.csv

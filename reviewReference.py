@@ -55,11 +55,19 @@ import pandas as pd
 # currency-denominated scorer inputs (price, marketCap, EPStoEPSmean, marketCapRevQuants,
 # BoScore, DcfToPrice, priceGrowth, grahamNumberToPrice) can never leak into a cohort
 # distribution.
+#
+# `shareCountChange` / `longTermDebtChange` ADDED 2026-08-04 (E-2).  Both are dimensionless
+# (a count over a count; a difference of two stock/stock ratios), so both are admissible under
+# the currency-invariance rule above.  They are added because they carry 0.30 of the FIN-1
+# vector between them, and without them a FIN-1 review page explained only 55.0% of its own
+# score -- see `assert_allow_list_covers_the_weighted_metrics` for the measured coverage and the
+# guard that now keeps this list tied to the weight vector.
 PLAYBOOK_METRICS = [
     'returnOnCapitalEmployed', 'returnOnEquity', 'RoA', 'grossProfitMargin',
     'freeCashFlowYield', 'currentRatio', 'earnYield', 'revenueGrowth',
     'incomeQuality', 'Altman-Z', 'Piotroski', 'bVpRatio', 'tbVpRatio',
     'freeCashFlowPerShareGrowth', 'moatScore', 'CycleHeat',
+    'shareCountChange', 'longTermDebtChange',
 ]
 
 # Fields that must NEVER be aggregated as a cohort distribution (absolute-currency or
@@ -68,6 +76,110 @@ PLAYBOOK_METRICS = [
 _CURRENCY_ABSOLUTE_DENY = {
     'price', 'marketCap', 'EPStoEPSmean', 'marketCapRevQuants',
 }
+
+
+#  WEIGHTED METRICS DELIBERATELY OUTSIDE THE ALLOW-LIST, each with its reason.
+#
+#  This is NOT `_CURRENCY_ABSOLUTE_DENY` and must not be conflated with it: that set answers
+#  "may this be aggregated as a cohort DISTRIBUTION", which is a narrower question.  This set
+#  answers "is this metric's absence from the review page a DECISION".  Written out separately
+#  and per-metric so that the coverage guard below cannot be satisfied by quietly widening a
+#  set -- every entry has to carry a reason a reader can disagree with.
+_ALLOW_LIST_EXEMPT = {
+    'marketCapRevQuants':
+        'a POOL-RELATIVE size quartile code, and deny-listed as currency-denominated '
+        '(_CURRENCY_ABSOLUTE_DENY): a cohort mixing GBp/SEK/USD cannot have its market-cap '
+        'quartiles compared. STATED RESIDUAL, not a clean pass -- a FIN-1 page still cannot '
+        'show the 0.15 this metric carries there.',
+    'EPStoEPSmean':
+        'in per-share EARNINGS units, so it is currency-denominated and already in '
+        '_CURRENCY_ABSOLUTE_DENY.',
+    'grahamNumberToPrice':
+        "excluded per this module's own header comment, which lists it among the inputs that "
+        'must not leak into a cohort distribution. FLAGGED INCONSISTENCY, not resolved here: '
+        'METRIC_BASIS below describes it as a "ratio of trailing-year Graham to price '
+        '(unitless)", which would make it currency-INVARIANT and therefore admissible. The '
+        'header comment and METRIC_BASIS disagree; the pre-existing behaviour (excluded) is '
+        'preserved and the disagreement is recorded rather than silently decided.',
+    'BoScore': 'w = 0 in every vector since E-2 -- nothing to explain.',
+    'DcfToPrice': 'w = 0.000 (deliberately zeroed; no point-in-time DCF exists).',
+    'priceGrowth': 'w = 0.000 (deliberately zeroed; uncorrected semi-annual level bias).',
+}
+
+
+def allow_list_coverage(weights=None):
+    """How much of a pool's WEIGHT the playbook allow-list actually explains, per pool.
+
+    THE GAP THIS EXISTS TO MAKE LOUD (added 2026-08-04, E-2).  `PLAYBOOK_METRICS` is a
+    hand-maintained allow-list and NOTHING tied it to the weight vector, so a metric could
+    carry real weight and simply never appear on the review page that is supposed to justify
+    the pick.  It was not hypothetical: measured before E-2's two metrics were added, FIN-1
+    explained only 55.0% of its own score -- and 45%, not 30%, because `marketCapRevQuants` was
+    ALREADY absent (it is deny-listed as currency-denominated, which is correct for a cohort
+    DISTRIBUTION but still leaves the page unable to explain that weight).
+
+    Returns {pool: (covered_fraction, [uncovered metrics, worst first])}.  `moatScore` is in the
+    allow-list but is not a weighted metric, so it never counts against coverage.
+    """
+    import scoringWeights as sw
+    allow = set(PLAYBOOK_METRICS)
+    vectors = dict(general=sw.DEPLOYED)
+    vectors.update({label: sw.COHORT_WEIGHTS[label] for label in sw.COHORT_LABELS})
+    if weights is not None:
+        vectors = dict(weights)
+    out = {}
+    for pool, vec in vectors.items():
+        total = sum(abs(float(w)) for w in vec.values())
+        if total <= 0:
+            out[pool] = (1.0, [])
+            continue
+        missing = {k: abs(float(w)) for k, w in vec.items()
+                   if k not in allow and abs(float(w)) > 0}
+        covered = 1.0 - sum(missing.values()) / total
+        out[pool] = (covered, sorted(missing, key=lambda k: -missing[k]))
+    return out
+
+
+def assert_allow_list_covers_the_weighted_metrics(min_covered=0.80, exempt=None):
+    """Raise when a weighted metric is absent from the review page WITHOUT a stated reason,
+    or when a pool's coverage falls below `min_covered`.
+
+    Two distinct failures, deliberately both here.  The first is the silent one that motivated
+    this: a metric acquires weight and nobody adds it to the hand-maintained allow-list, so the
+    page that justifies a pick cannot show part of the score.  The second is a floor, for the
+    case where every absence IS reasoned but they add up.
+
+    `exempt` defaults to `_ALLOW_LIST_EXEMPT`, whose entries each carry a reason -- read them
+    before trusting a green result, because two are STATED RESIDUALS rather than clean
+    exclusions (`marketCapRevQuants` in FIN-1, and `grahamNumberToPrice`, whose exclusion rests
+    on a contradiction inside this module).
+
+    `min_covered` is a floor on a KNOWN-INCOMPLETE list, NOT a target -- do not read 0.80 as
+    "80% is fine".  Measured after E-2 registered its two metrics: general 85.5%, Mining 83.7%,
+    REIT 85.3%, FIN-1 85.0%, FIN-2 85.7%, FIN-3 83.9%.  FIN-1 was **55.0%** before, which is
+    the size of the hole this guard exists to prevent recurring.
+    """
+    exempt = set(exempt if exempt is not None else _ALLOW_LIST_EXEMPT)
+    coverage = allow_list_coverage()
+    problems = []
+    for pool, (covered, missing) in sorted(coverage.items()):
+        unexplained = [m for m in missing if m not in exempt]
+        if unexplained:
+            problems.append('%s: %.1f%% covered, carries weight but is NEITHER in the '
+                            'allow-list NOR exempt with a reason: %s'
+                            % (pool, 100 * covered, unexplained))
+        elif covered < min_covered:
+            problems.append('%s: only %.1f%% covered (floor %.1f%%); every absence is '
+                            'reasoned but they now add up to more than the floor allows: %s'
+                            % (pool, 100 * covered, 100 * min_covered, missing))
+    if problems:
+        raise AssertionError(
+            'reviewReference.PLAYBOOK_METRICS has drifted off the weight vector -- a review '
+            'page cannot explain its own pick:\n  ' + '\n  '.join(problems)
+            + '\nAdd them to PLAYBOOK_METRICS (AND to generate_presentation.PLAYBOOK_METRICS, '
+              'which is a second copy), or add an _ALLOW_LIST_EXEMPT entry WITH A REASON. Do '
+              'not widen the exemption set without one.')
+    return {pool: cov for pool, (cov, _m) in coverage.items()}
 
 _ALL_COHORTS = ['general', 'REIT', 'Mining', 'InvestmentVehicle',
                 'FinManager', 'BalanceSheetFin']
@@ -126,6 +238,10 @@ def _pool_raw_fast(sources, cdx_df, nq=16):
         r['tbVpRatio'] = sm.tbv_p_ratio(t, nq, rpy=_rpy)
         r['Altman-Z'] = sm.altman_z(t, rpy=_rpy)
         r['Piotroski'] = sm.piotroski(t, rpy=_rpy)
+        #  E-2's two extracted Piotroski components.  They carry 0.30 of the FIN-1 vector, so
+        #  the reference artifact has to show them or a FIN-1 page cannot explain its own score.
+        r['shareCountChange'] = sm.share_count_change(t, rpy=_rpy)
+        r['longTermDebtChange'] = sm.long_term_debt_change(t, rpy=_rpy)
         # rpy passed for lockstep with the live scorer (fix 2026-07-30) -- every other metric
         # on these lines already scales its window to the filer's frequency; CycleHeat was the
         # one that did not, so the reference artifact reported a different h than the deck.
@@ -381,6 +497,10 @@ METRIC_BASIS = {
     'revenueGrowth': 'annual YoY (rpy rows back)',
     'freeCashFlowPerShareGrowth': 'annual YoY (rpy rows back)',
     'Piotroski': 'count 0-9 (unitless)',
+    'shareCountChange': 'annual YoY fractional change in share count (unitless); '
+                        'POSITIVE = dilution, and the weight is NEGATIVE',
+    'longTermDebtChange': 'annual YoY change in the longTermDebt/totalAssets ratio '
+                          '(unitless); POSITIVE = leverage added, and the weight is NEGATIVE',
     'CycleHeat': 'self-normalised z, capped [-3,3] (unitless)',
     'grahamNumberToPrice': 'ratio of trailing-year Graham to price (unitless)',
     'bVpRatio': 'stock/stock ratio (unitless)',

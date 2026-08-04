@@ -115,6 +115,14 @@ def _stage2_metric_loop_offline(bstop, cdxtop, nq=16):
         setv("priceGrowth", sm.price_growth(tempcdx, nq, rpy=_rpy))
         setv("Altman-Z", sm.altman_z(tempcdx, rpy=_rpy))
         setv("Piotroski", sm.piotroski(tempcdx, rpy=_rpy))
+        # LOCKSTEP with the live scorer (E-2, 2026-08-04): the two Piotroski components
+        # extracted as standalone FIN-1 metrics.  They are w = 0.000 in the general vector,
+        # so omitting them here would be score-neutral for the general PIT reproduction --
+        # and that is exactly the reasoning that let past divergences hide.  A column the
+        # live path fills and this one leaves all-NaN is a divergence whether or not it
+        # currently scores.
+        setv("shareCountChange", sm.share_count_change(tempcdx, rpy=_rpy))
+        setv("longTermDebtChange", sm.long_term_debt_change(tempcdx, rpy=_rpy))
         # CycleHeat: the SAME shared function the live scorer uses.  Its canonical
         # EPS prep (stage2_metrics.prepare_eps_series) collapses duplicate-dated
         # (restated) quarters to the last-ingested figure, so the live and offline

@@ -58,12 +58,71 @@ REQUIRED_TAGS = ('eu-restored', 'edge-dupdate', 'edge-dedup', 'edge-zerocap',
                  'ccy-sek', 'ccy-cad', 'cohort-fill')
 
 
-def newest_panel(pattern='Bometric_dic-*.pickle'):
+#  Panel filenames carry the run date as `..._all_YYYY-MM-DD_len...`.
+_PANEL_DATE_RE = re.compile(r'_all_(\d{4}-\d{2}-\d{2})_')
+
+
+def _panel_date(path):
+    m = _PANEL_DATE_RE.search(os.path.basename(path))
+    return m.group(1) if m else ''
+
+
+def panel_universe(path):
+    """The universe name embedded in a panel filename, or None if unrecognisable.
+
+    Matches the LONGEST registry name, because the names nest as substrings:
+    `stock_NA1` occurs inside `stock_NA1_EU1`, so a shortest/first match would
+    mis-attribute every default-universe panel.
+    """
+    base = os.path.basename(path)
+    for name in sorted(un.names(), key=len, reverse=True):
+        if ('_%s_' % name) in base:
+            return name
+    return None
+
+
+def is_explicit_list_panel(path):
+    """True when this panel came from a CURATED, EXPLICIT-TICKER-LIST universe.
+
+    The discriminator is the registry's own (`universes.symbols(name) is not None`) -- the
+    same field `universes.run_banner` keys its TEST-UNIVERSE warning off -- rather than a
+    hard-coded 'TEST1'.  A second curated universe added later is covered automatically.
+    """
+    u = panel_universe(path)
+    return u is not None and un.symbols(u) is not None
+
+
+def newest_panel(pattern='Bometric_dic-*.pickle', production_only=False):
     """Newest locally saved panel, or None.  A panel is dev-machine-only (gitignored,
-    ~140 MB), so absence is normal and must degrade to a partial report, not an error."""
+    ~140 MB), so absence is normal and must degrade to a partial report, not an error.
+
+    TWO DEFECTS FIXED HERE (2026-08-04), and the second is the one that matters:
+
+    1. "Newest" SORTED LEXICOGRAPHICALLY, so it was not newest.  Panel names embed the
+       universe before the date, and `stock_TEST1` > `stock_NA1_EU1` on a string compare, so
+       a curated-universe panel outranked a production one REGARDLESS of date.  Now sorted on
+       the embedded run date (mtime as the tie-break), which is what the name claims.
+
+    2. But fixing the sort alone does NOT fix the bug it caused, and that is the point:
+       2026-08-04 > 2026-01-08, so a date sort ALSO picks the curated panel.  The real defect
+       is SEMANTIC -- `derive_divergent` reconstructs "the production pool" from the panel's
+       own `Tickers_df`, and a curated panel's Tickers_df contains only the ~140 curated
+       members.  Deriving the production pool from the test universe and then reconciling the
+       test universe against it is CIRCULAR: siblings that production sees (BW, HRZN, WHLR)
+       cannot exist in a 126-name panel, so every declared open group reads as
+       over-declared.  `production_only=True` excludes curated panels for exactly that call.
+
+    This was reproducible for anyone the moment a `stock_TEST1` run wrote a panel -- which the
+    README recommends as the standard iteration route -- so it was a live trap, not a
+    theoretical one.
+    """
     here = os.path.dirname(os.path.abspath(__file__))
-    cands = sorted(glob.glob(os.path.join(here, pattern)))
-    return cands[-1] if cands else None
+    cands = glob.glob(os.path.join(here, pattern))
+    if production_only:
+        cands = [p for p in cands if not is_explicit_list_panel(p)]
+    if not cands:
+        return None
+    return max(cands, key=lambda p: (_panel_date(p), os.path.getmtime(p)))
 
 
 def _exchange_of(symbol, tickers_df):
@@ -213,8 +272,16 @@ def derive_divergent(panel_path=None, production=None):
     siblings absent from the saved panel are invisible here.  Those divergences are
     evidenced from live-list membership instead and are listed in
     `universes.OPEN_GROUPS_LIVE_LIST_ONLY`.
+
+    THE PANEL MUST BE A PRODUCTION ONE (`production_only=True`, fixed 2026-08-04).  This
+    function's job is to compare the CURATED universe against the pool PRODUCTION sees, and it
+    reconstructs that pool from the panel's own `Tickers_df`.  Handed a curated-universe panel
+    it therefore derives "production" from the very 140 names under test -- circular, and it
+    reports every declared open group as over-declared because the siblings production sees
+    are not in a 126-name panel.  Caller-supplied `panel_path` is honoured as-is; only the
+    DEFAULT is constrained.
     """
-    panel_path = panel_path or newest_panel()
+    panel_path = panel_path or newest_panel(production_only=True)
     if panel_path is None:
         return None, 'no saved panel on this machine -- derivation unavailable'
     import carveOut as co
