@@ -18,6 +18,39 @@ import warnings
 warnings.filterwarnings('ignore', message='.*concatenation with empty or all-NA entries.*')
 
 
+def generalTopN(finalBoRank_df, bands, topn, warn=True):
+    """The frame the GENERAL top-N is taken from -- `head(topn)` of the result IS that list.
+
+    When currency data is present the general top-N is the General band (>$300M), i.e.
+    postRank[marketCap_usd>300e6].head(topn), so the deliverables match the banded partition.
+    When banding is absent OR currency is still pending, behaviour is UNCHANGED (byte-identical
+    to before): the general top-N stays postRank.head(topn), so nothing wrong ships before the
+    field flows.
+
+    Factored out of createPresentation (2026-08-04) because the industry counter has to count
+    THE SAME twenty names the deck presents.  A second copy of this selection would be a
+    concentration report about a list nobody sees the moment the two drifted -- so there is one
+    selection, and the counter reads it with `warn=False` (the same warning printed twice for
+    one run is noise, and the reporting caller is not the one that would be shrinking a list).
+    """
+    if bands and not bands.get('currency_pending', True):
+        _gb = (bands.get('bands') or {}).get('General')
+        if _gb is not None and not _gb.empty:
+            # The General band is pre-capped at the MCAP_BANDS General head_N (=20). If a
+            # caller ever requests MORE than that (ntopxlsx > 20), keying the list off the
+            # band would SILENTLY shrink the general list -- so fall back to the unbanded
+            # head(topn) and warn LOUDLY instead. No effect today (ntopxlsx == 20 == cap).
+            if topn > len(_gb):
+                if warn:
+                    print(f"WARNING: createPresentation topn={topn} exceeds General-band size "
+                          f"{len(_gb)} (MCAP_BANDS General cap); using unbanded "
+                          f"postRank.head({topn}) to avoid silently shrinking the general "
+                          f"list.", flush=True)
+            else:
+                return _gb
+    return finalBoRank_df
+
+
 def _diag_newest_rows(df, n=3):
     """The most recent `n` rows of a per-source frame, for a PRINT-ONLY diagnostic.
 
@@ -641,6 +674,37 @@ def writeResWrapper(resdic):
         print(f'WARNING: universe-provenance sidecar skipped '
               f'({type(_e).__name__}: {_e}); deliverables unaffected.', flush=True)
 
+    # ------------------------------------------------------------------------------ #
+    #  INDUSTRY COUNTER -- top-100 and top-20 (CEO, 2026-08-04).                       #
+    #                                                                                #
+    #  The 07-17 corrected top-100 holds 11 Marine Shipping (7 of the top-20) and NO   #
+    #  deliverable said so.  The CEO reviews the shortlist by hand, so concentration is #
+    #  something he has to SEE -- it is NOT something the filter may act on (standing   #
+    #  ruling: no hard gates in the filtering logic).                                   #
+    #                                                                                #
+    #  Printed LAST, after every deliverable, so it is the composition summary of the   #
+    #  files just listed and so nothing downstream of it exists to be influenced.       #
+    #  Counts THE SAME twenty names the deck presents (generalTopN, shared with         #
+    #  createPresentation) rather than a second guess at the general top-N.             #
+    #  Read-only + guarded: no resdic key is written, no frame is mutated, and a failure #
+    #  here costs a text block, never a deliverable.                                    #
+    # ------------------------------------------------------------------------------ #
+    try:
+        import industry_concentration as ic
+        _cdx_ind = resdic.get('cdx_df')
+        _uni = (sorted(set(_cdx_ind['source']))
+                if _cdx_ind is not None and 'source' in getattr(_cdx_ind, 'columns', [])
+                else None)
+        _top100 = list(fb_df['source'].head(ntopagg))
+        _top20 = list(generalTopN(fb_df, marketcap_bands, ntopxlsx,
+                                  warn=False)['source'].head(ntopxlsx))
+        print("\n" + "\n".join(ic.report_lines(
+            _top100, _top20, universe_sources=_uni,
+            labels=(f'top-{ntopagg}', f'top-{ntopxlsx}'))), flush=True)
+    except Exception as _e:
+        print(f'WARNING: industry counter skipped ({type(_e).__name__}: {_e}); '
+              f'deliverables unaffected.', flush=True)
+
     # Return the human-readable top-N deliverables just written (same pattern as
     # utils.saveWrapper returning its pickle name) so Sbocker.main can copy them to
     # the Drive-synced transfer dir at the pre-ingestion phase boundary. Data-only:
@@ -1024,28 +1088,12 @@ def createPresentation(finalBoRank_df, mscore, cscore, baseurl, api_key, topn, f
     #fname = fname_spreadSheet
     #topn = 20
     #years = 10
-    # Market-cap banding (ADDITIVE): when currency data is present, the general top-N is
-    # the General band (>$300M) head(topn) -- i.e. postRank[marketCap_usd>300e6].head(topn) --
-    # so the xlsx general list matches the banded partition. When banding is absent OR
-    # currency is still pending, behaviour is UNCHANGED (byte-identical to before): the
-    # general top-N stays postRank.head(topn), so nothing wrong ships before the field flows.
+    # Market-cap banding (ADDITIVE): see generalTopN -- the General band (>$300M) when currency
+    # data is present, unbanded postRank.head(topn) otherwise (byte-identical to pre-banding).
     # TODO: emit each sub-band's top-5 as its own labelled sheet block once the field flows
     # (deferred: the HTML presentation already carries the full banded view; adding sheets
     # here multiplies the per-symbol live API calls).
-    _general_df = finalBoRank_df
-    if bands and not bands.get('currency_pending', True):
-        _gb = (bands.get('bands') or {}).get('General')
-        if _gb is not None and not _gb.empty:
-            # The General band is pre-capped at the MCAP_BANDS General head_N (=20). If a
-            # caller ever requests MORE than that (ntopxlsx > 20), keying the xlsx off the
-            # band would SILENTLY shrink the general list -- so fall back to the unbanded
-            # head(topn) and warn LOUDLY instead. No effect today (ntopxlsx == 20 == cap).
-            if topn > len(_gb):
-                print(f"WARNING: createPresentation topn={topn} exceeds General-band size "
-                      f"{len(_gb)} (MCAP_BANDS General cap); using unbanded postRank.head({topn}) "
-                      f"to avoid silently shrinking the general list.", flush=True)
-            else:
-                _general_df = _gb
+    _general_df = generalTopN(finalBoRank_df, bands, topn)
     symblist = list(_general_df['source'].head(topn))
     #eyVec = []
     #quote_full = pd.DataFrame(requests.get(f'{baseurl}v3/quote/{symblist}?&apikey={api_key}').json())

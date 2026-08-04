@@ -65,6 +65,21 @@ import panel_upgrade as pu
 import postBo as pb
 import reporting_period as rp
 
+#  The concentration/counter code THIS script originated now lives at the repo root, because
+#  the pipeline emits it every run (postBo.writeResWrapper) and a pipeline stage must not
+#  import an analysis script.  Re-exported here so `ia.concentration_line(...)` /
+#  `ia.cycle_of(...)` keep working for the existing caller (run_corrected_current.py) and so
+#  there is exactly one implementation of the count in the repo.  See
+#  industry_concentration.py's docstring for the three rendering differences in the lift.
+from industry_concentration import (  # noqa: F401  (re-export)
+    CYCLE_CLUSTERS,
+    concentration_line,
+    counter_block,
+    cycle_of,
+    industry_counts,
+    report_lines,
+)
+
 ORIG_PANEL = (r"C:\Users\stefanthorarinsson\Documents\HomeGDrive"
               r"\Boresults_dic-fmp_stock_NA1_EU1_all_2026-07-17_len7752_manelim3692"
               r"_fails2075.pickle")
@@ -78,153 +93,6 @@ SHIPPED_PREFIX_CSV = os.path.join(
 
 def industry_map():
     return co._load_industry_map()
-
-
-#  CYCLE CLUSTERS -- the grouping `top20-real-value-verification.md` S6.3 step 3 actually asks
-#  for.  Grouping by industry LABEL under-reports the exposure that matters: on the 07-17
-#  corrected list it reads "Marine Shipping 40%" when the real commodity-cycle exposure is
-#  8 shipping + 4 oil & gas E&P = 60%.  Two names in different FMP industries can share one
-#  cycle; the doctrine's warning is about the CYCLE, not the tag.  Both views are reported --
-#  the label view stays because it is what the CSVs and the deck show.
-CYCLE_CLUSTERS = {
-    "Commodity/Freight cycle": [
-        "Marine Shipping", "Oil & Gas Exploration & Production", "Oil & Gas Midstream",
-        "Oil & Gas Refining & Marketing", "Oil & Gas Equipment & Services",
-        "Oil & Gas Integrated", "Oil & Gas Drilling", "Thermal Coal", "Coking Coal",
-        "Railroads", "Trucking", "Integrated Freight & Logistics",
-        "Steel", "Aluminum", "Copper", "Other Industrial Metals & Mining",
-        "Gold", "Silver", "Other Precious Metals & Mining", "Uranium",
-        "Agricultural Inputs", "Chemicals", "Specialty Chemicals", "Lumber & Wood Production",
-        "Paper & Paper Products", "Building Materials", "Airlines",
-    ],
-    "Rate/Credit cycle": [
-        "Banks - Regional", "Banks - Diversified", "Credit Services", "Mortgage Finance",
-        "Insurance - Property & Casualty", "Insurance - Life", "Insurance - Diversified",
-        "Insurance - Reinsurance", "Insurance - Specialty", "Insurance Brokers",
-        "Capital Markets", "Asset Management", "Financial - Data & Stock Exchanges",
-        "REIT - Diversified", "REIT - Office", "REIT - Retail", "REIT - Residential",
-        "REIT - Industrial", "REIT - Hotel & Motel", "REIT - Mortgage",
-        "REIT - Healthcare Facilities", "REIT - Specialty",
-    ],
-    "Consumer cycle": [
-        "Auto Manufacturers", "Auto Parts", "Auto & Truck Dealerships",
-        "Residential Construction", "Homebuilding", "Furnishings, Fixtures & Appliances",
-        "Apparel Manufacturing", "Apparel Retail", "Footwear & Accessories",
-        "Restaurants", "Lodging", "Resorts & Casinos", "Travel Services",
-        "Leisure", "Department Stores", "Specialty Retail",
-    ],
-}
-_CYCLE_OF = {ind: cl for cl, inds in CYCLE_CLUSTERS.items() for ind in inds}
-
-
-def cycle_of(industry):
-    """Cycle cluster for an FMP industry label, or None if it is not cycle-classified.
-    None is NOT a cluster -- an unclassified name is counted separately, never pooled."""
-    return _CYCLE_OF.get(industry)
-
-
-def _fmt_enr(x):
-    """Enrichment factor.  `%.0fx` collapses every sub-1.5x value to '0x' or '1x', which
-    reads as "no signal" for a 1.4x and as "one times" for a 0.6x -- both wrong.  Use a
-    decimal below 10x."""
-    if x is None or not np.isfinite(x):
-        return "n/a"
-    return ("%.1fx" % x) if x < 10 else ("%.0fx" % x)
-
-
-def concentration_line(top_sources, universe_sources, ind=None, top_k=6, warn_share=0.25):
-    """The deck pre-flight's INDUSTRY CONCENTRATION line, as one string.
-
-    Automates `top20-real-value-verification.md` S6.3 step 3, which currently asks the CEO to
-    tally industries by hand.  The COUNT alone is not the signal -- 3 of 20 in an industry that
-    is 15% of the universe is nothing, while 3 of 20 in one that is 0.8% is 19x.  So the line
-    carries the universe base rate and the enrichment factor, which is what turns a tally into
-    something interpretable.
-
-    Uses `industrydic_fmp_*.pickle` -- 18,333 symbols over 156 FMP industries, already loaded
-    by the deck (`get_industry`) and already the pipeline's primary FIN-2/FIN-3 classifier -- so
-    this introduces no new taxonomy and nothing to maintain.
-    """
-    if ind is None:
-        ind = industry_map()
-    top = list(top_sources)
-    if not top:
-        return "INDUSTRY CONCENTRATION: empty top list -- nothing to report."
-    known_uni = [s for s in universe_sources if ind.get(s)]
-    uni_c = Counter(ind[s] for s in known_uni)
-    n_uni = len(known_uni)
-
-    # ---- view 1: by INDUSTRY LABEL (what the CSVs and the deck show) ------------------
-    c = Counter(ind.get(s, "UNKNOWN") for s in top)
-    parts = []
-    for name, k in c.most_common(top_k):
-        if name == "UNKNOWN":
-            parts.append("Unclassified %d" % k)
-            continue
-        br = uni_c.get(name, 0) / n_uni if n_uni else float("nan")
-        enr = ((k / len(top)) / br) if br else float("inf")
-        parts.append("%s %d (base %.2f%%, %s)" % (name, k, 100 * br, _fmt_enr(enr)))
-    out = ["INDUSTRY CONCENTRATION (top-%d): %s" % (len(top), " * ".join(parts))]
-
-    # UNKNOWN is NOT an industry and must never win the "one industry" line or trip the
-    # warning: 6 unclassified names are a DATA GAP, not a concentration.
-    named = Counter({k: v for k, v in c.items() if k != "UNKNOWN"})
-    if named:
-        top_name, top_n = named.most_common(1)[0]
-        br = uni_c.get(top_name, 0) / n_uni if n_uni else float("nan")
-        enr = ((top_n / len(top)) / br) if br else float("inf")
-        out.append("  -> %d of %d in ONE industry (%s): universe base rate %.2f%%, "
-                   "enrichment %s" % (top_n, len(top), top_name, 100 * br, _fmt_enr(enr)))
-    if c.get("UNKNOWN"):
-        out.append("  -> %d of %d UNCLASSIFIED (a data gap, not a concentration)"
-                   % (c["UNKNOWN"], len(top)))
-
-    # ---- view 2: by CYCLE CLUSTER (what S6.3 step 3 asks for) -------------------------
-    cyc = Counter()
-    for s in top:
-        cl = cycle_of(ind.get(s))
-        if cl:
-            cyc[cl] += 1
-    uni_cyc = Counter()
-    for s in known_uni:
-        cl = cycle_of(ind[s])
-        if cl:
-            uni_cyc[cl] += 1
-    if cyc:
-        cparts = []
-        for cl, k in cyc.most_common():
-            br = uni_cyc.get(cl, 0) / n_uni if n_uni else float("nan")
-            enr = ((k / len(top)) / br) if br else float("inf")
-            cparts.append("%s %d/%d = %.0f%% (base %.1f%%, %s)"
-                          % (cl, k, len(top), 100 * k / len(top), 100 * br, _fmt_enr(enr)))
-        out.append("  CYCLE CLUSTER (the grouping S6.3 step 3 asks for -- a shared cycle can "
-                   "span several industry tags):")
-        for p in cparts:
-            out.append("    " + p)
-
-    # THE TWO WARNINGS ARE INDEPENDENT (fix, 2026-07-30).  The first version gated the
-    # label-level warning on the cycle view existing (`if cyc: ... elif ...`), so a list that
-    # was 50% Software plus ONE shipping name produced a cycle block and NO warning at all --
-    # the label concentration was SUPPRESSED by the presence of an unrelated cycle name, and it
-    # would have fired before the cycle view was added.  A second view must never silence the
-    # first: a 50%-one-industry list is a concentration whether or not that industry maps to a
-    # cycle, so both conditions are now evaluated separately and both can fire.
-    if named:
-        worst_ind, worst_ind_n = named.most_common(1)[0]
-        if worst_ind_n / len(top) >= warn_share:
-            _mapped = cycle_of(worst_ind)
-            out.append("  !! %.0f%% of the list is ONE INDUSTRY (%s)%s -- a concentration on "
-                       "its own terms."
-                       % (100 * worst_ind_n / len(top), worst_ind,
-                          "" if _mapped else ", with no cycle mapping"))
-    if cyc:
-        worst_cl, worst_n = cyc.most_common(1)[0]
-        if worst_n / len(top) >= warn_share:
-            out.append("  !! %.0f%% of the list sits in ONE CYCLE (%s). Where both warnings "
-                       "fire, the doctrine's cyclicality warning applies to THIS number -- it "
-                       "is the larger exposure -- but read both, before position sizing."
-                       % (100 * worst_n / len(top), worst_cl))
-    return "\n".join(out)
 
 
 def base_rate(sources, ind):

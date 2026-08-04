@@ -288,6 +288,75 @@ def rpy_basis_banner():
             f'for such names. Status: {escape(_RPY_MAP_STATUS)}.</div>')
 
 
+def industry_counter_banner(postrank_df, general_top20, industrydic, cdx_df=None):
+    """The INDUSTRY COUNTER block for the top-100 and top-20 (CEO, 2026-08-04); '' if unusable.
+
+    The 07-17 corrected top-100 held 11 Marine Shipping (7 of the top-20) and nothing on this
+    page said so.  The CEO reads the deck by hand, so composition has to be VISIBLE here --
+    which also means it must be visible BEFORE the first name page, since an 11-of-100
+    concentration changes how every deep-dive below is read.
+
+    INFORMATIONAL ONLY -- no name is dropped, reordered or re-scored by anything here, and the
+    counts are not read back by any other section.  The counting itself is delegated to the
+    repo-root `industry_concentration` module, the SAME one the pipeline's run log uses, so the
+    deck and the run log can never disagree about how many shipping names are in the list.
+
+    `general_top20` is passed in rather than recomputed so the count is of the twenty names this
+    deck actually renders (banded General head-20, or the flat fallback).
+    """
+    try:
+        import industry_concentration as ic
+    except Exception as _e:                                     # pragma: no cover
+        log.info(f"industry counter skipped: {type(_e).__name__}: {_e}")
+        return ''
+    if postrank_df is None or getattr(postrank_df, 'empty', True):
+        return ''
+    ind = dict(industrydic) if isinstance(industrydic, dict) else {}
+    if not ind:
+        return ('<div class="industry-counter"><strong>INDUSTRY COUNTER —</strong> '
+                'unavailable: no industry map was loaded for this run, so no name on this page '
+                'can be industry-labelled.</div>')
+    uni = None
+    if cdx_df is not None and 'source' in getattr(cdx_df, 'columns', []):
+        uni = sorted(set(cdx_df['source']))
+
+    lists = [('Top-100', list(postrank_df['source'].head(100))),
+             ('Top-20', list(general_top20))]
+    blocks = []
+    for label, srcs in lists:
+        named, n_unc, n_tot = ic.industry_counts(srcs, ind)
+        if not n_tot:
+            continue
+        cells = ''.join(
+            '<span class="ic-cell%s">%s <b>%d</b> <span class="ic-pct">(%.0f%%)</span></span>'
+            % (' ic-hot' if k / n_tot >= 0.10 else '', escape(str(name)), k,
+               100.0 * k / n_tot)
+            for name, k in named)
+        blocks.append(
+            '<div class="ic-list"><span class="ic-head">%s (%d names)</span>%s'
+            '<span class="ic-cell ic-unc">unclassified <b>%d</b></span></div>'
+            % (escape(label), n_tot, cells, n_unc))
+    if not blocks:
+        return ''
+    detail = ''
+    if uni and len(list(general_top20)):
+        # The interpretive view: a count means nothing without the universe base rate (3 of 20
+        # in a 15%-of-universe industry is nothing; 3 of 20 in a 0.8% one is 19x).  Same
+        # function the run log prints, rendered as preformatted text so the numbers line up.
+        try:
+            detail = ('<pre class="ic-detail">'
+                      + escape(ic.concentration_line(list(general_top20), uni, ind=ind))
+                      + '</pre>')
+        except Exception as _e:                                 # pragma: no cover
+            log.info(f"industry concentration detail skipped: {type(_e).__name__}: {_e}")
+    return ('<div class="industry-counter"><strong>INDUSTRY COUNTER —</strong> '
+            'count of names per FMP <em>industry</em>, most-concentrated first. '
+            'Informational only: nothing on this page is filtered, ranked or scored by it. '
+            '<span class="ic-pct">(≥10% of a list is highlighted; unclassified is a data gap, '
+            'not an industry.)</span>'
+            + ''.join(blocks) + detail + '</div>')
+
+
 def schema_note_banner(aggscore_df):
     """Page-level banner when the run's AggScore CSV declares a REDUCED schema; '' otherwise.
 
@@ -1384,6 +1453,10 @@ def load_run_data(run_dir, valuation_repo, run_date=None):
         'aggscore_df': aggscore_df,
         'forensic_df': forensic_df,
         'get_industry': get_industry,
+        # The raw map as well as the closure: the industry COUNTER needs to aggregate over a
+        # whole list, and re-globbing the pickle for it would let the counter and the per-name
+        # labels drift onto two different files.
+        'industrydic': industrydic if isinstance(industrydic, dict) else {},
     }
 
 
@@ -2648,10 +2721,19 @@ class PresentationBuilder:
                 if bdf is not None and not bdf.empty:
                     band_names[label] = bdf.head(N)['source'].tolist()
 
+        # The GENERAL TOP-20 this deck renders: the banded General head-20 when currency data
+        # is present, the flat postRank head-20 otherwise. Resolved ONCE here so the industry
+        # counter counts exactly the names the page shows.
+        general_top20 = (list(band_names.get('General') or [])[:20] if banded
+                         else postrank_df.head(20)['source'].tolist())
+
         # rpy_basis_banner() is '' in the healthy case; it renders a loud page-level warning
         # if the filing-frequency map degraded (domain N9 -- never a silent basis regression).
         content = ("""<div class="content">""" + rpy_basis_banner()
                    + schema_note_banner(self.data.get('aggscore_df'))
+                   + industry_counter_banner(postrank_df, general_top20,
+                                             self.data.get('industrydic'),
+                                             self.data.get('cdx_df'))
                    + self._icon_legend())
         if banded:
             # PRIMARY: banded partition. Each general-pool name renders once, under its
@@ -2671,7 +2753,7 @@ class PresentationBuilder:
         else:
             # FALLBACK (pending currency / no band data): the original single flat general
             # top-20, with a note. NEVER the confusing flat-top-20 + appendix-bands shape.
-            top_20 = postrank_df.head(20)['source'].tolist()
+            top_20 = general_top20
             nav_html = self._build_nav(top_20, cohort_names)
             pend = band_info.get('currency_pending', True) if band_info else True
             note = (' — market-cap bands pending currency data (correct from next full run)'
@@ -3156,6 +3238,43 @@ nav.sidebar {
     font-size: 0.9em;
     line-height: 1.5;
     color: #5a3d00;
+}
+
+/* INDUSTRY COUNTER -- informational composition block; deliberately styled NEUTRAL (same
+   card as the legend, not the red .basis-warning) because a concentration is a fact for the
+   reader to weigh, not a defect in the run. */
+.industry-counter {
+    background: #f6f8fa;
+    border: 1px solid #e1e4e8;
+    border-radius: 6px;
+    padding: 8px 12px;
+    margin: 0 0 14px 0;
+    font-size: 0.85em;
+    line-height: 1.8;
+}
+.industry-counter .ic-list { margin-top: 5px; }
+.industry-counter .ic-head {
+    display: inline-block;
+    min-width: 130px;
+    font-weight: 600;
+    color: #444;
+}
+.industry-counter .ic-cell {
+    display: inline-block;
+    margin-right: 10px;
+    white-space: nowrap;
+}
+.industry-counter .ic-hot { background: #ffe9c7; border-radius: 3px; padding: 0 4px; }
+.industry-counter .ic-unc { color: #777; font-style: italic; }
+.industry-counter .ic-pct { color: #777; }
+.industry-counter .ic-detail {
+    margin: 8px 0 0 0;
+    padding: 6px 8px;
+    background: #fff;
+    border: 1px solid #e1e4e8;
+    border-radius: 4px;
+    font-size: 0.95em;
+    white-space: pre-wrap;
 }
 
 .icon-legend .leg { margin-right: 12px; white-space: nowrap; }
