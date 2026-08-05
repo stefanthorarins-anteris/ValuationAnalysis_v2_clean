@@ -99,10 +99,13 @@ def _stage2_metric_loop_offline(bstop, cdxtop, nq=16):
                                         rpy=_rpy))
 
         # ---- postNewRankingDict metrics (shared with production via stage2_metrics) ----
+        #  `tempcdx=` -- the NAME-level calendar-gap test (nan_policy) needs the dates, and
+        #  this is a SCORING path, so it must be in lockstep with production's call site.
         setv("freeCashFlowYield", sm.free_cash_flow_yield(tempfcf, tempcdx.marketCap,
-                                                         nq, rpy=_rpy))
+                                                         nq, rpy=_rpy, tempcdx=tempcdx))
         setv("freeCashFlowPerShareGrowth",
-             sm.free_cash_flow_per_share_growth(tempfcf, tempshares, nq, rpy=_rpy))
+             sm.free_cash_flow_per_share_growth(tempfcf, tempshares, nq, rpy=_rpy,
+                                                tempcdx=tempcdx))
         # DcfToPrice: DROPPED offline (no point-in-time DCF; weight 0 in the live vector)
         setv("marketCapRevQuants", tempmcapQuants)
         setv("tbVpRatio", sm.tbv_p_ratio(tempcdx, nq, rpy=_rpy))

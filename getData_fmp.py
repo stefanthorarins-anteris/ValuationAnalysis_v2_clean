@@ -439,9 +439,25 @@ def build_bometric_rows(tempfund, tempMetric_df, rpy, n=1, dicts=None):
         # never difference ACROSS a refused row, and because NaN propagates through the
         # subtraction, a per-ROW level guard automatically makes the diff two-sided (NaN
         # whenever EITHER period is inadmissible), which is the honest reading.
+        # BOUNDARY IMPUTATION runs AFTER the guard and is its mirror image (nan-policy.md
+        # ADDENDUM A, 2026-08-05).  A guard REFUSES rows whose value is perverse; a boundary
+        # FILLS rows whose value is undefined because an input was ADVERSE, with the metric's
+        # own analytic limit at that input's domain edge.  Declared per FORM for the same reason
+        # the guard is -- the merged `ratioOpCalcDicts` collapses a key that lives in two dicts,
+        # so a level test and a change test must each read their own entry.
+        # Order: guard first, then boundary -- and the boundary is now told WHICH ROWS THE GUARD
+        # ADMITTED rather than being trusted to leave them alone (review finding, 2026-08-05).
+        # BOTH mechanisms express refusal as NaN, so "the boundary only fills rows that are still
+        # NaN" does not protect a guard-refused row -- it is precisely what would REFILL one. The
+        # ordering the old comment here relied on caused the problem it claimed to prevent. Not
+        # live today (no criterion declares both keys), closed before the first one does.
         def _guarded(values, spec):
             g = spec.get('Guard')
-            return values if g is None else cm.apply_domain_guard(tempfund, values, g)
+            adm = None if g is None else cm.STAGE1_DOMAIN_GUARDS[g](tempfund)
+            out = values if g is None else cm.apply_domain_guard(tempfund, values, g)
+            b = spec.get('Boundary')
+            return out if b is None else cm.apply_boundary_imputation(tempfund, out, b,
+                                                                     admissible=adm)
 
         if key in BoMetric_base_dict:
             tempMetric_df[restr] = _guarded(tf, BoMetric_base_dict[key])

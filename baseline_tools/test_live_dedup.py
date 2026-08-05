@@ -3,7 +3,18 @@ Live-path issuer-dedup self-checks.
 
 The deployed top-20 (postBo -> postBoScoreRanking -> head(N) emission) must contain
 DISTINCT issuers: a dual-listing / share-class (e.g. TFPM / TFPM.TO) must collapse to
-ONE line, keeping the highest-RANKED line, matching the backtest harness's dedup.
+ONE line, matching the backtest harness's dedup.
+
+UPDATED 2026-08-05 -- THE SURVIVOR RULE CHANGED, DELIBERATELY.  These checks used to
+assert "keep the highest-RANKED line", and two of them asserted it directly.  That rule
+is RETIRED: canonicity now overrides rank (carveOut.dedup_ranked), because the score of a
+notes / preferred / depositary line is the ISSUER's fundamentals attached to an instrument
+the CEO is not buying, and because 10 of 19 duplicate groups differ on score with
+IDENTICAL price and IDENTICAL fundamentals -- the difference is history depth, so the old
+rank rule was systematically selecting on noise.  The issuer still occupies its BEST RANK
+POSITION; only which ticker represents it changed.  Nothing here was weakened to make the
+suite green: the checks now assert the new rule, plus the property that survives both
+(one line per issuer, order preserving).
 
 postBoScoreRanking itself is not cleanly offline-runnable (its DcfToPrice/CycleHeat-beta
 paths need the network -- the reason stage2_pit re-implements the metric loop), so we
@@ -48,47 +59,67 @@ NAMES = {"TFPM": "Triple Flag Precious Metals Corp.",
          "AAA": "Alpha Alpha Inc.", "CRUS": "Cirrus Logic, Inc."}
 
 
-def test_edge_c_shares_plus_nearequal():
-    """Edge C: EXACT shares + near-equal fundamentals -> collapse, no names needed."""
+def test_K2_marketcap_groups_the_pair_with_no_names():
+    """The pair collapses with NO names at all.  It used to be edge C (exact shares +
+    near-equal fundamentals, 5% tolerance) that did this; that edge is RETIRED and K2
+    (exact marketCap, an issuer-level number identical across an issuer's lines) does it
+    with no tolerance."""
     cdx = _cdx([AAA, TFPM_US, TFPM_TO, CRUS])
     ranked = ["AAA", "TFPM", "TFPM.TO", "CRUS"]     # TFPM ranked ABOVE TFPM.TO
     kept, dropped = co.dedup_ranked(ranked, cdx, names={})
     assert kept == ["AAA", "TFPM", "CRUS"], kept
     assert dropped == [("TFPM.TO", "TFPM")], dropped
-    print(f"  [ok] edge C (no names): {ranked} -> {kept}  dropped {dropped}")
+    print(f"  [ok] K2 (no names): {ranked} -> {kept}  dropped {dropped}")
 
 
-def test_edge_b_name_plus_shares_fx():
-    """Edge B: same normalized name + EXACT shares collapses even when the CAD line's
-    revenue is FX-shifted well beyond edge C's tolerance."""
+def test_K3_name_plus_shares_when_every_issuer_level_field_is_FX_shifted():
+    """K3 (same normalised name + EXACT shares) collapses the pair even when EVERY
+    issuer-level field on the CAD line is FX-shifted, so neither K1 (statements) nor K2
+    (marketCap) can fire.  Share count is currency-invariant, which is why K3 is retained
+    from the old edge set rather than subsumed.
+
+    NOTE the survivor here is TFPM.TO, and that is the SPECIFIED ordering, not a defect:
+    both lines are commons (neither carries a canonicity marker), shares tie, so the key
+    falls to -marketCap -- and this FIXTURE deliberately inflates the CAD line's market cap
+    by 1.35x, which real data does not do (marketCap is an issuer-level number, identical
+    across an issuer's lines in 1,250 of 1,282 real groups).  The assertion is therefore on
+    ONE-LINE-PER-ISSUER, not on which of two commons wins a synthetic currency mismatch."""
     tfpm_to_fx = ("TFPM.TO", 195_000_000.0, 155_000_000.0, 3_000_000_000.0,
-                  206573855.0, 9.6e9)   # ~1.35x FX on rev/NI/TA -> edge C fails
+                  206573855.0, 9.6e9)   # ~1.35x FX on rev/NI/TA AND on marketCap
     cdx = _cdx([AAA, TFPM_US, tfpm_to_fx, CRUS])
     ranked = ["AAA", "TFPM", "TFPM.TO", "CRUS"]
-    # without names edge C fails on the FX gap -> NOT collapsed
+    # without names, nothing can group them: K1 and K2 both differ by the FX shift
     kept_noname, _ = co.dedup_ranked(ranked, cdx, names={})
-    assert "TFPM.TO" in kept_noname, kept_noname
-    # WITH names, edge B (name+shares) collapses it
+    assert "TFPM.TO" in kept_noname and "TFPM" in kept_noname, kept_noname
+    # WITH names, K3 (name + shares) collapses it to ONE line at the group's best rank
     kept, dropped = co.dedup_ranked(ranked, cdx, NAMES)
-    assert kept == ["AAA", "TFPM", "CRUS"], kept
-    assert dropped == [("TFPM.TO", "TFPM")], dropped
-    print(f"  [ok] edge B (name+shares, FX rev): collapses -> {kept}")
+    assert len(kept) == 3 and len([s for s in kept if s.startswith("TFPM")]) == 1, kept
+    assert kept.index([s for s in kept if s.startswith("TFPM")][0]) == 1, (
+        "the issuer must occupy its BEST rank position (index 1)", kept)
+    assert len(dropped) == 1 and set(dropped[0]) == {"TFPM", "TFPM.TO"}, dropped
+    print(f"  [ok] K3 (name+shares, everything FX-shifted): collapses -> {kept}")
 
 
-def test_keeps_highest_ranked_and_order():
-    """Survivor = the highest-RANKED line; order preserved; a distinct issuer that
-    was below the dup is promoted up as the slot frees."""
+def test_CANONICITY_overrides_rank_and_order_is_preserved():
+    """THE SURVIVOR RULE, restated for the new rule.  A distinct issuer below the dup is
+    still promoted as the slot frees, and the issuer still sits at its BEST rank
+    position -- but the surviving TICKER is now the canonical line REGARDLESS of which
+    line ranked higher.  Demonstrated on a preferred, which is the case that matters:
+    under the old rule a preferred that outranked its common SURVIVED."""
     cdx = _cdx([TFPM_US, TFPM_TO, AAA, CRUS])
     ranked = ["TFPM", "TFPM.TO", "AAA", "CRUS"]     # dup at ranks 1,2
     kept, dropped = co.dedup_ranked(ranked, cdx, NAMES)
     assert kept == ["TFPM", "AAA", "CRUS"], kept          # TFPM.TO removed, rest shift up
     assert dropped == [("TFPM.TO", "TFPM")], dropped
-    # if TFPM.TO were ranked ABOVE TFPM, IT would be the survivor (rank rule)
-    ranked2 = ["TFPM.TO", "TFPM", "AAA", "CRUS"]
-    kept2, dropped2 = co.dedup_ranked(ranked2, cdx, NAMES)
-    assert kept2 == ["TFPM.TO", "AAA", "CRUS"], kept2
-    assert dropped2 == [("TFPM", "TFPM.TO")], dropped2
-    print(f"  [ok] rank-based survivor + order-preserving promotion")
+
+    # A PREFERRED ranked ABOVE its common: the common still survives, at rank 1.
+    pfd = ("TFPM-PA", TFPM_US[1], TFPM_US[2], TFPM_US[3], TFPM_US[4], TFPM_US[5])
+    cdx2 = _cdx([pfd, TFPM_US, AAA, CRUS])
+    names2 = dict(NAMES, **{"TFPM-PA": "Triple Flag Precious Metals Corp."})
+    kept2, dropped2 = co.dedup_ranked(["TFPM-PA", "TFPM", "AAA", "CRUS"], cdx2, names2)
+    assert kept2 == ["TFPM", "AAA", "CRUS"], kept2
+    assert dropped2 == [("TFPM-PA", "TFPM")], dropped2
+    print("  [ok] canonicity overrides rank + order-preserving promotion")
 
 
 def test_no_dupes_is_noop():
@@ -139,9 +170,9 @@ def test_live_wiring_present():
 
 if __name__ == "__main__":
     print("Live-path issuer-dedup self-checks")
-    test_edge_c_shares_plus_nearequal()
-    test_edge_b_name_plus_shares_fx()
-    test_keeps_highest_ranked_and_order()
+    test_K2_marketcap_groups_the_pair_with_no_names()
+    test_K3_name_plus_shares_when_every_issuer_level_field_is_FX_shifted()
+    test_CANONICITY_overrides_rank_and_order_is_preserved()
     test_no_dupes_is_noop()
     test_live_wiring_present()
     print("ALL LIVE-DEDUP SELF-CHECKS PASSED")

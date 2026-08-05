@@ -162,58 +162,172 @@ def test_PEG_special_spec():
     assert special['Sign'] == +1, (
         'PEG is GUARDED, not inverted -- the criterion is 1/PEG - 1 > 0 and its direction is '
         'unchanged')
-    assert special['Guard'] == 'peg_growth_defined'
+    assert 'Guard' not in special, (
+        "PEG carries NO `Guard` key since it started being computed LOCALLY (2026-08-05), and "
+        "restoring one is a REGRESSION, not a tightening. A guard is a predicate on the raw "
+        "frame whose signature carries no `rpy`, so it would have to re-derive the filer's "
+        "frequency from the stamp while calcMetrics.peg_local receives it from the caller -- two "
+        "statements of one domain resolved from two different places. PEG's domain is intrinsic "
+        "to its formula and lives in peg_local, once. The criterion still REFUSES every state "
+        "the old guard refused, plus non-positive current trailing EPS.")
 
 
-def test_PEG_guard_is_TWO_SIDED_on_the_growth_leg():
-    """Both legs of `eps_t / eps_{t-1}` must be positive, not just the current period.
+def test_PEG_horizon_and_eps_basis_are_pinned():
+    """The two constants a silent edit would move without any error anywhere."""
+    assert cm.PEG_GROWTH_YEARS == 1, (
+        'the PEG growth horizon is ONE YEAR (trailing-year vs trailing-year). Changing it '
+        'changes the criterion pass rate -- measured 0.2149 at 1y, 0.1754 at 2y, 0.1491 at 3y '
+        'on the 61,832 newest-8 rows of the 2026-07-17 CORRECTED panel -- so it is a decision, '
+        'not a tuning knob.')
+    assert cm._PEG_EPS_FIELD == 'netIncomePerShare', (
+        "PEG's EPS basis is the `netIncomePerShare` PROXY, not `eps`. `eps` / `epsdiluted` are "
+        "captured at ingest but absent from every saved panel; they populate on the next full "
+        "fetch. Switching MUST be a deliberate edit -- see calcMetrics._PEG_EPS_FIELD -- never "
+        "an `eps if present else proxy` fallback, which would change a scored criterion's basis "
+        "silently on the first fetch that carried the column.")
 
-    The vendor's growth leg is a SEQUENTIAL quarter-over-quarter ratio, so a sign change in
-    EITHER period makes it not a growth rate.  Asserted directly on the predicate, over the
-    four sign states, because a one-sided guard passes every other test in this file.
+
+def test_PEG_does_not_read_the_vendor_field_at_all():
+    """The whole point of computing it locally: the vendor column must be inert.
+
+    Asserted by CORRUPTING it.  If `priceEarningsToGrowthRatio` still fed the criterion, a value
+    inside (0,1) on every row would make the criterion pass and a garbage value would move it.
     """
-    g = cm.STAGE1_DOMAIN_GUARDS['peg_growth_defined']
-    #  NEWEST-FIRST: row 0 is the current period, row 1 is one period OLDER.
-    def admissible(eps_now, eps_prev):
-        df = pd.DataFrame({'netIncomePerShare': [eps_now, eps_prev, eps_prev]})
-        return bool(g(df).fillna(False).iloc[0])
-
-    assert admissible(1.0, 0.8) is True, 'both positive -> PEG is defined'
-    assert admissible(-1.0, 0.8) is False, 'eps_t < 0 -> PE leg negative -> refuse'
-    assert admissible(-1.0, -0.8) is False, 'both negative -> refuse'
-    assert admissible(1.0, -0.8) is False, (
-        'TURNAROUND (eps_t > 0, eps_prev < 0) must be REFUSED -- the growth ratio flips sign, '
-        'so this is undefined, not bad. A ONE-SIDED eps_t guard would wrongly admit it.')
-    assert admissible(1.0, 0.0) is False, 'a zero base is division by zero'
-    assert admissible(0.0, 1.0) is False
-
-    #  the OLDEST row has no predecessor -> inadmissible, never silently admitted
-    df = pd.DataFrame({'netIncomePerShare': [1.0, 1.0]})
-    assert bool(g(df).fillna(False).iloc[-1]) is False
+    growing = [0.5 * (0.95 ** i) for i in range(_PEG_ROWS)]
+    ref = _score(_stage1(_frame(_PEG_ROWS, netIncomePerShare=growing)), 'PEG', 'special', 'PEG')
+    for vendor in (0.5, -3.0, np.nan, 1e9):
+        alt = _stage1(_frame(_PEG_ROWS, netIncomePerShare=growing,
+                             priceEarningsToGrowthRatio=vendor))
+        assert _score(alt, 'PEG', 'special', 'PEG') == ref, (
+            'the vendor PEG field (=%r) still influences the criterion' % vendor)
 
 
-def test_PEG_criterion_fails_on_every_undefined_growth_state():
-    """End to end through the real Stage-1 construction and the real scorer.
+def test_PEG_domain_is_a_POSITIVE_TRAILING_EPS_and_the_crossing_is_DEFERRED():
+    """The four sign states, asserted directly on `peg_local`.
 
-    A raw PEG inside (0,1) is supplied throughout, so every case isolates the GUARD rather than
-    the 0 < PEG < 1 threshold.  The frames are built so that EVERY row of the scoring window
-    sits in the state under test -- an ALTERNATING eps series puts each row in one of the two
-    MIXED states (eps_t<0/eps_prev>0 and the eps_t>0/eps_prev<0 turnaround), which is the only
-    way to hold a sign-CHANGE condition on every row at once.
+    NEWEST-FIRST frames.  The legs are TRAILING-YEAR sums, so each state is built by holding a
+    whole year of EPS at one sign -- the single-period frames the old guard used cannot express a
+    TTM condition.
+
+    THE CROSSING STATE IS IN DOMAIN BUT NOT YET ANSWERABLE.  A growth rate computed from a
+    NEGATIVE base is not a growth rate, so the row cannot take `|E_prev|` growth (that is the
+    2026-08-05 nerf) and it cannot take a build-time constant either -- it takes the POOL's median
+    growth, which `calc_special` cannot see.  So it comes out NaN here and is filled by
+    `calcMetrics.substitute_peg_crossing`.  Both halves are asserted, because "NaN at build" alone
+    is indistinguishable from the pre-fix refusal.
     """
-    alternating = [(-0.5 if i % 2 == 0 else 0.8) for i in range(_ROWS)]
-    for series, label in ((alternating, 'both MIXED states (deterioration + TURNAROUND)'),
-                          ([-0.5] * _ROWS, 'both periods negative')):
-        bm = _stage1(_frame(netIncomePerShare=series, priceEarningsToGrowthRatio=0.5))
-        assert np.isnan(bm['PEG']).all(), 'PEG admitted an undefined growth state: %s' % label
+    def peg(now, prev, crossing_growth=None):
+        #  4 rows at `now` (this trailing year) then 8 at `prev`, so the one-year lag lands.
+        eps = [now] * 4 + [prev] * 8
+        df = pd.DataFrame({'netIncomePerShare': eps, 'price': [10.0] * len(eps)})
+        return cm.peg_local(df, rpy=4, crossing_growth=crossing_growth)[0].iloc[0]
+
+    assert np.isfinite(peg(1.0, 0.8)), 'both trailing years positive -> an ordinary growth rate'
+    assert not np.isfinite(peg(-1.0, 0.8)), 'no positive earnings -> no P/E -> refuse'
+    assert not np.isfinite(peg(-1.0, -0.8)), 'still loss-making -> refuse'
+    assert not np.isfinite(peg(1.0, 0.0)), 'a zero prior base is division by zero'
+
+    #  THE TURNAROUND: deferred at build, answerable once the pool supplies a median.
+    assert not np.isfinite(peg(1.0, -0.8)), (
+        'the crossing row must NOT be answered at build time -- under |E_prev| growth it would '
+        'saturate near +100%/yr and, worse, grow with the DEPTH of the prior loss, which is the '
+        'over-reward the CEO ruled against')
+    assert np.isfinite(peg(1.0, -0.8, crossing_growth=25.0)), (
+        'the crossing row must become answerable once the POOL median is supplied -- otherwise '
+        'this is the pre-fix refusal, and the 5,089 recovering rows stay failed')
+    #  and the answer no longer depends on how bad the prior year was
+    assert peg(1.0, -0.8, crossing_growth=25.0) == pytest.approx(
+        peg(1.0, -8.0, crossing_growth=25.0))
+
+    #  the OLDEST rows have no prior trailing year -> inadmissible, never silently admitted
+    df = pd.DataFrame({'netIncomePerShare': [1.0] * 5, 'price': [10.0] * 5})
+    assert not np.isfinite(cm.peg_local(df, rpy=4)[0].iloc[-1])
+
+
+def test_PEG_criterion_end_to_end_through_the_real_scorer():
+    """End to end through the real Stage-1 construction and the real scorer."""
+    #  REFUSED: no positive trailing EPS -> no P/E -> the criterion cannot be scored.
+    for series, label in (([-0.5] * _PEG_ROWS, 'loss-making throughout'),
+                          ([(-0.5 if i % 2 else -0.6) for i in range(_PEG_ROWS)],
+                           'loss-making, varying')):
+        bm = _stage1(_frame(_PEG_ROWS, netIncomePerShare=series))
+        assert np.isnan(bm['PEG']).all(), 'PEG admitted a non-positive trailing EPS: %s' % label
         assert _score(bm, 'PEG', 'special', 'PEG') == 0.0, label
 
-    #  and the DEFINED state still scores normally -- the guard must not just fail everything
-    ok = _stage1(_frame(netIncomePerShare=0.5, priceEarningsToGrowthRatio=0.5))
+    #  FLAT earnings -> zero growth -> PEG is division by zero -> NaN -> fails.  A company with
+    #  no growth failing a growth-adjusted cheapness test is the right answer.
+    flat = _stage1(_frame(_PEG_ROWS, netIncomePerShare=0.5))
+    assert np.isnan(flat['PEG']).all()
+    assert _score(flat, 'PEG', 'special', 'PEG') == 0.0
+
+    #  CHEAP GROWER: 0.95^-4 = +21.6%/yr, PE = 10/1.855 = 5.39 -> PEG 0.25 -> PASSES on every
+    #  row of the window, so the criterion earns its full weight.
+    growing = [0.5 * (0.95 ** i) for i in range(_PEG_ROWS)]
+    ok = _stage1(_frame(_PEG_ROWS, netIncomePerShare=growing))
     assert _score(ok, 'PEG', 'special', 'PEG') == _weight('special', 'PEG')
-    #  PEG outside (0,1) still fails on the threshold, which this fix does not touch
-    rich = _stage1(_frame(netIncomePerShare=0.5, priceEarningsToGrowthRatio=2.5))
+
+    #  EXPENSIVE GROWER: same growth, 10x the price -> PEG 2.5 -> fails on the (0,1) threshold,
+    #  which this change does not touch.
+    rich = _stage1(_frame(_PEG_ROWS, netIncomePerShare=growing, price=100.0))
     assert _score(rich, 'PEG', 'special', 'PEG') == 0.0
+
+    #  SHRINKING earnings -> negative growth -> PEG < 0 -> fails.
+    shrinking = [0.5 * (1.05 ** i) for i in range(_PEG_ROWS)]
+    down = _stage1(_frame(_PEG_ROWS, netIncomePerShare=shrinking))
+    assert _score(down, 'PEG', 'special', 'PEG') == 0.0
+
+
+def test_PEG_turnaround_row_is_MEASURED_after_the_pool_substitution():
+    """End to end across BOTH stages: the real Stage-1 construction, then the real
+    cross-sectional substitution.
+
+    Only ONE row of a single sign-crossing can be the turnaround (the trailing-year legs straddle
+    the crossing for the rows around it), so this is asserted per ROW rather than through the
+    8-row window mean.  The pool needs GROWERS as well as the crossing name, or there is no
+    in-domain row for a median and the substitution correctly refuses -- which is the honest
+    behaviour and is asserted separately below.
+    """
+    eps_turn = [0.5] * 4 + [-0.5] * (_PEG_ROWS - 4)     # newest trailing year +, prior year -
+    eps_grow = [0.5 * (0.95 ** i) for i in range(_PEG_ROWS)]
+
+    turn_fund = _frame(_PEG_ROWS, netIncomePerShare=eps_turn)
+    turn_fund['source'] = 'TURN'
+    grow_fund = _frame(_PEG_ROWS, netIncomePerShare=eps_grow)
+    grow_fund['source'] = 'GROW'
+
+    bm = pd.concat([_stage1(turn_fund).assign(source='TURN'),
+                    _stage1(grow_fund).assign(source='GROW')], ignore_index=True)
+    cdx = pd.concat([turn_fund, grow_fund], ignore_index=True)
+    cdx[rp.FREQ_COLUMN] = rp.QUARTERLY
+
+    raw = pd.to_numeric(bm.loc[bm['source'] == 'TURN', 'PEG'], errors='coerce').iloc[0]
+    assert np.isnan(raw), 'the crossing row must be NaN out of the build (see peg_local)'
+
+    out, stats = cm.substitute_peg_crossing(bm, cdx, verbose=False)
+    assert np.isfinite(stats['median_growth']) and stats['n_filled'] >= 1
+    v = pd.to_numeric(out.loc[out['source'] == 'TURN', 'PEG'], errors='coerce').iloc[0]
+    assert np.isfinite(v), (
+        'the turnaround row is STILL not computable after the substitution -- the point of the '
+        'whole two-stage design is that these rows become MEASURABLE rather than auto-failed')
+
+    #  NO POOL, NO SUBSTITUTION: with only the crossing name there is no in-domain row, so the
+    #  median does not exist and the row stays refused rather than being filled with an invention.
+    only_turn = cdx[cdx['source'] == 'TURN'].reset_index(drop=True)
+    out2, stats2 = cm.substitute_peg_crossing(
+        bm[bm['source'] == 'TURN'].reset_index(drop=True), only_turn, verbose=False)
+    assert not np.isfinite(stats2['median_growth'])
+    assert np.isnan(pd.to_numeric(out2['PEG'], errors='coerce').iloc[0])
+
+
+def test_PEG_local_matches_its_own_arithmetic():
+    """One hand-computed value, so the formula is pinned and not merely self-consistent."""
+    eps = [1.0] * 4 + [0.5] * 8                 # TTM now 4.0, prior year 2.0 -> +100%/yr
+    df = pd.DataFrame({'netIncomePerShare': eps, 'price': [40.0] * len(eps)})
+    peg, now, prev = cm.peg_local(df, rpy=4)
+    assert now.iloc[0] == pytest.approx(4.0)
+    assert prev.iloc[0] == pytest.approx(2.0)
+    #  PE = 40/4 = 10 ; g = 100*(4-2)/|2| / 1yr = 100 ; PEG = 0.10
+    assert peg.iloc[0] == pytest.approx(0.10)
 
 
 def test_eps_fields_are_captured_at_ingest():
@@ -285,6 +399,12 @@ def test_salesToInventory_stays_weight_zero():
 #  the guard + calc_diff) and the REAL scorer (`calcScore.calcByTier`), and the resulting
 #  pass/fail is asserted.  Nothing here re-implements a formula.
 _ROWS = 12          # > 8 + rpy so the head(8) window is full after the history trim
+#  PEG needs MORE history than every other criterion, because it is the only one with a
+#  TRAILING-YEAR leg AND a one-year growth lag on top of it: row 7 of the scoring window
+#  reads a trailing year ending `rpy` rows further back, i.e. 8 + rpy (trim) + 2*rpy - 1
+#  rows in total.  A separate constant rather than a bigger _ROWS, so the frames every
+#  other test hand-builds at length 12 are untouched.
+_PEG_ROWS = 16
 
 _BASE_ROW = {
     # every preReq field the Stage-1 dicts read, at a bland, healthy, in-domain value
@@ -312,16 +432,20 @@ _BASE_ROW = {
 }
 
 
-def _frame(**overrides):
-    """One synthetic source, NEWEST-FIRST, `_ROWS` identical rows with `overrides` applied.
+def _frame(_rows=None, **overrides):
+    """One synthetic source, NEWEST-FIRST, `_rows or _ROWS` identical rows with `overrides`.
 
     Identical rows are deliberate: it makes every DIFF exactly zero, so a diff criterion's
     pass/fail is decided purely by the guard (a zero diff is not > 0, i.e. a fail), and it keeps
     the LEVEL criteria unambiguous.  Where a diff's sign is what is under test the caller
     overrides a column with a per-row sequence.
+
+    `_rows` exists for PEG alone (`_PEG_ROWS`), whose trailing-year leg plus one-year growth lag
+    needs a longer frame than any other criterion.  Defaulting to `_ROWS` keeps every existing
+    caller -- and every hand-built 12-element override list -- bit-identical.
     """
     rows = []
-    for i in range(_ROWS):
+    for i in range(_rows or _ROWS):
         r = dict(_BASE_ROW)
         for k, v in overrides.items():
             r[k] = v[i] if isinstance(v, (list, tuple)) else v

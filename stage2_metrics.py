@@ -45,6 +45,7 @@ TWO PRECONDITIONS ON EVERY `tempcdx` PASSED IN HERE, both owned by the caller:
 import numpy as np
 import pandas as pd
 
+import nan_policy as npol
 import reporting_period as rp
 
 # =========================================================================== #
@@ -219,6 +220,70 @@ def window_quarters(key, scoring_nq):
     raise ValueError('stage2_metrics: %r declares unknown window basis %r' % (key, window))
 
 
+#  The window bases that make a metric a WINDOWED metric -- i.e. one whose value is a reduction
+#  over a run of fundamentals rows, and which therefore must take the coverage, gappiness and
+#  calendar-gap tests.  Kept as a tuple beside the bases themselves so `windowed_metric_keys`
+#  cannot fall out of step with the declarations.
+_WINDOWED_BASES = (WINDOW_SCORING, WINDOW_CYCLEHEAT_BASE, WINDOW_EPS_MEAN_BASE)
+
+
+def windowed_metric_keys(spec=None):
+    """Every registry key whose value is a reduction over a run of FUNDAMENTALS rows.
+
+    DERIVED FROM THE REGISTRY, NEVER HAND-LISTED, and that is the whole point of the function.
+    `test_nan_policy.test_every_windowed_metric_goes_through_the_ONE_seam` used to enumerate seven
+    functions by hand -- and OMITTED `eps_to_eps_mean`, which is exactly the metric that had
+    silently opted out of the seam.  A test named for enumerating *every* windowed metric that can
+    miss one is decorative; this makes the enumeration a property of the declarations instead.
+
+    `FREQ_NOT_A_TIME_SERIES` is excluded, and by a DERIVED rule rather than a carve-out list:
+    `DcfToPrice` is declared WINDOW_SCORING but its window runs over a DCF frame with its own
+    cadence, not over the fundamentals panel, so there are no period-end dates for a gap test to
+    read and no fundamentals rows for coverage to count.  Its registry row already says so.
+    """
+    spec = STAGE2_METRIC_SPEC if spec is None else spec
+    return tuple(k for k, (w, f, _why) in spec.items()
+                 if w in _WINDOWED_BASES and f != FREQ_NOT_A_TIME_SERIES)
+
+
+def structural_lag(key, rpy):
+    """Rows at the OLD end of `key`'s series that CANNOT be computable, by arithmetic.
+
+    Read from the registry, never guessed at a call site.  A YoY metric is
+    `pct_change(-rpy)`, so its oldest `rpy` rows have no counterpart; `priceGrowth` is
+    `pct_change(-1)`, so one row.  Everything else is 0.
+
+    `nan_policy.window_verdict` subtracts this from the COVERAGE DENOMINATOR when those rows
+    fall inside the window (which only happens on a source whose panel is shorter than
+    window+lag).  Without it, a short history would fail coverage for an ARITHMETIC reason --
+    the exact defect the "denominator = rows present" choice exists to avoid, reappearing one
+    level down.  Measured: 54 extra `revenueGrowth` sources and 28 extra
+    `freeCashFlowPerShareGrowth` sources would be flagged.
+    """
+    _window, freq, _why = _spec(key)
+    if freq == FREQ_YOY_WINDOW:
+        return int(rpy)
+    if freq == FREQ_PERIOD_SPAN:
+        return 1
+    return 0
+
+
+def _reduce(values, key, w, rpy, tempcdx=None, boundary_ok=None,
+            scoring_nq=npol.SCORING_WINDOW_NQ):
+    """The windowed reduction for `key`, WITH the two-tier NaN policy applied.
+
+    THE ONE SEAM.  Every windowed metric in this module goes through here, so coverage,
+    gappiness and boundary imputation are decided in exactly one implementation
+    (`nan_policy.window_verdict`) for the live scorer, the certified PIT reproduction and the
+    offline tools alike.  Before this existed each metric ended in a bare `.head(w).mean()`,
+    which is a reduction that cannot tell "measured over 15 of 16 quarters" from "measured
+    over 2 of 16".
+    """
+    return npol.window_verdict(values, w, key, rpy, tempcdx=tempcdx,
+                               structural_lag=structural_lag(key, rpy),
+                               scoring_nq=scoring_nq, boundary_ok=boundary_ok)
+
+
 def unregistered_metrics(keys):
     """Which of `keys` have NO registry entry.  Empty list = the vector is fully declared.
 
@@ -352,7 +417,18 @@ def postbm_metric(key, met, tempcdx, nq, rpy=rp.DEFAULT_ROWS_PER_YEAR):
     w = rp.scale_window(_wq, rpy)
     ff = flow_factor(key, rpy)          # x1.0 unless the registry says flow-over-stock
     if key == "grahamNumberToPrice":
-        return (tempcdx["grahamNumber"] / tempcdx["price"]).head(w).mean() * ff
+        #  THE ONE TYPE-D COLUMN THAT TAKES A BOUNDARY (nan_policy.BOUNDARY_LIMIT).  Fully
+        #  undefined over the window AND undefined because an input was ADVERSE -> the limit
+        #  0.0, which is this metric's floor.  Undefined because the INPUTS WERE MISSING ->
+        #  refused (NaN -> column median).  `grahamUndefinedReason` is what tells the two
+        #  apart, and it is 99.1% adverse / 0.9% gap on this panel -- which is the whole
+        #  empirical case for treating "undefined" and "missing" as different objects.
+        #  PARTIAL coverage keeps its own observations and is NOT collapsed (see
+        #  window_verdict): a name with 4 of 16 computable Graham quarters WAS profitable four
+        #  times.
+        return _reduce(tempcdx["grahamNumber"] / tempcdx["price"], key, w, rpy,
+                       tempcdx=tempcdx, boundary_ok=npol.graham_adverse_mask(tempcdx),
+                       scoring_nq=nq) * ff
     elif key == "returnOnEquity":
         # SIGN-INVERSION GUARD (2026-08-04).  ROE = netIncome/equity, so a NEGATIVE equity with
         # a NEGATIVE net income gives a POSITIVE, often LARGE, return on equity -- the same
@@ -391,15 +467,22 @@ def postbm_metric(key, met, tempcdx, nq, rpy=rp.DEFAULT_ROWS_PER_YEAR):
         # ABOVE the median on a number built from two negatives.
         _eq = pd.to_numeric(tempcdx["totalStockholdersEquity"], errors="coerce")
         _roe = pd.to_numeric(tempcdx[met], errors="coerce").where(_eq > _ROE_MIN_EQUITY)
-        return _roe.replace([np.inf, -np.inf], np.nan).head(w).mean() * ff
+        #  THE ADVERSE SELECTION THE COMMENT ABOVE FLAGS IS NOW PRICED, and by the general rule
+        #  rather than by a carve-out for this metric.  The masked rows are non-computable rows,
+        #  so `nan_policy`'s coverage test sees them: a name with FEWER THAN HALF its window
+        #  admissible is no longer scored on its selected good quarters -- it goes to the column
+        #  median.  MEASURED: 338 sources (4.37%) [universe], 0 [pool].  The "mildly adversely
+        #  selected" residual is therefore bounded at coverage >= 0.50 rather than unbounded.
+        return _reduce(_roe, key, w, rpy, tempcdx=tempcdx, scoring_nq=nq) * ff
     elif key == "bVpRatio":
-        return (1 / tempcdx[met]).head(w).mean() * ff
+        return _reduce(1 / tempcdx[met], key, w, rpy, tempcdx=tempcdx, scoring_nq=nq) * ff
     elif key == "revenueGrowth":
-        return tempcdx[met].pct_change(-int(rpy), fill_method=None).head(w).mean() * ff
+        return _reduce(tempcdx[met].pct_change(-int(rpy), fill_method=None),
+                       key, w, rpy, tempcdx=tempcdx, scoring_nq=nq) * ff
     elif key == "incomeQuality":
         return income_quality_accruals(tempcdx, nq, rpy=rpy) * ff
     else:
-        return tempcdx[met].head(w).mean() * ff
+        return _reduce(tempcdx[met], key, w, rpy, tempcdx=tempcdx, scoring_nq=nq) * ff
 
 
 # --------------------------------------------------------------------------- #
@@ -520,43 +603,60 @@ def income_quality_accruals(tempcdx, nq, rpy=rp.DEFAULT_ROWS_PER_YEAR):
     ta = pd.to_numeric(tempcdx["totalAssets"], errors="coerce")
     ta = ta.where(ta > _IQ_MIN_ASSETS)          # 0 / negative / NaN -> NaN, never a divisor
     val = (cfo - ni) / ta
-    return (val.replace([np.inf, -np.inf], np.nan)
-               .head(rp.scale_window(nq, rpy)).mean())
+    #  Reduced through the shared NaN-policy seam, so the TA-masked rows count against coverage
+    #  exactly as the ROE-masked ones do.  MEASURED: coverage < 0.50 on 6 sources (0.08%)
+    #  [universe] / 0 [pool]; >= 2 interior gaps on 47 (0.61%) / 0.
+    return _reduce(val, 'incomeQuality', rp.scale_window(nq, rpy), rpy,
+                   tempcdx=tempcdx, scoring_nq=nq)
 
 
 # --------------------------------------------------------------------------- #
 #  postNewRankingDict metrics                                                 #
 # --------------------------------------------------------------------------- #
-def free_cash_flow_yield(tempfcf, tempmcap, nq, rpy=rp.DEFAULT_ROWS_PER_YEAR):
+def free_cash_flow_yield(tempfcf, tempmcap, nq, rpy=rp.DEFAULT_ROWS_PER_YEAR,
+                         tempcdx=None):
     """FCF / marketCap, head(nq) mean (call site: postBoRank._compute_ticker_metrics).
 
     FLOW/STOCK: a semi-annual row's FCF is a 6-month flow over a point-in-time market
     cap, so the per-row yield reads ~2x a quarterly peer's.  The value is z-scored
     downstream, so the correction only needs to fix the SEMI-ANNUAL/QUARTERLY ratio and is
     applied on a common per-quarter basis (x1 quarterly = no-op).  Ruling applied
-    2026-07-25; the previous note here said this was deferred."""
-    return ((tempfcf / tempmcap).head(rp.scale_window(nq, rpy)).mean()
-            * rp.per_quarter_factor(rpy))
+    2026-07-25; the previous note here said this was deferred.
+
+    `tempcdx` is OPTIONAL and ADDITIVE (2026-08-05).  It is the only thing this function
+    needs for the NAME-level calendar-gap test, and it is optional purely so the five existing
+    call sites keep working unchanged; the two SCORING paths (postBoRank and
+    baseline_tools/stage2_pit) DO pass it, and a test pins that they do.  Coverage and
+    interior-gap tests apply either way -- they read the series, not the dates."""
+    return _reduce(tempfcf / tempmcap, 'freeCashFlowYield', rp.scale_window(nq, rpy), rpy,
+                   tempcdx=tempcdx, scoring_nq=nq) * rp.per_quarter_factor(rpy)
 
 
 def free_cash_flow_per_share_growth(tempfcf, tempshares, nq,
-                                    rpy=rp.DEFAULT_ROWS_PER_YEAR):
+                                    rpy=rp.DEFAULT_ROWS_PER_YEAR, tempcdx=None):
     """YoY growth of FCF-per-share over `rpy` rows, head(nq) mean
     (call site: postBoRank._compute_ticker_metrics).
 
     `rpy` rows back is one YEAR for either frequency; the hard-coded 4 was two years for
-    a semi-annual filer."""
+    a semi-annual filer.  `tempcdx` -- see free_cash_flow_yield.
+
+    THE STRUCTURAL LAG MATTERS MOST HERE.  `pct_change(-rpy)` leaves the oldest `rpy` rows NaN
+    by arithmetic, and `structural_lag` takes them out of the coverage denominator so a short
+    panel is not failed for a gap it cannot have.  MEASURED: coverage < 0.50 on 143 sources
+    (1.85%) [universe] / 0 [pool] with the correction, 171 without it."""
     fcfps = tempfcf / tempshares
-    return (fcfps.pct_change(-int(rpy), fill_method=None)
-            .head(rp.scale_window(nq, rpy)).mean())
+    return _reduce(fcfps.pct_change(-int(rpy), fill_method=None),
+                   'freeCashFlowPerShareGrowth', rp.scale_window(nq, rpy), rpy,
+                   tempcdx=tempcdx, scoring_nq=nq)
 
 
 def tbv_p_ratio(tempcdx, nq, rpy=rp.DEFAULT_ROWS_PER_YEAR):
     """Tangible book value per share / price, head(nq) mean
     (call site: postBoRank._compute_ticker_metrics).
     Both inputs are point-in-time STOCKS, so only the averaging window scales."""
-    return (tempcdx["tangibleBookValuePerShare"] / tempcdx["price"]
-            ).head(rp.scale_window(nq, rpy)).mean()
+    return _reduce(tempcdx["tangibleBookValuePerShare"] / tempcdx["price"],
+                   'tbVpRatio', rp.scale_window(nq, rpy), rpy,
+                   tempcdx=tempcdx, scoring_nq=nq)
 
 
 # Minimum |mean EPS| for the EPStoEPSmean denominator, as a FRACTION of the mean
@@ -636,9 +736,44 @@ def eps_to_eps_mean(tempcdx, nq=EPS_MEAN_BASE_NQ, rpy=rp.DEFAULT_ROWS_PER_YEAR):
     i.e. a real, pool-dependent, non-neutral score for "not computable".  NaN is
     the honest answer and normalizeAndDropNA maps it to z = 0 = genuinely neutral,
     which is the Stage-2 convention for missing data everywhere else.
+
+    NO BOUNDARY IMPUTATION HERE -- THIS COLUMN IS *REFUSED*, DELIBERATELY (2026-08-05).
+    nan-policy.md ADDENDUM A2 assigns this metric a boundary of -1.0.  That is wrong twice
+    over, and both reasons are recorded in `nan_policy.REFUSED_NOT_IMPUTED['EPStoEPSmean']`:
+      * THE SPEC'S LIMIT IS THE LIMIT OF THE SIGN-REVERSED FORMULA.  It writes
+        "(EPS - mean)/abs(mean)"; the shipped formula below is (mean - recent)/|mean|.
+      * TAKE THE ACTUAL LIMIT AND IT IS NOT A FLOOR.  Driving the non-positive recent EPS to
+        0+ sends the EWMA term to 0, leaving epsmean/|epsmean| = +1 whenever epsmean > 0 --
+        and +1.0 is this metric's OBSERVED MAXIMUM, i.e. the most-REWARDED value (w = +0.0516).
+        Measured over the 3,888 sources that hit the positivity gate: the limit is not even a
+        constant (min -275.79, median -1.00, max +1.00) and is positive for 25.8% of them.
+      ADDENDUM A1 admits a boundary only where the limit is FINITE *and* the metric's WORST
+      admissible value, so its own escape clause fires: REFUSE.
+    AND REFUSING IS ALSO WHAT THE CEO'S INSTRUCTION WANTS, which is the part worth reading
+    twice: this NaN was never a punishment.  The positivity gate exists to stop a LOSS-MAKER
+    collecting the maximum mean-reversion reward, so imputing at any boundary would either
+    hand it that reward (+1) or invent a fresh punishment (-1) -- and "I don't think we should
+    punish them again for it" rules out the second.  The column median is the neutral answer
+    and it is what a NaN already gets.
     """
     eps = tempcdx["netIncome"] / tempcdx["weightedAverageShsOut"]
     eps = eps.replace([np.inf, -np.inf], np.nan)
+    #  POLICY GATE (added 2026-08-05 -- REVIEW FINDING).  This function did NOT go through the
+    #  shared seam, so it took NO calendar-gap test at all: on a frame with two filing stoppages
+    #  `RoA` and `CycleHeat` came back NaN and this metric came back with a real value.  Three
+    #  places asserted the property the code lacked (`_reduce`'s "THE ONE SEAM" docstring,
+    #  `nan_policy.SCORING_WINDOW_NQ`'s "falls back to this", and a test that enumerated seven
+    #  functions by hand and omitted this one).  The enumeration is now DERIVED from the registry
+    #  (`windowed_metric_keys`) so it cannot omit a metric again.
+    #  Only the NaN-ness of `_gate` is used; its value (the mean EPS over the baseline window) is
+    #  not the metric.  This column is TYPE-D, so `window_verdict` deliberately does NOT apply the
+    #  coverage or interior-gap tests to it -- a partial Graham/EPS history keeps its own
+    #  observations (ADDENDUM A's closing clause).  What the gate adds here is the NAME-level
+    #  calendar-gap refusal, which is not Type-D-conditional: a company that stopped filing twice
+    #  has no trustworthy window for ANY windowed metric.
+    _gate = _reduce(eps, 'EPStoEPSmean', rp.scale_window(nq, rpy), rpy, tempcdx=tempcdx)
+    if pd.isna(_gate):
+        return np.nan
     # BASELINE TRUNCATION.  tempcdx is NEWEST-FIRST (postBoRank._sort_cdx_newest_first, and
     # the offline PIT loop sorts the same way), so head() keeps the MOST RECENT rows -- the
     # same end of the series the EWMA below reads via iloc[0:rpy].  Truncating by ROW (no
@@ -690,8 +825,9 @@ def price_growth(tempcdx, nq, rpy=rp.DEFAULT_ROWS_PER_YEAR):
         # change is a 6-month move vs a quarterly name's 3-month one -- a LEVEL
         # difference the window cannot fix; priceGrowth is w=0.000 so nothing rests on
         # it, but it is noted with freeCashFlowYield in the report.)
-        return (tempcdx["price"].pct_change(-1, fill_method=None)
-                .head(rp.scale_window(nq, rpy)).mean())
+        return _reduce(tempcdx["price"].pct_change(-1, fill_method=None),
+                       'priceGrowth', rp.scale_window(nq, rpy), rpy,
+                       tempcdx=tempcdx, scoring_nq=nq)
     return np.nan
 
 
@@ -775,29 +911,64 @@ def piotroski(tempcdx, rpy=rp.DEFAULT_ROWS_PER_YEAR):
     semi-annual filer has 2 rows per year and a fixed lag of 4 compared against TWO
     years ago.  The lag is now `rpy` (reporting_period), so a semi-annual name compares
     H1 against the PRIOR YEAR'S H1 and a quarterly name is unchanged at 4.
+
+    A NaN COMPONENT NOW MAKES THE COMPOSITE NaN (nan-policy.md D-9 / section 4a, 2026-08-05).
+    IT DID NOT BEFORE, AND THAT WAS THE DEFECT: `NaN > x` is False, so a missing input scored
+    the point 0 -- INDISTINGUISHABLE FROM FAILING THE TEST.  A company was therefore marked
+    down for a gap in the provider's data, which is the one thing this project's standing
+    premise forbids ("missing data must never reward by default" cuts both ways: it must not
+    silently PUNISH either, because a punishment for absence is not a measurement of the
+    company).
+    WHY NaN AND NOT "the fraction of the computable tests passed": that form would REWARD a
+    company for having fewer tests apply to it.  Making the COMPOSITE NaN reaches the honest
+    place instead -- the column becomes unavailable, `normalizeAndDropNA` imputes it at the
+    column MEDIAN, and nothing is either credited or docked.  The precedent is already in this
+    module and was built this way on purpose: `share_count_change` and `long_term_debt_change`.
+    MEASURED [panel]: 117 sources (1.51%) [universe], 33 of the 4,287 general-carved names
+    (0.77%), **0 of the 100 deployed pool names** -- and every one of them arrives via
+    `netCashProvidedByOperatingActivities` (p2 and p4).
+    AND DO NOT RECORD D-9 AS CLOSED BY THIS.  The NaN channel is the SMALL half.  A STRUCTURAL
+    ZERO is not a NaN and no NaN rule can reach it: `longTermDebt == 0` in both periods makes
+    p5 ("leverage fell") evaluate `0 < 0` = False and FAIL, forever, on 476 sources (6.17%);
+    `revenue == 0` does the same to p9 on 380, and `grossProfitMargin == 0` to p8 on 380.  That
+    is ~6.5x this fix, it is the provider-zero conflation (nan-policy.md section 5), and it
+    needs a provider-level presence flag at ingest -- not a metric change.
     """
     try:
         lag = int(rpy)
         if len(tempcdx) >= lag + 1:
             curr = tempcdx.iloc[0]     # Most recent quarter
             prev = tempcdx.iloc[lag]   # Same quarter one year earlier (4 rows older)
-            ta_curr = curr["totalAssets"]
-            ta_prev = prev["totalAssets"]
+            #  Every input the nine components read, from BOTH rows.  `_finite` returns None
+            #  for absent / non-numeric / non-finite -- the same helper the two extracted
+            #  components use, so "what counts as present" is stated once for all three.
+            need_curr = ('totalAssets', 'netIncome',
+                         'netCashProvidedByOperatingActivities', 'longTermDebt',
+                         'currentRatio', 'weightedAverageShsOut', 'grossProfitMargin',
+                         'revenue')
+            need_prev = ('totalAssets', 'netIncome', 'longTermDebt', 'currentRatio',
+                         'weightedAverageShsOut', 'grossProfitMargin', 'revenue')
+            c = {k: _finite(curr[k]) for k in need_curr}
+            p = {k: _finite(prev[k]) for k in need_prev}
+            if any(v is None for v in c.values()) or any(v is None for v in p.values()):
+                return np.nan
+            ta_curr = c["totalAssets"]
+            ta_prev = p["totalAssets"]
             if ta_curr > 0 and ta_prev > 0:
-                p1 = 1 if curr["netIncome"] / ta_curr > 0 else 0
-                p2 = 1 if curr["netCashProvidedByOperatingActivities"] > 0 else 0
-                roa_curr = curr["netIncome"] / ta_curr
-                roa_prev = prev["netIncome"] / ta_prev
+                p1 = 1 if c["netIncome"] / ta_curr > 0 else 0
+                p2 = 1 if c["netCashProvidedByOperatingActivities"] > 0 else 0
+                roa_curr = c["netIncome"] / ta_curr
+                roa_prev = p["netIncome"] / ta_prev
                 p3 = 1 if roa_curr > roa_prev else 0
-                p4 = 1 if curr["netCashProvidedByOperatingActivities"] > curr["netIncome"] else 0
-                ltd_ratio_curr = curr["longTermDebt"] / ta_curr
-                ltd_ratio_prev = prev["longTermDebt"] / ta_prev
+                p4 = 1 if c["netCashProvidedByOperatingActivities"] > c["netIncome"] else 0
+                ltd_ratio_curr = c["longTermDebt"] / ta_curr
+                ltd_ratio_prev = p["longTermDebt"] / ta_prev
                 p5 = 1 if ltd_ratio_curr < ltd_ratio_prev else 0
-                p6 = 1 if curr["currentRatio"] > prev["currentRatio"] else 0
-                p7 = 1 if curr["weightedAverageShsOut"] <= prev["weightedAverageShsOut"] else 0
-                p8 = 1 if curr["grossProfitMargin"] > prev["grossProfitMargin"] else 0
-                at_curr = curr["revenue"] / ta_curr
-                at_prev = prev["revenue"] / ta_prev
+                p6 = 1 if c["currentRatio"] > p["currentRatio"] else 0
+                p7 = 1 if c["weightedAverageShsOut"] <= p["weightedAverageShsOut"] else 0
+                p8 = 1 if c["grossProfitMargin"] > p["grossProfitMargin"] else 0
+                at_curr = c["revenue"] / ta_curr
+                at_prev = p["revenue"] / ta_prev
                 p9 = 1 if at_curr > at_prev else 0
                 return p1 + p2 + p3 + p4 + p5 + p6 + p7 + p8 + p9
         return np.nan
@@ -1079,8 +1250,23 @@ def cycleheat(tempcdx, nq=CYCLEHEAT_BASE_NQ, rpy=rp.DEFAULT_ROWS_PER_YEAR):
     that a caller omitting `rpy` gets the quarterly window; callers MUST pass it (all three do).
     """
     try:
-        eps_clean = prepare_eps_series(tempcdx)
         w = rp.scale_window(nq, rpy)
+        #  POLICY GATE (2026-08-05).  CycleHeat is Type U, so coverage and interior gappiness
+        #  apply to it like every other windowed metric -- but they must be measured on the
+        #  ROW series, before `prepare_eps_series` drops the non-computable rows, because a
+        #  dropna'd series has no gaps left to find.  Only the NaN-ness of `_gate` is used; its
+        #  value (the mean EPS) is not the metric.  MEASURED: coverage < 0.50 on 0 sources,
+        #  >= 2 interior gaps on 15 sources (0.19%) [universe] / 0 [pool].
+        #  NOTE the two windows are not the same object and that is pre-existing: this gate is
+        #  row-based (head(w) of the panel), while prepare_eps_series takes the most recent w
+        #  OBSERVATIONS after its own dropna/dedup.  The gate is deliberately the stricter,
+        #  row-based reading -- it is the one that can see a gap.
+        _gate = _reduce((pd.to_numeric(tempcdx["netIncome"], errors="coerce")
+                         / pd.to_numeric(tempcdx["weightedAverageShsOut"], errors="coerce")),
+                        'CycleHeat', w, rpy, tempcdx=tempcdx)
+        if pd.isna(_gate):
+            return np.nan
+        eps_clean = prepare_eps_series(tempcdx)
         if w and len(eps_clean) > w:
             eps_clean = eps_clean.tail(w)          # most-recent w observations
         if len(eps_clean) >= 2:

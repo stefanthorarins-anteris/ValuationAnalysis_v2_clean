@@ -232,9 +232,9 @@ def _pool_raw_fast(sources, cdx_df, nq=16):
         for k in _CI_BM_KEYS:
             r[k] = sm.postbm_metric(k, postBm[k]['eqMet'], t, nq, rpy=_rpy)
         r['freeCashFlowYield'] = sm.free_cash_flow_yield(t.freeCashFlow, t.marketCap,
-                                                        nq, rpy=_rpy)
+                                                        nq, rpy=_rpy, tempcdx=t)
         r['freeCashFlowPerShareGrowth'] = sm.free_cash_flow_per_share_growth(
-            t.freeCashFlow, t.weightedAverageShsOut, nq, rpy=_rpy)
+            t.freeCashFlow, t.weightedAverageShsOut, nq, rpy=_rpy, tempcdx=t)
         r['tbVpRatio'] = sm.tbv_p_ratio(t, nq, rpy=_rpy)
         r['Altman-Z'] = sm.altman_z(t, rpy=_rpy)
         r['Piotroski'] = sm.piotroski(t, rpy=_rpy)

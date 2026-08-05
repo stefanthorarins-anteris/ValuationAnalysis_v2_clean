@@ -523,6 +523,13 @@ def main():
             # therefore runs ~2x loose.  Nothing announced it.  One loud banner does.
             utils.check_panel_basis(datandmetricdic,
                                     configdic['loadBoMetricfname'])
+            # AND THE BoMetric HALF OF THE SAME HAZARD (2026-08-05).  The check above measures a
+            # cdx-level ratio; the NaN-policy change altered two Stage-1 CRITERION COLUMNS
+            # instead, and renamed nothing -- so calcScore's column-exact schema gate passes a
+            # stale panel silently.  See utils.check_bometric_basis for the detector and why an
+            # exact 0.0 is a reliable one.
+            utils.check_bometric_basis(datandmetricdic,
+                                       configdic['loadBoMetricfname'])
 
             # UNIVERSE PROVENANCE ON THE LOAD PATH (2026-08-03).  The fetch-path stamp
             # sits inside `if not loadBoMetricbool:`, and the configdic spread that

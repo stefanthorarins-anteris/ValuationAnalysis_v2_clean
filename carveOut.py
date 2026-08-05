@@ -632,61 +632,93 @@ def classify(symbols, sector_map, fund, names, industry_map=None):
     return pd.Series(labels), pd.Series(reasons)
 
 
-# --- issuer-level de-duplication --------------------------------------------
-# Same-issuer lines (share-classes, preferreds, notes, cross-listings) occupy
-# multiple slots for ONE economic bet and -- worse -- a cross-listing can leak
-# past the carve-out when the sector map tags only the primary line. We collapse
-# to one line per issuer BEFORE the carve-out partition, so secondary listings
-# inherit the issuer's (propagated) sector.
-#
-# Reuses baseline_tools/universe_dedup's fundamental-fingerprint idea (exact-equal
-# revenue/netIncome/totalAssets/shares == same issuer), but EXTENDS it: that
-# signal alone MISSES currency-converted cross-listings (verified: Lundin Gold's
-# London line 0R4M.L reports FX-shifted revenue/NI/TA vs LUG.TO/LUG.ST, so its
-# fingerprint differs by ~1% and it stays a separate line -> the leak). We add a
-# currency-INVARIANT edge -- normalized companyName + weightedAverageShsOut
-# (share count is FX-independent) -- and union-find the two edge types.
+# =========================================================================== #
+#  ISSUER-LEVEL DE-DUPLICATION -- ONE LISTING PER ISSUER                        #
+#  (rebuilt 2026-08-05; spec: design/dedup-policy.md, register E-4 + B-7)       #
+#                                                                               #
+#  Same-issuer lines (share-classes, preferreds, notes, cross-listings) occupy    #
+#  multiple slots for ONE economic bet and -- worse -- a cross-listing can leak   #
+#  past the carve-out when the sector map tags only the primary line. We collapse  #
+#  to one line per issuer BEFORE the carve-out partition, so secondary listings    #
+#  inherit the issuer's (propagated) sector.                                      #
+#                                                                               #
+#  THE ARCHITECTURE IS AN INVERSION, AND THAT IS THE WHOLE POINT.                 #
+#  Everything before this was DETECTORS -- spot each non-canonical line and        #
+#  REMOVE it from the universe -- and it failed repeatedly and DIFFERENTLY each    #
+#  time: Korean preferreds (numeric suffix, no rule sees it), Continental          #
+#  certificats (CBE.PA shares no prefix with RBT.PA), London depositary lines,     #
+#  FMP-truncated company names (BWNB never joins BW's name group at all). The      #
+#  rule is now: GROUP an issuer's lines, PICK the main one, DROP the rest.         #
+#                                                                               #
+#  WHY THAT IS BETTER -- KEEP THIS PROPERTY VISIBLE. The detector pile does not    #
+#  get retired; it gets MOVED. It becomes an ORDERING INSIDE A GROUP               #
+#  (`_non_canonical_tag`, consumed by `_investability_key`) instead of a REMOVAL   #
+#  FROM THE UNIVERSE. As an ordering, a detector's false positive costs NOTHING:   #
+#  we just pick the sibling. As a removal, a false positive DELETES A REAL         #
+#  COMPANY, which is the expensive error this register kept booking. Same          #
+#  heuristics, inverted consequence. That is why the picking rule below is allowed  #
+#  to be aggressive, and why a marker that fails to fire is a DEGRADATION (a       #
+#  slightly worse ticker) and never a DEFECT (a missing company).                  #
+# =========================================================================== #
 _ISSUER_STRIP = re.compile(
     r'\b(inc|incorporated|corp|corporation|company|co|plc|ltd|limited|lp|llc|'
-    r'sa|s\.a|ag|se|nv|asa|ab|oyj|spa|the|holdings?|group|ordinary|shares?|'
+    r'sa|s\.a|ag|se|nv|asa|ab|oyj|spa|the|group|ordinary|shares?|'
     r'class|senior|notes?|due|preferred|pref|units?|warrants?|adr|ads)\b', re.I)
 
-def _norm_issuer_name(x):
+#  `holding(s)` is stripped SEPARATELY, because exactly ONE caller must not strip it.
+#
+#  HEIA.AS "Heineken N.V." and HEIO.AS "Heineken Holding N.V." are GENUINELY SEPARATE
+#  ISSUERS with separate statements -- Holding CONSOLIDATES the operating company and
+#  reports materially different netIncome -- and both now arrive in the universe on the
+#  AMS code the 2026-08-02 Europe fix restored, so this is LIVE, not hypothetical.
+#  Stripping `Holding` makes their normalised names COLLIDE, which is the one way the
+#  name+shares key (K3) could merge two real companies. So K3, and only K3, normalises
+#  with keep_holding=True.
+#
+#  It is NOT free to strip it everywhere and NOT free to strip it nowhere; both
+#  directions were MEASURED rather than assumed:
+#    * DEDUP GROUPING is identical either way -- 2,842 merged pairs on the 2026-01-09
+#      panel with `holding` stripped and 2,842 without. K3 loses nothing.
+#    * getData_gen.filter_non_common_instruments RULE C is not: on the live 2026-08-04
+#      table (51,703 type=='stock' lines) it catches 532 lines with `holding` stripped
+#      and 531 without. The single loss is VRXAW, the Veraxa Biotech WARRANT, whose
+#      enabling sibling VRXA is named "Veraxa Biotech HOLDING AG" -- rule A (no
+#      "Warrants" token in the name) and rule B (no -P suffix) both miss it, so
+#      deleting `holdings?` outright would put a warrant back into the pre-fetch
+#      universe AND into the Stage-2 z-pool, which dedup does not police.
+#  Hence a flag instead of a deletion: the dedup key gets the Heineken separation and
+#  the share-class filter keeps its removal. The DEFAULT is today's behaviour, so every
+#  pre-existing caller (rule C, isin_same_issuer_groups) is bit-for-bit unchanged.
+_ISSUER_STRIP_HOLDING = re.compile(r'\bholdings?\b', re.I)
+
+
+def _norm_issuer_name(x, keep_holding=False):
+    """Normalise a company name for issuer matching.
+
+    keep_holding=True preserves the `Holding`/`Holdings` token, so a consolidating
+    holding company does NOT normalise onto its operating subsidiary (Heineken).  Only
+    the K3 dedup key sets it; see the note above for why the default is the other way.
+    """
     if not isinstance(x, str) or not x.strip():
         return ''
     s = x.lower()
     s = re.sub(r'\d+(\.\d+)?%.*$', ' ', s)      # drop "6.125% senior notes due 2026" tails
     s = re.sub(r'[^a-z0-9 ]', ' ', s)
     s = _ISSUER_STRIP.sub(' ', s)
+    if not keep_holding:
+        s = _ISSUER_STRIP_HOLDING.sub(' ', s)
     return re.sub(r'\s+', ' ', s).strip()
 
 
-# Cross-listing near-equal tolerance (edge C). FMP reports an issuer's two listings
-# in a common reporting currency, so their revenue/netIncome/totalAssets agree to
-# within ~0.3-1% (verified: Barrick B vs ABX.TO 0.26%; Lundin Gold ~1%). 5% gives
-# headroom above that while staying far below the gap between genuinely distinct
-# firms -- and it is gated by an EXACT share-count match, which does the real work.
-_XLIST_FUND_TOL = 0.05
-
-
-def _fund_near_equal(a, b, latest, cols, tol=_XLIST_FUND_TOL):
-    """True iff EVERY fundamental in `cols` is present for both a and b and agrees
-    within relative tolerance `tol`. Backs the FX-/rename-invariant cross-listing
-    edge: a missing value on either side is a NON-match (never merge on a data gap)."""
-    for c in cols:
-        va = latest.at[a, c] if (a in latest.index and c in latest.columns) else None
-        vb = latest.at[b, c] if (b in latest.index and c in latest.columns) else None
-        if va is None or vb is None or pd.isna(va) or pd.isna(vb):
-            return False
-        va, vb = float(va), float(vb)
-        denom = max(abs(va), abs(vb))
-        if denom == 0.0:
-            if va != vb:
-                return False
-            continue
-        if abs(va - vb) / denom > tol:
-            return False
-    return True
+#  RETIRED 2026-08-05: `_XLIST_FUND_TOL` / `_fund_near_equal`, the old edge C
+#  (EXACT weightedAverageShsOut + revenue/netIncome/totalAssets near-equal within 5%).
+#  Not simplified away -- REFUTED. That edge gated a tolerance on an exact share match,
+#  and shares are THE ONE LISTING-DEPENDENT FIELD in the fingerprint (register B-7), so
+#  the gate is what made the conjunction fail. It is strictly subsumed by K1 union K2
+#  below: on the 2026-01-09 panel, K1+K2+K3 reproduces every pair the A/B/C edge set
+#  found (ZERO regressions) and adds 247 more. Nothing is left that needs a tolerance,
+#  so there is no longer a threshold parameter anywhere in the grouping -- which is
+#  worth more than the last one or two pairs a tolerance would buy.
 
 
 def _latest_raw(cdx_df, cols):
@@ -698,23 +730,105 @@ def _latest_raw(cdx_df, cols):
     return df.groupby('source')[have].last()
 
 
-def _issuer_components(syms, cdx_df, names):
-    """Union-find grouping of same-issuer lines by fundamental fingerprint.
+#  K1 -- STATEMENT IDENTITY. FMP serves the ISSUER's own statements to every line it
+#  lists, so these three together are an issuer identity. This is the old edge A MINUS
+#  the listing-dependent share count, and that subtraction is the entire fix: for every
+#  cross-listing / depositary pair the old scheme missed, revenue / netIncome /
+#  totalAssets are BYTE-IDENTICAL and it is marketCap and weightedAverageShsOut that
+#  wobble (0EDE.L/NXPI, 0IJ2.L/ES, 0KXS.L/RGLD, 4PG.DE/OTIS: all three fields exactly
+#  0.0000 apart; 0LF0.L/TXT identical on all three but 4.96% apart on shares).
+#  netIncome is REQUIRED and EXACT deliberately -- it is the field that separates a
+#  parent from a consolidating holding company (Heineken N.V. vs Heineken Holding N.V.,
+#  which reports roughly half the netIncome once minority interest is out). Weaken or
+#  drop netIncome and the one live MUST-NOT-MERGE in the register becomes reachable.
+_K1_COLS = ('revenue', 'netIncome', 'totalAssets')
 
-    Groups share-classes / preferreds / notes / cross-listings of ONE economic issuer
-    via three edges (see dedup_to_issuers for the full rationale):
-      A  identical fundamental fingerprint (same-currency lines);
-      B  currency-invariant (normalized companyName + weightedAverageShsOut);
-      C  FX-/rename-invariant (EXACT shares + near-equal revenue/netIncome/totalAssets).
+#  K2 -- ISSUER AGGREGATE. marketCap is an issuer-level, currency-normalised number, so
+#  it groups the FX-shifted cross-listings K1 cannot: 0R4M.L / LUG.TO / LUG.ST carry
+#  byte-identical marketCap while their totalAssets differ by 85%. The floor keeps
+#  zero/near-zero caps -- of which the panel has many, and which would otherwise all
+#  collide into one bogus mega-group -- out of the key.
+_K2_MARKETCAP_FLOOR = 1e6
+
+
+def _issuer_components(syms, cdx_df, names):
+    """Union-find grouping of same-issuer lines. THREE EXACT KEYS, NO TOLERANCE.
+
+    Each key is a HASH BUCKET COMPUTED FROM ONE LINE'S OWN FIELDS -- no pairwise
+    comparison, no tolerance, no threshold anywhere in the grouping:
+
+      K1  exact (revenue, netIncome, totalAssets), all three present   [_K1_COLS]
+      K2  exact marketCap, present and > _K2_MARKETCAP_FLOOR
+      K3  exact (normalised name incl. `Holding`, weightedAverageShsOut), both present
+          -- the old edge B, RETAINED UNCHANGED except for the `Holding` token. It is
+          the only key that catches 32 real pairs (Manulife's six lines, Southern's
+          five, Chimera's six, PennyMac's five, ACRI-A.ST/ACRI-B.ST), so dropping it
+          would be a regression.
+
+    MEASURED on the 2026-01-09 panel (8,106 lines):
+      grouping          components  multi-groups  lines dropped  new pairs  REGRESSIONS
+      current A/B/C           6,437         1,236   1,669 (20.6%)         -            -
+      K1 only                 6,449         1,234   1,657              +126          158
+      K1+K2                   6,340         1,277   1,766              +241           32
+      K1+K2+K3 (this)         6,328         1,282   1,778 (21.9%)      +247            0
+    i.e. a STRICT SUPERSET of what the old edges found, +247 pairs, zero regressions.
+
+    PRECISION -- the load-bearing number, and it is why the aggression is safe. Every
+    candidate false positive on that panel was inspected by hand: of the 16 K2 groups
+    whose members' totalAssets disagree by >25%, ALL 16 are the same issuer (FX: Lundin
+    Gold, Lundin Mining, IPCO, Traton, Stora Enso; period alignment: RBC, GSK, Comcast;
+    subsidiary bond lines: AFGB/C/D/E). Of the 55 K1 groups spanning >1 distinct
+    normalised name, ALL 55 are the same issuer (MicroStrategy->Strategy, Barrick
+    Gold->Barrick Mining, Bed Bath & Beyond->Beyond, the FMP-truncated "Babcock &
+    Wilcox Enterprises, I"). ZERO chance collisions in either. The shell-collision worry
+    does not materialise: 42 K1 groups have revenue == 0 and all 42 are true
+    LSE-depositary/common pairs -- a 4-decimal (netIncome, totalAssets) pair is
+    effectively unique. And where names collide but the issuers DIFFER, the fundamentals
+    keys correctly REFUSE to merge: FBNC/FBP/FNLC (three different First Bancorps),
+    IBCP/INDB, GHC/GHM, DOM.L/DPZ, OBDC/OWL, ATER/ATN.L, SST/SYS1.L, TORO/TTC all stay
+    separate. A fundamentals fingerprint separates issuers that name matching merges.
+
+    RESIDUAL RECALL MISS: exactly one, 0SAY.L / DWS.DE (dmarketCap 0.26%, drevenue 4.64%
+    -- a fiscal-period misalignment). One miss in 8,106 lines does not buy back a
+    tolerance parameter; if it is ever worth fixing, fix it by aligning both lines on a
+    COMMON FISCAL PERIOD before fingerprinting, not by loosening a threshold.
+
+    SCOPE-INVARIANCE (this is what the old rule did NOT have). getData_gen's rule C is
+    PAIRWISE -- it recognises an instrument line only relative to a shorter sibling -- so
+    its completeness depended on which universe was active. Every key here is a bucket
+    over a single line's own fields, so grouping is scope-invariant: run on the emitted
+    87-row ranking alone it produces the same groups as running on all 8,106 lines and
+    projecting down (verified both ways). The pairwise weakness dissolves for the DROP
+    decision. It does NOT dissolve for the PICK decision -- a group with only one member
+    in the pool has nothing better to choose -- which is why the share-class filter
+    stays; see the note above filter_non_common_instruments.
+
+    K4 (exact ISIN) is the natural fourth key and is NOT wired: profile ISIN is fetched
+    (findAllSectors._fetch_profiles_batched) but not plumbed into cdx_df. Exact-ISIN
+    equality is safe and was never the Heineken problem -- that belongs to the
+    same-name-DIFFERENT-isin rule, which we are not adopting. It is worth the plumbing:
+    the ONE case no marker in `_non_canonical_tag` can see is the Samsung PREFERRED GDR
+    SMSD.L -- FMP gives it the common's name verbatim, it has no -P suffix, it is not a
+    symbol extension of SMSN.L, and it is not a .KS symbol -- so in a two-member group
+    {SMSD.L, SMSN.L} the PREFERRED wins on the alphabetical tail. ISIN is the only
+    discriminator available for it.
+
+    POINT-IN-TIME CAVEAT (a property to test, not a defect). K2 keys on `marketCap`, which
+    is QUOTE-derived, so group membership is date-dependent in a way the statement keys are
+    not. The backtest path must keep handing this function a `cdx_df` already truncated to
+    date D or earlier (baseline_tools/stage2_pit); `_latest_raw` ffills and takes the last
+    row, which is correct only on a pre-sliced frame. Flagged rather than redesigned.
 
     Returns (comps, latest, _val):
       comps  : dict root_symbol -> [member symbols]  (insertion order = order in syms)
       latest : per-source latest raw fundamentals (from _latest_raw)
       _val   : (symbol, col) -> rounded finite float or None
-    Shared by dedup_to_issuers (sector-survivor rule) and dedup_ranked (rank-survivor
-    rule) so both resolve issuer identity IDENTICALLY."""
-    fp_cols = ['revenue', 'netIncome', 'totalAssets', 'weightedAverageShsOut']
-    latest = _latest_raw(cdx_df, fp_cols + ['marketCap'])
+    Shared by dedup_to_issuers and dedup_ranked so both resolve issuer identity
+    IDENTICALLY."""
+    # `price` is NOT a grouping input -- it is carried only so the dropped-sibling audit
+    # trail can show the CEO what each collapsed line was quoted at (dedup_to_issuers).
+    latest = _latest_raw(cdx_df, list(_K1_COLS)
+                         + ['weightedAverageShsOut', 'marketCap', 'price'])
 
     parent = {s: s for s in syms}
     def find(x):
@@ -733,46 +847,26 @@ def _issuer_components(syms, cdx_df, names):
                 return round(float(v), 4)
         return None
 
-    # edge A: identical fundamental fingerprint (same-currency lines)
-    fpmap = {}
+    # ONE pass over the pool, three keys, all in ONE bucket dict -- each key is tagged
+    # ('K1'/'K2'/'K3') so the three namespaces cannot collide with each other, and the
+    # shape makes the important property self-evident: a line's keys are functions of
+    # THAT LINE ALONE. Two lines meet only by landing in the same bucket.
+    buckets = {}
     for s in syms:
-        vals = [_val(s, c) for c in fp_cols]
-        if all(v is not None for v in vals):
-            fpmap.setdefault(tuple(vals), []).append(s)
-    # edge B: currency-invariant (normalized name + shares outstanding)
-    nsmap = {}
-    for s in syms:
-        nm = _norm_issuer_name(names.get(s, '')) if names else ''
+        k1 = tuple(_val(s, c) for c in _K1_COLS)
+        if all(v is not None for v in k1):
+            buckets.setdefault(('K1',) + k1, []).append(s)
+
+        mc = _val(s, 'marketCap')
+        if mc is not None and mc > _K2_MARKETCAP_FLOOR:
+            buckets.setdefault(('K2', mc), []).append(s)
+
+        nm = _norm_issuer_name(names.get(s, ''), keep_holding=True) if names else ''
         sh = _val(s, 'weightedAverageShsOut')
         if nm and sh is not None:
-            nsmap.setdefault((nm, sh), []).append(s)
-    # edge C: FX-/rename-invariant fingerprint -- EXACT weightedAverageShsOut +
-    # NEAR-equal revenue/netIncome/totalAssets. Catches cross-listings both other edges
-    # miss: edge A (exact fingerprint) fails because FMP reports the two lines with
-    # tiny (~0.3-1%) reporting differences, not byte-equal; edge B (name+shares) fails
-    # when the listings carry DIFFERENT names -- e.g. Barrick's NYSE line "Barrick
-    # Mining Corp" vs its TSX line still "Barrick Gold Corp" after the 2025 rename, so
-    # the normalized names diverge ("barrick mining" != "barrick gold") and B (which FMP
-    # mis-sectors as Industrials) escaped the Mining carve into the general pool. Share
-    # count is currency- and name-invariant; requiring an exact share match AND three
-    # near-equal fundamentals makes a false merge of two distinct issuers effectively
-    # impossible. Grouped by exact shares first so the pairwise check stays O(k^2) over
-    # tiny (usually 1-3 name) share-collision groups.
-    shmap = {}
-    for s in syms:
-        sh = _val(s, 'weightedAverageShsOut')
-        if sh is not None and sh > 0:
-            shmap.setdefault(sh, []).append(s)
-    _xlist_cols = ['revenue', 'netIncome', 'totalAssets']
-    for grp in shmap.values():
-        if len(grp) < 2:
-            continue
-        for i in range(len(grp)):
-            for j in range(i + 1, len(grp)):
-                if _fund_near_equal(grp[i], grp[j], latest, _xlist_cols):
-                    union(grp[i], grp[j])
+            buckets.setdefault(('K3', nm, sh), []).append(s)
 
-    for grp in list(fpmap.values()) + list(nsmap.values()):
+    for grp in buckets.values():
         for s in grp[1:]:
             union(grp[0], s)
 
@@ -782,69 +876,297 @@ def _issuer_components(syms, cdx_df, names):
     return comps, latest, _val
 
 
-# Decimals at which two AggScores count as TIED for the dedup survivor tie-break.
-# Cross-listed clone lines carry byte-identical fundamentals and therefore produce
-# EXACTLY equal scores, so this is effectively exact equality with last-bit slack.
-_TIE_DECIMALS = 12
+# =========================================================================== #
+#  CANONICITY MARKERS -- THE DETECTOR PILE, RELOCATED                           #
+#                                                                               #
+#  These are the same heuristics that used to REMOVE lines from the universe.     #
+#  Here they only ORDER the members of an issuer group, so a false positive costs   #
+#  a slightly worse surviving ticker instead of a deleted company. Read the         #
+#  inversion note at the top of this section before adding or loosening one.       #
+# =========================================================================== #
+
+#  (a) LSE INTERNATIONAL ORDER BOOK. A digit-prefixed .L symbol (0HQ7.L, 0R4M.L,
+#  0IJO.L) is an institutional grey-market depositary line the CEO cannot buy at the
+#  quoted size. This is the single biggest source of untradeable picks: 19 of the 87
+#  slots in the 2026-01-09 emitted ranking were 0*.L lines.
+_IOB_LSE_RE = re.compile(r'^\d.*\.L$')
+
+#  (b) PREFERRED-SERIES TICKER SUFFIX -- US -PA, TSX -PFJ, Nordic -PREF. Same pattern
+#  as getData_gen._PREFERRED_SUFFIX_RE; duplicated rather than imported because carveOut
+#  is deliberately credential-less and importing the ingestion module at module scope
+#  would drag `requests` into the carve. Safe because the dual-class convention is
+#  -A/-B/-C, never -P.
+_PREF_SUFFIX_RE = re.compile(r'-P[A-Z]{0,3}$')
+
+#  (d) SAME-ISSUER SYMBOL EXTENSION -- the candidate is a SHORTER GROUP MEMBER's symbol
+#  plus a short tail, with no separator (IMPPP = IMPP + P, HNNAZ = HNNA + Z, CIMN =
+#  CIM + N, WHLRD = WHLR + D, BWNB = BW + NB).
+#
+#  THIS TAIL IS DELIBERATELY MORE PERMISSIVE THAN getData_gen's, AND THAT DIFFERENCE IS
+#  THE INVERSION CASHING IN -- it is the one place in this change where the architecture
+#  actually buys something a detector could not have. getData_gen._INSTRUMENT_TAIL_RE is
+#  `^(P[A-Z]?|[A-Z]?[RUWZ]|[PRUWZ][A-Z])$`, a hand-audited WHITELIST, because there a
+#  false positive DELETES a common: share classes live in exactly this shape (GOOGL =
+#  GOOG + L, UAA = UA + A, WLYB, LILAK, UONEK, METCB, FOXA, NWSA). Here a false positive
+#  only picks the sibling, so the whitelist is not needed and its conservatism has a
+#  measurable COST: the un-whitelisted single-letter tails (register entry
+#  `unwhitelisted-single-letter-tail`) are invisible to it.
+#
+#  MEASURED on the 2026-01-09 panel -- permissive vs the whitelist, 1,282 groups, 4 picks
+#  change and NOT ONE of them is a regression:
+#    CIM/CIM-PA..PD/CIMN     CIMN (a NOTES line) -> CIM        <- the real fix. CIMN is
+#                            un-whitelisted ("N"), so it sat in the CANONICAL tier and
+#                            won its group on marketCap. A notes line as the CEO's
+#                            ticker is the exact defect this whole change exists to kill.
+#    WLY/WLYB                WLYB -> WLY        dual-class commons, either is fine
+#    NWS/NWSA/0K7U.L         NWSA -> NWS        dual-class commons, either is fine
+#    CCP.L/CCPA.L/CCPC.L     CCPA.L -> CCP.L    picks the base line
+#  No group loses its last canonical member (6 all-non-canonical groups either way).
+#  GOOGL / UAA / METCB are demoted -- and that is harmless BY CONSTRUCTION, because the
+#  dual-class ruling merges them with GOOG / UA / METC, so the sibling common survives.
+#  DO NOT copy this pattern back into getData_gen: there it would delete GOOGL.
+_ORDERING_TAIL_RE = re.compile(r'^[A-Z0-9]{1,2}$')
+
+#  (e) KOREAN PREFERRED. Korean symbols are a 5-character issuer root plus a
+#  1-character line code: `...0` is the common, anything else is a preferred class.
+#  This is the marker with no analogue in any existing rule -- the Korean convention is
+#  a suffix ON THE ROOT, which is why the share-class filter caught 1 of 196 -- and it
+#  is what makes Korea admissible at all.
+#
+#  IT IS A CHARACTER, NOT A DIGIT, AND THAT MATTERS. The spec says "6th digit"; measured
+#  on the live 2026-08-04 list, the 6th character of the 196 symbols in the 91
+#  multi-line families is 0 x91, 5 x78, 7 x9, 9 x1 -- and ALSO **K x15 and L x2**
+#  (Korea's "new-type" preferred: Samsung C&T 02826K.KS, Hanjin Kal 18064K.KS, SK Inc
+#  03473K.KS, Solus 33637K/33637L.KS). Every one of those 17 carries its common's name
+#  VERBATIM, so `_non_common_name_tag` returns '' for all of them. Written as `\d` this
+#  marker would have called 17 Korean preferreds canonical.
+_KOREAN_LINE_RE = re.compile(r'^([0-9A-Z]{5})([0-9A-Z])\.(KS|KQ)$')
+
+_NON_CANONICAL_TAGS = ('lse-iob', 'preferred-suffix', 'name-vocabulary',
+                       'symbol-extension', 'korea-preferred')
 
 
-def _investability_key(sym, val_fn, sector_map=None):
+def _sym_base(s):
+    """Ticker without its exchange suffix ('ACRI-A.ST' -> 'ACRI-A')."""
+    return s.rsplit('.', 1)[0] if '.' in s else s
+
+
+def _sym_suffix(s):
+    return s.rsplit('.', 1)[1] if '.' in s else ''
+
+
+def _name_vocabulary_tag(name):
+    """(c) FMP names the instrument as one ("... 6.125% Senior Notes due 2026",
+    "... Warrants", "... Pfd Registered Shs Non-Voting").
+
+    Delegates to getData_gen._non_common_name_tag so there is ONE instrument vocabulary
+    in the repo -- that regex set was derived by reading every risky name in the
+    universe and it must not be re-guessed here. Imported LAZILY (carveOut is
+    credential-less; getData_gen pulls in `requests`), and a failed import DEGRADES this
+    one marker to always-'' rather than raising: losing a marker costs a worse ticker
+    inside a group, never a lost company. That asymmetry is the inversion, made
+    operational.
+    """
+    if not isinstance(name, str) or not name:
+        return ''
+    try:
+        import getData_gen as _gg
+        return _gg._non_common_name_tag(name)
+    except Exception:
+        return ''
+
+
+def _non_canonical_tag(sym, name='', group=()):
+    """The first non-common marker `sym` shows, or '' if it looks like the common.
+
+    Markers are tested in the order the spec fixes (a)-(e); the tag is returned rather
+    than a bool so the dedup audit trail can say WHY a line was demoted.
+    """
+    if not isinstance(sym, str) or not sym:
+        return ''
+    if _IOB_LSE_RE.match(sym):
+        return 'lse-iob'
+    if _PREF_SUFFIX_RE.search(_sym_base(sym)):
+        return 'preferred-suffix'
+    nt = _name_vocabulary_tag(name)
+    if nt:
+        return 'name-vocabulary:' + nt
+    # (d) needs the GROUP -- it is the one marker that is relative, and it is relative to
+    # the issuer group rather than to the whole pool, which is what makes it
+    # scope-invariant in a way getData_gen's rule C is not. Same exchange suffix is
+    # required, as in rule C, so a genuine foreign listing is never read as a tail.
+    base, suf = _sym_base(sym), _sym_suffix(sym)
+    for other in group:
+        if other == sym or _sym_suffix(other) != suf:
+            continue
+        ob = _sym_base(other)
+        if len(ob) < len(base) and base.startswith(ob) \
+                and _ORDERING_TAIL_RE.match(base[len(ob):]):
+            return 'symbol-extension'
+    m = _KOREAN_LINE_RE.match(sym)
+    if m and m.group(2) != '0':
+        return 'korea-preferred'
+    return ''
+
+
+#  REMOVED 2026-08-05: `_TIE_DECIMALS`, the rounding at which two AggScores counted as
+#  TIED for the old survivor tie-break. Canonicity now overrides rank outright, so there
+#  is no tie to detect: a "tie" is simply the case where every ordering term below
+#  canonicity was already equal, which the sort handles without a tolerance. Deleted
+#  rather than left as a dead constant, because a rounding knob sitting beside a survivor
+#  rule invites a reader to think the rule still consults the score.
+
+
+def _investability_key(sym, val_fn, sector_map=None, names=None, group=()):
     """Deterministic "most investable line" ordering key for an issuer's listings.
 
-    Prefer (1) a line the sector map already tags (the recognised primary -- only when
-    a sector_map is supplied), then (2) largest latest market cap (most investable),
-    then (3) a symbol NOT starting with a digit (deprioritise LSE IOB/grey-market
-    depositary lines, e.g. 0R4M.L / 0HQ7.L), then (4) fewest punctuation (bare ticker),
-    shortest, alphabetical (fully deterministic).
+    CANONICITY CLASS FIRST, then the CEO's share count. Lowest sorts first:
+      1. `_non_canonical_tag(...)` -> 0 if the line shows no non-common marker, 1 if it
+         does. THE dominant term.
+      2. -weightedAverageShsOut  -- the CEO's size discriminator, INSIDE a canonicity
+         tier, which is the only place it works.
+      3. -marketCap.
+      4. digit-prefix, punctuation count, length, alphabetical -- the previous tail,
+         unchanged and fully deterministic.
 
-    Shared by dedup_to_issuers (which passes sector_map, so criterion 1 is live) and by
-    dedup_ranked's tie-break (no sector_map -> criterion 1 is constant and inert), so
-    "which line of an issuer do we prefer" means ONE thing across the pipeline.
+    WHY NOT SHARE COUNT FIRST, WHICH IS WHAT THE BRIEF ASSUMED. Because it was measured
+    and it is a bad rule. FMP serves the ISSUER's own filed share count to every one of
+    its lines, so weightedAverageShsOut is IDENTICAL across all members in 1,188 of
+    1,282 multi-line groups (92.7%) -- "largest share count" is a TIE in 93% of cases
+    and degenerates into whatever follows it. Ranking groups by largest share count
+    picks a structurally non-canonical line in 700 of 1,282 groups (54.6%); largest
+    marketCap fails identically (54.9%) for the same reason. Even restricted to the 94
+    groups where shares genuinely differ it still picks wrong 30 times (32%), because
+    that difference is a 0.1-1.6% filing-vintage wobble, not a depositary ratio (0KGE.L
+    reads 0.1% MORE shares than PAYX; 0KV3.L 1.3% more than RF). A depositary programme
+    does not report a fraction of the shares -- it reports the issuer's shares. Register
+    B-7 is real, but it is about `shareCountChange`, a TIME-SERIES DELTA; the share-count
+    LEVEL is not a listing-size proxy.
+
+    MEASURED failure rate, same 1,282 groups:
+      largest share count (as briefed)      693 / 1,282  (54.1%)
+      largest marketCap                     701 / 1,282  (54.7%)
+      previous _investability_key            40 / 1,282   (3.1%)
+      canonicity-first, then shares (this)    6 / 1,282   (0.47%)
+    All six residual failures are groups with NO canonical member at all (TRTN-PA..PE,
+    GLOP-PA..PC, SEAL-PA/PB, SNV-PD/PE, TD-PFA/PFJ.TO, TRINI/TRINZ) -- nothing better
+    exists, so keeping one is correct.
+
+    *** 0.47% IS A LOWER BOUND ON THE TRUE FAILURE RATE, FOR TWO INDEPENDENT REASONS.
+    Do not quote it as the failure rate. ***
+      1. THE LABELLER IS THE RULE. "Structurally non-canonical" is scored with
+         `_non_canonical_tag` -- the same function the ordering uses -- so the metric
+         CANNOT COUNT a wrong pick that no marker recognises. That is not hypothetical:
+         it is exactly how CIMN (a Chimera NOTES line) sat in the canonical tier and won
+         its group on marketCap while scoring as a success.
+      2. THE POPULATION EXCLUDES THE KNOWN FAILURE CLASS. All three groups where the
+         shipped rule is KNOWN to pick the non-common -- CBE.PA/RBT.PA (Robertet
+         certificat), PREVA.AS/VALUE.AS (Value8 preference), SMSD.L/SMSN.L (Samsung
+         preferred GDR) -- are ABSENT from the panel: none of the six symbols appears in
+         it, in `moatdf` or in `cdx_df`. The panel carries no Amsterdam/Paris
+         fundamentals and Samsung's GDRs were never fetched, so the measurement is taken
+         on a population that structurally cannot contain them.
+    In all three, every marker (a)-(e) is ruled out BY CONSTRUCTION -- FMP gives the
+    non-common the common's name verbatim, there is no -P suffix, the symbols share no
+    prefix, and neither is a .KS line -- so the key falls through to the alphabetical
+    tail and the NON-COMMON wins ('CBE' < 'RBT', 'PREVA' < 'VALUE', 'SMSD' < 'SMSN').
+    ISIN is the only discriminator available for them; see the K4 note in
+    _issuer_components and design/dedup-policy.md section 10.
+
+    `sector_map` IS ACCEPTED AND IGNORED, deliberately and not by accident. It used to
+    be criterion 1 ("prefer a line the sector map already tags"), which meant FMP's
+    sector TAGGING decided which ticker the CEO saw. Sector propagation happens
+    independently in dedup_to_issuers and does not need the survivor to be the tagged
+    line. The parameter stays in the signature so no caller breaks.
     """
-    known = 0 if (sector_map is not None
-                  and _is_known_sector(sector_map.get(sym))) else 1
+    nm = (names or {}).get(sym, '') if names else ''
+    noncanon = 1 if _non_canonical_tag(sym, nm, group) else 0
+    sh = val_fn(sym, 'weightedAverageShsOut')
+    sh = sh if sh is not None else -1.0
     mc = val_fn(sym, 'marketCap')
     mc = mc if mc is not None else -1.0
     digitpfx = 1 if sym[:1].isdigit() else 0
     punct = sum(ch in '-.' for ch in sym)
-    return (known, -mc, digitpfx, punct, len(sym), sym)
+    return (noncanon, -sh, -mc, digitpfx, punct, len(sym), sym)
 
 
 def dedup_ranked(ranked_sources, cdx_df, names, scores=None, sector_map=None):
-    """Collapse same-issuer lines in a RANK-ORDERED source list, keeping the
-    HIGHEST-RANKED (earliest-appearing) line per issuer and dropping every later
-    same-issuer line. Order-preserving.
+    """Collapse same-issuer lines in a RANK-ORDERED source list to ONE line per issuer.
 
-    TIE-BREAK (audit M3 fix, 2026-07-19).  When `scores` is supplied and an issuer's
-    best-ranked lines are TIED on score, the survivor is picked by
-    _investability_key instead of by SORT STABILITY.  This matters because a
-    cross-listed clone line carries byte-identical fundamentals and therefore an
-    EXACTLY equal AggScore, so which of the two the ranking happened to emit first was
-    arbitrary -- and it decided which ticker the CEO sees.  On the 2026-01-09 pool 18
-    of 87 ranked rows sit in exact-score pairs, and the arbitrary winner was the LSE
-    grey-market depositary line in both cited cases: 0HQ7.L over BKE and 0IJO.L over
-    EXEL, both at identical AggScore.  With the tie-break the bare US ticker wins.
+    The issuer is represented at its BEST RANK POSITION; the surviving TICKER is the
+    group's most CANONICAL line (`_investability_key`), which is not necessarily the
+    best-ranked one. Order-preserving.
 
-    NOT changed (deliberately): when the scores genuinely DIFFER the highest-RANKED
-    line still survives -- that is the documented survivor rule (see below) and the
-    audit produced no evidence against it.  Concretely, HNNAZ (Hennessy Advisors
-    NOTES) survived over HNNA on the Jan pool at AggScore 0.1159 vs 0.1026, i.e. NOT a
-    tie: the score really did prefer the notes line.  Overriding a real score
-    difference is a survivor-RULE change, not a tie-break, and needs a design decision
-    (the underlying problem there is that a notes line entered the universe as
-    type=='stock' at all -- audit M-5).
+    SURVIVOR RULE CHANGED 2026-08-05: CANONICITY OVERRIDES RANK. This is the design
+    decision the previous version explicitly deferred ("needs a design decision, audit
+    M-5"), and it is now made. Previously the highest-RANKED line survived and
+    investability broke only EXACT-score ties, which left the cited case standing: HNNAZ
+    (Hennessy Advisors 4.875% NOTES) survived over HNNA at AggScore 0.1159 vs 0.1026 --
+    not a tie, so the score really did prefer the notes line.
+
+    WHY OVERRIDING THE SCORE IS RIGHT, AND WHY IT IS NOT THROWING INFORMATION AWAY.
+    A score computed on a notes / preferred / depositary line is a score of THE ISSUER's
+    fundamentals attached to an instrument the CEO is not buying, so the rank difference
+    is an artifact rather than information -- and it is measurably an artifact:
+
+      *  THE DERIVED PRICE IS IDENTICAL ACROSS AN ISSUER'S LINES. price =
+         marketCap / weightedAverageShsOut (getData_fmp), and both are issuer-level, so
+         they cancel: 0HQ7.L and BKE both 54.80; 0R2J.L, AEM and AEM.TO all 168.56;
+         HEN.DE and HEN3.DE both 66.66 (which is itself a finding -- Henkel's ordinary
+         and preferred do NOT trade at the same price, so FMP is serving one
+         issuer-level price to both lines). 9 of the 19 duplicate groups in the emitted
+         2026-01-09 ranking therefore carry a BYTE-IDENTICAL AggScore.
+      *  THE OTHER 10 GROUPS DIFFER ON SCORE -- AEM.TO -0.3320 vs AEM -0.3605 vs 0R2J.L
+         -0.3635 -- and the reason is NOT what the design spec says it is. The spec
+         attributes it to "history depth and reporting-date alignment". MEASURED, that is
+         wrong: of those 10 groups, ROW COUNT differs in only 1 and DATE SPAN in only 2,
+         so 8 of 10 differ on score with the SAME number of rows over the SAME date range.
+         What actually differs is the ROW VALUES. Aligning AEM against AEM.TO on their 22
+         common dates, `netIncome` differs on 20 of 22, `operatingIncome` and
+         `interestExpense` on 22 of 22, and `price` on 20 of 22 -- with no NaN mismatch
+         anywhere, so this is not a coverage gap. "Identical price, identical
+         fundamentals" is true only of the LATEST row, which is the only row K1
+         fingerprints; the HISTORY the score integrates over is materially different per
+         listing.
+         THE POINT FOR THIS FUNCTION IS UNCHANGED AND IF ANYTHING STRONGER: the rank
+         difference is an artifact of which listing's history FMP happened to serve, so
+         the old rank-based survivor rule was systematically keeping whichever line that
+         artifact favoured. Canonicity-first stops the pipeline selecting on it.
+         WHAT IS NOT FIXED HERE, and is a finding in its own right (adjacent to register
+         C-7): an issuer's listings carry DIFFERENT HISTORICAL STATEMENTS AND DIFFERENT
+         HISTORICAL PRICES, so every history-integrating metric is listing-dependent.
+         That also refutes "prefer the line with the most history" as a tie-break -- see
+         design/dedup-policy.md section 10, where it is costed and demoted.
+
+    So the damage from a wrong pick was never price error. It is (1) UNTRADEABILITY --
+    an LSE IOB 0*.L line is not a mildly worse pick, it is not a pick at all (register
+    J-1), and raw rank picked the IOB or preferred line in 7 of the top 20; (2) score
+    NOISE selection, above; (3) silent DOUBLE WEIGHT -- before dedup one bet occupies two
+    slots at two different scores, so a 20-name list is really 13 companies.
+
+    THE ISSUER KEEPS ITS RANK POSITION; ONLY THE TICKER CHANGES -- IN `kept`. Callers
+    that consume the returned `kept` LIST get that property for free (it is built in rank
+    order with the survivor placed at the group's best position). A caller that instead
+    filters its own frame by `source in set(kept)` -- postBoRank._dedup_issuers_in_ranking
+    does exactly that -- leaves the survivor at ITS OWN row, so an issuer whose canonical
+    line ranked lower is represented at the LOWER position. That was invisible before,
+    because the survivor WAS the best-ranked line. It is a real consequence of this
+    change and it is called out here rather than silently absorbed.
+
+    `scores` and `sector_map` ARE ACCEPTED AND UNUSED. `scores` drove the old exact-tie
+    tie-break, which canonicity-first subsumes entirely (a tie is just the case where
+    every ordering term below canonicity was already equal); `sector_map` fed a criterion
+    that has been deliberately dropped (see _investability_key). Both stay in the
+    signature so existing call sites -- postBoRank, stage2_pit, baseline_tools -- keep
+    working untouched.
 
     CEO standing principle: NO duplicate issuers in the emitted top-N -- a dual-listing
     or share-class must not occupy two slots (the TFPM / TFPM.TO case). This is the
     SELECTION-TIME dedup: apply it to the full ranked list BEFORE taking head(N), so the
-    emitted top-N contains N DISTINCT issuers. It reuses the EXACT issuer-fingerprint
-    grouping (_issuer_components, edges A/B/C) the carve-out uses, so "same issuer"
-    means the same thing across the pipeline.
-
-    Note the survivor rule differs from dedup_to_issuers by design: here we keep the
-    highest-RANKED line (the pick the score actually surfaced); the carve-out keeps the
-    most-investable/recognised line for sector propagation. Both are correct for their
-    purpose.
+    emitted top-N contains N DISTINCT issuers. It reuses the EXACT issuer grouping
+    (_issuer_components, keys K1/K2/K3) the carve-out uses, so "same issuer" means the
+    same thing across the pipeline -- and both sites now also share the SAME survivor
+    rule, which they did not before.
 
     Returns (kept, dropped):
       kept    : deduped rank-ordered source list (>= 1 line per distinct issuer)
@@ -854,30 +1176,15 @@ def dedup_ranked(ranked_sources, cdx_df, names, scores=None, sector_map=None):
     comps, _latest, _val = _issuer_components(ranked, cdx_df, names)
     root_of = {s: r for r, members in comps.items() for s in members}
 
-    # --- resolve exact-score ties inside each issuer group -----------------------
+    # --- pick the CANONICAL line in each multi-line group ------------------------
+    # Unconditional, not tie-gated: canonicity overrides rank (see above).
     chosen = {}
-    if scores is not None:
-        sv = {}
-        for s, x in zip(ranked, list(scores)):
-            try:
-                fx = float(x)
-            except (TypeError, ValueError):
-                fx = np.nan
-            sv[s] = round(fx, _TIE_DECIMALS) if np.isfinite(fx) else np.nan
-        by_root = {}
-        for s in ranked:                      # ranked order -> members[0] is best-ranked
-            by_root.setdefault(root_of.get(s, s), []).append(s)
-        for r, members in by_root.items():
-            if len(members) < 2:
-                continue
-            top_score = sv.get(members[0], np.nan)
-            if not np.isfinite(top_score):
-                continue
-            tied = [m for m in members
-                    if np.isfinite(sv.get(m, np.nan)) and sv[m] == top_score]
-            if len(tied) > 1:
-                chosen[r] = sorted(
-                    tied, key=lambda m: _investability_key(m, _val, sector_map))[0]
+    for r, members in comps.items():
+        if len(members) < 2:
+            continue
+        chosen[r] = sorted(
+            members,
+            key=lambda m: _investability_key(m, _val, None, names, members))[0]
 
     kept, dropped, done = [], [], {}
     for s in ranked:
@@ -887,8 +1194,7 @@ def dedup_ranked(ranked_sources, cdx_df, names, scores=None, sector_map=None):
                 dropped.append((s, done[r]))
         else:
             # The issuer is represented at its BEST rank position; the surviving TICKER
-            # is the tie-break winner when the best-ranked lines were tied, else the
-            # best-ranked line itself.
+            # is the group's most CANONICAL line, which may be a lower-ranked one.
             surv = chosen.get(r, s)
             done[r] = surv
             kept.append(surv)
@@ -1004,27 +1310,45 @@ def dedup_to_issuers(BoScore_df, cdx_df, sector_map, names):
     survivor->propagated sector), diagnostics(dict with report DataFrame + counts).
 
     SURVIVOR RULE (stated explicitly): within an issuer group, prefer
-      (1) a line the sector map already tags (the recognised primary), then
-      (2) largest latest market cap (most investable), then
-      (3) a symbol NOT starting with a digit (deprioritise LSE IOB/grey-market
-          depositary lines, e.g. 0R4M.L), then
-      (4) fewest punctuation (bare ticker), shortest, alphabetical (deterministic).
+      (1) a line showing NO non-common marker (canonicity class -- see
+          _non_canonical_tag), then
+      (2) largest weightedAverageShsOut, then (3) largest latest market cap, then
+      (4) not digit-prefixed, fewest punctuation, shortest, alphabetical.
+    This is `_investability_key` verbatim -- dedup_ranked now uses the SAME rule, so the
+    carve-out and the emitted ranking can no longer disagree about which line of an
+    issuer is the real one (they could before: this site preferred the sector-tagged /
+    biggest-cap line while dedup_ranked preferred the best-RANKED line).
     SECTOR PROPAGATION: the survivor inherits the group's known sector (majority of
     tagged members) -- this is what plugs the cross-listing leak regardless of which
     line survives. A conflict (two DIFFERENT known sectors in one group) is flagged.
+    NOTE the survivor no longer has to be a sector-TAGGED line, which is the point:
+    propagation happens below and does not depend on it, so FMP's sector tagging no
+    longer decides which ticker the CEO sees.
+
+    THE DROPPED-SIBLING AUDIT TRAIL IS THE MITIGATION FOR MERGING DUAL-CLASS COMMONS.
+    A dual-class pair is one issuer, one set of statements, one economic bet, so it
+    merges -- but the two classes trade at DIFFERENT PRICES, so which one you buy is a
+    real 5-15% decision that merging would otherwise hide. The `report` frame therefore
+    carries every dropped line's PRICE and SHARE COUNT alongside its symbol, so the
+    consumer can show "AEM -- also listed as AEM.TO, 0R2J.L" and the CEO can pick the
+    cheaper / more liquid line at execution. One slot in the ranking, all lines visible
+    for the trade. (Wiring that into the emitted CSV is a separate change in the
+    emission layer; the data is produced here.)
     """
     syms = list(BoScore_df['source'])
     comps, latest, _val = _issuer_components(syms, cdx_df, names)
 
     from collections import Counter
-    def _key(s):
-        # THE shared "most investable line" key (module-level _investability_key), so
-        # dedup_ranked's tie-break and this survivor rule can never diverge.
-        return _investability_key(s, _val, sector_map)
 
     survivors, member_to_survivor, sector_override = set(), {}, {}
     rows, conflicts = [], []
     for members in comps.values():
+        def _key(s, _m=members):
+            # THE shared "most investable line" key (module-level _investability_key),
+            # so dedup_ranked and this survivor rule can never diverge. `sector_map` is
+            # passed as None because the key ignores it -- kept explicit so a reader does
+            # not think this site still prefers the tagged line.
+            return _investability_key(s, _val, None, names, _m)
         surv = sorted(members, key=_key)[0]
         survivors.add(surv)
         secs = [x for x in (sector_map.get(m) for m in members) if _is_known_sector(x)]
@@ -1047,9 +1371,14 @@ def dedup_to_issuers(BoScore_df, cdx_df, sector_map, names):
             member_to_survivor[m] = surv
             if m != surv:
                 rows.append((m, surv, names.get(m, ''), sector_map.get(m, ''), prop,
-                             '|'.join(sorted(members))))
+                             '|'.join(sorted(members)),
+                             _non_canonical_tag(m, names.get(m, ''), members),
+                             _val(m, 'price'), _val(m, 'weightedAverageShsOut'),
+                             _val(m, 'marketCap')))
     report = pd.DataFrame(rows, columns=['dropped', 'survivor', 'name',
-                                         'orig_sector', 'propagated_sector', 'issuer_group'])
+                                         'orig_sector', 'propagated_sector', 'issuer_group',
+                                         'non_canonical_tag', 'dropped_price',
+                                         'dropped_shares', 'dropped_marketCap'])
     diagnostics = {'n_lines_in': len(syms), 'n_issuers_out': len(comps),
                    'n_collapsed': len(syms) - len(comps),
                    'sector_conflicts': conflicts, 'report': report}

@@ -53,8 +53,8 @@ for t in pr['source']:
     rpy = rp.rows_per_year(fmap, t)
     row = {}
     for k in postBm: row[k] = sm.postbm_metric(k, postBm[k]['eqMet'], tc, NQ, rpy=rpy)
-    row['freeCashFlowYield'] = sm.free_cash_flow_yield(tc.freeCashFlow, tc.marketCap, NQ, rpy=rpy)
-    row['freeCashFlowPerShareGrowth'] = sm.free_cash_flow_per_share_growth(tc.freeCashFlow, tc.weightedAverageShsOut, NQ, rpy=rpy)
+    row['freeCashFlowYield'] = sm.free_cash_flow_yield(tc.freeCashFlow, tc.marketCap, NQ, rpy=rpy, tempcdx=tc)
+    row['freeCashFlowPerShareGrowth'] = sm.free_cash_flow_per_share_growth(tc.freeCashFlow, tc.weightedAverageShsOut, NQ, rpy=rpy, tempcdx=tc)
     row['tbVpRatio'] = sm.tbv_p_ratio(tc, NQ, rpy=rpy)
     row['Altman-Z'] = sm.altman_z(tc, rpy=rpy)
     row['Piotroski'] = sm.piotroski(tc, rpy=rpy)

@@ -143,12 +143,23 @@ def _real_panel_before_after():
     import postBoRank as pbr
     cdx = pbr._sort_cdx_newest_first(pd.read_pickle(cache)["cdx_dftop100"])
     freq = rp.frequency_by_source(cdx)
+    import nan_policy as npol
     rows = []
     for src, t in cdx.groupby("source", sort=False):
         _rpy = rp.rows_per_year(freq, src)
+        #  `gap_refused` -- carried so the comparisons below can ISOLATE the window cap.  Since
+        #  2026-08-05 `eps_to_eps_mean` also goes through the shared NaN-policy seam, so it can
+        #  return NaN for a reason that has nothing to do with the window: a name that stopped
+        #  filing twice has EVERY windowed metric refused.  `_uncapped` is this file's own
+        #  reimplementation and carries no policy, so on such a name the two arms differ by the
+        #  POLICY, not by the cap.  Flagging the reason here -- rather than gating `_uncapped`,
+        #  which would duplicate policy logic into a test -- keeps each assertion able to say
+        #  which effect it is measuring.
         rows.append((src, len(t), _rpy, rp.scale_window(sm.EPS_MEAN_BASE_NQ, _rpy),
-                     _uncapped(t, rpy=_rpy), sm.eps_to_eps_mean(t, rpy=_rpy)))
-    return pd.DataFrame(rows, columns=["source", "n", "rpy", "win", "before", "after"])
+                     _uncapped(t, rpy=_rpy), sm.eps_to_eps_mean(t, rpy=_rpy),
+                     bool(npol.calendar_gap_refused(t, _rpy))))
+    return pd.DataFrame(rows, columns=["source", "n", "rpy", "win", "before", "after",
+                                       "gap_refused"])
 
 
 def test_the_real_2026_07_17_panel_QUARTERLY_names_are_bit_identical():
@@ -193,7 +204,23 @@ def test_no_name_on_the_real_panel_changes_NaN_STATUS():
     if d is None:
         pytest.skip("no saved resdic on this machine")
     flipped = d[d["before"].isna() != d["after"].isna()]
-    assert flipped.empty, "NaN-status changed for:\n%s" % flipped.to_string(index=False)
+    #  THE WINDOW CAP MUST FLIP NOBODY.  Names the NaN POLICY refuses are a DIFFERENT effect and
+    #  are excluded -- but the exclusion is ASSERTED, not waved through: every flipped name must
+    #  be flipped BECAUSE of the calendar-gap refusal, and in the NaN direction only.  A flip with
+    #  no policy reason, or a policy-refused name that came back SCORED, still fails here.
+    unexplained = flipped[~flipped["gap_refused"]]
+    assert unexplained.empty, (
+        "NaN-status changed with NO NaN-policy reason -- that is the window cap silently "
+        "neutralising a name:" + chr(10) + unexplained.to_string(index=False))
+    assert flipped["after"].isna().all(), (
+        "a NaN-policy-refused name came back SCORED, which is the inverse defect:"
+        + chr(10) + flipped.to_string(index=False))
+    #  and the policy exclusion must stay SELECTIVE on the shipped pool -- if it ever refuses a
+    #  large share of it that is a FINDING, not a detail to absorb into an allowlist.  Measured
+    #  2026-08-05: 2 of 100 (FG, NESR), both with two filing stoppages in the scoring window.
+    assert len(flipped) <= 0.05 * len(d), (
+        "the calendar-gap rule refuses %d of %d shipped pool names on EPStoEPSmean -- too many "
+        "to treat as an exclusion" % (len(flipped), len(d)))
 
 
 # --------------------------------------------------------------------------- #
@@ -345,6 +372,13 @@ def test_the_call_site_inventory_is_COMPLETE():
         # live scorer.  Exempt because the call is CORRECT, not because the file is out of
         # scope -- this guard firing on it was the guard working.
         os.path.join("baseline_tools", "per_exchange_completeness.py"),
+        # The NaN-policy pins (2026-08-05).  Every `eps_to_eps_mean` call in that file is
+        # `sm.eps_to_eps_mean(<frame>, rpy=4)`, inside
+        # test_EPStoEPSmean_is_REFUSED_and_the_reason_is_that_the_limit_is_the_metric_MAXIMUM --
+        # they pass `rpy=` and do NOT pass the ambient scoring `nq`, so they inherit the
+        # 28-quarter EPS_MEAN_BASE_NQ cap exactly as the two production sites do.  Exempt because
+        # the calls are CORRECT; the guard firing on a new file was the guard working.
+        "test_nan_policy.py",
     }
     expected = {p for p, _n in EPS_MEAN_CALL_SITES} | ALLOWED_ELSEWHERE
     found = set()

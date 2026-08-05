@@ -119,6 +119,13 @@ POSTRANK_METRIC_READERS = {
     "portfolio.py": "postRank['source'] only (portfolio.py:305-306); no metric column read",
     "run_target_test.py": "postRank['AggScore'] only, guarded (line 150); AggScore is a score, "
                           "not a metric",
+    # --- reviewed 2026-08-05 (the NaN-policy acceptance harness) ------------------------
+    "nan_policy_report.py":
+        "LITERAL-NAME FALSE POSITIVE, cleared by reading the file: the 15 metric names it "
+        "matches sit in `_row_series`, which rebuilds each metric's PER-ROW series from "
+        "`cdx_df` in order to measure coverage and interior gaps. The only postRank columns it "
+        "touches are ['source'] and ['AggScore'] (section_pool), i.e. a name list and a score "
+        "-- never a weighted metric column, and it publishes no metric value.",
     # NOTE: `pick_log.py` was on this list and matched NOTHING -- it reads AggScore only and
     # takes its entry valuations from cdx_df.  Removed rather than left as a stale claim.
     # --- reviewed 2026-07-31 ------------------------------------------------------------

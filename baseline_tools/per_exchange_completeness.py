@@ -241,9 +241,9 @@ def stage2_metric_frame(cdx_pool, boscore, nq=16, verbose=True):
         tempfcf = tempcdx.freeCashFlow
         tempshares = tempcdx.weightedAverageShsOut
         r['freeCashFlowYield'] = sm.free_cash_flow_yield(tempfcf, tempcdx.marketCap, nq,
-                                                        rpy=_rpy)
+                                                        rpy=_rpy, tempcdx=tempcdx)
         r['freeCashFlowPerShareGrowth'] = sm.free_cash_flow_per_share_growth(
-            tempfcf, tempshares, nq, rpy=_rpy)
+            tempfcf, tempshares, nq, rpy=_rpy, tempcdx=tempcdx)
         r['DcfToPrice'] = np.nan
         r['marketCapRevQuants'] = tempcdx.mcapQuants.iloc[0]
         r['tbVpRatio'] = sm.tbv_p_ratio(tempcdx, nq, rpy=_rpy)

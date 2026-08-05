@@ -1,4 +1,6 @@
+import calcMetrics as cm
 import calcScore as cs
+import nan_policy as npol
 import getData_gen as gdg
 import postBoRank as pbr
 import reporting_period as rp
@@ -253,6 +255,34 @@ def postBoWrapper(dmdic, as_of=None):
     # frequency_by_source decodes the stamped rp.FREQ_CONFLICT_COLUMN -- before that fix this
     # banner could only ever report zero, whatever the data said.
     _freq_map = rp.frequency_by_source(dmdic.get('cdx_df'), verbose=True, csv=True)
+
+    # ONE RUN = ONE SET OF NaN-POLICY COUNTS (review finding, 2026-08-05).  `POLICY_COUNTS`
+    # accumulates ACROSS POOLS on purpose -- postBoScoreRanking runs once per pool -- but it was
+    # never cleared, so a process that scores twice (the backtest harness, the tuner, a test
+    # session, the two arms of the acceptance report) reported the first run's conversions again
+    # in the second.  Cleared HERE because postBoWrapper is exactly once per run.
+    npol.reset_counts()
+
+    # PEG's SIGN-CROSSING SUBSTITUTION -- a CROSS-SECTIONAL BASELINE, so it belongs exactly here
+    # (CEO ruling, 2026-08-05; see calcMetrics.PEG_CROSSING_SUBSTITUTION).
+    #
+    # A growth rate computed from a NEGATIVE base is not a growth rate, so a row where earnings
+    # crossed zero takes the POOL's median growth rate instead and its P/E has to stand on its
+    # own -- neither credit nor penalty, and no tuned constant.  The median cannot be computed in
+    # `calc_special`: that sees ONE source, and on the fetch path the panel is still being
+    # accumulated, so the crossing rows arrive here as NaN.
+    #
+    # WHY THIS LINE AND NOT THE BUILDERS.  It is the same class of object as `BoMetric_ave` and it
+    # gets the same treatment for the same reason (audit H-1): a cross-sectional baseline is
+    # recomputed on the frame ACTUALLY SCORED, never carried stale, and never frozen into the
+    # saved panel.  `bmdf` is a LOCAL, so the artifact on disk keeps the honest per-source
+    # pre-substitution column while the score uses the pooled one.  It is also the ONE seam every
+    # Stage-1 path passes through -- `build_bometric_rows` has four call sites and
+    # `fixAfterGetData` four, and a fix applied to three of four is this project's signature
+    # defect.
+    bmdf, _peg_stats = cm.substitute_peg_crossing(bmdf, dmdic.get('cdx_df'),
+                                                 freq_map=_freq_map, verbose=True)
+
     # bmda is passed but UNUSED inside simpleScore_fromDict -- see the note at its assignment.
     BoScore_df = cs.simpleScore_fromDict(bmdf, bmav, bmda, n, as_of=as_of,
                                         freq_map=_freq_map)

@@ -97,3 +97,9 @@ ReportingFrequencyConflicts_*.csv
 _quarantine/
 ManualEliminationTickersList_fmp_*.csv
 delisted_tickers_*.csv
+
+# Generated measurement-report text artifacts (baseline_tools/nan_policy_report.py and friends).
+# Same class as the *.csv / *.xlsx result artifacts above: reproducible from the script, ~300 KB
+# each, and full of progress-bar noise. The SCRIPT is tracked; its output is not.
+baseline_tools/nan_policy_report_*.txt
+baseline_tools/cache_nanpolicy_*.pickle

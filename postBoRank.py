@@ -10,6 +10,7 @@ import pandas as pd
 import numpy as np
 from tqdm import tqdm
 
+import nan_policy as npol
 import stage2_metrics as sm
 import reporting_period as rp
 
@@ -99,6 +100,14 @@ def postBoScoreRanking(bmtop, bstop, cdxtop, baseurl, api_key, period='quarter',
     # Note: Bulk endpoints require higher subscription tier, using individual API calls only
     dcf_bulk_dict = {}
 
+    # LABEL THE NaN-POLICY COUNTS WITH THIS POOL (nan_policy.POLICY_COUNTS).  The counter is a
+    # run-level accumulator in the same style as NORM_DIAGNOSTICS, and this scorer runs ONCE PER
+    # POOL -- general plus the five carve-out cohorts -- so without the label a cohort's
+    # coverage/gappiness conversions would be indistinguishable from the general pool's.  It is
+    # the observability half of the two-tier policy, and it is a COUNT rather than a per-cell
+    # reason channel because a refused-vs-missing channel was explicitly ruled out.
+    npol.set_pool(pool_label or 'general')
+
     pbar = tqdm(total=len(bstop['source'].unique()))
     for tempcntr, ticker in enumerate(bstop['source']):
         tempcdx = cdxtop.loc[cdxtop['source'] == ticker]
@@ -163,6 +172,12 @@ def postBoScoreRanking(bmtop, bstop, cdxtop, baseurl, api_key, period='quarter',
     # pool.  Read-only on both frames; nothing is assigned back.
     _safe_diagnose(missing_data_fill_report, postScoreMetric_raw, postScoreMetric_df,
                    weight_series, pool=(pool_label or 'general'))
+
+    # WHY each cell was NaN in the first place, as a per-rule COUNT for this pool.  The fill
+    # report above says WHERE the imputation lands; this says WHICH RULE created the cell it
+    # imputed -- coverage below 0.50, interior gaps, calendar gaps, a boundary limit, or a
+    # refusal.  Together they are what section 2 of nan-policy.md asks the run to emit.
+    _safe_diagnose(npol.report_counts)
 
     # Apply weights using the stable weight_series mapping; if a weight is missing,
     # default to 1.
@@ -476,9 +491,14 @@ def _compute_ticker_metrics(ticker, tempcdx, dcf, bstop, nq, tempcntr,
     tempshares = tempcdx.weightedAverageShsOut
     tempmcap = tempcdx.marketCap
 
-    setv('freeCashFlowYield', sm.free_cash_flow_yield(tempfcf, tempmcap, nq, rpy=rpy))
+    # `tempcdx=` is what lets these two see the NAME-level calendar-gap test (nan_policy);
+    # every other windowed metric already receives the frame.  They are the SCORING path, so
+    # they must pass it -- test_nan_policy pins that this call site does.
+    setv('freeCashFlowYield',
+         sm.free_cash_flow_yield(tempfcf, tempmcap, nq, rpy=rpy, tempcdx=tempcdx))
     setv('freeCashFlowPerShareGrowth',
-         sm.free_cash_flow_per_share_growth(tempfcf, tempshares, nq, rpy=rpy))
+         sm.free_cash_flow_per_share_growth(tempfcf, tempshares, nq, rpy=rpy,
+                                            tempcdx=tempcdx))
     # EPStoEPSmean's BASELINE window is stage2_metrics.EPS_MEAN_BASE_NQ (28 quarters), NOT
     # the ambient `nq` scoring window of this function -- do NOT "thread nq through" here.
     # `nq` is the head(n) averaging window the postBm/postNew ratio metrics use (16); the
@@ -715,8 +735,35 @@ def _dedup_issuers_in_ranking(postRank, cdxtop, names, dedup_issuers):
         kept, issuer_dupes_dropped = _co.dedup_ranked(ranked_srcs, cdxtop,
                                                       names or {}, scores=_sc)
         if issuer_dupes_dropped:
-            keptset = set(kept)
-            postRank = postRank[postRank['source'].isin(keptset)].reset_index(drop=True)
+            # HONOUR `kept`'s ORDER, do not merely filter by its MEMBERSHIP (review B1, fixed
+            # 2026-08-05).  This line was `postRank[postRank['source'].isin(set(kept))]`, which
+            # keeps postRank's own row order and throws the returned SEQUENCE away.
+            #
+            # THAT IS LIVE, NOT LATENT, AND THE SHARP STATEMENT IS THE DISAGREEMENT: two consumers
+            # of the SAME `dedup_ranked` call, in the SAME run, read the result differently --
+            # `carveOut.partition_by_marketcap` does `reindex(kept)` and so HONOURS the order,
+            # while this site discarded it.  So the two could place one issuer at two different
+            # positions from one dedup verdict.  `dedup_ranked` resolves exact-tie clone lines by
+            # INVESTABILITY rather than sort stability, and that tie-break is expressed ONLY in
+            # the order of `kept`; a membership filter cannot see it.
+            # MEASURED SEVERITY on the local panel: the top-20 SETS agree and only the order at
+            # #13 diverges -- small, but a divergence between two readings of one verdict is not
+            # something to leave in place, and the ejection reading of the mechanism is
+            # unquantified rather than excluded.
+            # `reindex` on a source-indexed frame is the same idiom carveOut uses, deliberately.
+            if postRank['source'].duplicated().any():
+                # Cannot happen -- postRank is one row per source -- but a position-preserving
+                # reindex on a duplicated index is AMBIGUOUS, and guessing would be exactly the
+                # silent mis-ordering this fix removes.  Raise, so the LOUD FALLBACK below names
+                # the real cause instead of the dedup quietly reverting to a membership filter.
+                raise ValueError(
+                    'postBoRank issuer-dedup: postRank carries duplicate `source` rows, so '
+                    'honouring dedup_ranked\'s ORDER is ambiguous. postRank is built one row per '
+                    'source; a duplicate means an upstream defect, not a dedup problem.')
+            _present = set(postRank['source'])
+            _kept_present = [s for s in kept if s in _present]
+            postRank = (postRank.set_index('source').reindex(_kept_present)
+                        .reset_index())
             print("postBoRank issuer-dedup: collapsed %d same-issuer line(s) in the "
                   "ranking -> %s"
                   % (len(issuer_dupes_dropped),
@@ -1570,10 +1617,13 @@ def missing_data_fill_report(raw_df, norm_df, weight_series, pool='general',
     """WHERE THE fillna(0) IMPUTATION LANDS, per weighted column and per name.  EMITS ONLY.
 
     WHY IT HAS TO BE PRODUCED BY THE RUN (2026-08-01).  A missing metric is imputed by
-    `normalizeAndDropNA`'s post-normalisation `fillna(0)`, i.e. it is scored AT THE POOL MEAN
-    of that column, not as "missing".  Whether that is generous or punitive depends on where 0
-    sits in the column's OBSERVED z distribution -- which is a property of THIS pool on THIS
-    panel.  Every fill percentile we hold was measured on a pre-change panel, and the 2026-08-01
+    `normalizeAndDropNA`'s post-normalisation `fillna(0)`, i.e. it is scored AT THE POOL
+    **MEDIAN** of that column, not as "missing".  (This line said "POOL MEAN" until 2026-08-05
+    and was stale from E-1: the ruler has centred each column on its observed MEDIAN since
+    2026-08-03, which is precisely why the fill is now (near-)neutral instead of the +0.0739
+    advantage it used to be -- so the wrong word here described the defect that had been fixed.)
+    Whether the fill is generous or punitive depends on where 0 sits in the column's OBSERVED z
+    distribution -- which is a property of THIS pool on THIS panel.  Every fill percentile we hold was measured on a pre-change panel, and the 2026-08-01
     scoring changes (the EPStoEPSmean window cap and the incomeQuality basis) move the very
     distributions those percentiles were measured against.  Re-deriving them later from a stale
     panel would calibrate the new design against the old data, so tonight's run PRODUCES the

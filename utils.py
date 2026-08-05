@@ -63,6 +63,84 @@ def check_panel_basis(dmdic, fname='<unknown>', verbose=True):
     return basis
 
 
+#  A LOADED PANEL'S *BoMetric* BASIS, which `check_panel_basis` above cannot see (2026-08-05).
+#  THE HAZARD IS THE SAME SHAPE AS THE ONE THAT FUNCTION EXISTS FOR, one frame further in.  The
+#  2026-08-05 NaN-policy change altered two Stage-1 CRITERION COLUMNS rather than any cdx field:
+#  `uGrahamNumberToPrice` now carries the boundary value 0.0 on adverse rows instead of NaN, and
+#  `PEG` is computed locally instead of read off the vendor field.  Neither renames a column, so
+#  `calcScore`'s schema gate -- which is column-EXACT on NAMES -- passes a stale panel silently,
+#  and a `-loadbometric` run would score old criterion columns with new code.  cdx-level ratios
+#  cannot detect it: cdx is unchanged.
+#
+#  THE DETECTOR IS AN EXACT ZERO, and that is why it is reliable rather than a heuristic.
+#  `uGrahamNumberToPrice` is grahamNumber/price -- a ratio of two continuous positive quantities,
+#  which lands on exactly 0.0 with probability zero.  So ANY exact zeros mean the boundary
+#  imputation ran; NONE, alongside a large NaN rate, means it did not.  Measured on the
+#  2026-07-17 CORRECTED panel rebuilt with the current code: 53,267 of 148,081 rows (36.0%) are
+#  exactly 0.0 and 687 remain NaN; on the pre-change rebuild, 0 are exactly 0.0 and 53,954 are
+#  NaN.  Emits only, never raises, never blocks -- the reload path is a legitimate workflow, but
+#  it must not be silent.
+BOMETRIC_BOUNDARY_COLUMN = 'uGrahamNumberToPrice'
+
+
+def check_bometric_basis(dmdic, fname='<unknown>', verbose=True):
+    """Report whether a LOADED BoMetric_df carries the post-2026-08-05 criterion basis.
+
+    Returns 'new' | 'old' | 'unknown'.  'unknown' when the column is absent or the panel is too
+    small for the incidence to mean anything -- a small TEST universe can legitimately contain no
+    adverse Graham row at all, and calling that 'old' would be a false alarm.
+    """
+    basis, n_zero, n_nan, n = 'unknown', 0, 0, 0
+    try:
+        bm = dmdic.get('BoMetric_df')
+        v = pd.to_numeric(bm[BOMETRIC_BOUNDARY_COLUMN], errors='coerce')
+        n = int(len(v))
+        n_nan = int(v.isna().sum())
+        n_zero = int((v == 0.0).sum())
+        if n >= 1000:
+            if n_zero > 0:
+                basis = 'new'
+            elif n_nan >= 0.05 * n:
+                #  no boundary values AND a substantial non-computable share = the pre-change
+                #  build.  The second clause matters: a panel with no adverse rows at all would
+                #  otherwise be mislabelled.
+                basis = 'old'
+    except Exception:
+        pass
+    if not verbose:
+        return basis
+    if basis == 'new':
+        print('BoMETRIC BASIS OK: %s carries the CURRENT criterion basis (%s exactly 0.0 on '
+              '%d of %d rows = the adverse-Graham boundary; %d still NaN = genuine missing '
+              'inputs).' % (fname, BOMETRIC_BOUNDARY_COLUMN, n_zero, n, n_nan), flush=True)
+        return basis
+    if basis == 'unknown':
+        print('BoMETRIC BASIS UNKNOWN for %s (%s absent, or only %d row(s) -- too few for the '
+              'incidence to mean anything). Not a warning; just not determinable.'
+              % (fname, BOMETRIC_BOUNDARY_COLUMN, n), flush=True)
+        return basis
+    bar = '!' * 78
+    msg = [
+        '', bar,
+        '!!! LOADED BoMetric PANEL PREDATES THE 2026-08-05 NaN POLICY.',
+        '!!!   panel : ' + str(fname),
+        '!!!   %s: 0 rows exactly 0.0, %d of %d NaN (%.1f%%).'
+        % (BOMETRIC_BOUNDARY_COLUMN, n_nan, n, 100.0 * n_nan / max(1, n)),
+        '!!! Consequence: this panel carries the OLD criterion columns -- `PEG` from the VENDOR',
+        '!!! field on a quarter-over-quarter growth leg, and `uGrahamNumberToPrice` NaN on',
+        '!!! adverse rows instead of the derived boundary -- while the rest of the run applies',
+        '!!! the current code. No column was RENAMED, so calcScore\'s schema gate cannot see it.',
+        '!!! Stage-1 scores are a hybrid: the PEG criterion alone moves from a 0.2050 to a',
+        '!!! 0.2670 pass rate between the two bases. Re-fetch (or rebuild the panel) for',
+        '!!! anything decisional.',
+        bar, '',
+    ]
+    out = chr(10).join(msg)
+    print(out, file=sys.stderr, flush=True)
+    print(out, flush=True)
+    return basis
+
+
 def loadWrapper(type,loaddic):
     if type == 'metric':
         lbmfn = loaddic['loadBoMetricfname']

@@ -475,7 +475,21 @@ def getDicts():
 
     BoMetric_unity_dict =    {
         'currentRatio':         {'Upper': 'currentRatio',       'Lower': 'Identity',    'Tier': 'S', 'Sign': 1},
-        'grahamNumberToPrice':  {'Upper': 'grahamNumber',       'Lower': 'price',       'Tier': 'S', 'Sign': 1},
+        # BOUNDARY-IMPUTED on its ADVERSE rows (nan-policy.md ADDENDUM A, 2026-08-05).
+        # grahamNumber = sqrt(22.5 * EPS_ttm * BVPS) is undefined for EPS_ttm <= 0 or BVPS <= 0,
+        # and 99.1% of that non-computability is ADVERSE (negative EPS 22,103 rows, negative book
+        # 1,109) against 0.9% a genuine gap (missing inputs 208) -- the strongest evidence in
+        # this project that "undefined" and "missing" are different objects.  The CEO's rule for
+        # the adverse half: "just put it like earnings were close to 0."  Taken as a LIMIT, that
+        # is grahamNumber/price -> 0.0, and the unity test then yields -1.0 = a FAIL.
+        # SO THIS IS BEHAVIOUR-IDENTICAL TO TODAY on all 23,212 adverse rows, deliberately, and
+        # the identity is the confirmation rather than the disappointment: the fail becomes
+        # DERIVED ("there is no earnings-based valuation floor to compare this price against")
+        # instead of INCIDENTAL ("the number was missing"), so the criterion no longer relies on
+        # NaN-scores-as-a-fail to reach the right answer.  The 208 missing-input rows stay NaN.
+        # Predicate in calcMetrics.STAGE1_BOUNDARY_IMPUTATIONS, limit + derivation in
+        # nan_policy.BOUNDARY_LIMIT.  Sign STAYS +1 and the Tier is untouched.
+        'grahamNumberToPrice':  {'Upper': 'grahamNumber',       'Lower': 'price',       'Tier': 'S', 'Sign': 1, 'Boundary': 'graham_adverse'},
         # GUARDED EBITDA > 0, NOT inverted (sign-inversion fix, 2026-08-04).
         #
         # THE GUARD KEYS ON THE DENOMINATOR ALONE, AND THAT IS THE WHOLE POINT.  This
@@ -539,37 +553,52 @@ def getDicts():
         # better earnings quality.  Profitability is tested separately and at Tier S by
         # returnOnAssets and the CFO>0 base test.
         'CFOlessEarnings':                  {'Tier': 'S', 'Sign': 1},
-        # GUARDED, TWO-SIDED (sign-inversion fix, follow-up, 2026-08-04).  The criterion is
-        # `1/PEG - 1 > 0`, i.e. exactly 0 < PEG < 1.  An earlier review cleared PEG by verifying
-        # that its pass count equals the count of rows with raw PEG in (0,1) -- which is TRUE and
-        # tests nothing about whether those values are legitimate.  They frequently are not.
+        # COMPUTED LOCALLY, AND THE DOMAIN MOVED WITH IT (2026-08-05).  The criterion is still
+        # `1/PEG - 1 > 0`, i.e. exactly 0 < PEG < 1, still Tier C, still Sign +1.  What changed
+        # is that `PEG` is no longer FMP's `priceEarningsToGrowthRatio`: it is computed from
+        # full-precision inputs on a TRAILING-YEAR basis with a ONE-YEAR growth horizon.  The
+        # vendor formula that was reverse-engineered, the three defects in it (quarter-over-
+        # quarter horizon, an annualised P/E divided by a quarterly percentage, and a growth leg
+        # differenced from two 2-decimal-rounded figures), and the horizon reasoning all live in
+        # `calcMetrics.peg_local` -- one place, beside the arithmetic.  CEO ruling behind it: "In
+        # general, we should compute things we can rather than using the FMP."
         #
-        # THE BASIS IS SETTLED ARITHMETICALLY (no vendor docs exist), on nine deliberately
-        # seasonal quarters:  PEG = [price/(4*eps_t)] / [100*(eps_t/eps_{t-1} - 1)].  The PE leg
-        # is ONE QUARTER ANNUALISED x4 (implied earnings pin to 4.00 x NI_quarter within 0.7% on
-        # all nine, while the TTM hypothesis swings 0.63-1.51), and the growth leg is SEQUENTIAL
-        # quarter-over-quarter on reported `eps` (matched to all printed digits; netIncome QoQ
-        # does NOT match).  Both operands are single-period, so the guard keys on the SINGLE
-        # PERIOD -- not TTM.  That choice is worth 214 of 1,223 passes (17.5%) on the TEST1 panel
-        # and 2,391 of 24,298 on this one, and it resolves in favour of single-period.
+        # THE `Guard` KEY IS GONE, AND THAT IS NOT A REVERT OF THE 2026-08-04 FIX -- READ THIS
+        # BEFORE RESTORING IT.  PEG is still REFUSED on exactly the states that used to be
+        # guarded plus one more, and the refusal is stricter, not looser.  What changed is WHERE
+        # the domain is stated.  A `Guard` is a predicate on the RAW frame whose signature
+        # carries no `rpy`, so a PEG guard would have to re-derive the filer's frequency from the
+        # stamp while `peg_local` receives it from the caller -- two statements of one domain,
+        # resolved from two different places, which is the silently-divergent pair this repo
+        # keeps getting bitten by.  PEG's domain is also INTRINSIC to its formula (without a
+        # positive trailing EPS there is no P/E for a growth rate to be compared against, so the
+        # value does not exist rather than being inadmissible), which a `Guard` cannot express.
+        # So it lives in `calcMetrics.peg_local`, once.
         #
-        # BOTH legs of the growth ratio must be positive or the ratio is not a growth rate.
-        # The four states, MEASURED (61,472 head(8) rows):
-        #   eps_t>0 eps_prev>0   34,398 rows  pass 0.3671   DEFINED
-        #   eps_t<0 eps_prev>0    5,129 rows  pass 0.8830   FALSE PASS (PE<0 x growth<0)
-        #   eps_t<0 eps_prev<0   16,902 rows  pass 0.4218   FALSE PASS (same cancellation)
-        #   eps_t>0 eps_prev<0    5,040 rows  pass 0.0006   TURNAROUND, wrongly FAILED
-        # 11,659 of 24,292 passes (48.0%) came from the two false-pass cells -- the largest
-        # share of any criterion in this family.
+        # THE DOMAIN ITSELF MOVED, and that is the substantive half.  The shipped guard required
+        # BOTH eps legs positive, because the vendor's ratio-form growth leg is meaningless
+        # across a sign change.  The local growth leg divides by |base|, so a NEGATIVE base is
+        # admissible -- which is exactly what makes the TURNAROUND expressible.  What is still
+        # refused is a non-positive CURRENT trailing EPS: no earnings, no P/E, nothing for a
+        # growth rate to be compared against; and that single condition removes BOTH of the old
+        # false-pass cells (where PE < 0 cancelled against growth < 0 into a positive PEG).
         #
-        # READ THE TURNAROUND ROW HONESTLY: the guard does NOT recover it.  Stage-1 scores a
-        # refused row as a FAIL, so those 5,037 wrongly-failed rows stay failed; the guard only
-        # makes the reason honest and removes the 3 that passed on the sign flip.  Two-sided vs
-        # one-sided is a 3-pass difference.  The turnaround defect is RECORDED here and NOT
-        # fixed -- it needs Stage-1's NaN rule changed (out of scope) or PEG recomputed locally.
-        # SIGN STAYS +1.  The guard uses the `netIncomePerShare` PROXY for `eps`; see
-        # calcMetrics._PEG_EPS_FIELD for why switching to `eps` must be a deliberate edit.
-        'PEG':                              {'Tier': 'C', 'Sign': 1, 'Guard': 'peg_growth_defined'},
+        # THE FOUR SIGN CELLS, BEFORE -> AFTER, on the 61,832 newest-8 rows of the panel:
+        #   eps_now>0 prev>0      34,500 / 12,673 passes  ->  34,569 / 12,513   (0.367 -> 0.362)
+        #   eps_now<=0 prev>0      5,177 /      0 refused ->   4,225 /      0   refused
+        #   eps_now<=0 prev<=0    17,035 /      0 refused ->  17,321 /      0   refused
+        #   eps_now>0 prev<=0      5,089 /      0 FAILED  ->   4,489 /    773   (0.172)
+        # Overall criterion pass rate 0.2050 -> 0.2149.  NOTE WHERE THAT COMES FROM: the normal
+        # cell is essentially UNCHANGED (-0.53pp), so the fixed 0<PEG<1 bar has NOT been loosened
+        # by the horizon change; the whole movement is the crossing rows going from AUTO-FAILED to
+        # SCORED-ON-THEIR-OWN-P/E.
+        # THE CROSSING CELL IS NERFED (CEO, 2026-08-05): it takes the POOL's median growth rate,
+        # so the DEPTH OF THE PRIOR LOSS no longer enters the answer. Crossing 0.172 against
+        # normal 0.362 = 0.48x, where before the nerf it was 0.890 = 2.46x. Lower, and the
+        # mechanism is plain: a just-crossed trailing EPS is tiny, so the trailing P/E is
+        # genuinely high and fails against a 6.72%/yr median. So those 5,089 rows are now
+        # MEASURED rather than auto-failed -- NOT "now passing". See calcMetrics.peg_local.
+        'PEG':                              {'Tier': 'C', 'Sign': 1},
         # GUARDED equity > 0 (sign-inversion fix, 2026-08-04) -- applied inside
         # calcMetrics.calc_special, since this criterion has a formula rather than a ratio spec.
         # ROE = netIncome/equity, so NEGATIVE equity with a NEGATIVE net income gives a

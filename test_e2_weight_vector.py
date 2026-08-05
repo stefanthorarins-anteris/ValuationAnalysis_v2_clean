@@ -560,26 +560,54 @@ def test_the_extraction_agrees_with_the_Piotroski_point_it_came_from():
 
 
 def test_the_MECHANISM_the_C_block_OOD_ruling_rests_ON():
-    """The design's FIN-1 / FIN-3 `C`-block ruling turns on a code fact, so the code fact is
-    pinned: an undefined Piotroski component does NOT propagate NaN.  A NaN input makes every
-    `>` / `<` / `<=` comparison False, so the point scores 0 -- indistinguishable from
-    FAILING it.  With 7 of 9 undefined the composite is therefore systematically PUNITIVE
-    against every member of the cohort, not merely uninformative, which is why it is carried
-    at no weight there rather than at a reduced one.
+    """FLIPPED 2026-08-05, AND THE RULING HAS BEEN RE-READ RATHER THAN ASSUMED.
 
-    THIS IS THE ONE PLACE the two undefined-for-a-financial inputs are exercised directly:
-    `grossProfitMargin` (no gross margin exists) and `currentRatio` (no working-capital
-    cycle).  Both are inputs a bank or a fund genuinely lacks, and both cost a POINT.
+    This test used to pin the OPPOSITE code fact: that an undefined Piotroski component did NOT
+    propagate NaN, so a NaN input made every comparison False, the point scored 0, and the
+    composite was systematically PUNITIVE against a cohort with 7 of 9 components undefined.  It
+    carried its own instruction for this moment -- "if this ever changes to NaN-propagation the
+    OOD ruling still holds but its URGENCY drops from 'actively mis-ranks financials today' to
+    'carries no information', so the ruling should be re-read rather than assumed."
 
-    If this ever changes to NaN-propagation the OOD ruling still holds (a NaN carrier is no
-    carrier) but its URGENCY drops from "actively mis-ranks financials today" to "carries no
-    information", so the ruling should be re-read rather than assumed."""
-    punished = s2m.piotroski(_perfect_nine(grossProfitMargin=np.nan, currentRatio=np.nan))
-    assert not np.isnan(punished), (
-        'piotroski now propagates NaN -- re-read the C-block OOD reasoning in '
-        'scoringWeights D.2 before relying on the "punitive" framing')
-    assert punished == 7, \
-        'two undefined components cost exactly two POINTS, i.e. they scored as failures'
-    #  contrast: the EXTRACTED metrics answer NaN for the same class of gap
+    nan-policy.md section 4a made that change (stage2_metrics.piotroski now returns NaN when any
+    component input is absent), so the re-read, recorded here:
+
+      * THE C-BLOCK OOD RULING STANDS.  `Piotroski` is still carried at w = 0.0000 in FIN-1 and
+        `BalanceSheetFin`.  A NaN carrier is no carrier: after this change the composite is NaN
+        for those members, `normalizeAndDropNA` imputes it at the column MEDIAN, and a column
+        that is near-constant after the fill spends its weight on nothing.  Zero weight is still
+        the right answer -- for the second reason now, not the first.
+      * ITS URGENCY DROPS, exactly as predicted.  The framing "actively mis-ranks financials
+        today" is retired; the honest framing is "carries no information there".
+      * WHAT THE CHANGE IS WORTH, measured [panel = baseline_tools/resdic_2026-07-17_CORRECTED]:
+        117 sources (1.51%) [universe], 33 of the 4,287 general-carved names, 0 of the 100
+        deployed pool names -- all of them via `netCashProvidedByOperatingActivities` (p2, p4).
+        FIN-1's own exposure is only 4 of 79 members, because the "7 of 9 undefined" there is
+        CONCEPTUAL inapplicability (a BDC has no gross margin) and FMP reports ZEROS for it, not
+        NaNs.  A structural zero is not a NaN and no NaN rule reaches it.
+      * SO DO NOT RECORD D-9 AS CLOSED BY THIS.  The structural-zero channel is ~6.5x larger
+        (`longTermDebt == 0` in both periods fails p5 on 476 sources, forever) and needs a
+        provider-level presence flag at ingest.
+    """
+    nanned = s2m.piotroski(_perfect_nine(grossProfitMargin=np.nan, currentRatio=np.nan))
+    assert np.isnan(nanned), (
+        'an undefined Piotroski component must make the COMPOSITE NaN. Scoring the point 0 is '
+        'indistinguishable from FAILING the test, i.e. a mark-down for a provider gap -- which '
+        'is what nan-policy.md section 4a removed. If this reverts, the C-block OOD ruling '
+        'reverts to its "actively mis-ranks" framing too.')
+    #  NOT a "fraction of the computable tests passed": that form would REWARD a company for
+    #  having fewer tests apply to it.  The whole composite goes unavailable instead.
+    assert np.isnan(s2m.piotroski(_perfect_nine(netIncome=np.nan)))
+    assert np.isnan(s2m.piotroski(_perfect_nine(revenue=np.nan)))
+    #  A REPORTED ZERO IS NOT ABSENT, and this is the boundary of what the fix reaches.  A
+    #  PERMANENTLY unlevered company reports longTermDebt == 0 in BOTH periods, still scores,
+    #  and still FAILS p5 -- `0 < 0` is False -- so it drops to 8 for a reason no NaN rule can
+    #  see.  That is the structural-zero channel (476 sources, 6.17%), ~6.5x this fix and
+    #  untouched by it by construction.
+    _unlevered = _frame([dict(_improved_now(), longTermDebt=0.0), _row(), _row(), _row(),
+                         dict(_weaker_then(), longTermDebt=0.0)])
+    assert s2m.piotroski(_unlevered) == 8
+    #  the EXTRACTED metrics already answered NaN for the same class of gap; the composite has
+    #  now been brought into line with them rather than the other way round
     assert np.isnan(s2m.share_count_change(_perfect_nine(weightedAverageShsOut=np.nan)))
     assert np.isnan(s2m.long_term_debt_change(_perfect_nine(longTermDebt=np.nan)))

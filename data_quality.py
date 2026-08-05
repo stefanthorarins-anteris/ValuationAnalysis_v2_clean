@@ -15,6 +15,8 @@ import numpy as np
 from datetime import datetime
 import os
 
+import nan_policy as npol
+
 
 # --- cross-field plausibility thresholds (see checks 5-7 in check_price_sanity) -----
 # Each is set where the combination becomes ARITHMETICALLY IMPOSSIBLE rather than merely
@@ -275,22 +277,25 @@ def filter_invalid_data(cdx_df, price_col='price', mcap_col='marketCap',
             if pd.notna(price) and price > 0:
                 prev_data[source] = (price, mcap, date)
     
-    if not corrupt_records:
-        if verbose:
-            print("No corrupt data found.")
-        return df, pd.DataFrame()
-    
-    corrupt_df = pd.DataFrame(corrupt_records)
-    
+    # NO EARLY RETURN ON "no corruption found" (2026-08-05).  It used to return here, which
+    # would have SKIPPED PASS 5 (the primary-presence eject) entirely on any panel whose
+    # arithmetic checks all pass -- i.e. the eject would have been conditional on unrelated
+    # corruption existing.  The passes below are each empty-safe instead.
+    corrupt_df = pd.DataFrame(corrupt_records,
+                              columns=['source', 'date', 'price', 'marketCap', 'reason'])
+    if verbose and corrupt_df.empty:
+        print("No corrupt data found (arithmetic checks).")
+
     # =========================================================================
     # PASS 2: For each ticker, find most recent corruption date
     # =========================================================================
     # Get the most recent (max) corruption date per ticker
-    most_recent_corruption = corrupt_df.groupby('source')['date'].max().to_dict()
-    
+    most_recent_corruption = ({} if corrupt_df.empty
+                              else corrupt_df.groupby('source')['date'].max().to_dict())
+
     if verbose:
         print(f"\nTickers with corruption: {len(most_recent_corruption):,}")
-    
+
     # =========================================================================
     # PASS 3: Remove all data at or before the most recent corruption date
     # =========================================================================
@@ -341,9 +346,81 @@ def filter_invalid_data(cdx_df, price_col='price', mcap_col='marketCap',
         
         # Update filtered_df
         filtered_df = filtered_df[~filtered_df['source'].isin(insufficient_tickers)].copy()
-    
+
+    # =========================================================================
+    # PASS 5: PRIMARY-PRESENCE EJECT  (nan-policy.md section 1a / ADDENDUM C)
+    # =========================================================================
+    # THE CEO'S FIRST TIER, AND IT IS DELIBERATELY *NOT* A NEW GATE.  "we should have some
+    # columns such that if there are NaNs, we should just disqualify them."  The source-level
+    # exclusion that can express that already exists -- it is this function -- and a second
+    # gate is worse than either.  Stage-1 cannot express an eject at all: calcByTier returns a
+    # PASS-RATE, so a NaN there is soft degradation (a name failing eight of eight rows on a
+    # Tier-S criterion still scores, and four names reach the pool passing ZERO of eight on
+    # net-debt-to-EBITDA).  That ruling is ring-fenced and is not reopened.
+    #
+    # FIVE RAW INPUTS, plus the two ARITHMETIC IMPOSSIBILITIES that `revenue` and `totalAssets`
+    # were reclassified into (ADDENDUM C1).  The list, the conditions and the AS-OF-ROW reading
+    # all live in `nan_policy` beside the reasoning; this site only applies the verdict and
+    # logs it.
+    #
+    # MEASURED [panel = baseline_tools/resdic_2026-07-17_CORRECTED.pickle]: 117 sources
+    # (1.51%) on the CFO limb, 13 on totalAssets <= 0, 36 on revenue < 0, every other limb 0 --
+    # union 166 of 7,729 (2.15%) universe and **0 of the 100 deployed pool names**.  It is a
+    # TRIPWIRE more than a filter: the eject already happens upstream for the other four limbs
+    # (0.00% NaN on the newest row of all 7,729 surviving sources), and 2,738 of the 10,467
+    # tickers in Tickers_df never reach Stage-1 at all.  What it buys is that the day a
+    # provider gap DOES land on a primary input, the name leaves rather than being scored on
+    # the pool.
+    #
+    # IDEMPOTENT: the ejected sources are gone from `filtered_df`, so a second invocation (this
+    # function runs TWICE on the live path, Sbocker.py:490 and :547) finds nothing to remove.
+    # LOUD FALLBACK, NOT A RAISE, and not a silent skip either.  `primary_eject` REFUSES a frame
+    # that does not carry a primary input, because reporting "0 ejected" for a missing column is
+    # a false negative.  But this function sits on the critical path of a ~12-hour run, and the
+    # same trade-off already has a precedent in this repo (postBo's carve-out fallback): finish
+    # the run, and make it impossible to miss that a tier of the filter did not apply.  The
+    # banner deliberately says the output must not be treated as filtered.
+    if not filtered_df.empty:
+        try:
+            _ej = npol.primary_eject(filtered_df, verbose=verbose)
+        except Exception as _e:
+            print("!" * 78, flush=True)
+            print("!!! PRIMARY-PRESENCE EJECT DID NOT RUN (%s: %s)."
+                  % (type(_e).__name__, _e), flush=True)
+            print("!!! The CEO's first tier -- 'columns such that if there are NaNs, we should\n"
+                  "!!! just disqualify them' -- was NOT applied to this frame. Names with an\n"
+                  "!!! absent primary input are still in the universe. DO NOT treat this output\n"
+                  "!!! as fully filtered.", flush=True)
+            print("!" * 78, flush=True)
+            _ej = pd.DataFrame()
+        if len(_ej):
+            # One reason string per source, naming EVERY limb that fired on it (a source can
+            # fail more than one), then one removal record per REMOVED ROW -- the same
+            # convention PASS 4 uses, so the summary's row count below stays honest and the
+            # transparency CSV carries the attribution on every row it deleted.
+            _reason = {}
+            for _src, _grp in _ej.groupby('source'):
+                _limbs = '; '.join(
+                    '%s %s (value=%s)' % (r['field'], r['limb'],
+                                          'NaN' if pd.isna(r['value']) else '%.6g' % r['value'])
+                    for _, r in _grp.iterrows())
+                _reason[_src] = 'primary_input_absent [%s]' % _limbs
+            _mask = filtered_df['source'].isin(_reason)
+            for _idx, _row in filtered_df[_mask].iterrows():
+                removal_records.append({
+                    'source': _row['source'],
+                    'date': _row.get('date', None),
+                    'price': _row.get(price_col, np.nan),
+                    'marketCap': _row.get(mcap_col, np.nan),
+                    'removal_reason': _reason[_row['source']],
+                })
+            filtered_df = filtered_df[~_mask].copy()
+            if verbose:
+                print("  primary-presence eject removed %d source(s) entirely (%d row(s))."
+                      % (len(_reason), int(_mask.sum())))
+
     removed_df = pd.DataFrame(removal_records)
-    
+
     # =========================================================================
     # Summary
     # =========================================================================

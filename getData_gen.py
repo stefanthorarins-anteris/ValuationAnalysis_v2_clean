@@ -451,6 +451,37 @@ def filter_non_common_instruments(df, verbose=True, log_csv=True):
     Returns the filtered frame.  Every removal is logged with the rule that caught it
     (loud stdout summary + a dated CSV) so the exclusion list is auditable and never
     silent.  Requires 'symbol'; uses 'name' when present.
+
+    THIS FILTER STAYS, AND IT LOSES ITS BURDEN OF COMPLETENESS (2026-08-05).
+    carveOut's canonical-choice dedup now collapses each issuer to one line and PICKS the
+    canonical member, so a non-common line that has a sibling in the pool no longer needs
+    catching HERE -- if it slips through, dedup simply prefers the sibling. That removes
+    the property that has actually been failing: this filter had to be COMPLETE, and it
+    never could be (it is three ANGLO rules -- English debt vocabulary, the US/Nordic
+    `-P<letters>` suffix, and a shared symbol prefix -- so it caught 1 of 196 Korean
+    preferreds and 0 of 1,046 restored Continental names).
+
+    BUT IT IS STILL NEEDED, because canonical-choice cannot pick a better sibling that is
+    not in the pool. MEASURED on the live 2026-08-04 list, all 51,703 type=='stock' lines
+    (i.e. the RAW available-traded capture, NOT intersected with the statement-symbol
+    list -- state the population, because the design spec's figures are 902/760/142 on a
+    slightly narrower one and the two must not be conflated):
+      * it removes 1,097 lines;
+      *   912 (83%) have a surviving same-normalised-name sibling in the live list, so
+          canonical-choice would have handled them anyway;
+      *   185 (17%) DO NOT, and those are catchable only by a detector: name:rights 48,
+          name:coupon-rate 42, preferred-suffix 40, name:preferred-class 27,
+          name:warrant 22, name:notes-in-context 3, name:maturity 3.
+      * RULE C (`symbol-extension`, 468 removals) is the one rule that is now purely a
+        COST OPTIMISATION: 0 of its 468 removals lack a sibling, so dedup covers 100% of
+        them. Keeping it saves ~5 statement calls per line pre-fetch and keeps them out of
+        the Stage-2 z-pool (which dedup does not police); it is no longer load-bearing for
+        correctness.
+    So: DO NOT WIDEN this filter, and DO NOT "fix" SHARE_CLASS_FILTER_KNOWN_GAPS below --
+    WHLRD, WHLRL and BWNB all have siblings in the pool and canonical-choice handles all
+    three (BWNB in particular is grouped by the K1 statement key despite the truncated
+    FMP name that defeats every name-based rule). Widening a removal rule is where a
+    deleted common comes from; that is the expensive error and it is now avoidable.
     """
     if df is None or 'symbol' not in getattr(df, 'columns', []) or df.empty:
         return df
@@ -621,6 +652,20 @@ ISIN_DETECTOR_VERIFIED_FINDINGS = {
     'known_false_positive': (('HEIA.AS', 'HEIO.AS'),),
 }
 
+#  STATUS UPDATE (2026-08-05). The note above ends "a safe version needs a fundamentals
+#  check on top of the ISIN signal -- which is carveOut's existing issuer-fingerprint
+#  idea, and belongs there rather than here". That is now BUILT: carveOut's K1/K2/K3
+#  keys group all four `duplicate_isin` / `non_common_admitted` symbols by FUNDAMENTALS,
+#  with no ISIN and no name-similarity rule, and carveOut's canonicity ordering picks the
+#  common. So this detector is superseded for the cases it was written to find.
+#
+#  TWO THINGS DO NOT CHANGE. (1) `same_name_different_isin` STAYS UNWIRED -- it has a
+#  real false positive on Heineken and the fundamentals keys do its job with better
+#  precision; carveOut separates HEIA.AS from HEIO.AS on netIncome and marketCap, which
+#  no name/ISIN rule can. (2) EXACT-ISIN equality remains the natural fourth grouping
+#  key (K4) and would be cheap belt-and-braces for HAFNI/HAFNIO and CATG/ALCAT -- it is
+#  not wired only because profile ISIN is fetched but never plumbed into `cdx_df`.
+
 # =========================================================================== #
 #  KNOWN GAPS IN `filter_non_common_instruments` -- PRE-EXISTING, NOT INTRODUCED  #
 #  BY THE UNIVERSE WORK.  Found 2026-08-03 while auditing the curated test        #
@@ -656,6 +701,162 @@ SHARE_CLASS_FILTER_KNOWN_GAPS = {
         ('PREVA.AS', 'VALUE.AS', 'Value8 cumulative preference shares, -29.9%'),
     ),
 }
+
+
+# =========================================================================== #
+#  KOREA -- THE DEDUP DEPENDENCY, EXPRESSED IN CODE                             #
+#                                                                               #
+#  Korea is admissible in a universe ONLY because canonical-choice issuer dedup   #
+#  exists (carveOut, 2026-08-05). 196 preferred symbols across 91 families share   #
+#  their common's numeric root AND its company name verbatim and trade at 30-60%   #
+#  discounts, so on a cheapness screen they rank STRAIGHT TO THE TOP -- they look   #
+#  like the same company at half price, because that is exactly what the data says. #
+#  The old share-class filter caught 1 of 196 (rule B keys on a `-P<letters>`       #
+#  suffix; the Korean convention is a suffix ON THE ROOT, which no rule saw).       #
+#                                                                               #
+#  So the dependency is not a comment, it is a GATE: a universe containing KSC or   #
+#  KOE does not resolve unless the Korean canonicity marker is present and correct.  #
+#  Nobody can enable Korea by editing `universes.py` alone.                          #
+#                                                                               #
+#  WHAT THE GATE CAN AND CANNOT PROVE -- stated plainly, because overclaiming here   #
+#  is exactly the failure the register keeps booking. It runs PRE-FETCH, where no     #
+#  statements exist yet, so it proves the PICKING half only:                          #
+#    PROVEN pre-fetch  -- the marker demotes every non-`...0` line and demotes NO      #
+#                         `...0` common (a pure function of symbol + name), and the     #
+#                         live list still has the family shape the marker assumes.      #
+#    NOT PROVEN         -- that FMP actually serves a Korean preferred its issuer's      #
+#                         statements, i.e. that K1/K3 GROUP the family at all. If they   #
+#                         do not, each preferred survives as its own singleton issuer     #
+#                         and the marker never gets a sibling to prefer.                  #
+#  That second half is a POST-FETCH regression (test_dedup_issuer.py, the Korea gate)     #
+#  and it is UNVERIFIED until a real Korea fetch exists. The gate says so out loud.       #
+# =========================================================================== #
+KOREA_EXCHANGE_CODES = ('KSC', 'KOE')
+
+#  Live-verified 2026-08-04 on `available_traded_raw_2026-08-04.pickle` (51,703
+#  type=='stock' lines): (common, *preferred_lines) per family. Recorded as DATA so the
+#  finding is testable and cannot decay into prose, exactly like
+#  ISIN_DETECTOR_VERIFIED_FINDINGS. Chosen to cover every SHAPE, not just the common one:
+#    005930/005935  the textbook numeric preferred (Samsung Electronics, ~29% discount)
+#    005380/5/7/9   a family with THREE preferred lines (Hyundai Motor)
+#    028260/02826K  the "new-type" preferred whose 6th character is a LETTER -- written
+#                   as `\d` the marker misses this shape (15 K + 2 L lines live)
+#    336370/K/L     both letter codes in one family (Solus Advanced Materials)
+#    009830/009835  the ONE family of 91 whose members do NOT share a name; it is caught
+#                   by the instrument-name vocabulary instead ("Pfd Registered Shs")
+KOREA_PREFERRED_VERIFIED_FAMILIES = (
+    ('005930.KS', '005935.KS'),
+    ('005380.KS', '005385.KS', '005387.KS', '005389.KS'),
+    ('028260.KS', '02826K.KS'),
+    ('336370.KS', '33637K.KS', '33637L.KS'),
+    ('009830.KS', '009835.KS'),
+)
+
+#  Measured on the same list: Korean families, and how many members each shape has.
+KOREA_FAMILY_FACTS = {
+    'korean_stock_lines': 1276,
+    'multi_line_families': 91,
+    'symbols_in_those_families': 196,
+    #  How many families have ALL members under ONE normalised name -- i.e. how many the
+    #  K3 (name + shares) key can group on names alone. TWO numbers, because the answer
+    #  depends on which normaliser you use, and K3 uses keep_holding=True:
+    #    89 under keep_holding=True  (what K3 actually sees)
+    #    90 under the default        (`Holding` stripped)
+    #  The extra split is AMOREPACIFIC: FMP names 002790/002795 "AMOREPACIFIC Holdings
+    #  Corp." and the new-type preferred 00279K "AMOREPACIFIC Group", so preserving
+    #  `Holding` (the Heineken guard) costs that family its K3 name edge. It is the same
+    #  issuer, so 00279K must then be grouped by K1 (statements) or it survives as a
+    #  sibling-less preferred -- one of the 91 families whose collapse rests on K1 alone.
+    'families_with_one_shared_name_K3': 89,
+    'families_with_one_shared_name_default_norm': 90,   # exception: 009830/009835
+    'families_containing_a_common': 91,        # every family has its `...0` line
+    'sixth_char_counts': {'0': 91, '5': 78, '7': 9, '9': 1, 'K': 15, 'L': 2},
+}
+
+
+def _korean_families(symbols):
+    """{(root5, suffix): [symbols]} for 6-character Korean bases -- families only."""
+    fam = {}
+    for s in symbols:
+        if not isinstance(s, str) or '.' not in s:
+            continue
+        base, suf = s.rsplit('.', 1)
+        if suf in ('KS', 'KQ') and len(base) == 6:
+            fam.setdefault((base[:5], suf), []).append(s)
+    return {k: v for k, v in fam.items() if len(v) > 1}
+
+
+def assert_korea_dedup_ready(tickdf, tfilt, verbose=True):
+    """HARD GATE: raise unless the Korean canonicity rule is present AND correct.
+
+    Called from `tickerfilterWrapper` for any universe wiring KSC/KOE, BEFORE the fetch
+    is spent.  Costs zero API calls -- it reads the marker (a pure function) and the
+    pre-filter table that is already in memory.
+    """
+    import carveOut as _co
+    tag = getattr(_co, '_non_canonical_tag', None)
+    if tag is None:
+        raise Exception(
+            'UNIVERSE %s includes Korea (%s) but carveOut._non_canonical_tag is MISSING. '
+            'Korean preferred lines share their common\'s numeric root and name and trade '
+            '30-60%% below it, so without the canonicity marker they rank to the top of '
+            'the cheapness screen. Do not fetch Korea. See getData_gen.'
+            'KOREA_EXCHANGE_CODES.' % (tfilt, '/'.join(KOREA_EXCHANGE_CODES)))
+
+    # 1. THE MARKER ITSELF, against recorded live-verified families. Pure symbol+name
+    #    logic, so this is a real assertion with no data dependency at all.
+    names = {}
+    if tickdf is not None and 'symbol' in getattr(tickdf, 'columns', []) \
+            and 'name' in tickdf.columns:
+        names = dict(zip(tickdf['symbol'].astype(str), tickdf['name'].astype(str)))
+    problems = []
+    for fam in KOREA_PREFERRED_VERIFIED_FAMILIES:
+        common, prefs = fam[0], fam[1:]
+        grp = list(fam)
+        if tag(common, names.get(common, ''), grp):
+            problems.append('%s (the COMMON) is marked non-canonical' % common)
+        for p in prefs:
+            if not tag(p, names.get(p, ''), grp):
+                problems.append('%s (a PREFERRED) is NOT marked non-canonical' % p)
+    if problems:
+        raise Exception(
+            'UNIVERSE %s includes Korea but the canonicity marker FAILED its recorded '
+            'families: %s. This is the exact defect that makes Korean preferreds rank '
+            'first on a cheapness screen. Fix carveOut._non_canonical_tag before '
+            'fetching Korea.' % (tfilt, '; '.join(problems)))
+
+    # 2. THE LIVE LIST still has the shape the marker assumes: in every Korean family,
+    #    EXACTLY ONE member survives as canonical and it is the `...0` common. This is
+    #    what catches FMP renaming or renumbering a venue under us -- the failure mode
+    #    that hid the dead EURONEXT/OSE codes for the life of the project.
+    fams = _korean_families(list(names) if names else [])
+    bad = []
+    for key, members in fams.items():
+        canon = [s for s in members if not tag(s, names.get(s, ''), members)]
+        zeros = [s for s in members if s.rsplit('.', 1)[0][5] == '0']
+        if canon != zeros or len(canon) != 1:
+            bad.append('%s%s: canonical=%s, `...0`=%s'
+                       % (key[0], key[1], canon or 'NONE', zeros or 'NONE'))
+    if bad:
+        raise Exception(
+            'UNIVERSE %s includes Korea but %d of %d Korean families on the LIVE list do '
+            'not resolve to exactly one canonical `...0` common: %s. The convention the '
+            'marker encodes has moved; re-verify before fetching Korea.'
+            % (tfilt, len(bad), len(fams), '; '.join(bad[:5])))
+
+    if verbose:
+        print('KOREA DEDUP GATE: PASSED the PICKING half -- carveOut._non_canonical_tag '
+              'demotes every preferred and no common across %d recorded families and all '
+              '%d Korean families on this list.' % (
+                  len(KOREA_PREFERRED_VERIFIED_FAMILIES), len(fams)), flush=True)
+        print('  !!! THE GROUPING HALF IS NOT PROVEN HERE AND CANNOT BE: whether FMP '
+              'serves a Korean preferred its ISSUER\'S statements (so K1/K3 group the '
+              'family at all) needs STATEMENTS, which do not exist pre-fetch. If they do '
+              'not, each preferred survives as its own singleton and the marker never '
+              'gets a sibling to prefer. Run the Korea MUST-MERGE regression '
+              '(test_dedup_issuer.py) against this fetch\'s panel before trusting any '
+              'Korean name in the ranking.', flush=True)
+    return True
 
 
 def tickerfilterWrapper(tickdf,tfilt,sfilt,mcapf,baseurl,api_key):
@@ -700,6 +901,26 @@ def tickerfilterWrapper(tickdf,tfilt,sfilt,mcapf,baseurl,api_key):
     explicit = un.symbols(tfilt)          # raises on an unknown name
     every = un.is_every_exchange(tfilt)
     codes = un.exchanges(tfilt)
+
+    # KOREA GATE, BEFORE ANY WORK IS SPENT. A universe that wires KSC/KOE does not
+    # resolve unless the issuer-dedup canonicity marker is present and correct -- see
+    # assert_korea_dedup_ready for exactly what that does and does not prove. Placed
+    # here, not in universes.py, on purpose: this is where membership is APPLIED, so the
+    # dependency cannot be edited around by adding an entry to the registry.
+    if codes and any(c in KOREA_EXCHANGE_CODES for c in codes):
+        assert_korea_dedup_ready(tickdf, tfilt)
+    elif every:
+        # stock_FULL1 applies no exchange filter, so it contains Korea by construction.
+        # It is the CEO's deliberate "everything" option and is documented as a hazard
+        # rather than fenced (universes.stock_FULL1), so the gate WARNS here instead of
+        # raising -- but it still has to run, because the Korean preferreds are in it.
+        try:
+            assert_korea_dedup_ready(tickdf, tfilt)
+        except Exception as _ke:
+            print('!!! UNIVERSE %s contains Korea (no exchange filter) and the Korea '
+                  'dedup gate FAILED: %s\n!!! Korean preferred lines will rank to the top '
+                  'of the cheapness screen. Proceeding because FULL is an explicit CEO '
+                  'option, NOT because this is safe.' % (tfilt, _ke), flush=True)
 
     tickers_df_stock = filter_tickers(tickdf, 'type', 'stock', mcapf, api_key)
 

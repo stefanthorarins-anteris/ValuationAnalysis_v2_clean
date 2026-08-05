@@ -217,6 +217,14 @@ FIXTURE_ROWS = [
     ('GYL.OL',    'Gyldendal ASA',              'OSL',    'stock'),
     ('7203.T',    'Toyota Motor Corporation',   'JPX',    'stock'),
     ('005930.KS', 'Samsung Electronics',        'KSC',    'stock'),
+    #  The Korean PREFERRED of that common (2026-08-05).  Present so the Asia universes
+    #  exercise the shape they were blocked on: same 5-digit root, same company name,
+    #  6th character 5 instead of 0.  Nothing name- or suffix-based can see it; only
+    #  carveOut's Korean canonicity marker can, which is what the Korea gate checks.
+    ('005935.KS', 'Samsung Electronics',        'KSC',    'stock'),
+    #  An ACCESS-EXCLUDED Asian venue (Taiwan), so "excluded codes leak nowhere" is a
+    #  real assertion rather than a claim about an empty set.
+    ('2330.TW',   'Taiwan Semiconductor',       'TAI',    'stock'),
     ('SIRI',      'Sirius XM Holdings',         'AMEX',   'stock'),
     ('OTCX',      'Some OTC Corp',              'OTC',    'stock'),
     ('SPY',       'SPDR S&P 500 ETF Trust',     'NYSE',   'etf'),
@@ -274,15 +282,41 @@ def test_us1_selects_only_us_and_us1_eu2_is_no_longer_us_only(fixture_df, offlin
     assert 'GYL.OL' not in eu2, 'US1_EU2 is Euronext-only; Oslo is a separate code'
 
 
-def test_no_universe_leaks_asia_or_amex_or_otc(fixture_df, offline_wrapper):
-    """Asia is deliberately unwired (dedup blocker), and AMEX/OTC are unwired pending a
-    CEO decision.  A fixture row for each so an accidental widening is caught."""
+def test_asia_appears_ONLY_in_the_asia_universes_and_amex_otc_nowhere(
+        fixture_df, offline_wrapper):
+    """REWRITTEN 2026-08-05, when Asia was wired.  It used to assert Asia leaked NOWHERE;
+    the equivalent guard now is that Asia appears ONLY where it was deliberately added,
+    and that the ACCESS-EXCLUDED Asian venues (India / China A / Taiwan) still appear
+    nowhere at all.  AMEX and OTC remain unwired pending a CEO decision.
+    """
+    asia_universes = {n for n in un.names()
+                      if set(un.exchanges(n) or ()) & set(un.ASIA_LIKELY_INVESTABLE)}
+    assert asia_universes == {'stock_ASIA1', 'stock_NA1_EU1_ASIA1'}, (
+        'an unexpected universe now wires likely-investable Asia: %s' % asia_universes)
     for name in un.names():
         if un.is_every_exchange(name):
             continue                          # FULL is *supposed* to contain everything
         got = set(_syms(offline_wrapper(fixture_df, name, 'all', -1, 'http://x', 'k')))
-        for leak in ('7203.T', '005930.KS', 'SIRI', 'OTCX'):
+        #  Never wired anywhere: unwired US venues and the access-excluded Asian ones.
+        for leak in ('SIRI', 'OTCX', '2330.TW'):
             assert leak not in got, '%s leaked %s' % (name, leak)
+        for asian in ('7203.T', '005930.KS', '005935.KS'):
+            if name in asia_universes:
+                assert asian in got, '%s should contain %s' % (name, asian)
+            else:
+                assert asian not in got, '%s leaked %s' % (name, asian)
+
+
+def test_the_access_excluded_asian_codes_are_recorded_and_wired_nowhere():
+    """India, China A and Taiwan are the BULK of what Asia would add and are excluded on
+    ACCESS grounds, not data grounds.  Recorded as data so the decision is legible, and
+    asserted absent from every universe so it cannot be widened by accident."""
+    assert set(un.ASIA_ACCESS_EXCLUDED) == {'NSE', 'BSE', 'SHH', 'SHZ', 'TAI', 'TWO'}
+    for name, d in un.UNIVERSES.items():
+        assert not (set(un.ASIA_ACCESS_EXCLUDED) & set(d['exchanges'] or ())), (
+            '%s wires an access-excluded Asian code' % name)
+    #  Taiwan's counts are this module's own live-verified figures, so they must agree.
+    assert un.ASIA_CANDIDATE_CODES['TAI'] + un.ASIA_CANDIDATE_CODES['TWO'] == 2108
 
 
 def test_the_full_universe_applies_no_exchange_filter(fixture_df, offline_wrapper):
@@ -1246,22 +1280,53 @@ def test_the_banner_warns_about_korea_on_the_full_universe():
 
 
 # --------------------------------------------------------------------------- #
-#  ASIA -- present as code, NOT wired                                          #
+#  ASIA -- WIRED 2026-08-05, AND ONLY BECAUSE THE DEDUP BLOCKER CLOSED          #
 # --------------------------------------------------------------------------- #
-def test_asia_is_documented_and_built_but_wired_into_nothing():
-    """The CEO's standing practice: document the logic and even build it, but do not
-    apply it.  Here the blocker is DEDUP, not data availability -- so the note must say
-    so, and no universe may reference an Asian code."""
+def test_asia_is_wired_with_the_likely_investable_set_only():
+    """The blocker was DEDUP, never data.  It closed, so Asia is wired -- but only the
+    venues the CEO judged likely investable, and the note must still record that the
+    blocker existed and what remains unverified about it."""
     codes = set(un.asia_codes())
     assert {'JPX', 'HKSE', 'KSC', 'KOE', 'ASX', 'SES'} <= codes
     for c in codes:
         assert un.ASIA_CANDIDATE_CODES[c] > 0, '%s must be recorded as data-available' % c
-    for name, d in un.UNIVERSES.items():
-        if un.is_every_exchange(name):
-            continue
-        assert not (codes & set(d['exchanges'] or ())), '%s wires an Asian code' % name
-    assert 'dedup' in un.ASIA_BLOCKER.lower()
-    assert 'not data' in un.ASIA_BLOCKER.lower() or 'not a data' in un.ASIA_BLOCKER.lower()
+    assert set(un.ASIA_LIKELY_INVESTABLE) == {'JPX', 'HKSE', 'KSC', 'KOE', 'ASX', 'SES'}
+    assert (set(un.ASIA_LIKELY_INVESTABLE) & set(un.ASIA_ACCESS_EXCLUDED)) == set()
+    assert set(un.exchanges('stock_ASIA1')) == set(un.ASIA_LIKELY_INVESTABLE)
+    assert (set(un.exchanges('stock_NA1_EU1_ASIA1'))
+            == set(un.exchanges('stock_NA1_EU1')) | set(un.ASIA_LIKELY_INVESTABLE))
+    #  The blocker note must record BOTH that it closed and what is still unproven --
+    #  "closed" alone would read as "Korea is verified", which it is not.
+    b = un.ASIA_BLOCKER.lower()
+    assert 'dedup' in b
+    assert 'closed' in b
+    assert 'unverified' in b, (
+        'ASIA_BLOCKER no longer states the open residual: whether FMP serves Korean '
+        'preferreds their issuer\'s STATEMENTS is unverified until a Korea fetch is '
+        'regression-tested. Deleting that sentence would turn an open gate into an '
+        'implied pass.')
+
+
+def test_a_korean_universe_does_not_resolve_without_the_dedup_marker(
+        fixture_df, offline_wrapper):
+    """THE DEPENDENCY, ENFORCED.  Korea is admissible only because canonical-choice dedup
+    exists, so a universe wiring KSC/KOE must REFUSE to resolve if the Korean canonicity
+    marker is gone -- otherwise 196 preferred lines at 30-60% discounts enter a cheapness
+    screen.  Nobody can enable Korea by editing the registry alone."""
+    import carveOut as _co
+    real = _co._non_canonical_tag
+    try:
+        del _co._non_canonical_tag
+        with pytest.raises(Exception) as e:
+            offline_wrapper(fixture_df, 'stock_ASIA1', 'all', -1, 'http://x', 'k')
+        assert 'Korea' in str(e.value)
+    finally:
+        _co._non_canonical_tag = real
+    #  ...and with the marker present it resolves, preferred line included (dedup drops it
+    #  later, at the carve/ranking stage -- membership is not where that happens).
+    got = set(_syms(offline_wrapper(fixture_df, 'stock_ASIA1', 'all', -1,
+                                    'http://x', 'k')))
+    assert {'005930.KS', '005935.KS', '7203.T'} <= got
 
 
 def test_the_unwired_but_available_codes_are_recorded_rather_than_forgotten():

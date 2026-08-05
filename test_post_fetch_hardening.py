@@ -288,16 +288,18 @@ def test_every_diagnostic_call_in_stage2_is_routed_through_the_guard():
     guarded = [ast.unparse(n.args[0]) for n in ast.walk(tree)
                if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
                and n.func.id == "_safe_diagnose" and n.args]
-    # SIX sites now.  `_diagnose_inputs` was missed on the first pass and this assertion caught
-    # it; `missing_data_fill_report` was added 2026-08-01 and `single_column_reach_check`
-    # 2026-08-03 (the E-1 k-property check), both guarded for the same reason -- they are
-    # emits-only code sitting on the critical path.  Enumerated explicitly so a seventh
-    # diagnostic added later must be declared here rather than slipping in unguarded.
+    # SEVEN sites now.  `_diagnose_inputs` was missed on the first pass and this assertion
+    # caught it; `missing_data_fill_report` was added 2026-08-01, `single_column_reach_check`
+    # 2026-08-03 (the E-1 k-property check) and `npol.report_counts` 2026-08-05 (the NaN-policy
+    # per-rule conversion counts), all guarded for the same reason -- they are emits-only code
+    # sitting on the critical path.  Enumerated explicitly so an eighth diagnostic added later
+    # must be declared here rather than slipping in unguarded.
     assert sorted(guarded) == ["_diagnose_first_ticker_data",
                                "_diagnose_first_ticker_metrics",
                                "_diagnose_inputs",
                                "_diagnose_pre_normalize",
                                "missing_data_fill_report",
+                               "npol.report_counts",
                                "single_column_reach_check"], guarded
 
 

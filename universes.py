@@ -98,6 +98,14 @@ _VERIFIED_COUNTS = {
     'ATH': 79, 'DUB': 20, 'WSE': 382, 'IST': 144, 'FSX': 239, 'STU': 23,
     'DUS': 12, 'HAM': 10, 'MUN': 6, 'PRA': 8, 'BUD': 6, 'TAL': 1, 'RIS': 1,
     'DXE': 11, 'IOB': 30, 'AQS': 3,
+    # Asia -- WIRED 2026-08-05 (see ASIA_LIKELY_INVESTABLE). Same counts and same
+    # provenance as ASIA_CANDIDATE_CODES; they belong HERE as well, because
+    # `check_resolved_counts` skips any code whose verified count is 0 -- so an Asia code
+    # absent from this dict would have its per-code dead-code floor SILENTLY DISABLED,
+    # which is precisely how EURONEXT/OSE hid for the life of the project.
+    'JPX': 3644, 'HKSE': 2376, 'KSC': 857, 'KOE': 398, 'ASX': 1586, 'SES': 237,
+    # Asia -- served, deliberately NOT wired (access-excluded; see ASIA_ACCESS_EXCLUDED)
+    'TAI': 1027, 'TWO': 1081,
 }
 
 #  The two codes that matched NOTHING.  Kept as data, not prose, so the test suite can
@@ -126,23 +134,35 @@ EUROPE_NOT_WIRED = ('CPH', 'HEL', 'SIX', 'MIL', 'BME', 'VIE', 'ATH', 'DUB',
 US_NOT_WIRED = ('AMEX', 'TSXV', 'NEO', 'CNQ', 'OTC', 'PNK')
 
 # --------------------------------------------------------------------------- #
-#  ASIA -- DOCUMENTED, CODE PRESENT, DELIBERATELY NOT WIRED.                    #
+#  ASIA -- NOW WIRED, AND ONLY BECAUSE THE DEDUP BLOCKER IS CLOSED (2026-08-05). #
 #                                                                               #
-#  Per the CEO's standing practice ("if there is some logic we want to use but    #
-#  FMP doesn't allow us, we should document it, even create the code to use it,   #
-#  but not apply it").  Here the blocker is NOT the data -- every code below      #
-#  returns statement-bearing stocks on the current key.  THE BLOCKER IS DEDUP.    #
+#  The blocker below was never data: every code here returns statement-bearing    #
+#  stocks on the current key.  It was DEDUP.  Korean preferred lines share the     #
+#  common's numeric root AND its company name verbatim and trade at 30-60%        #
+#  discounts, so on a cheapness screen they rank STRAIGHT TO THE TOP -- they look  #
+#  like the same company at half price, because that is precisely what the data    #
+#  says.  The share-class filter caught 1 of 196: rule B keys on a `-P<letters>`   #
+#  suffix and the Korean convention is a suffix ON THE ROOT, which no rule saw.    #
 #                                                                               #
-#  Korea specifically MUST NOT be added before a SUFFIX-AWARE dedup exists.       #
-#  Korean preferred lines share the common's numeric root AND its company name    #
-#  verbatim, and trade at 30-60% discounts to the common.  On a cheapness screen  #
-#  they rank straight to the top -- they look like the same company at half       #
-#  price, because that is precisely what the data says.  The repo's own           #
-#  share-class filter (getData_gen.filter_non_common_instruments) removed 1 of    #
-#  196 when tested against them: rule B keys on a `-P<letters>` suffix, and the   #
-#  Korean convention is a numeric suffix on the root, which no current rule sees. #
-#  So this is a dedup gap, not a data gap, and adding Asia before closing it      #
-#  would poison the top of the ranking rather than widen it.                      #
+#  WHAT CHANGED: carveOut's canonical-choice dedup (2026-08-05) groups an issuer's #
+#  lines on FUNDAMENTALS and then picks the canonical member, and its Korean marker #
+#  demotes every line whose 6th character is not `0`.  Verified on the live         #
+#  2026-08-04 list: in ALL 91 multi-line Korean families (196 symbols) the unique    #
+#  canonical member is exactly the `...0` common -- zero commons demoted, zero        #
+#  preferreds missed.                                                              #
+#                                                                               #
+#  THE DEPENDENCY IS ENFORCED IN CODE, NOT BY THIS COMMENT.  Any universe wiring    #
+#  KSC/KOE goes through `getData_gen.assert_korea_dedup_ready`, which RAISES if the  #
+#  canonicity marker is absent or wrong -- so Korea cannot be enabled by editing     #
+#  this registry alone.                                                            #
+#                                                                               #
+#  AND WHAT IS STILL UNVERIFIED, LOUDLY: that gate proves the PICKING half only.     #
+#  Whether FMP actually serves a Korean preferred its ISSUER'S statements -- i.e.     #
+#  whether the family GROUPS at all -- needs statements, and no Korean fundamentals   #
+#  exist locally.  If it does not, each preferred survives as its own singleton        #
+#  issuer and the marker never gets a sibling to prefer.  That is a POST-FETCH         #
+#  regression (test_dedup_issuer.py, the Korea MUST-MERGE gate) and it must be run     #
+#  against the first Korea fetch before any Korean name in the ranking is trusted.     #
 # --------------------------------------------------------------------------- #
 ASIA_CANDIDATE_CODES = {
     'JPX': 3644,    # Japan
@@ -150,23 +170,61 @@ ASIA_CANDIDATE_CODES = {
     'TAI': 1027, 'TWO': 1081,   # Taiwan (main + OTC board)
     'ASX': 1586,    # Australia
     'SES': 237,     # Singapore
-    'KSC': 857, 'KOE': 398,     # Korea -- BLOCKED, see above
+    'KSC': 857, 'KOE': 398,     # Korea -- admissible ONLY with the dedup gate, see above
 }
 ASIA_BLOCKER = (
-    'suffix-aware issuer dedup does not exist yet; Korean preferreds (KSC/KOE) share '
-    'the common\'s numeric root and company name, trade 30-60% below it, and the '
-    'current share-class filter caught 1 of 196. Blocker is DEDUP, not data -- every '
-    'code above returns statements on the current key.')
+    'CLOSED 2026-08-05 by carveOut canonical-choice dedup + the '
+    'getData_gen.assert_korea_dedup_ready gate. It was never a data gap: every Asia code '
+    'returns statements on the current key. It was DEDUP -- Korean preferreds (KSC/KOE) '
+    'share the common\'s numeric root and company name, trade 30-60% below it, and the '
+    'share-class filter caught 1 of 196. RESIDUAL, UNVERIFIED: that FMP serves a Korean '
+    'preferred its issuer\'s STATEMENTS (so the family groups at all) is unproven until '
+    'the post-fetch Korea MUST-MERGE regression runs on a real Korea fetch.')
+
+#  THE LIKELY-INVESTABLE ASIA SET (CEO, 2026-08-05): "Let's drop what is unlikely for me
+#  to be able to invest in. Keep the ones that are likely, have the full universe as an
+#  option. I'll check with my broker later."
+#  Kept: Japan, Hong Kong, Korea, Australia, Singapore -- all reachable through a normal
+#  international broker. Counts are the live-verified statement-bearing figures above.
+ASIA_LIKELY_INVESTABLE = ('JPX', 'HKSE', 'KSC', 'KOE', 'ASX', 'SES')
+
+#  DELIBERATELY EXCLUDED, and they are the BULK of what Asia would otherwise add: these
+#  generally need local or qualified-foreign-investor access.
+#    India     NSE + BSE   5,828 statement-bearing names
+#    China A   SHH + SHZ   4,362   (Shanghai + Shenzhen A-shares)
+#    Taiwan    TAI + TWO   2,108   (matches ASIA_CANDIDATE_CODES: 1,027 + 1,081)
+#  Only the Taiwan figure comes from this module's own live-verified counts; the India and
+#  China figures are as supplied with the CEO's decision and are NOT in _VERIFIED_COUNTS,
+#  so treat them as the decision's basis rather than as measured here. On the raw live
+#  2026-08-04 available-traded table the corresponding type=='stock' line counts are
+#  NSE 2,427 + BSE 3,731, SHH 1,989 + SHZ 2,395, TAI 1,052 + TWO 1,084 -- upper bounds,
+#  since that table is not intersected with the statement-symbol list.
+ASIA_ACCESS_EXCLUDED = {
+    'NSE': 'India -- generally needs local/FPI access',
+    'BSE': 'India -- generally needs local/FPI access',
+    'SHH': 'China A-shares (Shanghai) -- QFII/Stock-Connect access',
+    'SHZ': 'China A-shares (Shenzhen) -- QFII/Stock-Connect access',
+    'TAI': 'Taiwan main board -- foreign-investor registration',
+    'TWO': 'Taiwan OTC board -- foreign-investor registration',
+}
+
+#  ASIA/EM CODES FMP SERVES THAT ARE IN NEITHER SET. Not a decision -- an omission made
+#  visible, in the same spirit as EUROPE_NOT_WIRED, so nobody reads ASIA_LIKELY_INVESTABLE
+#  as "all the investable Asia there is". Raw type=='stock' counts, live 2026-08-04:
+#  SET 878 (Thailand), JKT 761 (Indonesia), KLS 299 (Malaysia), SAU 368 (Saudi),
+#  TLV 478 (Israel). Wiring any of them is a CEO call.
+ASIA_NOT_WIRED = ('SET', 'JKT', 'KLS', 'SAU', 'TLV')
 
 
 def asia_codes():
-    """The Asia code list, BUILT but never wired into a universe (see ASIA_BLOCKER).
-
-    Present so that closing the dedup gap is a one-line wiring change with the
-    verified code set already recorded, rather than a re-derivation.  Nothing in the
-    pipeline calls this.
-    """
+    """Every Asia code the module knows, wired or not (see ASIA_LIKELY_INVESTABLE for
+    the set an actual universe uses)."""
     return tuple(sorted(ASIA_CANDIDATE_CODES))
+
+
+def korea_codes():
+    """The Korean exchange codes -- the ones whose presence triggers the dedup gate."""
+    return ('KSC', 'KOE')
 
 
 # --------------------------------------------------------------------------- #
@@ -639,6 +697,31 @@ UNIVERSES = {
         was=_US + ('EURONEXT', 'LSE', 'XETRA'),
         note='Named "WW" but contains no Asia and no Nordics; the name overstates it.'),
 
+    # ---- NEW: ASIA (2026-08-05, unblocked by canonical-choice dedup) ------ #
+    'stock_ASIA1': dict(
+        label='ASIA, LIKELY-INVESTABLE ONLY -- JPX HKSE KSC KOE ASX SES '
+              '(9,098 pre-filter)',
+        exchanges=ASIA_LIKELY_INVESTABLE, symbols=None, every_exchange=False, was=None,
+        note='Asia ALONE (no US/Europe) -- the universe to fetch when validating Asia, '
+             'notably the post-fetch Korea MUST-MERGE regression. EXCLUDES India '
+             '(NSE/BSE 5,828), China A-shares (SHH/SHZ 4,362) and Taiwan (TAI/TWO 2,108) '
+             'as generally needing local/foreign-investor access -- see '
+             'ASIA_ACCESS_EXCLUDED; those three are the BULK of what Asia would add. '
+             'KOREA IS GATED: getData_gen.assert_korea_dedup_ready must pass or this '
+             'universe does not resolve. Its GROUPING half is UNVERIFIED until a real '
+             'Korea fetch is regression-tested (ASIA_BLOCKER residual).'),
+    'stock_NA1_EU1_ASIA1': dict(
+        label='NORTH AMERICA + EUROPE + LIKELY-INVESTABLE ASIA -- stock_NA1_EU1 '
+              '+ JPX HKSE KSC KOE ASX SES (20,595 pre-filter)',
+        exchanges=_US + ('TSX',) + _EU_CORE + _EU_RESTORED + ASIA_LIKELY_INVESTABLE,
+        symbols=None, every_exchange=False, was=None,
+        note='The default universe PLUS likely-investable Asia -- roughly +9,100 '
+             'statement-bearing names on top of 11,497, i.e. ~+21h of fundamentals fetch. '
+             'Same Korea gate and same UNVERIFIED grouping residual as stock_ASIA1. '
+             'Pool composition changes, so NO pooled statistic (z-score, percentile, '
+             'top-100, beat-rate) from this universe is comparable to a stock_NA1_EU1 '
+             'run -- match artifacts by universe_fingerprint, not by name.'),
+
     # ---- NEW ------------------------------------------------------------- #
     'stock_TEST1': dict(
         label='CURATED TEST UNIVERSE -- 142 fixed names (140 after the instrument '
@@ -655,8 +738,10 @@ UNIVERSES = {
         note='NOT THE DEFAULT, by CEO decision -- intended only once the issue register '
              'is worked through. Applies NO exchange filter, so it includes OTC (9,937) '
              'and PNK (60), which dominate it and are a data-quality minefield, plus '
-             'all of Asia -- INCLUDING Korea, which the Asia note warns must not enter '
-             'before a suffix-aware dedup exists. '
+             'ALL of Asia -- including Korea (now handled by canonical-choice dedup, but '
+             'with the grouping half still UNVERIFIED -- see ASIA_BLOCKER) and the '
+             'access-excluded India / China A / Taiwan venues that stock_ASIA1 leaves '
+             'out on purpose. This IS the CEO\'s "full universe as an option". '
              'FETCH-TIME HAZARD: 49,071 names x 5 statement calls = ~245,000 calls. At '
              'the ~1 s/call the 12h/10,693-name production run implies, that is roughly '
              '60 HOURS -- a single flag turns a 12-hour job into a multi-day one. '
@@ -896,10 +981,12 @@ def run_banner(name, resolved_count=None):
         out += [
             bang,
             '!!! FULL UNIVERSE -- no exchange filter at all. Includes OTC (9,937) and',
-            '!!! PNK (60), which dominate it, and ALL of Asia including Korea, whose',
-            '!!! preferred lines the current dedup CANNOT separate from their commons',
-            '!!! (see universes.ASIA_BLOCKER). Expect them to rank at the top of a',
-            '!!! cheapness screen for that reason. ~5x the current fetch cost.',
+            '!!! PNK (60), which dominate it, and ALL of Asia including Korea and the',
+            '!!! access-excluded India / China A / Taiwan venues. Korean preferreds are',
+            '!!! now demoted by carveOut canonical-choice dedup, but whether the family',
+            '!!! GROUPS at all is UNVERIFIED on real Korean statements (see',
+            '!!! universes.ASIA_BLOCKER); if it does not, they rank at the top of the',
+            '!!! cheapness screen exactly as before. ~5x the current fetch cost.',
             bang,
         ]
 

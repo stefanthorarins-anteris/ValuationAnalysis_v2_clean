@@ -1,6 +1,7 @@
 import pandas as pd
 import numpy as np
 
+import nan_policy as npol
 import reporting_period as rp
 
 # `rpy` = this source's rows per year (4 quarterly / 2 semi-annual, reporting_period).
@@ -62,62 +63,394 @@ STAGE1_DOMAIN_GUARDS = {
     # be a much larger and unrelated change.
     'tax_rate_nonnegative':
         lambda df: pd.to_numeric(df['effectiveTaxRate'], errors='coerce') >= 0,
-    # PEG needs BOTH periods of its growth leg -- see _peg_growth_defined.
-    'peg_growth_defined': lambda df: _peg_growth_defined(df),
+    #  NO PEG ENTRY, DELIBERATELY -- see the `PEG` note in createDicts.BoMetric_special_dict and
+    #  `peg_local` below.  PEG's domain is INTRINSIC TO ITS FORMULA (without a positive trailing
+    #  EPS there is no P/E for a growth rate to be compared against, so the value does not exist
+    #  rather than being inadmissible), so it is applied inside `peg_local` itself.  A `Guard`
+    #  entry restating the same condition would be a SECOND registry of one fact -- and a fact
+    #  stated twice, once with `rpy` in hand and once without it, is this repo's worst bug class.
 }
 
 
-#  EPS BASIS FOR THE PEG GUARD.  The vendor's PEG is built from `eps` (income available to
-#  COMMON); `netIncomePerShare` is a near-perfect proxy but NOT identical -- measured sign
-#  agreement 92.8%, median absolute error 2.5%.  `eps` / `epsdiluted` are now captured at
-#  ingest (createDicts.preReq_dict 'inc') but are ABSENT from every saved panel, so the guard
-#  reads the PROXY and says so.  SWITCHING TO `eps` MUST BE A DELIBERATE EDIT, not an
-#  `eps if present else proxy` fallback: a silent basis change on the first fetch that carries
-#  the column would move the guard's boundary with nothing in the run to say it had.
+# =========================================================================== #
+#  PEG, COMPUTED LOCALLY  (CEO ruling, 2026-08-04; built 2026-08-05)           #
+# =========================================================================== #
+#  "In general, we should compute things we can rather than using the FMP."
+#
+#  WHAT THE VENDOR'S FIELD WAS, established arithmetically (no vendor docs exist), matched to
+#  all printed digits on nine deliberately-seasonal quarters:
+#
+#      PEG_fmp = [ price / (4 * eps_t) ]  /  [ 100 * (eps_t / eps_{t-1} - 1) ]
+#
+#  Three things wrong with it, in the order that matters:
+#
+#   1. THE HORIZON IS THE NOISIEST ONE AVAILABLE, AND IT IS THE VENDOR'S CHOICE, NOT OURS.  The
+#      growth leg is SEQUENTIAL quarter-over-quarter, so it is dominated by seasonality: a
+#      retailer's Q4-vs-Q3 EPS move is the calendar, not growth.  For a filter that holds for 36
+#      months that is close to indefensible.
+#   2. IT IS DIMENSIONALLY INCOHERENT.  The PE leg is a quarter ANNUALISED (x4) while the growth
+#      leg is a QUARTERLY percentage.  PEG is defined as "P/E divided by the annual growth RATE
+#      in percentage points"; the vendor divides an annual P/E by a quarterly percentage.
+#   3. IT IS QUANTISATION NOISE FOR SMALL CHANGES.  The growth leg differences TWO 2-DECIMAL-
+#      ROUNDED `eps` figures, so for a small sequential change the denominator is mostly
+#      rounding; 179 of 2,969 rows carry an exact-zero growth artifact.
+#
+#  WHAT IS COMPUTED HERE INSTEAD -- both legs TRAILING-YEAR, one horizon, full precision:
+#
+#      eps_ttm[t] = sum of the `rpy` most recent per-period EPS (t .. t+rpy-1, newest-first)
+#      PE[t]      = price[t] / eps_ttm[t]
+#      g[t]       = 100 * (eps_ttm[t] - eps_ttm[t - PEG_GROWTH_YEARS yr]) / |eps_ttm[t - ...]|
+#                     / PEG_GROWTH_YEARS                       # percent PER YEAR
+#      PEG[t]     = PE[t] / g[t]
+#
+#  and the Stage-1 criterion `1/PEG - 1 > 0` (i.e. 0 < PEG < 1) is UNCHANGED -- no threshold,
+#  weight or tier moves.
+#
+#  THE HORIZON, AND WHY ONE YEAR (this is the real decision, so the reasoning is here and not
+#  in a report).  Measured over the 61,832 newest-8 rows of the panel, overall criterion pass
+#  rate, WITH the sign-crossing nerf in place: vendor 0.2050 -> 1y 0.2149 -> 2y 0.1754 ->
+#  3y 0.1491.  (Without the nerf the same three read 0.2669 / 0.2410 / 0.2147 -- the whole
+#  difference is the crossing cell, which is what the nerf is for.)
+#    * TTM-vs-TTM removes SEASONALITY outright, which QoQ cannot, and averages four quarters on
+#      EACH leg, so it is ~2x quieter than even a single-quarter YoY.
+#    * It is the quantity PEG is DEFINED over: a growth rate PER YEAR against an annual P/E.
+#    * IT KEEPS THE MOST ROWS MEASURABLE.  The in-domain cell holds 34,574 rows at 1y against
+#      31,434 at 3y: a longer horizon silently shrinks the measurable universe by ~9% of rows
+#      and biases it toward long-history names.
+#    * IT STAYS RESPONSIVE, and that is not a side benefit -- it is the second prize of this
+#      whole change.  A turnaround has to be visible while the 36-month hold is still ahead; a
+#      3-year growth rate averages a fresh recovery back into three years of losses.
+#    * AND THE NERF STRENGTHENS THE CHOICE rather than being orthogonal to it.  Crossing rows
+#      are substituted with the POOL MEDIAN growth, and that median FALLS with the horizon
+#      (6.72%/yr at 1y, 5.14% at 2y, 4.23% at 3y on this panel), so a longer horizon hands
+#      every crossing row a harsher bar for a reason that is a property of the WINDOW, not of
+#      the company.  The crossing cell tracks it: 0.1722 -> 0.1284 -> 0.0975.
+#  THE COUNTER-ARGUMENT, STATED BECAUSE IT IS REAL: for a 36-month hold a 3-year growth rate is
+#  closer to the horizon of the bet and is quieter still.  It loses on two grounds.  (a) Stage-1
+#  already averages this criterion over 8 rows (`calcByTier` returns the head(8) MEAN of a
+#  pass/fail indicator), so lengthening the window buys much less variance reduction than it
+#  appears to.  (b) A longer LOOKBACK is not a better estimate of the forward three years for a
+#  company whose trajectory has just changed -- which is exactly the population the filter is
+#  trying to find.
+#
+#  THE GROWTH DENOMINATOR IS |eps_ttm_prev|, AND THAT ONE CHOICE IS WHAT MAKES A TURNAROUND
+#  EXPRESSIBLE.  It reduces to the ordinary growth rate whenever the base is positive, so there
+#  is NO case split, and when the base is NEGATIVE it still returns a positive, finite,
+#  monotone-in-improvement number.  Under the vendor's `eps_t/eps_{t-1} - 1` the same situation
+#  produces a NEGATIVE growth rate and the company FAILS a criterion for having recovered.
+PEG_GROWTH_YEARS = 1
+
+#  EPS BASIS.  The vendor's PEG is built from `eps` (income available to COMMON);
+#  `netIncomePerShare` is a near-perfect proxy but NOT identical -- measured sign agreement
+#  92.8%, median absolute error 2.5%.  `eps` / `epsdiluted` are now captured at ingest
+#  (createDicts.preReq_dict 'inc') but are ABSENT FROM EVERY SAVED PANEL and only populate on
+#  the next full fetch, so the local computation reads the PROXY and says so.
+#  SWITCHING TO `eps` MUST BE A DELIBERATE EDIT, never an `eps if present else proxy` fallback:
+#  the first fetch that carried the column would silently change the basis of a scored
+#  criterion with nothing in the run to say it had.  Pinned by
+#  test_nan_policy.test_peg_eps_basis_is_pinned_and_cannot_switch_silently.
 _PEG_EPS_FIELD = 'netIncomePerShare'
 
+#  `epsTTM` IS DELIBERATELY NOT USED, and the reason is not laziness.  `stamp_frequency_and_graham`
+#  exposes a trailing-year EPS on a DIFFERENT basis (TTM netIncome / current-row shares) and it
+#  is ABSENT from every panel written before 2026-07-29, including the one every number above is
+#  measured on.  Using it would make PEG unmeasurable offline AND would put a second definition
+#  of trailing EPS into a criterion whose basis the comment above pins to one named field.  If
+#  the pipeline should carry ONE canonical trailing EPS -- it probably should -- that is a
+#  deliberate unification, not a side effect of this change.
 
-def _peg_growth_defined(df):
-    """Rows where PEG's growth leg is DEFINED: `eps_t > 0` AND `eps_{t-1} > 0`.
 
-    THE VENDOR'S FORMULA, established arithmetically (no vendor docs exist), matched to all
-    printed digits on nine deliberately-seasonal quarters:
+#  THE SIGN-CROSSING NERF (CEO, 2026-08-05): "We can also just set the going from negative to
+#  positive arbitrarily a higher number in the peg calc, so it is nerfed."  Governing principle,
+#  carried over from the return-on-equity case: THE CRITERION MUST NOT TREAT AN UNASSESSABLE
+#  STATE POSITIVELY.
+#
+#  WHY A SUBSTITUTION AND NOT A CAP.  A percentage growth rate computed from a NEGATIVE base is
+#  not a growth rate -- it is an artifact of the base's SIGN.  (E_now - E_prev)/|E_prev| for
+#  E_prev < 0 saturates near +100% for a marginal recovery and grows with |E_prev|, i.e. with how
+#  bad the prior year was, so the measure rewards the depth of the previous loss.  Measured
+#  consequence: the turnaround cell passed at 0.890 against 0.362 in the normal cell -- PEG < 1
+#  becomes "P/E under ~100" there where a steady 10%/yr grower faces "P/E under 10".  An order of
+#  magnitude more valuation headroom for having had a bad prior period.
+#
+#  SO THE CROSSING ROW TAKES THE POOL'S MEDIAN GROWTH RATE, and its P/E then has to stand on its
+#  own.  The crossing confers NEITHER CREDIT NOR PENALTY, which is the ROE ruling's requirement,
+#  and it introduces NO TUNED CONSTANT -- the same ground on which a relative floor was refused
+#  further down this module.  A chosen "arbitrarily higher number" would have been the only tuned
+#  constant on this path.
+#
+#  IT IS A CROSS-SECTIONAL BASELINE, SO IT LIVES WHERE THE OTHER ONE DOES.  The median is a
+#  property of the POOL, and `calc_special` sees ONE SOURCE at a time -- on the production fetch
+#  path the panel does not even exist yet when it runs.  So the crossing rows come out of the
+#  build as NaN and are filled by `substitute_peg_crossing`, called from `postBo.postBoWrapper`
+#  immediately before Stage-1 scoring: the same position, and for the same reason, as
+#  `calcScore.getAves2`'s `BoMetric_ave` (audit H-1 -- recompute the cross-sectional baseline on
+#  the frame you actually score, never carry a stale one, and never freeze it into the panel).
+#  The SAVED panel therefore keeps the honest per-source pre-substitution column.
+#
+#  THE COST, STATED: the criterion's bar for a crossing row is now PANEL-DEPENDENT, where the rest
+#  of PEG is absolute.  That is a real property, not a hidden one -- `substitute_peg_crossing`
+#  returns the median it used and the run prints it, so a ranking can never be read without it.
+PEG_CROSSING_SUBSTITUTION = 'pool_median_growth'
 
-        PEG = [ price / (4 * eps_t) ]  /  [ 100 * (eps_t / eps_{t-1} - 1) ]
 
-    So BOTH legs are SINGLE-PERIOD (the PE leg is one quarter annualised x4, not a trailing
-    sum) and the growth leg is SEQUENTIAL quarter-over-quarter.  Both operands of that growth
-    ratio can cross zero, which gives PEG FOUR sign states and only ONE of them defined.
-    MEASURED on the 61,472-row head(8) window of the 7,729-source panel:
+def peg_criterion(peg):
+    """`1/PEG - 1`, the scored Stage-1 quantity, from a PEG Series.  ONE expression, shared by the
+    build and by the crossing substitution so the two cannot drift.
 
-        eps_t > 0, eps_{t-1} > 0   34,398 rows  pass 0.3671   DEFINED -- the real criterion
-        eps_t < 0, eps_{t-1} > 0    5,129 rows  pass 0.8830   FALSE PASS: PE < 0 and growth < 0
-                                                              cancel into a positive PEG
-        eps_t < 0, eps_{t-1} < 0   16,902 rows  pass 0.4218   FALSE PASS: same cancellation
-        eps_t > 0, eps_{t-1} < 0    5,040 rows  pass 0.0006   TURNAROUND: the growth ratio
-                                                              flips sign, PEG < 0, and the
-                                                              criterion FAILS the company
-
-    WHY THE GUARD IS TWO-SIDED AND NOT JUST `eps_t > 0`.  One-sided would state a domain that
-    is not the metric's: PEG is a ratio to a GROWTH RATE, and a growth rate computed across a
-    sign change is not a growth rate.  A turnaround is undefined, not bad.
-    BUT BE PRECISE ABOUT WHAT THAT BUYS, because the honest number is small: at Stage-1 a
-    refused row is scored by `calcByTier` as `w if Sign*NaN > 0 else 0` = 0, i.e. STILL A FAIL.
-    So the two-sided guard does NOT convert the 5,037 wrongly-failed turnaround rows into
-    passes -- it makes the REASON honest and removes the 3 that were passing on the sign flip.
-    Measured difference between the two guard shapes: 11,664 vs 11,661 passes removed, i.e. 3.
-    THE TURNAROUND DEFECT IS THEREFORE RECORDED, NOT FIXED HERE.  Fixing it needs either a
-    change to Stage-1's NaN-is-a-fail rule (deliberately out of scope) or a PEG computed
-    locally on a basis that is defined across a sign change.  Do not read this guard as having
-    recovered those rows.
-
-    ROW ORDER IS LOAD-BEARING: `df` is ONE source, NEWEST-FIRST, so `shift(-1)` is one period
-    OLDER -- the same convention `calc_diff` uses.  The oldest row's predecessor is NaN and
-    therefore inadmissible, which is correct (no prior period, no growth rate) and costs
-    nothing: `build_bometric_rows` trims the oldest `rpy` rows anyway.
+    `0` for a PEG of exactly 0 is kept verbatim from the pre-2026-08-05 line -- it then becomes
+    -1, i.e. a FAIL, which is right (a PEG of exactly 0 is not "infinitely cheap").  A NaN PEG
+    stays NaN rather than becoming -1: both read as a FAIL at Stage-1 (`Sign * NaN > 0` and
+    `-1 > 0` are both False), so this is not a scoring difference -- it keeps "not computable"
+    and "computed, and it failed" DISTINCT in the panel, which the Stage-1 NaN-accounting readout
+    and the fill report both read.
     """
+    out = pd.Series(np.where(peg.notna() & (peg != 0), 1.0 / peg, 0.0) - 1.0, index=peg.index)
+    return out.where(peg.notna())
+
+
+def peg_local(df, rpy=rp.DEFAULT_ROWS_PER_YEAR, years=None, crossing_growth=None):
+    """PEG computed locally from full-precision inputs.  Returns (peg, eps_ttm_now, eps_ttm_prev).
+
+    `df` is ONE source, NEWEST-FIRST (the `build_bometric_rows` contract), so a positive shift
+    in `.shift(-k)` reaches OLDER rows -- the same convention `calc_diff` uses.
+
+    THE DOMAIN IS APPLIED HERE, AND ONLY HERE.  NaN wherever the quantity does not exist: no
+    trailing year, no prior trailing year, a zero prior base (the growth rate would be division
+    by zero), or a NON-POSITIVE CURRENT TRAILING EPS.  Nothing is imputed and no sentinel is
+    returned.
+
+    THE DOMAIN MOVED WHEN THE COMPUTATION DID, and this is the half of the change a reviewer
+    should press on.  The shipped guard (`peg_growth_defined`, da79aee) required
+    `eps_t > 0` AND `eps_{t-1} > 0`, because under the vendor's RATIO-form growth leg a base
+    crossing zero made the growth rate meaningless.  The local growth leg divides by |base|, so a
+    NEGATIVE base is fine -- it is the recovery case, and expressing it is the point.  What
+    remains inadmissible is a non-positive CURRENT trailing EPS: with no earnings there is no
+    P/E, and that one condition removes BOTH of the old false-pass cells (where PE < 0 cancelled
+    against growth < 0 into a positive PEG).
+
+    NOTE THIS IS NOT A `Guard` ENTRY, and that is deliberate rather than an omission.  A guard is
+    a predicate on the RAW frame, applied to a ratio the loop in `build_bometric_rows` has
+    already computed; its signature carries no `rpy`, so a PEG guard would have to re-derive the
+    filer's frequency from the stamp while this function receives it from the caller.  Two
+    statements of one domain, resolved from two different places, is exactly the
+    silently-divergent pair this repo keeps getting bitten by -- so there is one statement, and
+    it is the one that has `rpy`.
+
+    THE FOUR SIGN CELLS, MEASURED on the 61,832 newest-8 rows [panel = resdic_2026-07-17_
+    CORRECTED], BEFORE (vendor field + the shipped two-sided guard, single-period eps legs) and
+    AFTER (local, TTM legs, 1-year horizon, crossing rows on the POOL MEDIAN growth):
+
+        cell                    BEFORE rows / passes        AFTER rows / passes
+        eps_now>0 prev>0        34,500 / 12,673  (0.367)    34,569 / 12,513  (0.362)
+        eps_now<=0 prev>0        5,177 /      0  refused     4,225 /      0  refused
+        eps_now<=0 prev<=0      17,035 /      0  refused    17,321 /      0  refused
+        eps_now>0 prev<=0        5,089 /      0  FAILED      4,489 /    773  (0.172)  <-- the fix
+
+    (Row counts move between the two because the legs themselves change from single-period to
+    trailing-year -- they are not the same partition of the same rows.)  Overall criterion pass
+    rate 0.2050 -> 0.2149.  NOTE WHERE THAT COMES FROM: the normal cell is essentially unchanged
+    (-0.53pp), so the fixed 0<PEG<1 bar has NOT been loosened by the horizon change; the whole
+    movement is the crossing rows going from AUTO-FAILED to SCORED-ON-THEIR-OWN-P/E.
+
+    READ THE TWO CELL RATES AGAINST EACH OTHER, because that is the property the nerf is judged
+    on.  Crossing 0.172 against normal 0.362 = 0.48x.  BEFORE the nerf it was 0.890 against 0.362
+    = 2.46x, i.e. roughly an order of magnitude more P/E headroom for having had a bad prior year.
+    Comparable-but-LOWER is the expected shape and the mechanism is not a mystery: a company whose
+    trailing-year EPS has only just crossed zero has a tiny denominator, so its trailing P/E is
+    genuinely high, and a high P/E fails against a 6.72%/yr median growth rate.  So the honest
+    summary of what this buys is "those 5,089 rows are now MEASURED instead of auto-failed", NOT
+    "they now pass".
+
+    THE TINY-POSITIVE-BASE ROWS ARE NOT REACHED, DELIBERATELY.  222 rows panel-wide land at
+    |PEG| < 1e-3 with a prior base that is positive but tiny -- a real, enormous growth rate, not
+    a sign artifact, so the crossing substitution does not and must not touch them.  (Panel-wide
+    over every row; the head(8) SCORING-window figure is ~76, and the two reconcile at the ~35% of
+    panel rows that window covers.)  The only ways to reach them are a relative floor on |base| or
+    a cap on the growth rate, and BOTH are tuned constants -- this path deliberately carries none,
+    which is the same ground on which the pool median was chosen over a picked number.  Recorded
+    for the CEO as a threshold question, not silently absorbed.
+    """
+    years = PEG_GROWTH_YEARS if years is None else years
     e = pd.to_numeric(df[_PEG_EPS_FIELD], errors='coerce')
-    return (e > 0) & (e.shift(-1) > 0)
+    price = pd.to_numeric(df['price'], errors='coerce')
+    #  Newest-first, so the rolling sum runs on the REVERSED series: each row then carries
+    #  itself plus the (rpy-1) OLDER rows -- the same idiom stamp_frequency_and_graham uses for
+    #  its TTM netIncome, deliberately, so the two trailing-year windows are built the one way.
+    eps_ttm = e.iloc[::-1].rolling(int(rpy)).sum().iloc[::-1]
+    lag = int(rpy) * int(years)
+    prev = eps_ttm.shift(-lag)
+    g = 100.0 * (eps_ttm - prev) / prev.abs() / float(years)
+    #  THE SIGN-CROSSING NERF.  Where the base is NON-POSITIVE the ratio above is not a growth
+    #  rate (see PEG_CROSSING_SUBSTITUTION), so it is replaced by the POOL's median growth rate
+    #  when one is supplied and made NaN when it is not.  NaN is the build-time answer: the median
+    #  is cross-sectional and `calc_special` sees one source, so the crossing rows are filled later
+    #  by `substitute_peg_crossing`.  Nothing is imputed here and no sentinel is used.
+    crossing = (prev <= 0) & prev.notna() & eps_ttm.notna()
+    if crossing.any():
+        g = g.mask(crossing, float(crossing_growth) if crossing_growth is not None else np.nan)
+    pe = price / eps_ttm
+    peg = (pe / g).replace([np.inf, -np.inf], np.nan)
+    #  THE DOMAIN, applied here and nowhere else.  `eps_ttm > 0` is "there IS a P/E";
+    #  `prev.notna() & (prev != 0)` is "there is a prior trailing year, and it is not a zero
+    #  base".  A NEGATIVE prior base is admissible -- that is the turnaround.  These comparisons
+    #  are False on NaN, so an undetermined domain is inadmissible without a fillna.
+    peg = peg.where((eps_ttm > 0) & prev.notna() & (prev != 0))
+    return peg, eps_ttm, prev
+
+
+#  The row key the substitution aligns on.  (source, date) ALONE IS NOT ENOUGH: 282 sources carry
+#  DUPLICATE snapped quarters (1,639 of 5,501 rows), so a pair-merge fans out many-to-many and can
+#  pair a row with the wrong counterpart -- the defect that made my own first measurement of the
+#  Graham boundary report 70 changed rows when the true answer was 0.  Adding the OCCURRENCE index
+#  within (source, date) makes the key unique and is strictly stronger than the (source, date)
+#  matching `data_quality.apply_data_quality_filter` already relies on, which rests on the same
+#  documented invariant: both frames are built per ticker from the SAME date vector and both go
+#  through `utils.setDatesToQuarterly`.
+_PEG_KEY = ('source', '_peg_date', '_peg_occ')
+
+
+def _peg_row_key(df, date_col='date'):
+    """The three key columns for `df` (a small COPY; `df` itself is untouched).
+
+    THE DATE IS SNAPPED ON BOTH SIDES BEFORE KEYING, and that is load-bearing rather than
+    defensive.  `build_bometric_rows` writes `utils.setDatesToQuarterly(tempMetric_df)`, so
+    BoMetric_df carries SNAPPED period ends, while cdx_df carries snapped ones on a SAVED panel and
+    RAW ones on the live fetch path.  Keyed on the raw date, the live path matches nothing --
+    measured on a synthetic pair: 2 crossing rows found, 0 filled, and the only symptom was the
+    `n_unmatched` counter, which is exactly why that counter is returned and printed rather than
+    swallowed.  `setDatesToQuarterly` is idempotent on already-snapped dates, so applying it here
+    is a no-op on the saved-panel path.
+    """
+    d = pd.to_datetime(df[date_col], errors='coerce')
+    #  utils.setDatesToQuarterly is `PeriodIndex(freq='Q').to_timestamp()`; inlined rather than
+    #  imported to keep calcMetrics free of a utils dependency (utils imports nothing from here,
+    #  but the one-way edge is worth preserving).  NaT-safe: PeriodIndex carries NaT through.
+    d = pd.Series(pd.PeriodIndex(d, freq='Q').to_timestamp(), index=d.index)
+    return pd.DataFrame({'source': df['source'].values, '_peg_date': d.values,
+                         '_peg_occ': d.groupby([df['source'].values, d.values]).cumcount().values},
+                        index=df.index)
+
+
+def peg_pool_median_growth(cdx_df, freq_map=None, years=None):
+    """The POOL's median annual growth rate, over the rows the PEG criterion can actually score.
+
+    THE POPULATION IS THE IN-DOMAIN ROWS -- positive trailing EPS now AND a positive prior
+    trailing year.  That is deliberately narrower than "every row where the arithmetic works":
+    it is "the typical growth rate among the companies this criterion is able to assess", which
+    is exactly the bar a crossing row should be made to face.  Rows whose base is non-positive
+    are excluded BY CONSTRUCTION -- they are the rows being substituted, so including them would
+    let the artifact define its own replacement.
+
+    Returns (median, n_rows).  `median` is NaN when the pool has no in-domain row, in which case
+    `substitute_peg_crossing` leaves every crossing row NaN -- i.e. refused, which is the honest
+    answer and is what the criterion did before this change.
+    """
+    if freq_map is None:
+        freq_map = rp.frequency_by_source(cdx_df)
+    vals = []
+    for src, g in cdx_df.groupby('source', sort=False):
+        rpy = rp.rows_per_year(freq_map, src)
+        tf = g.iloc[::-1] if _is_oldest_first(g) else g
+        _peg, now, prev = peg_local(tf, rpy=rpy, years=years)
+        e = pd.to_numeric(tf[_PEG_EPS_FIELD], errors='coerce')
+        ttm = e.iloc[::-1].rolling(int(rpy)).sum().iloc[::-1]
+        lag = int(rpy) * int(PEG_GROWTH_YEARS if years is None else years)
+        base = ttm.shift(-lag)
+        gr = (100.0 * (ttm - base) / base.abs()
+              / float(PEG_GROWTH_YEARS if years is None else years))
+        gr = gr.replace([np.inf, -np.inf], np.nan).where((ttm > 0) & (base > 0))
+        vals.append(gr.dropna())
+    if not vals:
+        return float('nan'), 0
+    allg = pd.concat(vals, ignore_index=True)
+    return (float(allg.median()) if len(allg) else float('nan')), int(len(allg))
+
+
+def _is_oldest_first(g, date_col='date'):
+    """True when this source's frame is OLDEST-first.  `peg_local` requires NEWEST-first (its
+    `.shift(-k)` reaches older rows), and the saved panel is stored oldest-first while the live
+    build hands over the raw newest-first FMP order -- so the orientation is DETECTED rather than
+    assumed.  A frame with unparseable or tied dates falls through as newest-first, i.e. the
+    build-time convention."""
+    d = pd.to_datetime(g[date_col], errors='coerce').dropna()
+    return len(d) >= 2 and d.iloc[0] < d.iloc[-1]
+
+
+def substitute_peg_crossing(bm_df, cdx_df, freq_map=None, verbose=True):
+    """Fill `bm_df['PEG']`'s sign-crossing rows with the pool-median-growth criterion value.
+
+    Returns (bm_df COPY, stats).  `bm_df` is never mutated: the caller replaces its own local, so
+    the SAVED panel keeps the honest per-source pre-substitution column and the SCORED frame
+    carries the cross-sectional one -- the `BoMetric_ave` pattern (audit H-1).
+
+    Called from ONE place, `postBo.postBoWrapper`, immediately before Stage-1 scoring.  It is not
+    called from the per-source builders because the median does not exist there.
+    """
+    stats = {'median_growth': float('nan'), 'n_pool_rows': 0, 'n_crossing_rows': 0,
+             'n_filled': 0, 'n_unmatched': 0}
+    if bm_df is None or 'PEG' not in getattr(bm_df, 'columns', []) or cdx_df is None:
+        return bm_df, stats
+    if freq_map is None:
+        freq_map = rp.frequency_by_source(cdx_df)
+    med, n_pool = peg_pool_median_growth(cdx_df, freq_map=freq_map)
+    stats['median_growth'], stats['n_pool_rows'] = med, n_pool
+    if not np.isfinite(med):
+        if verbose:
+            print('PEG CROSSING SUBSTITUTION: the pool has no in-domain row, so no median exists '
+                  '-- every sign-crossing row stays REFUSED (the pre-2026-08-05 behaviour).',
+                  flush=True)
+        return bm_df, stats
+
+    rows = []
+    for src, g in cdx_df.groupby('source', sort=False):
+        rpy = rp.rows_per_year(freq_map, src)
+        tf = (g.iloc[::-1] if _is_oldest_first(g) else g)
+        peg, ttm, base = peg_local(tf, rpy=rpy, crossing_growth=med)
+        crossing = (base <= 0) & base.notna() & ttm.notna() & (ttm > 0)
+        if not crossing.any():
+            continue
+        k = _peg_row_key(tf)
+        sub = pd.DataFrame({'source': k['source'], '_peg_date': k['_peg_date'],
+                            '_peg_occ': k['_peg_occ'],
+                            '_peg_new': peg_criterion(peg).values})[crossing.values]
+        rows.append(sub)
+    stats['n_crossing_rows'] = int(sum(len(r) for r in rows))
+    if not rows:
+        return bm_df, stats
+
+    fill = pd.concat(rows, ignore_index=True).dropna(subset=['_peg_new'])
+    out = bm_df.copy()
+    key = _peg_row_key(out)
+    idx = pd.MultiIndex.from_arrays([key['source'], key['_peg_date'], key['_peg_occ']])
+    m = pd.Series(fill['_peg_new'].values,
+                  index=pd.MultiIndex.from_arrays([fill['source'], fill['_peg_date'],
+                                                   fill['_peg_occ']]))
+    #  Duplicate keys would make the reindex ambiguous.  They cannot occur -- the occurrence index
+    #  is what removes them -- so assert rather than silently take the first.
+    if m.index.has_duplicates:
+        raise ValueError(
+            'calcMetrics.substitute_peg_crossing: the (source, date, occurrence) key is not '
+            'unique on the substitution frame, so the fill would be ambiguous. That key exists '
+            'precisely to remove the duplicate-snapped-quarter ambiguity -- if it is duplicated, '
+            'the two frames were not built from the same date vector.')
+    new = m.reindex(idx)
+    take = new.notna().to_numpy()
+    stats['n_filled'] = int(take.sum())
+    stats['n_unmatched'] = int(len(fill) - take.sum())
+    vals = pd.to_numeric(out['PEG'], errors='coerce').to_numpy(dtype='float64')
+    vals[take] = new.to_numpy(dtype='float64')[take]
+    out['PEG'] = vals
+    if verbose:
+        print('PEG CROSSING SUBSTITUTION: pool median annual growth = %.4f%% over %d in-domain '
+              'row(s); %d sign-crossing row(s) found, %d filled, %d unmatched.'
+              % (med, n_pool, stats['n_crossing_rows'], stats['n_filled'],
+                 stats['n_unmatched']), flush=True)
+        if stats['n_unmatched']:
+            print('  NOTE %d substitution row(s) had no counterpart in BoMetric_df -- expected '
+                  'for the oldest `rpy` rows, which build_bometric_rows trims.'
+                  % stats['n_unmatched'], flush=True)
+    return out, stats
 
 
 def apply_domain_guard(df, values, guard):
@@ -149,6 +482,89 @@ def apply_domain_guard(df, values, guard):
             "length mismatch means the caller passed a different frame than the ratio was "
             "built from." % (guard, len(ok), len(v)))
     return np.where(ok, v, np.nan).tolist()
+
+
+# =========================================================================== #
+#  STAGE-1 BOUNDARY IMPUTATION (nan-policy.md ADDENDUM A, 2026-08-05)          #
+# =========================================================================== #
+#  THE COMPANION OF A GUARD, AND THE OPPOSITE CASE.  A `Guard` refuses rows whose value is
+#  PERVERSE (a sign inversion) -- the number exists and is wrong.  A `Boundary` fills rows whose
+#  value is UNDEFINED BECAUSE AN INPUT IS ADVERSE -- the number does not exist, and the metric's
+#  own limit at that input's domain edge is the honest stand-in.  The CEO's instruction: "For
+#  metrics that are NaN because of adverse things I don't think we should punish them again for
+#  it.  So just put it like earnings were close to 0."
+#
+#  Declared per metric in `createDicts` (`Boundary`), predicate + limit here, and the limit
+#  VALUES with their derivations in `nan_policy.BOUNDARY_LIMIT` -- the same three-place split the
+#  guards use, so a criterion's domain and its boundary sit beside the criterion.
+#
+#  {name: (mask_of_rows_where_the_boundary_applies, metric_key_whose_limit_to_use)}
+STAGE1_BOUNDARY_IMPUTATIONS = {
+    #  `uGrahamNumberToPrice`.  grahamNumber = sqrt(22.5 * EPS_ttm * BVPS) is undefined for
+    #  EPS_ttm <= 0 or BVPS <= 0; as EPS_ttm -> 0+ the whole expression -> 0, so the criterion
+    #  column grahamNumber/price -> 0.0.  `calcScore.calcByTier` then tests `metvec - 1 > 0`
+    #  on a unity criterion, i.e. -1.0, i.e. a FAIL -- which is EXACTLY what it does with the
+    #  NaN today.  BEHAVIOUR-IDENTICAL BY CONSTRUCTION on 23,212 of the 61,832 newest-8 rows,
+    #  and that identity is the point: it makes the fail DERIVED ("there is no earnings-based
+    #  valuation floor to compare this price against") instead of INCIDENTAL ("the number was
+    #  missing"), so the criterion no longer depends on NaN-scores-as-a-fail to be right.
+    #
+    #  ONLY THE ADVERSE ROWS.  `graham_missing_inputs` (208 rows, 0.9%) is a genuine provider
+    #  gap and is left NaN -- imputing a real value there would put an answer where there is
+    #  none.  The discriminator is the per-row reason the ingest already stamps.
+    'graham_adverse': (lambda df: npol.graham_adverse_mask(df), 'uGrahamNumberToPrice'),
+}
+
+
+def apply_boundary_imputation(df, values, boundary, admissible=None):
+    """`values` with every row the named boundary applies to replaced by the metric's LIMIT.
+
+    Only rows that are BOTH in the boundary's mask AND currently NaN are filled: a row that
+    already has a value is a measurement and is never overwritten.  Returns a list, so the
+    caller's downstream handling is unchanged (mirrors `apply_domain_guard`).
+
+    `admissible` -- the GUARD's mask, when a guard also ran on this form.  ENFORCEMENT, not
+    decoration (review finding, 2026-08-05): `build_bometric_rows` applies the guard first and
+    then the boundary, and a comment there claimed a boundary could therefore never resurrect a
+    guard-refused row.  IT COULD.  Both mechanisms express refusal as NaN, so with a guard and a
+    boundary on the same form the boundary's "fill the NaNs" step would fill the rows the guard
+    had just refused -- and the ordering the comment relied on is what makes that happen, not what
+    prevents it.  NOT LIVE TODAY (one Boundary, six Guards, no criterion declares both), which is
+    exactly why it is worth closing now rather than after the first criterion that does.
+    """
+    if boundary not in STAGE1_BOUNDARY_IMPUTATIONS:
+        raise KeyError(
+            "calcMetrics.apply_boundary_imputation: no boundary named %r (known: %r). A "
+            "`Boundary` key was added to a createDicts metric entry without a predicate here "
+            "-- add it, or drop the key. Silently ignoring it would leave the criterion "
+            "failing adverse rows for the wrong reason with nothing to say so."
+            % (boundary, sorted(STAGE1_BOUNDARY_IMPUTATIONS)))
+    mask_fn, metric_key = STAGE1_BOUNDARY_IMPUTATIONS[boundary]
+    limit = npol.BOUNDARY_LIMIT.get(metric_key)
+    if limit is None:
+        raise KeyError(
+            "calcMetrics.apply_boundary_imputation: boundary %r names metric %r, which has no "
+            "entry in nan_policy.BOUNDARY_LIMIT. The LIMIT and its derivation must be written "
+            "there -- ADDENDUM A's rule is not automatable, so a boundary without a derived "
+            "limit is a tuned constant in disguise." % (boundary, metric_key))
+    v = pd.to_numeric(pd.Series(list(values)), errors='coerce').to_numpy(dtype='float64')
+    ok = np.asarray(mask_fn(df).fillna(False), dtype=bool)
+    if len(ok) != len(v):
+        raise ValueError(
+            "calcMetrics.apply_boundary_imputation: boundary %r produced %d flags for %d "
+            "values -- the caller passed a different frame than the ratio was built from."
+            % (boundary, len(ok), len(v)))
+    if admissible is not None:
+        adm = np.asarray(pd.Series(list(admissible)).fillna(False), dtype=bool)
+        if len(adm) != len(v):
+            raise ValueError(
+                "calcMetrics.apply_boundary_imputation: the guard mask has %d flags for %d "
+                "values." % (len(adm), len(v)))
+        #  A GUARD-REFUSED ROW IS OUT OF DOMAIN AND STAYS OUT.  The boundary answers "the metric
+        #  is undefined because an input was adverse"; the guard answers "this row must not be
+        #  scored at all".  The second is the stronger statement and wins.
+        ok = ok & adm
+    return np.where(ok & np.isnan(v), float(limit[0]), v).tolist()
 
 
 #maybe check if denom is 0?
@@ -248,7 +664,20 @@ def calc_special(df,metstr,n,rpy=rp.DEFAULT_ROWS_PER_YEAR,guard=None):
                                      errors='coerce')
                        - pd.to_numeric(df['netIncome'], errors='coerce'))
     elif metstr == 'PEG':
-        res[metstr] = np.where(df['priceEarningsToGrowthRatio'] != 0, 1 / df['priceEarningsToGrowthRatio'], 0) - 1
+        #  COMPUTED LOCALLY (2026-08-05).  `df['priceEarningsToGrowthRatio']` -- the vendor
+        #  field -- is no longer read: see `peg_local` for the vendor formula that was
+        #  reverse-engineered, the three defects in it, and why the horizon is one YEAR.  The
+        #  criterion form `1/PEG - 1 > 0` (i.e. 0 < PEG < 1) is UNCHANGED, as is Tier C /
+        #  Sign +1; only the quantity inside it is now ours.
+        #  `0` for a zero PEG is kept verbatim from the previous line -- it then becomes -1,
+        #  i.e. a FAIL, which is right (a PEG of exactly 0 is not "infinitely cheap").
+        #  crossing_growth is NOT supplied here, by design: the sign-crossing rows need the POOL's
+        #  median growth rate, which does not exist at build time (this function sees ONE source,
+        #  and on the fetch path the panel is still being accumulated).  They come out NaN and are
+        #  filled by `substitute_peg_crossing` from `postBo.postBoWrapper`.  See
+        #  PEG_CROSSING_SUBSTITUTION.
+        _peg, _e_now, _e_prev = peg_local(df, rpy=rpy)
+        res[metstr] = peg_criterion(_peg).values
     #elif str == 'CFOlessEarnings':
     #    res[metstr] = df['netCashProvidedByOperatingActivities'] - df['netIncome']
     #    res = res.iloc[::-1]
