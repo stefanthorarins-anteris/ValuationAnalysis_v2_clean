@@ -24,12 +24,23 @@ THAT CONCLUSION IS WITHDRAWN, for four reasons the devils-advocate gate establis
 Correct statement, and the only one this module supports:
     THE CONDITIONAL VALUE OF THE STAGE-2 WEIGHTS IS **UNMEASURED** AT THE SCALE IT OPERATES.
 
-A FURTHER REASON A UNIVERSE-WIDE STUDY CANNOT SETTLE IT.  `marketCapRevQuants` (w = 0.080,
-the #2 weight) is a POOL-RELATIVE quantile code, recomputed per pool: over 100 names it
-splits the shortlist into cap quartiles, over 7,000 it splits the universe.  It is
-literally a different variable in the two settings, so a universe-wide measurement can
-neither certify nor refute deployed Stage-2 -- for that metric the two are not comparable
-at all.  Reported here per pool size so the effect is visible rather than assumed.
+A FOURTH REASON THAT NO LONGER APPLIES -- KEPT SO THE RECORD IS NOT SILENTLY REWRITTEN.
+Until 2026-08-06 there was a fourth argument here: `marketCapRevQuants` (then w = 0.080, the
+#2 weight) was a POOL-RELATIVE quantile code recomputed per pool, so it was literally a
+different variable over 100 names than over 7,000 and a universe-wide measurement could not
+be transported to the top-100 for that metric at all.  Register D-5 (CEO 2026-08-06)
+REPLACED the pool quartiles with ABSOLUTE USD bands (stage2_metrics.MCAP_BAND_EDGES_USD).
+An absolute band depends on the row's own market cap and on nothing else, so the metric is
+now the SAME variable at every pool size and this objection is GONE -- along with the
+`mcap_quant_pool_dependence` table that measured it, RETIRED rather than repointed.
+THE MODULE'S CONCLUSION IS UNCHANGED: reasons 1-3 above (power at n=100, the
+near-significant n=656 estimate, the sign flip at rho=0.936) are the load-bearing ones and
+are untouched, so the conditional value of the Stage-2 weights remains UNMEASURED at the
+scale it operates.  What changed is that ONE of four arguments for that verdict expired.
+
+CAUTION FOR PRE-D-5 ARTIFACTS: any `marketCapRevQuants` column on a panel or postRank saved
+before 2026-08-06 still holds pool-relative quartile codes.  A difference against a post-D-5
+run is the D-5 boundary, not drift.
 
 Emits artifacts (the earlier pass emitted none for this, which is why it was the least
 checkable number in the study and the one that drove the recommendation).
@@ -142,42 +153,25 @@ def sign_test_note(ds, col="med_q1_minus_q5"):
     return k, n, p2, p1
 
 
-def mcap_quant_pool_dependence(panel_path, bs_path, buy, ns=(100, 300, 656, 6564)):
-    """`marketCapRevQuants` is POOL-RELATIVE: show how much a name's own value moves with
-    pool size -- the reason a universe-wide result cannot be transported to the top-100.
-
-    It must RE-RUN `add_mcap_quants` on each pool.  (An earlier version of this function
-    merely SUBSET the single universe-wide computation the metric loop had already done, so
-    it reported 0.0000 changed for every pool size -- it was measuring nothing.  The
-    deployed run calls qcut on the ~100-name pool; that is what has to be reproduced.)
-    """
-    import stage2_metrics as sm
-    cdx = pd.read_pickle(panel_path)["cdx_df"].copy()
-    cdx["date"] = pd.to_datetime(cdx["date"], errors="coerce")
-    cdx = cdx[cdx["date"] <= pd.Timestamp(buy)]
-    order = list(pd.read_pickle(bs_path)["bs"]["source"])
-    out, ref = [], None
-    for n in ns:
-        names = set(order[:n])
-        sub = cdx[cdx["source"].isin(names)].reset_index(drop=True)
-        if sub.empty:
-            continue
-        q = pd.Series(sm.add_mcap_quants(sub)).astype(float)
-        # one value per name, exactly as the metric loop takes it (.iloc[0] of the slice)
-        per_name = pd.DataFrame({"source": sub["source"], "q": q.values}) \
-            .groupby("source")["q"].first()
-        row = {"pool_n": len(per_name), "distinct_values": int(per_name.nunique()),
-               "mean": float(per_name.mean()), "sd": float(per_name.std())}
-        if ref is None:
-            ref = per_name
-            row["frac_changed_vs_top100"] = 0.0
-        else:
-            common = per_name.index.intersection(ref.index)
-            row["frac_changed_vs_top100"] = float(
-                (~np.isclose(per_name.loc[common], ref.loc[common], equal_nan=True)).mean())
-            row["n_common_with_top100"] = len(common)
-        out.append(row)
-    return pd.DataFrame(out)
+#  RETIRED (register D-5, CEO 2026-08-06): `mcap_quant_pool_dependence` is DELETED.
+#  It was the same measurement as verify_part5_defects' D11 -- how much a name's own
+#  `marketCapRevQuants` value moved with pool size -- carried in two tools. D-5 replaced the
+#  pool quartiles with ABSOLUTE USD bands (stage2_metrics.MCAP_BAND_EDGES_USD), and an
+#  absolute band depends on the row's OWN market cap and on nothing else. So pool-relativity
+#  is not harder to measure, it DOES NOT EXIST: re-running this would report "0.0000 changed"
+#  for every pool size -- which is exactly the bug an earlier version of the function
+#  actually had, and would now be mistaken for a real result.
+#
+#  A RETIREMENT, NOT A REGRESSION, and deliberately NOT repointed at a question about the
+#  new bands. The measurement was correct; its subject is gone.
+#
+#  What the DELETION COSTS this module, stated so nobody reconstructs it by accident: it
+#  removes ONE of the four reasons the header gives for why a universe-wide study cannot
+#  settle deployed Stage-2. The OTHER THREE (power at n=100, the near-significant n=656
+#  point estimate, the sign flip between two orderings correlated at rho=0.936) are
+#  untouched, and they are the load-bearing ones. The module's conclusion -- that the
+#  conditional value of the Stage-2 weights is UNMEASURED at the scale it operates -- does
+#  not depend on this function and still stands.
 
 
 def main():
@@ -185,7 +179,8 @@ def main():
     ap.add_argument("--cell", required=True, help="a *_cell.csv from decile_test")
     ap.add_argument("--label", default="")
     ap.add_argument("--psm", default=None, help="psm dump (for the Stage-1 order)")
-    ap.add_argument("--panel", default=None, help="panel pickle, for the mcapQuants recompute")
+    ap.add_argument("--panel", default=None,
+                    help="ACCEPTED AND IGNORED -- fed the retired mcapQuants pool table (D-5)")
     ap.add_argument("--buy", default="2022-12-30")
     ap.add_argument("--out-prefix", default=os.path.join(_HERE, "conditional"))
     args = ap.parse_args()
@@ -218,13 +213,14 @@ def main():
     print("  => the weak POSITIVE evidence is on MEDIANS only; on the beat-rate the same "
           "double sort does NOT go one way.")
 
-    if args.psm and os.path.exists(args.psm) and args.panel:
-        print("\n--- marketCapRevQuants is POOL-RELATIVE (w=0.080): re-running "
-              "add_mcap_quants per pool ---")
-        print(mcap_quant_pool_dependence(args.panel, args.psm, args.buy).to_string(
-            index=False, float_format=lambda v: "%.4f" % v))
-        print("  => a universe-wide measurement of Stage-2 can neither certify nor refute "
-              "the DEPLOYED Stage-2 for this metric.")
+    #  The `marketCapRevQuants` pool-dependence table that used to print here is RETIRED
+    #  (register D-5) -- see the note above `main`. `--panel` is now accepted and IGNORED,
+    #  rather than removed, so any saved invocation of this tool still runs; it is announced
+    #  so a caller who passes it is not left thinking the table was emitted and missed.
+    if args.panel:
+        print("\nNOTE: --panel is IGNORED. It fed only the marketCapRevQuants "
+              "pool-relativity table, RETIRED by register D-5 (absolute USD bands have no "
+              "pool to be relative to). Nothing is missing from this run.")
 
     ct.to_csv(args.out_prefix + "_ic.csv", index=False)
     ds.to_csv(args.out_prefix + "_double_sort.csv", index=False)

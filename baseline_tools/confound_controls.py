@@ -26,10 +26,17 @@ factor and that factor paid over this window" -- a regime bet whose sign is not 
 to persist -- NOT "the normalizer made the score informative".
 
 Market cap comes from `stage2_metrics._mcap_for_quants`, which is the SAME field the score's
-own `marketCapRevQuants` is cut over (USD where derivable, coarse exchange-suffix fallback
-otherwise).  Using the score's own size variable is deliberate: it makes the control as
-tight as it can be, and it cannot be accused of controlling for a different notion of size
-than the one the score reacts to.
+own `marketCapRevQuants` is cut over.  Using the score's own size variable is deliberate: it
+makes the control as tight as it can be, and it cannot be accused of controlling for a
+different notion of size than the one the score reacts to.
+
+THAT FIELD IS NOW USD-OR-NOTHING (register D-5, CEO 2026-08-06).  It used to read "USD where
+derivable, coarse exchange-suffix fallback otherwise"; the fallback is gone, because absolute
+bands cannot absorb a currency guess.  On any panel saved BEFORE the fetch that captures
+`reportedCurrency` it therefore returns ALL-NaN, and this tool is **BLOCKED** rather than
+degraded: `mcap_by_source` RAISES with instructions instead of running a size control that
+controls for nothing.  This is a WAIT, not an abandonment -- one post-fetch panel unblocks it
+and the guard is then deleted.  See `_MCAP_BLOCKED`.
 
 ALSO HERE
 ---------
@@ -76,14 +83,92 @@ import attribution_arms as aa
 # --------------------------------------------------------------------------- #
 #  Controls                                                                   #
 # --------------------------------------------------------------------------- #
+#  The message the BLOCKED state prints.  Module-level so the wording is stated once and a
+#  post-fetch reader gets the same text wherever they hit it.
+_MCAP_BLOCKED = """
+{bar}
+!!! confound_controls IS BLOCKED -- WAITING FOR DATA, NOT ABANDONED !!!
+{bar}
+This tool's whole purpose is to PARTIAL THE SCORE'S IC ON MARKET-CAP DECILE, so it needs a
+real market cap per name.  It cannot get one from this panel:
+
+    panel : {panel}
+    carries `reportedCurrency` : {has_rc}
+    carries `marketCap_usd`    : {has_usd}
+    usable USD market cap      : NO
+
+WHY, and why this is a WAIT.  `marketCap` alone is NOT a market cap on a comparable scale --
+it is stored in each company's REPORTING currency, mixed across the universe, so a SEK
+reporter reads ~10x an equally sized USD reporter and a KRW reporter far more.  Deciling
+that column would decile companies partly by which currency they report in, and the
+resulting "size control" would absorb currency, not size -- which would make this tool's
+headline (how much of the IC is size) WRONG IN AN UNKNOWABLE DIRECTION rather than merely
+noisy.  Register D-5 (CEO 2026-08-06) removed the coarse exchange-suffix FX guess that used
+to paper over this, from `stage2_metrics._mcap_for_quants` and from the $25M universe floor
+alike, because absolute edges do not cancel a systematic currency error.  So the field this
+tool reads is now honestly EMPTY instead of dishonestly full.
+
+>>> THE FIX IS AVAILABLE AS SOON AS A POST-FETCH PANEL EXISTS.  The next full fetch captures
+>>> `reportedCurrency` (the ingest already materializes `marketCap_usd` alongside it -- the
+>>> 2026-08-04 TEST1 panel carries both).  Point --panel-current / --panel-prearc at a panel
+>>> from that run and DELETE THIS GUARD: `_mcap_for_quants` will return real USD and the
+>>> decile control becomes correct, with no other change needed to this tool.
+>>>
+>>> DO NOT "fix" this by re-enabling a suffix-FX guess or by deciling the raw column.  That
+>>> is the exact defect D-5 removed, and here it would silently corrupt the finding.
+{bar}
+""".strip()
+
+
+def _usd_mcap_available(cdx):
+    """Does this panel carry a market cap on a COMPARABLE (USD) scale?  Delegates to the
+    pipeline's own predicate so the tool and the pipeline cannot disagree about it."""
+    try:
+        import carveOut as _co
+        return bool(_co.currency_data_present(cdx))
+    except Exception:
+        #  carveOut unavailable: fall back to the same two-column test it applies, rather
+        #  than assuming either answer.
+        cols = getattr(cdx, "columns", [])
+        if "marketCap_usd" in cols:
+            return bool(pd.to_numeric(cdx["marketCap_usd"], errors="coerce").notna().any())
+        return False
+
+
 def mcap_by_source(panel_path, buy):
-    """source -> market cap as of `buy`, via the SAME field mcapQuants is cut over."""
+    """source -> USD market cap as of `buy`, via the SAME field mcapQuants is cut over.
+
+    RAISES (loudly, with instructions) when the panel carries no USD market cap -- see
+    `_MCAP_BLOCKED`.  A silent all-NaN return is the failure mode this guard exists to
+    prevent: every name would land in the `missing-cap = own level` decile dummy, the
+    "market-cap control" would control for NOTHING, and `IC_partial_mcap` would come back
+    equal to the unpartialled IC -- a result that LOOKS like "size explains none of the IC"
+    and is in fact "no size variable was present".  That is the strongest possible wrong
+    conclusion this tool can emit, so it must fail instead of returning it.
+    """
     cdx = pd.read_pickle(panel_path)["cdx_df"].copy()
     cdx["date"] = pd.to_datetime(cdx["date"], errors="coerce")
     cdx = cdx[cdx["date"] <= pd.Timestamp(buy)].copy()
+    if not _usd_mcap_available(cdx):
+        cols = getattr(cdx, "columns", [])
+        msg = _MCAP_BLOCKED.format(
+            bar="!" * 78, panel=panel_path,
+            has_rc="yes" if "reportedCurrency" in cols else "NO",
+            has_usd="yes" if "marketCap_usd" in cols else "NO")
+        print(msg, file=sys.stderr, flush=True)
+        print(msg, flush=True)
+        raise RuntimeError(
+            "confound_controls: BLOCKED pending a post-fetch panel carrying "
+            "reportedCurrency -- no USD market cap on %s (register D-5). See the banner "
+            "above; do NOT substitute the raw mixed-currency marketCap column." % panel_path)
     cdx["_mc"] = pd.to_numeric(pd.Series(sm._mcap_for_quants(cdx)).values, errors="coerce")
     # newest non-NaN row per source (cdx is ascending, so .last())
     s = cdx.dropna(subset=["_mc"]).groupby("source")["_mc"].last()
+    if s.empty:
+        raise RuntimeError(
+            "confound_controls: panel %s reports a usable currency but yielded no finite "
+            "USD market cap as of %s -- refusing to run an empty size control."
+            % (panel_path, buy))
     return s
 
 
@@ -180,9 +265,16 @@ def deployed_topn(psm, bs, normalizer, price_source, buy, eval_, n_pool=100,
     """Stage-1 top-`n_pool` -> Stage-2 re-normalised OVER THAT POOL -> top-N by AggScore.
 
     This is the shape the pipeline actually ships, and it is NOT what a universe-wide decile
-    test measures: the cross-sectional normalisation runs over ~100 names, and
-    `marketCapRevQuants` is a within-pool quantile, so both are different variables at this
-    scale.  Issuer-dedup is deliberately NOT applied here (see module docstring).
+    test measures: the cross-sectional NORMALISATION runs over ~100 names, so a name's z --
+    and therefore its AggScore -- depends on the pool it is scored in.  That reason stands and
+    is why this function exists.
+
+    ONE reason that USED to be given here has EXPIRED: `marketCapRevQuants` was a within-pool
+    quantile, i.e. a different variable at pool scale than at universe scale.  Register D-5
+    (CEO 2026-08-06) made it an ABSOLUTE USD band, which depends on the row's own market cap
+    and on nothing else, so that metric is now pool-INVARIANT.  Corrected rather than deleted
+    so a reader of a pre-D-5 artifact knows which claim moved.  Issuer-dedup is deliberately
+    NOT applied here (see module docstring).
     """
     pool = list(bs.sort_values("score", ascending=False)["source"])[:n_pool]
     sub = psm[psm["source"].isin(set(pool))].reset_index(drop=True)

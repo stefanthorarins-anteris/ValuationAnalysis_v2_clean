@@ -102,10 +102,12 @@ def test_rank_normal_fill_of_zero_can_sit_far_off_median_on_a_discrete_column():
     z = pbr._rank_normal(binary)
     frac_below_fill = float((z < 0).mean())
     assert frac_below_fill >= 0.55, frac_below_fill      # ~60%, NOT 50%
-    # and a 5-level column (the marketCapRevQuants shape) is off-centre too
-    five = pd.Series(([-0.5] * 30) + ([-1 / 6] * 30) + ([0.0] * 10)
-                     + ([1 / 6] * 20) + ([0.5] * 10))
-    zf = pbr._rank_normal(five)
+    # and a 7-level column (the marketCapRevQuants shape: the SIX absolute market-cap
+    # bands of stage2_metrics.MCAP_BAND_SCORES plus the 0.0 missing-cap sentinel -- it was
+    # 5 while the metric was a pool quartile, register D-5 2026-08-06) is off-centre too
+    seven = pd.Series(([-0.5] * 25) + ([-0.3] * 20) + ([-0.1] * 15) + ([0.0] * 10)
+                      + ([0.1] * 15) + ([0.3] * 10) + ([0.5] * 5))
+    zf = pbr._rank_normal(seven)
     assert abs(float((zf < 0).mean()) - 0.50) > 0.02
 
 

@@ -321,33 +321,46 @@ STAGE2_FLOW_OVER_STOCK = tuple(k for k, (_w, f, _y) in STAGE2_METRIC_SPEC.items(
 #  Pool-level helper                                                          #
 # --------------------------------------------------------------------------- #
 def _mcap_for_quants(cdxtop):
-    """The market-cap series the size quartiles are cut over: USD where derivable,
-    raw marketCap otherwise (audit H-3/H8 fix, 2026-07-19).
+    """The market-cap series the size BANDS are cut over: USD from the real
+    `reportedCurrency`, or NaN.  NEVER a guess (register D-5, CEO 2026-08-06).
 
     marketCap is stored in each company's REPORTING currency, mixed across the pool, so
-    cutting quartiles over the raw field ranked companies partly by which currency they
-    report in: a SEK reporter looks ~10x bigger than an equally sized USD reporter and is
-    pushed into a larger-cap quartile, an ISK/KRW/JPY reporter far more.  mcapQuants is
-    the #2 ranking driver (w = 0.080), so this was a live selection effect, not cosmetic:
-    on the 2026-07-17 universe 838 of 7,752 names (10.8%) sit in a DIFFERENT size
-    quartile once the field is converted.
+    banding the raw field bands companies partly by which currency they report in: a SEK
+    reporter looks ~10x bigger than an equally sized USD reporter, an ISK/KRW/JPY reporter
+    far more.
 
-    Conversion uses carveOut.marketcap_usd_series with the coarse exchange-suffix
-    fallback ON, because the quartiles must produce a value for every name in the pool.
-    Unknown suffix -> rate 1.0 = the previous raw behaviour, so no name is lost.  Falls
-    back to the raw column entirely if carveOut is unavailable (offline tooling) or the
-    conversion yields nothing, so this can never make the metric MISSING.
+    WHY THERE IS NO FALLBACK ANY MORE -- the change absolute bands forced.  Until
+    2026-08-06 this function converted with the coarse exchange-suffix guess ON
+    (`allow_suffix_fallback=True`) and fell back to the RAW column when that yielded
+    nothing.  Under POOL QUARTILES that was defensible: a relative cut partly CANCELS a
+    systematic currency error, because every name in one currency shifts together and the
+    quartile boundaries move with them.  ABSOLUTE EDGES DO NOT CANCEL.  A Korean issuer
+    reporting won reads as >= $10B and scores -0.5 whatever its real size, and the curated
+    universe is deliberately multi-currency (KSC/KOE, PAR, AMS, TSX, LSE).  Measured on the
+    9,012-name 2026-01-08 panel: `reportedCurrency` is absent, yet the suffix guess moved
+    2,932 companies' rate off 1.0 and the remaining 6,080 were banded raw-as-if-USD -- so
+    every non-neutral band on saved data rested on a guess, and a coarse-suffix rate is not
+    a reporting-currency rate (FRES.L reports USD; the .L IOB lines are foreign issuers).
+
+    So: where the reporting currency is genuinely unknown, the row is UNKNOWN and
+    `add_mcap_quants` scores it NEUTRAL (MCAP_QUANT_MISSING = 0.0) rather than banding a
+    guess.  Nothing is misbanded; some names are merely unscored, which is recoverable.
+    This also makes the two consumers CONSISTENT -- `partition_by_marketcap` already gates
+    on `carveOut.currency_data_present`, and this metric was the one place still guessing.
+
+    CONSEQUENCE, stated so it is not a surprise: on every pickle saved BEFORE
+    `reportedCurrency` flows, this returns all-NaN, the column is CONSTANT 0.0, and
+    `normalizeAndDropNA` puts every name at z = 0 (its `sigma == 0 -> 1.0` guard), i.e. the
+    size tilt carries NO information for that run and its w = 0.049681 is inert.  That is
+    the intended degradation, it is announced by the `status=constant` banner the
+    normalizer prints, and it self-heals on the next full fetch.
     """
-    raw = pd.to_numeric(cdxtop["marketCap"], errors="coerce")
     try:
         import carveOut as _co
-        usd = _co.marketcap_usd_series(cdxtop, allow_suffix_fallback=True)
-        usd = pd.to_numeric(usd, errors="coerce")
-        if usd.notna().any():
-            return usd.where(usd.notna(), raw)
+        return pd.to_numeric(_co.marketcap_usd_series(cdxtop), errors="coerce")
     except Exception:
-        pass
-    return raw
+        #  carveOut unavailable (offline tooling): still no guess -- unknown, not raw.
+        return pd.Series(np.nan, index=getattr(cdxtop, "index", None), dtype="float64")
 
 
 #  mcapQuants value for a row whose market cap is NOT KNOWN: the NEUTRAL midpoint of the
@@ -356,37 +369,79 @@ def _mcap_for_quants(cdxtop):
 MCAP_QUANT_MISSING = 0.0
 
 
+#  ABSOLUTE market-cap bands, in USD (register D-5, CEO 2026-08-06).  Replaces the pool
+#  quartiles; see `add_mcap_quants` for why.
+#
+#  EDGES are HALF-DECADES (x3, x3.33, x3, x3.33, x3.33): size / neglect effects are
+#  log-linear, so equal LOG widths give equal resolution per unit of the effect.  A band
+#  is LEFT-CLOSED, RIGHT-OPEN -- [100M, 300M) scores +0.3, and exactly 10B scores -0.5 --
+#  so the table reads the way the spec is written ("< $100M", ">= $10B").
+#
+#  SIX bands, i.e. an EVEN count, is LOAD-BEARING, not a taste: an odd count puts a middle
+#  band at exactly 0.0, which collides with MCAP_QUANT_MISSING and would make a mid-cap
+#  INDISTINGUISHABLE from a name with no market cap at all.  Do not add or drop one band.
+#
+#  The SCORES span exactly [-0.5, +0.5] -- the same range the quartile map spanned -- so
+#  the deployed weight (marketCapRevQuants w = 0.049681) keeps meaning what it meant.
+#  Widening the range would be a weight increase in disguise.
+MCAP_BAND_EDGES_USD = (100e6, 300e6, 1e9, 3e9, 10e9)
+MCAP_BAND_SCORES = (0.5, 0.3, 0.1, -0.1, -0.3, -0.5)
+
+#  A market cap of <= 0 is not a very small company, it is a broken reading, and with
+#  ABSOLUTE edges it would land in the MOST-REWARDED band (+0.5, the maximum small-cap
+#  reward) -- the same defect class as the +0.8333 qcut sentinel below.  Treated as
+#  MISSING instead.  (Under the old quartile cut it landed in the smallest quartile, so
+#  this is a fix that rides along, not a behaviour the bands introduced.)
+MCAP_MIN_POSITIVE = 0.0
+
+
 def add_mcap_quants(cdxtop):
-    """Pool-level marketCap quartile code, mapped to [-0.5 .. +0.5] with the
-    sign flipped so SMALLER caps score HIGHER (set by
-    postBoRank._compute_ticker_metrics as `marketCapRevQuants`).
+    """ABSOLUTE market-cap band score in [-0.5 .. +0.5], SMALLER caps scoring HIGHER (set
+    by postBoRank._compute_ticker_metrics as `marketCapRevQuants`).
 
-    Cut over the USD market cap (see _mcap_for_quants), NOT the mixed-currency raw
-    field.
+    Banded over the USD market cap (see _mcap_for_quants), NOT the mixed-currency raw
+    field.  The conversion is MORE load-bearing here than it was under quartiles, not
+    less: with absolute edges an unconverted reporter lands in a band decided by its
+    REPORTING CURRENCY (a SEK reporter reads ~10x too big, an ISK/KRW/JPY one far more),
+    so a band is only as trustworthy as `reportedCurrency` flowing through ingest.  It is
+    therefore GATED on it: no reportedCurrency -> no band -> NEUTRAL, never a guess
+    (CEO 2026-08-06; see _mcap_for_quants for the whole argument and its consequence).
 
-    A row with NO market cap scores MCAP_QUANT_MISSING = 0.0, i.e. neutral (fix,
-    2026-07-25).  ``pd.qcut`` assigns ``cat.codes == -1`` to NaN, and -1 fell straight
+    WHY ABSOLUTE, NOT QUARTILES (register D-5, CEO 2026-08-06).  The metric was
+    `pd.qcut(..., 4)` -- POOL quartiles, so a company's own size score moved when OTHER
+    companies moved, and the cut ran over ROWS rather than companies (a multi-row issuer
+    counted several times), which put the 100-name Stage-2 pool at a lopsided 30/31/19/20
+    instead of 25/25/25/25.  Absolute bands make the score a property of the COMPANY:
+    pool-invariant, run-to-run comparable, and unaffected by the row-vs-company cut.
+    Six bands rather than four also give the size axis real resolution -- see
+    MCAP_BAND_EDGES_USD for why the count is even and the range unchanged.
+
+    A row with NO market cap (or a non-positive one) scores MCAP_QUANT_MISSING = 0.0,
+    i.e. neutral, and 0.0 is NOT any band's score, so missing stays distinguishable from
+    every real band.  Kept from the quartile implementation, whose defect it fixed
+    (2026-07-25): ``pd.qcut`` assigns ``cat.codes == -1`` to NaN, and -1 fell straight
     through the ``(-1) * (code/3 - 0.5)`` mapping to **+0.8333** -- OUTSIDE the metric's
-    intended range and, because smaller caps score higher, BETTER than the
-    most-rewarded real bucket (the smallest-cap quartile at +0.5) by 0.333.  Missing
-    market cap therefore earned the maximum small-cap reward in a w=0.080 metric (the
-    #2 ranking driver).  Verified on the 2026-07-17 panel: exactly the 746 rows with no
-    market cap carried +0.8333, and `cat.codes == -1` coincided with them one-for-one.
-    It is the same defect class as the EPStoEPSmean `return 0` sentinel and the Montier
-    `fillna(99999)`: absent data scoring as a real, favourable value.
+    intended range and BETTER than the most-rewarded real bucket by 0.333, so absent
+    market cap earned the maximum small-cap reward.  Verified on the 2026-07-17 panel:
+    exactly the 746 rows with no market cap carried +0.8333.  Same defect class as the
+    EPStoEPSmean `return 0` sentinel and the Montier `fillna(99999)`.
 
-    Uses ``duplicates='drop'`` + a 0.0 fallback so a pool with coincident
-    quartile edges degrades gracefully rather than raising.  (NOTE, pre-existing and
-    unchanged: when `duplicates='drop'` collapses the pool to fewer than 4 bins the
-    codes no longer span 0..3, so the mapping does not cover the full [-0.5, +0.5];
-    that path only triggers on a degenerate pool.)
+    Degenerate-pool caveat GONE: the old ``duplicates='drop'`` path silently narrowed the
+    range when quartile edges coincided, so on a small or clustered pool the mapping no
+    longer covered [-0.5, +0.5].  Absolute edges cannot collapse, so the range is now the
+    same on any pool, including a single row.
     """
     try:
-        codes = pd.qcut(_mcap_for_quants(cdxtop), 4,
-                        duplicates="drop").cat.codes
-        vals = (-1) * ((codes / 3) - 0.5)
-        # codes < 0 is qcut's NaN sentinel -- NOT a quartile. Neutral, not best-in-pool.
-        return vals.where(codes >= 0, MCAP_QUANT_MISSING)
+        usd = pd.to_numeric(pd.Series(_mcap_for_quants(cdxtop)), errors="coerce")
+        usd = usd.where(usd > MCAP_MIN_POSITIVE)          # <= 0 is a broken reading
+        # side='right' => a value EQUAL to an edge falls in the HIGHER band, i.e. bands
+        # are left-closed / right-open, matching the spec ("< $100M", "$100M - $300M").
+        idx = np.searchsorted(np.asarray(MCAP_BAND_EDGES_USD, dtype=float),
+                              usd.to_numpy(dtype=float), side="right")
+        vals = pd.Series(np.asarray(MCAP_BAND_SCORES, dtype=float)[idx],
+                         index=usd.index)
+        # NaN sorts to the far end, so it must be overwritten, not banded.
+        return vals.where(usd.notna(), MCAP_QUANT_MISSING)
     except Exception:
         return pd.Series(0.0, index=cdxtop.index)
 

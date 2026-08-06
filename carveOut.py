@@ -272,8 +272,18 @@ FX_TO_USD = {
 
 # --- COARSE exchange-suffix -> reporting-currency fallback --------------------------
 # ONLY for use where the alternative is treating a mixed-currency marketCap AS IF it
-# were USD -- i.e. the $25M universe FLOOR and the mcapQuants size tilt, both of which
-# run unconditionally today and therefore mis-select rather than degrade (audit H-3/H8).
+# were USD -- i.e. the $25M universe FLOOR, which runs unconditionally today and therefore
+# mis-selects rather than degrades (audit H-3/H8). The floor is now its LAST caller.
+#
+# THE mcapQuants SIZE TILT NO LONGER PASSES True (register D-5, CEO 2026-08-06). It did
+# while the metric was a POOL QUARTILE, where a relative cut partly cancels a systematic
+# currency error; `marketCapRevQuants` is now ABSOLUTE USD bands and absolute edges do not
+# cancel, so a won-reporting issuer would read as >= $10B whatever its size. That metric
+# is therefore gated on the real reportedCurrency and scores NEUTRAL when it is absent --
+# see stage2_metrics._mcap_for_quants. The asymmetry with the floor is DELIBERATE and
+# OPEN: the floor still guesses, because a name with no derivable USD size would otherwise
+# have to be either dropped or admitted unscreened. It is the remaining guess in the
+# currency story.
 #
 # It is deliberately NOT used by the market-cap BAND emission: the exchange suffix does
 # NOT determine reporting currency (fmp-specialist, 2026-07-18: FRES.L reports USD;
@@ -364,9 +374,20 @@ def marketcap_usd_series(cdx_df, allow_suffix_fallback=False):
 
     allow_suffix_fallback (OPT-IN, default OFF): fill rows the real reportedCurrency
     cannot resolve using the coarse exchange-suffix guess (SUFFIX_TO_CURRENCY), with an
-    unknown/absent suffix meaning rate 1.0 = raw marketCap. Callers that MUST produce a
-    number for every name -- the universe floor and the mcapQuants size tilt -- pass
-    True; the band emission does NOT (see SUFFIX_TO_CURRENCY note)."""
+    unknown/absent suffix meaning rate 1.0 = raw marketCap.
+
+    NO PIPELINE CALLER PASSES True ANY MORE (2026-08-06). The three consumers that key off
+    an absolute USD number now all refuse to guess: the band emission
+    (`partition_by_marketcap`) gates on `currency_data_present`, the `mcapQuants` size tilt
+    scores an unknown currency NEUTRAL (register D-5 -- absolute bands cannot absorb a
+    currency guess; see stage2_metrics._mcap_for_quants), and the $25M universe FLOOR was
+    the last guesser until it too was gated: it now excludes only names whose reporting
+    currency really resolves, and KEEPS the unknowns, because a wrong exclusion is
+    invisible and unrecoverable while a wrong inclusion still faces the whole filter (MD +
+    senior-dev joint call, CEO-delegated -- see partition_universe's floor block).
+    The flag survives for OFFLINE TOOLING that must produce a number for every row and is
+    explicit about the guess (baseline_tools/run_corrected_current.py); production must not
+    use it."""
     cols = getattr(cdx_df, 'columns', [])
     if cdx_df is None or 'marketCap' not in cols:
         return pd.Series(np.nan, index=getattr(cdx_df, 'index', None))
@@ -1295,6 +1316,68 @@ def _volavg_liquidity_term(sym, group, volavg_map):
     return 0 if top / mine < _VOLAVG_DECIDING_RATIO else 1
 
 
+#  The literal `volAvg_asof` markers used when there is no DATE to state, so an empty cell
+#  never has to be interpreted.  Exported as names because the tests and any reader that
+#  filters on them must not re-spell the strings.
+VOLAVG_STATUS_NOT_CAPTURED = 'not-captured'      # symbol absent from the map (or no map)
+VOLAVG_STATUS_NO_READING = 'no-reading'          # in the map, but null / 0 / non-finite
+VOLAVG_STATUS_UNDATED = 'undated-capture'        # a real value from the pre-dating pickle
+
+
+def volavg_report_frame(symbols, volavg_map=None):
+    """REPORT-ONLY average volume for a list of symbols: a 2-column frame
+    (`volAvg_report`, `volAvg_asof`) aligned to `symbols`, for the human-review artifacts
+    (register J-1, CEO 2026-08-06).
+
+    REPORT, NOT SCREEN.  The CEO's ruling is that average volume is SURFACED beside each
+    name and NOTHING is excluded on it: no liquidity floor, no threshold, no re-ordering.
+    Same shape as the loss-distribution decision -- show the number, let his own judgement
+    use it -- because any floor the house could pick would silently drop names on a bar
+    nobody can justify.  So this function is a pure lookup: it returns values and never
+    filters, sorts, or scores.  Its ONLY other reader in the pipeline is
+    `_volavg_liquidity_term`, which is the dedup survivor tiebreak and is UNTOUCHED by this;
+    nothing here feeds it.
+
+    ABSENCE IS NOT ZERO, AND THE THREE KINDS OF ABSENCE ARE DISTINGUISHED.  Every existing
+    pickle predates the volAvg capture, so "no number" is the NORMAL state and must not read
+    as a genuinely illiquid name -- a 0 in a volume column is a finding, an empty one is a
+    gap, and they must not look alike.  Same reasoning as the NaN-not-0 rule already applied
+    to the dedup diagnostic columns.  `volAvg_report` is therefore NaN whenever no usable
+    reading exists, and `volAvg_asof` states WHICH absence it is:
+      * `not-captured`   -- the symbol is not in the map at all (or no map exists);
+      * `no-reading`     -- present but null / 0 / non-finite, which is FMP's usual answer
+                            for a thin line and is an abstention trigger in the dedup term
+                            too, NOT a liquidity reading of zero;
+      * `undated-capture`-- a real value from the pre-2026-08-06 UNDATED pickle shape.
+
+    THE DATE TRAVELS WITH THE NUMBER, always.  Average volume is time-varying and
+    findAllSectors merges MERGE-NEVER-OVERWRITE, so a symbol a run did not fetch keeps a
+    stale reading indefinitely.  A dated column lets the reader see that two names are being
+    compared across two market regimes; an undated one invites exactly the false comparison
+    `_volavg_liquidity_term` refuses to make (its condition 2).  That is why `volAvg_asof` is
+    not optional and is emitted even when it can only carry a status marker.
+    """
+    vmap = _volavg_map_cached() if volavg_map is None else volavg_map
+    vals, dates = [], []
+    for sym in symbols:
+        v, asof = (vmap or {}).get(sym, (None, VOLAVG_STATUS_NOT_CAPTURED))
+        if sym not in (vmap or {}):
+            vals.append(np.nan)
+            dates.append(VOLAVG_STATUS_NOT_CAPTURED)
+            continue
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            f = float('nan')
+        if not math.isfinite(f) or f <= 0:
+            vals.append(np.nan)
+            dates.append(VOLAVG_STATUS_NO_READING)
+        else:
+            vals.append(f)
+            dates.append(asof if asof else VOLAVG_STATUS_UNDATED)
+    return pd.DataFrame({'volAvg_report': vals, 'volAvg_asof': dates})
+
+
 def _non_canonical_tag(sym, name='', group=()):
     """The first non-common marker `sym` shows, or '' if it looks like the common.
 
@@ -2014,41 +2097,117 @@ def partition_universe(BoScore_df, cdx_df, tickers_df,
     # and 25 names above $25M USD were floored OUT (GBP/EUR reporters just under the raw
     # cutoff). Both directions matter because the score deliberately rewards small caps
     # (mcapQuants w=0.080), so the leak-ins land where the tilt is strongest.
-    # Suffix fallback ON: this floor runs on every name every run, so it must produce a
-    # number for all of them; an unknown suffix yields rate 1.0 = the previous raw
-    # behaviour, and a name with NO market cap is still KEPT (never dropped on missing).
+    # NO GUESS -- the floor is applied ONLY where the reporting currency is really known
+    # (MD + senior-dev joint decision, 2026-08-06; CEO delegated: "make a decision and
+    # make it clear in reporting how it is done so we can change it if it is weird and we
+    # know why"). Until now the floor converted with the coarse exchange-suffix guess ON
+    # and then fell back to the RAW mixed-currency column, so EVERY exclusion on saved
+    # (pre-reportedCurrency) data rested on an assumption. $25M is the most ABSOLUTE edge
+    # in the pipeline and absolute edges do not cancel a systematic currency error -- the
+    # same reasoning that removed the guess from the size tilt (register D-5) applies here
+    # a fortiori, because this edge does not MIS-SCORE a name, it DELETES it: an excluded
+    # name is never fetched, never scored, cannot appear, and no output says it was
+    # dropped. That error is invisible and unrecoverable; a wrong INCLUSION is visible and
+    # still has to survive the Stage-1 criteria, the veto and the top-100 cut. The feared
+    # failure mode of keeping junk microcaps is already closed: an unresolvable currency
+    # scores NEUTRAL on the size metric (stage2_metrics.MCAP_QUANT_MISSING), so a tiny
+    # name cannot collect the small-cap reward, and every other market-cap metric in the
+    # score is a same-currency RATIO (bookToPrice, salesToMarketCap, CFOtoMarketCap,
+    # freeCashFlowToMarketCap), i.e. currency-neutral by construction.
+    #
+    # Measured on the 9,012-name 2026-01-08 panel (reportedCurrency absent, as on every
+    # pickle saved before the next full fetch): the guessing floor excluded 1,092 names
+    # (12.1% of the universe) -- 547 on a non-1.0 suffix rate, 545 on the raw-as-USD
+    # rate-1.0 assumption -- and the gated floor excludes 0, because NOTHING resolves.
+    # So on legacy panels this floor is now a NO-OP, which is a real change and is why the
+    # degradation is announced LOUDLY below and flagged in the diagnostics rather than
+    # left to be inferred from a count. It self-heals on the next full fetch, after which
+    # the floor is correct for every name whose reportedCurrency resolves.
+    #
+    # A name with NO market cap at all was always KEPT (never dropped on missing); an
+    # UNRESOLVABLE CURRENCY is now the same case -- unknown, therefore kept.
     mcap_raw = bs['source'].map(fund['marketCap'])
-    _mcu = marketcap_usd_by_source(cdx_df, allow_suffix_fallback=True)
+    _mcu = marketcap_usd_by_source(cdx_df)
     mcap = bs['source'].map(_mcu)
-    mcap = mcap.where(mcap.notna(), mcap_raw)
     below = mcap.notna() & (mcap < mcap_floor)
     n_below = int(below.sum())
     n_unknown_mcap = int(mcap.isna().sum())
     below_sources = set(bs.loc[below, 'source'])
     bs_floored = bs[~below].reset_index(drop=True)
-    # The currency change moves names IN and OUT of the universe, so NAME THEM -- two
-    # integers is not "loud, never silent" for a universe change of this size, and the
-    # suffix prior is wrong for some of them by construction (review M1). Same dated-CSV
-    # treatment the share-class filter gets.
+
+    # --- announce the gating, and NAME the names whose exclusion depended on the guess --
+    # Two integers is not "loud, never silent" for a floor that stopped firing. The set
+    # that matters is: raw market cap below the floor, but currency unknown -> KEPT. Those
+    # are exactly the names the old guessing floor would (or might) have deleted, and the
+    # ones to look at if this decision turns out to be wrong.
+    _kept_unknown_raw_below = bs.loc[mcap.isna() & mcap_raw.notna()
+                                     & (mcap_raw < mcap_floor), 'source']
+    _floor_pending = not currency_data_present(cdx_df)
+    n_kept_unknown_raw_below = int(len(set(_kept_unknown_raw_below)))
+    if _floor_pending:
+        bang = "!" * 78
+        wbanner = "\n".join([
+            "", bang,
+            "!!! CARVE-OUT WARNING -- $%.0fM UNIVERSE FLOOR NOT ENFORCED !!!"
+            % (mcap_floor / 1e6),
+            "!!!   reportedCurrency has not flowed on this data, so NO name has a known",
+            "!!!   USD market cap and the floor excluded 0 of %d names. This is the"
+            % len(bs),
+            "!!!   DELIBERATE choice (2026-08-06): an absolute USD floor is not applied to",
+            "!!!   a market cap in an UNKNOWN currency, because a wrong exclusion is",
+            "!!!   invisible and unrecoverable. %d name(s) with a RAW market cap below the"
+            % n_kept_unknown_raw_below,
+            "!!!   floor are therefore IN the universe -- some are genuinely sub-floor.",
+            "!!!   Run PROCEEDS; the size tilt scores them NEUTRAL. Self-heals on the",
+            "!!!   next full fetch. Do NOT read this run's universe as floor-filtered.",
+            bang, ""])
+        print(wbanner, file=sys.stderr, flush=True)
+        print(wbanner, flush=True)
+    else:
+        print("carveOut floor: applied in USD from reportedCurrency ONLY (no suffix "
+              "guess) -- %d excluded, %d kept with an unknown/unresolvable currency "
+              "(%d of those have a RAW market cap below the floor)"
+              % (n_below, n_unknown_mcap, n_kept_unknown_raw_below), flush=True)
+    # The floor moves names IN and OUT of the universe, so NAME THEM -- two integers is
+    # not "loud, never silent" for a universe change of this size. Same dated-CSV treatment
+    # the share-class filter gets. THREE populations, because the CEO's condition for being
+    # able to reverse the gating decision is knowing exactly which names it kept:
+    #   kept_currency_unknown  raw cap < floor, currency unknown -> KEPT BY THE GATING.
+    #                          This is the set the old guessing floor would have deleted;
+    #                          it is the whole cost of the decision, by name.
+    #   newly_excluded         raw cap >= floor but the KNOWN USD cap is below it (a real
+    #                          currency correction, e.g. a GBP/EUR reporter just over the
+    #                          raw cutoff).
+    #   newly_kept             raw cap < floor but the KNOWN USD cap is at or above it.
     _flip_out = bs.loc[below & mcap_raw.notna() & (mcap_raw >= mcap_floor), 'source']
-    _flip_in = bs.loc[~below & mcap_raw.notna() & (mcap_raw < mcap_floor)
-                      & mcap.notna(), 'source']
-    print("carveOut floor: applied in USD (suffix-FX fallback where reportedCurrency "
-          "absent) -- %d name(s) newly excluded that the raw-currency floor kept, "
-          "%d name(s) newly kept that it wrongly excluded"
-          % (len(_flip_out), len(_flip_in)), flush=True)
+    _flip_in = bs.loc[~below & mcap.notna() & mcap_raw.notna()
+                      & (mcap_raw < mcap_floor), 'source']
+    print("carveOut floor: %d name(s) excluded that the raw-currency floor kept, "
+          "%d name(s) kept that it wrongly excluded, %d name(s) kept because the "
+          "reporting currency is UNKNOWN (gating, 2026-08-06)"
+          % (len(_flip_out), len(_flip_in), n_kept_unknown_raw_below), flush=True)
     if len(_flip_out):
-        print("  newly EXCLUDED: %s" % ', '.join(sorted(_flip_out)), flush=True)
+        print("  newly EXCLUDED: %s" % ', '.join(sorted(set(_flip_out))), flush=True)
     if len(_flip_in):
-        print("  newly KEPT: %s" % ', '.join(sorted(_flip_in)), flush=True)
+        print("  newly KEPT: %s" % ', '.join(sorted(set(_flip_in))), flush=True)
+    if n_kept_unknown_raw_below:
+        _ku = sorted(set(_kept_unknown_raw_below))
+        print("  KEPT ON UNKNOWN CURRENCY (%d): %s%s"
+              % (len(_ku), ', '.join(_ku[:40]),
+                 '' if len(_ku) <= 40 else ' ... (full list in the CSV)'), flush=True)
     try:
+        _ku_all = sorted(set(_kept_unknown_raw_below))
         _fx_rows = pd.DataFrame({
-            'source': list(_flip_out) + list(_flip_in),
-            'direction': (['newly_excluded'] * len(_flip_out)
-                          + ['newly_kept'] * len(_flip_in))})
+            'source': list(set(_flip_out)) + list(set(_flip_in)) + _ku_all,
+            'direction': (['newly_excluded'] * len(set(_flip_out))
+                          + ['newly_kept'] * len(set(_flip_in))
+                          + ['kept_currency_unknown'] * len(_ku_all))})
         _fx_rows['marketCap_raw'] = _fx_rows['source'].map(fund['marketCap'])
         _fx_rows['marketCap_usd'] = _fx_rows['source'].map(_mcu)
-        _fx_rows['suffix_fx_rate'] = _fx_rows['source'].map(_suffix_fx_to_usd)
+        # The rate the OLD guessing floor would have used, for reference only -- it is no
+        # longer applied to anything. Kept in the CSV so the reversal is a one-line change
+        # with the evidence already in hand.
+        _fx_rows['retired_suffix_fx_rate'] = _fx_rows['source'].map(_suffix_fx_to_usd)
         _fn = ('CurrencyFloorFlips_%s.csv'
                % pd.Timestamp.today().strftime('%Y-%m-%d'))
         _fx_rows.to_csv(_fn, index=False)
@@ -2083,6 +2242,13 @@ def partition_universe(BoScore_df, cdx_df, tickers_df,
         'n_below_floor': n_below,
         'n_unknown_mcap': n_unknown_mcap,
         'mcap_floor': mcap_floor,
+        # --- floor provenance (gating, 2026-08-06). `mcap_floor` alone says what the floor
+        # WAS ASKED to be; these three say what it ACTUALLY DID, so no consumer can present
+        # a "$25M-floored universe" that was never floored. generate_presentation reads
+        # `floor_enforced` before it claims the floor in the deck.
+        'floor_enforced': bool(currency_data_present(cdx_df)),
+        'floor_currency_pending': bool(_floor_pending),
+        'n_kept_currency_unknown_raw_below_floor': n_kept_unknown_raw_below,
         'industry_coverage': (_ind_cov, len(symbols)),   # (names with a real industry, universe)
         'vehicle_caught': veh,             # FIN-1 pre-floor; `below_floor` reconciles to post-floor
         'finmanager_caught': _caught(FIN2_MANAGER),

@@ -1256,15 +1256,38 @@ def build_cohort_membership(data):
         return mem
     diag = data.get('carveout_diagnostics') or {}
     floor = diag.get('mcap_floor') or 0
-    c = cdx[['source', 'date', 'marketCap']].copy()
-    c['date'] = pd.to_datetime(c['date'], errors='coerce')
-    c = c.sort_values(['source', 'date'], ascending=[True, False])
-    latest_mcap = c.groupby('source', sort=False)['marketCap'].first()
+    #  Reconstruct the floor THE WAY THE PIPELINE APPLIES IT, or not at all.
+    #  This used to threshold the RAW `marketCap` column, which is in each company's
+    #  REPORTING currency, mixed across the universe -- so the deck's reconstructed
+    #  membership never matched carveOut's (a SEK reporter cleared a $25M floor at ~$2.4M).
+    #  carveOut now applies the floor only where reportedCurrency really resolves and KEEPS
+    #  every unknown-currency name (gating, 2026-08-06). Mirror both halves: use the same
+    #  single conversion path, and when the currency has not flowed (`floor_enforced` False)
+    #  apply NO floor here either, because the pipeline applied none.
+    floor_enforced = diag.get('floor_enforced')
+    if floor_enforced is None:                      # artifact predates the flag
+        try:
+            import carveOut as _co
+            floor_enforced = _co.currency_data_present(cdx)
+        except Exception:
+            floor_enforced = False
+    mcap_usd = {}
+    if floor_enforced and floor:
+        try:
+            import carveOut as _co
+            mcap_usd = _co.marketcap_usd_by_source(cdx)
+        except Exception:
+            floor_enforced = False
     mem = {}
     for coh in ['general'] + COHORTS:
         names = labels[labels == coh].index.tolist()
-        mem[coh] = [n for n in names if n in latest_mcap.index
-                    and pd.notna(latest_mcap[n]) and latest_mcap[n] >= floor]
+        if not (floor_enforced and floor):
+            mem[coh] = list(names)
+            continue
+        #  unknown USD cap -> KEPT, exactly as carveOut keeps it.
+        mem[coh] = [n for n in names
+                    if not (pd.notna(mcap_usd.get(n, float('nan')))
+                            and mcap_usd.get(n) < floor)]
     return mem
 
 

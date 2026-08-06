@@ -415,8 +415,120 @@ def test_sbocker_wiring_present():
     print("  [ok] Sbocker.main CALLS run_pick_log_stage (AST)")
 
 
+#  --- universe-definition drift (WARN ONLY, CEO 2026-08-06) -------------------------------
+#  These exist because the FAILURE MODE OF A DRIFT DETECTOR IS SILENCE. The first draft of
+#  `check_fingerprint_drift` referenced `pd` -- pick_log has no module-level pandas import --
+#  and the NameError was swallowed by a broad `except Exception: return None`, so it reported
+#  "no drift" on every run while never actually working. `test_drift_detected_when_definition_
+#  changes` is the guard against that exact regression: it asserts the detector FIRES, not
+#  merely that it does not crash.
+def _drift_log(tmpdir, rows):
+    """Write a minimal pick-log with just the three columns the drift check reads."""
+    import csv as _csv
+    p = os.path.join(tmpdir, 'pick_log.csv')
+    with open(p, 'w', encoding='utf-8', newline='') as f:
+        w = _csv.DictWriter(f, fieldnames=['as_of', 'universe', 'universe_fingerprint'])
+        w.writeheader()
+        for r in rows:
+            w.writerow(dict(zip(['as_of', 'universe', 'universe_fingerprint'], r)))
+    return p
+
+
+def test_drift_detected_when_definition_changes():
+    td = tempfile.mkdtemp()
+    p = _drift_log(td, [('2026-07-01', 'stock_CUR3K', 'aaaa1111bbbb'),
+                        ('2026-07-15', 'stock_CUR3K', 'aaaa1111bbbb')])
+    rec = plog.check_fingerprint_drift('stock_CUR3K', 'ffff9999eeee', p)
+    assert rec is not None, (
+        "DRIFT NOT DETECTED. A recorded fingerprint of aaaa1111bbbb and a current one of "
+        "ffff9999eeee is a definition change, and this is the whole point of the check. A "
+        "None here means the detector is silently inert -- the regression this test exists "
+        "for. Check for a swallowed exception inside check_fingerprint_drift.")
+    assert rec['previous_fingerprint'] == 'aaaa1111bbbb'
+    assert rec['current_fingerprint'] == 'ffff9999eeee'
+    assert rec['previous_as_of'] == '2026-07-15', "must compare against the LATEST prior stamp"
+    assert rec['previous_rows_logged'] == 2
+    #  WARN ONLY: it must RECORD and change nothing else.
+    assert 'WARN ONLY' in rec['action_taken']
+    notes = [f for f in os.listdir(td) if f.startswith('UniverseDefinitionDrift')]
+    assert notes, "a detected drift must leave a dated record, not only a console banner"
+    print("  drift detected + recorded (%s)" % notes[0])
+
+
+def test_no_drift_when_fingerprint_unchanged():
+    td = tempfile.mkdtemp()
+    p = _drift_log(td, [('2026-07-01', 'stock_CUR3K', 'aaaa1111bbbb')])
+    assert plog.check_fingerprint_drift('stock_CUR3K', 'aaaa1111bbbb', p) is None
+    #  A quiet run must not litter a drift note.
+    assert not [f for f in os.listdir(td) if f.startswith('UniverseDefinitionDrift')]
+    print("  unchanged fingerprint stays silent")
+
+
+def test_drift_check_is_silent_on_first_run_and_legacy_logs():
+    td = tempfile.mkdtemp()
+    #  A name never logged before is not drift.
+    p = _drift_log(td, [('2026-07-01', 'stock_NA1_EU1', 'cccc2222dddd')])
+    assert plog.check_fingerprint_drift('stock_CUR3K', 'ffff9999eeee', p) is None
+    #  No log at all.
+    assert plog.check_fingerprint_drift(
+        'stock_CUR3K', 'ffff9999eeee', os.path.join(td, 'absent.csv')) is None
+    #  A pre-provenance log (no fingerprint column) is expected, not an error.
+    legacy = os.path.join(td, 'legacy.csv')
+    with open(legacy, 'w', encoding='utf-8') as f:
+        f.write('as_of,universe\n2026-01-01,stock_CUR3K\n')
+    assert plog.check_fingerprint_drift('stock_CUR3K', 'ffff9999eeee', legacy) is None
+    #  An UNSTAMPED current run is already warned about elsewhere; do not double-warn.
+    p2 = _drift_log(td, [('2026-07-01', 'stock_CUR3K', 'aaaa1111bbbb')])
+    assert plog.check_fingerprint_drift(
+        'stock_CUR3K', plog.UNKNOWN_UNIVERSE_FINGERPRINT, p2) is None
+    print("  first-run / no-log / legacy-log / unstamped all silent")
+
+
+def test_drift_check_covers_sample_rates_and_must_include():
+    """The RESIDUAL this closes: a definition change that leaves the member COUNT unmoved.
+
+    Not a test of pick_log -- a test that the fingerprint it compares actually keys off the
+    three things the CEO asked to be hashed. If `definition_fingerprint` ever stops covering
+    sample rates or must-include, the warn path would still "work" while being blind to the
+    only cases the wallclock guard and cohort-sum pin do not already catch.
+    """
+    import universes as un
+    base = un.definition_fingerprint('stock_CUR3K')
+    assert isinstance(base, str) and base, "stock_CUR3K must fingerprint"
+    ent = un._entry('stock_CUR3K')
+    assert un.sample_rates('stock_CUR3K'), (
+        "stock_CUR3K is the sampled universe; if it has no sample rates the fingerprint "
+        "cannot be covering them")
+    #  Perturb each leg of the basis in turn and require the hash to move. The entry's
+    #  `sample` is a dict and `must_include` a tuple, so both legs are perturbed by REBINDING
+    #  the key and restored from a snapshot in `finally` -- the registry is module-global and
+    #  a leaked mutation would corrupt every later test in the session.
+    _first_code = sorted(ent['sample'])[0]
+    for leg, key, newval in (
+            ('sample rate', 'sample',
+             {**ent['sample'], _first_code: ent['sample'][_first_code] + 1}),
+            ('must-include', 'must_include',
+             tuple(ent['must_include']) + ('ZZZZ.TEST',))):
+        before = un.definition_fingerprint('stock_CUR3K')
+        snap = ent[key]
+        try:
+            ent[key] = newval
+            after = un.definition_fingerprint('stock_CUR3K')
+            assert after != before, (
+                "changing the %s did NOT move the fingerprint -- the drift check is blind "
+                "to it, which is exactly the residual it was added to close." % leg)
+        finally:
+            ent[key] = snap
+        assert un.definition_fingerprint('stock_CUR3K') == base, "restore failed"
+        print("  fingerprint moves on a %s change" % leg)
+
+
 if __name__ == '__main__':
     print("Prospective pick-log self-checks")
+    test_drift_detected_when_definition_changes()
+    test_no_drift_when_fingerprint_unchanged()
+    test_drift_check_is_silent_on_first_run_and_legacy_logs()
+    test_drift_check_covers_sample_rates_and_must_include()
     test_format_columns_lists_ranks()
     test_append_only_does_not_mutate()
     test_rerun_same_as_of_appends_new_block()

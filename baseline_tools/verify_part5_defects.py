@@ -1,7 +1,12 @@
-"""READ-ONLY verification harness for metric-rationale.md Part 5 defects D1/D3/D6/D8/D10/D11.
+"""READ-ONLY verification harness for metric-rationale.md Part 5 defects D1/D3/D6/D8/D10.
 
 Writes nothing into the pipeline; reads the saved resdic pickle + the saved panel and
 re-derives every quantitative claim independently.  Analysis tool only.
+
+D11 AND D11b ARE RETIRED, not missing -- register D-5 (CEO 2026-08-06) replaced the
+pool-relative market-cap quartiles with absolute USD bands, which removed the effect both of
+them measured.  See the retirement note where their block used to be, before D10.  The other
+defect checks are unaffected: none of them touches the size metric.
 """
 import os, sys, numpy as np, pandas as pd
 _HERE = os.path.dirname(os.path.abspath(__file__)); _REPO = os.path.dirname(_HERE)
@@ -241,58 +246,33 @@ print("\nIMPP detail: raw graham/price mean over its 6 computable q = %.4f ; poo
 print("IMPP z on grahamNumberToPrice (from saved postRank / w):",
       unw(float(pr.loc[pr['source']=='IMPP','grahamNumberToPrice'].iloc[0]), 'grahamNumberToPrice'))
 
-# ---------------------------------------------------------------- D11
-print("\n== D11: marketCapRevQuants pool-relativity magnitude [pool n=100] ==")
-mq = pd.to_numeric(raw.set_index('source')['marketCapRevQuants'], errors='coerce')
-print("raw value counts:", mq.value_counts().sort_index().to_dict())
-wcol = pd.to_numeric(pr.set_index('source')['marketCapRevQuants'], errors='coerce')
-zcol = unw(wcol, 'marketCapRevQuants')
-print("z range: %.4f .. %.4f (span %.4f)" % (zcol.min(), zcol.max(), zcol.max()-zcol.min()))
-print("WEIGHTED contribution range: %.4f .. %.4f (span %.4f of AggScore)"
-      % (wcol.min(), wcol.max(), wcol.max()-wcol.min()))
-step = (wcol.max()-wcol.min())/3
-print("one-quartile step = %.4f of AggScore" % step)
-med, t20d = pr['AggScore'].median(), pr['AggScore'].iloc[19]
-print("pool median AggScore %.4f ; rank-20 AggScore %.4f ; median->top20 distance %.4f" % (med, t20d, t20d-med))
-print("one-quartile step as a fraction of the median->top20 distance: %.2f" % (step/(t20d-med)))
-# churn simulation: drop k names at random from the pool, re-cut the quartiles
-usd = sm._mcap_for_quants(cdxs.drop_duplicates('source').set_index('source').loc[pr['source']].reset_index())
-usd.index = pr['source']
-rng = np.random.default_rng(7)
-flips = []
-for _ in range(200):
-    keep = pr['source'].sample(frac=0.85, random_state=int(rng.integers(1e6)))
-    sub = usd.loc[keep]
-    codes_sub = pd.qcut(sub, 4, duplicates='drop').cat.codes
-    vals_sub = (-1)*((codes_sub/3)-0.5)
-    base_vals = mq.loc[keep]
-    d = (vals_sub - base_vals).abs()
-    flips.append(float((d > 1e-9).mean()))
-print("15%%-of-pool composition change: fraction of SURVIVING names whose size score MOVES = %.3f (mean over 200 draws)"
-      % np.mean(flips))
-
-# ---------------------------------------------------------------- D11b: what population is qcut cut over?
-print("\n== D11b: the qcut population is ROWS, not NAMES ==")
-mqrows = sm.add_mcap_quants(cdxs)
-print("cdxtop rows passed to add_mcap_quants:", len(cdxs), "| unique sources:", cdxs['source'].nunique())
-print("row-level mcapQuants value counts:", mqrows.value_counts().sort_index().to_dict())
-newest = cdxs.groupby('source').head(1).index
-print("per-NAME (newest row) value counts:", mqrows.loc[newest].value_counts().sort_index().to_dict())
-rows_per_name = cdxs.groupby('source').size()
-print("rows per name: min %d max %d -- a long-history name contributes %.1fx as many observations "
-      "to the quartile edges as the shortest" % (rows_per_name.min(), rows_per_name.max(),
-                                                 rows_per_name.max()/rows_per_name.min()))
-# faithful churn simulation on the DEPLOYED row-level basis
-flips2 = []
-for _ in range(200):
-    keep = set(pr['source'].sample(frac=0.85, random_state=int(rng.integers(1e6))))
-    sub = cdxs[cdxs['source'].isin(keep)]
-    v = sm.add_mcap_quants(sub)
-    newv = v.loc[sub.groupby('source').head(1).index]
-    newv.index = sub.groupby('source').head(1)['source'].values
-    oldv = mq.loc[newv.index]
-    flips2.append(float(((newv - oldv).abs() > 1e-9).mean()))
-print("DEPLOYED-basis churn: 15%% pool turnover -> %.3f of surviving names change size score" % np.mean(flips2))
+# ------------------------------------------------- D11 / D11b: RETIRED (register D-5)
+#  D11  ("marketCapRevQuants pool-relativity magnitude") and
+#  D11b ("the qcut population is ROWS, not NAMES")
+#  are DELETED, not repointed. This is a RETIREMENT, NOT A REGRESSION, and not a
+#  measurement that got harder: the effect both of them measured NO LONGER EXISTS.
+#
+#  Both were measurements OF THE QCUT MECHANISM. `marketCapRevQuants` was a POOL-RELATIVE
+#  quantile code recomputed per pool, so (D11) a name's own size score moved when the pool
+#  composition moved, and (D11b) the quartile EDGES were cut over cdx ROWS rather than
+#  names, letting a long-history name pull the edges harder than a short-history one.
+#  Register D-5 (CEO 2026-08-06) replaced the pool quartiles with ABSOLUTE USD bands
+#  (stage2_metrics.MCAP_BAND_EDGES_USD). An absolute band depends on the row's OWN value
+#  and on nothing else, so there is no pool to be relative to and no population the edges
+#  are cut over: D11's churn simulation now returns 0.000 by construction and D11b's
+#  question ("what population?") has no referent. Re-running either would report a
+#  guaranteed null and invite reading it as evidence about the new bands.
+#
+#  DELIBERATELY NOT REPLACED with a question about the absolute bands. The measurements
+#  were CORRECT; the thing they measured is gone. Inventing a substitute finding so the
+#  block stays employed is the failure this comment exists to prevent.
+#
+#  ONE TRAP FOR A LATER READER: the saved artifacts this script reads (resdic_2026-07-17)
+#  were scored BEFORE D-5, so their `marketCapRevQuants` column still holds pool-relative
+#  quartile codes. Do not compare that column against a post-D-5 run's column and read the
+#  difference as drift -- it is the D-5 boundary. If a size-metric question is ever needed
+#  again, it is a NEW question about absolute bands (e.g. band occupancy, or sensitivity to
+#  an edge), asked against a post-fetch panel that carries `reportedCurrency`.
 
 # ---------------------------------------------------------------- D10
 print("\n== D10: capitalExpenditureCoverageRatio fillna(0) [panel] ==")

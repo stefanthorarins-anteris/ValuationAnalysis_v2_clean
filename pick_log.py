@@ -216,6 +216,112 @@ def _warn_unstamped_universe(name):
     print(banner, flush=True)
 
 
+def _warn_fingerprint_drift(name, prev_fp, now_fp, prev_as_of, n_prev_rows):
+    """LOUD warning (BOTH streams) when a universe NAME is running under a DIFFERENT
+    definition than the last time it was logged. WARN ONLY -- see check_fingerprint_drift."""
+    banner = (
+        "\n" + "!" * 78 + "\n"
+        "!!! UNIVERSE DEFINITION DRIFT -- %r MEANS SOMETHING DIFFERENT NOW !!!\n"
+        "!!!   last logged fingerprint : %s  (as_of %s, %d row(s))\n"
+        "!!!   this run's fingerprint  : %s\n"
+        "!!! The NAME is unchanged, so nothing else in the pipeline notices. The\n"
+        "!!! fingerprint covers the EXCHANGE SET, the SAMPLE RATES and the MUST-INCLUDE\n"
+        "!!! list, so at least one of those three moved -- and a sample-rate change can\n"
+        "!!! move membership while leaving the member COUNT flat, which is exactly the\n"
+        "!!! gap the wallclock guard and the cohort-sum pin do NOT close.\n"
+        "!!! WARN ONLY, BY DESIGN (CEO 2026-08-06): the run PROCEEDS UNCHANGED, nothing\n"
+        "!!! is recomputed and nothing is refused. This is your cue to decide whether\n"
+        "!!! rows under the two fingerprints may be POOLED when grading -- they are the\n"
+        "!!! same name but not the same universe. Both fingerprints are on the rows.\n"
+        % (name, prev_fp, prev_as_of, n_prev_rows, now_fp)
+        + "!" * 78 + "\n")
+    print(banner, file=sys.stderr, flush=True)
+    print(banner, flush=True)
+
+
+def check_fingerprint_drift(name, now_fp, path=PICK_LOG_PATH):
+    """Has `name` been logged before under a DIFFERENT definition fingerprint?  WARN ONLY.
+
+    Closes the residual the tightened wallclock guard and the cohort-sum pin leave open: both
+    trip on a MEMBER-COUNT move, so a definition change that leaves the count roughly unmoved
+    (a sample rate retuned, one exchange swapped for a similar one, a must-include edited)
+    passes them silently.  `universes.definition_fingerprint` already hashes exactly those
+    three things and is already stamped on every pick-log row -- what was missing was anybody
+    COMPARING this run's stamp against the recorded one.  That is all this does.
+
+    WARN ONLY, deliberately (CEO 2026-08-06), mirroring the bar-calibration failsafe: on a
+    mismatch it warns and RECORDS, and changes NOTHING -- no refusal, no auto-recompute, no
+    write to the append-only log beyond this run's own rows.  The drift is a judgement call
+    about whether historical rows may be POOLED with new ones, and that judgement is the
+    CEO's; a hard failure here would block a legitimate deliberate redefinition.
+
+    Returns a dict describing the drift, or None when there is nothing to say (first run for
+    this name, unchanged fingerprint, unstamped/unknown either side, or no readable log).
+
+    Reads with the `csv` module, NOT pandas, to match the rest of this file -- pick_log has no
+    module-level pandas import, and an earlier draft of this function used `pd` anyway.  The
+    resulting NameError was swallowed by a broad `except Exception: return None` and the check
+    silently never fired: a drift detector that reports "no drift" because it crashed is the
+    same silent-null defect this whole change set exists to remove.  Hence also the NARROW
+    except below -- an unreadable/legacy log is expected and returns None quietly, but a
+    programming error must surface, not masquerade as a clean result.
+    """
+    if not name or name == UNKNOWN_UNIVERSE:
+        return None
+    if not now_fp or now_fp == UNKNOWN_UNIVERSE_FINGERPRINT:
+        return None            # already warned by _warn_unstamped_universe
+    now_fp = str(now_fp).strip()
+    try:
+        if not os.path.exists(path) or os.path.getsize(path) == 0:
+            return None
+        with open(path, 'r', encoding='utf-8', newline='') as rf:
+            rows = list(csv.DictReader(rf))
+    except (OSError, UnicodeDecodeError, csv.Error):
+        #  Unreadable, or a log written before universe provenance existed. Not this
+        #  function's job to diagnose -- append_pick_log's schema check owns that.
+        return None
+    prior = [r for r in rows
+             if str(r.get('universe', '')).strip() == str(name)
+             and str(r.get('universe_fingerprint') or '').strip()
+             not in ('', UNKNOWN_UNIVERSE_FINGERPRINT)]
+    if not prior:
+        return None
+    #  Compare against the MOST RECENT prior stamp for this name; earlier ones may include a
+    #  drift already warned about on a previous run. `as_of` is ISO yyyy-mm-dd, so a plain
+    #  string sort is chronological; ties keep file order, which is append order.
+    prior.sort(key=lambda r: str(r.get('as_of') or ''))
+    prev_fp = str(prior[-1]['universe_fingerprint']).strip()
+    if prev_fp == now_fp:
+        return None
+    rec = {'universe': name, 'previous_fingerprint': prev_fp,
+           'current_fingerprint': now_fp,
+           'previous_as_of': str(prior[-1].get('as_of') or ''),
+           'previous_rows_logged': len(prior),
+           'distinct_prior_fingerprints':
+               len({str(r['universe_fingerprint']).strip() for r in prior}),
+           'detected_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+           'action_taken': 'WARN ONLY -- run proceeded unchanged (CEO 2026-08-06)'}
+    _warn_fingerprint_drift(name, prev_fp, now_fp, rec['previous_as_of'],
+                            rec['previous_rows_logged'])
+    #  RECORD it as a dated CSV beside the other dated drift reports (CurrencyFloorFlips,
+    #  ExcludedShareClasses). Best-effort: failing to write the note must not affect the run,
+    #  and the banner has already fired either way.
+    try:
+        _fn = 'UniverseDefinitionDrift_%s.csv' % datetime.now().strftime('%Y-%m-%d')
+        _p = os.path.join(os.path.dirname(os.path.abspath(path)), _fn)
+        _new = not os.path.exists(_p) or os.path.getsize(_p) == 0
+        with open(_p, 'a', encoding='utf-8', newline='') as wf:
+            w = csv.DictWriter(wf, fieldnames=list(rec.keys()))
+            if _new:
+                w.writeheader()
+            w.writerow(rec)
+        print('[PICK-LOG] universe-definition drift recorded to: %s' % _p, flush=True)
+    except (OSError, UnicodeEncodeError, csv.Error) as _e:
+        print('[PICK-LOG] WARNING: could not record the drift note (%s) -- the banner '
+              'above is the only record for this run.' % _e, flush=True)
+    return rec
+
+
 def _universe_stamp(resdic):
     """(universe_name, universe_fingerprint) for this run, READ FROM `resdic`.
 
@@ -376,6 +482,10 @@ def build_pick_log_rows(resdic, as_of=None, logged_at=None, filter_commit=None):
     if filter_commit is None:
         filter_commit = _git_short_hash()
     universe, universe_fp = _universe_stamp(resdic)
+    #  WARN-ONLY definition-drift check (CEO 2026-08-06). Runs here because this is the one
+    #  place per run that already holds BOTH the current stamp and a persistent record of the
+    #  previous one; it cannot alter `universe`/`universe_fp` or the rows that follow.
+    check_fingerprint_drift(universe, universe_fp)
     names = _names_map(resdic)
     vals = entry_valuations(resdic)
 

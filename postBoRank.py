@@ -952,7 +952,10 @@ BOUNDED_DISCRETE_COLUMNS = ('Piotroski', 'CycleHeat', 'marketCapRevQuants', 'mca
 #       which cannot make the same claim: `_rank_normal` centres on the median exactly only when
 #       a column's values are DISTINCT, and ties displace the centre (`_rank_normal([1, 1, 2])`
 #       has mean +0.0260), so on the discrete columns -- `Piotroski` 0..9,
-#       `marketCapRevQuants` 5 levels -- the fill is measurably off-median.  Do not restate the
+#       `marketCapRevQuants` 7 levels (the six ABSOLUTE market-cap bands plus the 0.0
+#       missing-cap sentinel; it read 5 while the metric was a pool QUARTILE -- four
+#       quartile scores + the sentinel -- and became 7 with register D-5, 2026-08-06)
+#       -- the fill is measurably off-median.  Do not restate the
 #       rank map's centring as "by construction"; it is not.
 #       HISTORICAL NOTE, kept because three mutually inconsistent sets of numbers for this one
 #       quantity were in the tree at once and that is the lesson: the figures "+0.1394 against
@@ -993,9 +996,13 @@ def _rank_normal(x):
       centre.  `_rank_normal([1, 1, 2])` has mean +0.0260; a 60/40 binary column puts 0
       above ~60% of the pool, not 50%.  So "0 is the median" is a property of
       distinct-valued columns, NOT of this function -- and the discrete columns
-      (`Piotroski` 0..9, `marketCapRevQuants` 5 levels) are exactly the ones where it
+      (`Piotroski` 0..9, `marketCapRevQuants` 7 levels -- the six absolute market-cap
+      bands plus the 0.0 missing-cap sentinel; 5 before register D-5, 2026-08-06, when it
+      was a pool quartile) are exactly the ones where it
       fails.  On the 07-17 pool `marketCapRevQuants` alone accounts for +0.0244 of the
-      +0.0228 residual missing-data advantage.  Do not restate this as "by construction".
+      +0.0228 residual missing-data advantage (measured at 5 levels; the figure is a
+      quartile-era measurement and is NOT restated for the banded column).  Do not
+      restate this as "by construction".
     * sd is CLOSE to but not exactly 1 (finite-sample plotting position, and ties compress
       a column's spread).  That is deliberate and is NOT re-scaled: rescaling each column
       back to unit variance would hand a heavily-tied column the same spread as a

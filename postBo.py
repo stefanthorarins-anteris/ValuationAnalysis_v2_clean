@@ -340,7 +340,13 @@ def postBoWrapper(dmdic, as_of=None):
         general_scores = carve['general']
         gp_count = len(general_scores)
         diag = carve['diagnostics']
-        print(f"CARVE-OUT: general pool = {gp_count} names after cohorts + $25M floor "
+        #  Do not CLAIM the floor in the headline unless it actually fired. When
+        #  reportedCurrency has not flowed, no name has a known USD market cap and the floor
+        #  excludes nothing by design (gating, 2026-08-06); saying "after cohorts + $25M
+        #  floor" would then be the banner asserting a filter that was never applied.
+        _floor_claim = ("$25M floor" if diag.get('floor_enforced', True)
+                        else "$25M floor NOT ENFORCED (currency pending)")
+        print(f"CARVE-OUT: general pool = {gp_count} names after cohorts + {_floor_claim} "
               f"(REIT={diag['n_REIT']}, Mining={diag['n_Mining']}, "
               f"FIN1_Vehicle={diag['n_InvestmentVehicle']}, "
               f"FIN2_Manager={diag.get('n_FinManager', 0)}, "
@@ -717,6 +723,19 @@ def writeResWrapper(resdic):
                 # so it is visible before the file is even opened.
                 _note = _note_map.get(label, '')
                 out_band['band_selection'] = _note
+                # AVERAGE VOLUME -- REPORTED, NEVER SCREENED ON (register J-1, CEO
+                # 2026-08-06).  Same two columns as the AggScore CSV, for the same reason:
+                # these band CSVs ARE the per-band shortlist a human reads.  Appended to an
+                # already-selected, already-ordered frame, so it cannot affect membership or
+                # order; absence reads as absence (see carveOut.volavg_report_frame).
+                try:
+                    _bvol = co.volavg_report_frame(list(out_band['source']))
+                    out_band['volAvg_report'] = _bvol['volAvg_report'].values
+                    out_band['volAvg_asof'] = _bvol['volAvg_asof'].values
+                except Exception as _bve:
+                    print(f'WARNING: volAvg report columns not added to the {label} band CSV '
+                          f'({type(_bve).__name__}: {_bve}); the band selection itself is '
+                          f'unaffected (the columns are REPORT-ONLY).', flush=True)
                 _selective = _sel_map.get(label, True)
                 _marker = '' if _selective else '_ALLMEMBERS_NOT_A_SELECTION'
                 fname_band = (f'MarketCapBand_{label}{_marker}-{fidag}_'
@@ -1184,6 +1203,34 @@ def writeBoAggToCSV(fb_df, mscore, cscore, baseurl, api_key, ntopagg, fname_AggS
         keep = [c for c in forensic_cols if c in flag_df.columns]
         BoComp_tocsv = BoComp_tocsv.merge(flag_df[keep], on='source', how='left')
 
+    # AVERAGE VOLUME -- REPORTED, NEVER SCREENED ON (register J-1, CEO 2026-08-06).
+    # Two APPENDED columns (`volAvg_report`, `volAvg_asof`) beside the names the CEO actually
+    # reads.  The CEO's ruling is report-only: no liquidity floor, no exclusion, no effect on
+    # ordering -- so this runs AFTER `fbdf_tocsv = fb_df.head(ntopagg)` has already fixed both
+    # the membership and the order, and it only ever ADDS columns to a frame whose rows are
+    # settled.  It cannot reach the dedup survivor pick either: that happens far upstream in
+    # carveOut, and the tiebreak's own reader (`_volavg_liquidity_term`) is untouched.
+    # OFFLINE: the values come from the volavgdic pickle, so this adds ZERO API calls to a
+    # stage that already makes ~4-5 per name.
+    # Absence reads as absence, not as zero -- see carveOut.volavg_report_frame; every pickle
+    # written before 2026-08-06 has no volume map at all, so `not-captured` is the expected
+    # value on current data and an empty numeric cell must not be read as an illiquid name.
+    try:
+        import carveOut as _co_vol
+        # MAPPED ON `source`, NOT POSITIONAL.  This is the first column assignment AFTER the
+        # flag_df merge, and that merge is a `how='left'` on a table that can carry a
+        # duplicated source (issuer clones are a known phenomenon here), so the frame is not
+        # guaranteed to still be len(symblist).  A positional `.values` assignment would then
+        # raise -- or, worse under a future refactor, misalign a volume onto the wrong name.
+        _vol = _co_vol.volavg_report_frame(list(dict.fromkeys(BoComp_tocsv['source'])))
+        _vol.index = list(dict.fromkeys(BoComp_tocsv['source']))
+        BoComp_tocsv['volAvg_report'] = BoComp_tocsv['source'].map(_vol['volAvg_report'])
+        BoComp_tocsv['volAvg_asof'] = BoComp_tocsv['source'].map(_vol['volAvg_asof'])
+    except Exception as _ve:
+        print(f'WARNING: volAvg report columns not added to {fname_AggScoretop} '
+              f'({type(_ve).__name__}: {_ve}); CSV otherwise unaffected. The columns are '
+              f'REPORT-ONLY, so nothing selected or ranked is affected either.', flush=True)
+
     # UNIVERSE STAMP IN THE RANKED CSV ITSELF (2026-08-03), not only in the sidecar.
     # This is the artifact most often read standalone, and its FILENAME carries only a
     # universe name whose meaning changed on 2026-08-02 -- so a reader comparing two
@@ -1215,6 +1262,41 @@ def createPresentation(finalBoRank_df, mscore, cscore, baseurl, api_key, topn, f
     # here multiplies the per-symbol live API calls).
     _general_df = generalTopN(finalBoRank_df, bands, topn)
     symblist = list(_general_df['source'].head(topn))
+
+    # AVERAGE VOLUME ON THE XLSX FACE -- REPORTED, NEVER SCREENED ON (register J-1; CEO
+    # 2026-08-06, extending the AggScore-CSV columns to the XLSX because the XLSX is where he
+    # actually reviews the top 20).
+    #
+    # WHY THIS CANNOT AFFECT SELECTION OR ORDERING, structurally rather than by intention:
+    # `symblist` is FIXED on the two lines above, before this lookup exists, and nothing below
+    # rebinds it, re-sorts it, or filters it -- the loop is `for symb in symblist[::-1]` and the
+    # only thing done with a volume here is `ws.cell(...).value = ...`. There is no threshold,
+    # no comparison and no floor anywhere in this block, so there is no code path by which a
+    # volume reading can drop a page or move one. The dedup survivor tiebreak that DOES read
+    # volume (`carveOut._volavg_liquidity_term`) ran far upstream and is untouched.
+    #
+    # OFFLINE, DELIBERATELY. Resolved ONCE here from the local volavgdic pickle -- NOT per
+    # symbol and NOT from the profile response inside the loop, even though `pr[0]` happens to
+    # carry a `volAvg`. Two reasons: this loop already fires ~7 live calls per name straight
+    # after a 12-hour fetch and must not gain more work, and the profile's `volAvg` is UNDATED,
+    # so using it would silently break the "the date travels with the number" rule that the CSV
+    # columns keep. Same source, same three absence markers, same as-of date as the CSV -- one
+    # number the CEO can compare across both artifacts.
+    _vol_x = {}
+    try:
+        import carveOut as _co_volx
+        _vf = _co_volx.volavg_report_frame(list(dict.fromkeys(symblist)))
+        _vf.index = list(dict.fromkeys(symblist))
+        _vol_x = {s: (_vf['volAvg_report'].get(s), _vf['volAvg_asof'].get(s))
+                  for s in _vf.index}
+    except Exception as _vex:
+        # The volume cells are REPORT-ONLY, so their absence costs a number on a page and
+        # nothing else. Never let it cost the XLSX -- but never let it pass quietly either:
+        # an empty volume cell must be attributable to a named failure, not guessed at.
+        print(f'WARNING: average-volume cells not added to {fname} '
+              f'({type(_vex).__name__}: {_vex}); every page and every other deliverable is '
+              f'unaffected, and nothing selected or ranked is affected either.', flush=True)
+
     #eyVec = []
     #quote_full = pd.DataFrame(requests.get(f'{baseurl}v3/quote/{symblist}?&apikey={api_key}').json())
 
@@ -1363,6 +1445,30 @@ def createPresentation(finalBoRank_df, mscore, cscore, baseurl, api_key, topn, f
                 ws.cell(row=psdf_row+1, column=psdf_col + 4).value = 'N/A'
         else:
             ws.cell(row=psdf_row+1, column=psdf_col + 4).value = 'N/A'
+
+        # --- Average volume (REPORT-ONLY; resolved offline before the loop) ---------------
+        # THE DATE TRAVELS WITH THE NUMBER, and the THREE KINDS OF ABSENCE stay distinguishable
+        # on the sheet face exactly as they are in the CSV -- 'not-captured' (symbol absent from
+        # the volume map), 'no-reading' (present but null/0/non-finite, FMP's usual answer for a
+        # thin line) and 'undated-capture' (a real value from the pre-dating pickle shape). The
+        # NUMBER cell is left EMPTY rather than 0 when there is no reading, because a 0 in a
+        # volume column is a finding and an empty one is a gap; the status goes in the 'as of'
+        # cell beneath, so a blank number is never ambiguous. This is why the marker strings are
+        # read from carveOut rather than re-spelled here.
+        ws.cell(row=psdf_row, column=psdf_col + 5).font = bold_font
+        ws.cell(row=psdf_row, column=psdf_col + 5).value = 'Average volume'
+        _v, _vasof = _vol_x.get(symb, (None, None))
+        try:
+            _vnum = float(_v)
+        except (TypeError, ValueError):
+            _vnum = float('nan')
+        if _vnum == _vnum and _vnum > 0:                      # finite and positive
+            ws.cell(row=psdf_row + 1, column=psdf_col + 5).value = "{:,.0f}".format(_vnum)
+        else:
+            #  No usable reading: leave the NUMBER cell blank (absence is not zero).
+            ws.cell(row=psdf_row + 1, column=psdf_col + 5).value = None
+        ws.cell(row=psdf_row + 2, column=psdf_col + 5).value = (
+            'as of %s' % _vasof if _vasof else 'as of unknown -- lookup unavailable')
 
         ws.cell(row=psdf_row + 5, column=psdf_col).font = bold_font
         ws.cell(row=psdf_row + 5, column=psdf_col).value = 'Rating Recommendation'
