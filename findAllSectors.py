@@ -82,7 +82,11 @@ def _fetch_profiles_batched(symbols, baseurl, api_key, batch_size=100, pace=None
     profiles, n_calls, complete = [], 0, True
     uniq = list(dict.fromkeys(s for s in symbols if isinstance(s, str) and s))
     requested = set(uniq)
-    pbar = tqdm(total=len(uniq)) if uniq else None
+    # Total is exact: the loop walks `uniq` in batches and advances by len(batch), which sums
+    # to len(uniq).  Nothing inside prints, so no bar-safe writer is needed here; `desc`/`unit`
+    # only, so the bar says which stage it belongs to.
+    pbar = tqdm(total=len(uniq), desc='Sector/industry profiles', unit='symbol',
+                dynamic_ncols=True) if uniq else None
     for i in range(0, len(uniq), batch_size):
         batch = uniq[i:i + batch_size]
         csv = ','.join(batch)

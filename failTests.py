@@ -1,7 +1,29 @@
 from datetime import datetime
+import sys
 import pandas as pd
 import requests
 import reporting_period as rp
+from tqdm import tqdm
+
+
+def _bar_print(msg):
+    """`print()` replacement for the skip-logs below, which fire INSIDE the fetch loop.
+
+    Every call site of this module's gate runs under the tqdm bar in
+    `getData_fmp.get_fundamentals_fmp`, and a bare `print()` emits its newline while that
+    bar is mid-render with '\\r' -- stranding a fragment of the bar on screen and restarting
+    it one line down.  `tqdm.write` clears the live bar, writes, and redraws; with no bar
+    alive (the offline/dead-path callers, the tests) it degrades to a plain write.
+
+    PRESENTATION ONLY -- identical text, stream (stdout) and flush behaviour to the
+    `print(..., flush=True)` calls it replaces.  Deliberately a local twin of
+    `getData_fmp._bar_print` rather than a shared import: this module is imported BY
+    getData_fmp, so pulling the helper across would add a cycle to the import graph for two
+    lines of code.
+    """
+    tqdm.write(msg, file=sys.stdout)
+    sys.stdout.flush()
+
 def testForAPIFaults_fmp(failcodes,compyear,ticker,period,limit,baseurl,api_key,
                          dead_path=False, http_get=None):
     """Fetch the 5 statement endpoints and evaluate the accept/reject gates.
@@ -84,10 +106,10 @@ def testForAPIFaults_fmp(failcodes,compyear,ticker,period,limit,baseurl,api_key,
                 failbool = True
                 whyfail = 'emptyfail'
                 _body = str(getattr(resp, 'text', ''))[:200].replace('\n', ' ')
-                print('EMPTYFAIL %s (%s): HTTP %s but the body is not JSON (%s) -- ticker '
-                      'SKIPPED, run continues. Body head: %r'
-                      % (ticker, calldic[key], getattr(resp, 'status_code', '?'),
-                         type(_je).__name__, _body), flush=True)
+                _bar_print('EMPTYFAIL %s (%s): HTTP %s but the body is not JSON (%s) -- ticker '
+                           'SKIPPED, run continues. Body head: %r'
+                           % (ticker, calldic[key], getattr(resp, 'status_code', '?'),
+                              type(_je).__name__, _body))
                 break
             resplist.append(_payload)
             fsdfdic[key] = pd.DataFrame(_payload)
@@ -142,9 +164,9 @@ def testForAPIFaults_fmp(failcodes,compyear,ticker,period,limit,baseurl,api_key,
                     _newest_year = None
                     failbool = True
                     whyfail = 'emptyfail'
-                    print('EMPTYFAIL %s: income-statement date %r is not YYYY-MM-DD (%s) -- '
-                          'ticker SKIPPED, run continues.'
-                          % (ticker, strdate, type(_de).__name__), flush=True)
+                    _bar_print('EMPTYFAIL %s: income-statement date %r is not YYYY-MM-DD (%s) -- '
+                               'ticker SKIPPED, run continues.'
+                               % (ticker, strdate, type(_de).__name__))
                 if _newest_year is None:
                     pass                        # already recorded as emptyfail above
                 elif compyear > _newest_year:
@@ -192,10 +214,10 @@ def testForAPIFaults_fmp(failcodes,compyear,ticker,period,limit,baseurl,api_key,
                 # visible in the run's completeness counters instead of vanishing.
                 failbool = True
                 whyfail = 'emptyfail'
-                print('failTests: %s returned HTTP 200 with no `date` column in the '
-                      'income statement (malformed/error body) -- skipped as emptyfail, '
-                      'run continues. Body head: %.200r'
-                      % (ticker, resplist[2]), flush=True)
+                _bar_print('failTests: %s returned HTTP 200 with no `date` column in the '
+                           'income statement (malformed/error body) -- skipped as emptyfail, '
+                           'run continues. Body head: %.200r'
+                           % (ticker, resplist[2]))
 
     outdic = {}
     if failbool == False:

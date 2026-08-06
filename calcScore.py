@@ -78,7 +78,12 @@ def simpleScore_fromDict(bm_df,bm_ave,bm_da,n=8,as_of=None,freq_map=None):
     _nan_acct = {}
     tbs_df = pd.DataFrame(columns=['score', 'source'])
     tbs_df['source'] = bm_df['source'].unique()
-    pbar = tqdm(total=len(bm_df['source'].unique()))
+    # Total matches the loop exactly (both are `bm_df['source'].unique()`).  `desc`/`unit`
+    # ONLY -- deliberately no live postfix: this loop maintains no running fail/skip bucket,
+    # and `_nan_acct` gets one entry PER TICKER (not per problem name), so its size would
+    # just re-display `n`.  Nothing here earns a postfix, so the bar stays plain.
+    pbar = tqdm(total=len(bm_df['source'].unique()), desc='Stage-1 scoring', unit='ticker',
+                smoothing=0.05, dynamic_ncols=True)
 
     for ticker in bm_df['source'].unique():
         bmdf_tick = bm_df[bm_df['source'] == ticker]
@@ -228,8 +233,17 @@ def simpleScore_fromDict(bm_df,bm_ave,bm_da,n=8,as_of=None,freq_map=None):
     if _nan_acct:
         _tot_w = sum(v[1] for v in _nan_acct.values())
         _worst = sorted(_nan_acct.items(), key=lambda kv: -kv[1][1])[:15]
+        # THE COUNT MUST MATCH THE LABEL IT HAS ALWAYS CARRIED (fix, 2026-08-06).  This read
+        # `len(_nan_acct)` while `_nan_acct[ticker]` is written for EVERY scored source
+        # (unconditionally, above), so the printed number was the size of the UNIVERSE and the
+        # sentence next to it said ">=1 all-NaN criterion" -- it read as total missingness
+        # saturation on every run.  `v[0]` is that source's count of all-NaN criteria, so
+        # counting the non-zero entries is the quantity the label names, and the quantity this
+        # readout exists for (see the note above: the INCIDENCE is the precondition for any
+        # gate-width experiment).  `_tot_w` is unaffected -- a clean source contributes 0.0.
         print('STAGE-1 NaN ACCOUNTING: %d source(s) have >=1 all-NaN criterion; summed '
-              'NaN tier-weight across the universe = %.2f' % (len(_nan_acct), _tot_w),
+              'NaN tier-weight across the universe = %.2f'
+              % (sum(1 for v in _nan_acct.values() if v[0]), _tot_w),
               flush=True)
         print('  worst by NaN tier-weight: '
               + '; '.join('%s n=%d w=%.2f %s' % (k, v[0], v[1], v[2][:4])

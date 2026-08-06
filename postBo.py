@@ -899,7 +899,13 @@ def writeBoAggToCSV(fb_df, mscore, cscore, baseurl, api_key, ntopagg, fname_AggS
                     dyVec, GNtPVec, margin, dcf2p, mscoreVec, cscoreVec)
     assert len(_row_vectors) == 12, len(_row_vectors)
     _rows_degraded = []
-    pbar = tqdm(total=ntopagg)
+    # TOTAL TAKEN FROM THE FRAME THE LOOP ITERATES, not from the REQUESTED count: `fb_df` can
+    # be shorter than `ntopagg` (a small universe, or a carve-out cohort with fewer members
+    # than the ask), and the bar then hangs short of its total forever.  `desc` names the
+    # stage because three bars run back-to-back after the fetch and 'the second one' is not
+    # an identification.  Display only.
+    pbar = tqdm(total=len(BoComp_tocsv), desc='AggScore CSV', unit='name',
+                smoothing=0.05, dynamic_ncols=True)
     for _row_i, row in enumerate(BoComp_tocsv.itertuples(), start=1):
         # PAD-TO-LENGTH GUARD (review item 5, 2026-07-31).  My earlier reasoning that a
         # per-row guard was impossible here was wrong: only the NAIVE form is defeated by
@@ -963,20 +969,23 @@ def writeBoAggToCSV(fb_df, mscore, cscore, baseurl, api_key, ntopagg, fname_AggS
 
             # Diagnostic: Check what the DCF API actually returns (only for first ticker)
             if len(crVec) == 0:  # Only print for first ticker to avoid spam
-                print(f"\nDEBUG: DCF API response for {symb}:")
-                print(f"  Status: {_dcf_status}")
-                print(f"  Response type: {type(temp_resp_dcf)}")
+                # Emitted through gdg.bar_print: this block fires on the FIRST name, i.e.
+                # one line after the bar appears, and a multi-line dump into a live '\r'
+                # render strands the bar on screen for the rest of the stage.  Same text.
+                gdg.bar_print(f"\nDEBUG: DCF API response for {symb}:")
+                gdg.bar_print(f"  Status: {_dcf_status}")
+                gdg.bar_print(f"  Response type: {type(temp_resp_dcf)}")
                 if isinstance(temp_resp_dcf, list):
-                    print(f"  Response length: {len(temp_resp_dcf)}")
+                    gdg.bar_print(f"  Response length: {len(temp_resp_dcf)}")
                     if len(temp_resp_dcf) > 0:
-                        print(f"  First element type: {type(temp_resp_dcf[0])}")
+                        gdg.bar_print(f"  First element type: {type(temp_resp_dcf[0])}")
                         if isinstance(temp_resp_dcf[0], dict):
-                            print(f"  First element keys: {list(temp_resp_dcf[0].keys())}")
+                            gdg.bar_print(f"  First element keys: {list(temp_resp_dcf[0].keys())}")
                 elif isinstance(temp_resp_dcf, dict):
-                    print(f"  Dict keys: {list(temp_resp_dcf.keys())}")
-                    print(f"  Dict content: {temp_resp_dcf}")
+                    gdg.bar_print(f"  Dict keys: {list(temp_resp_dcf.keys())}")
+                    gdg.bar_print(f"  Dict content: {temp_resp_dcf}")
                 else:
-                    print(f"  Response content: {temp_resp_dcf}")
+                    gdg.bar_print(f"  Response content: {temp_resp_dcf}")
         
             # Handle case where API returns a dict instead of a list (API might have changed)
             if isinstance(temp_resp_dcf, dict):
@@ -1106,21 +1115,28 @@ def writeBoAggToCSV(fb_df, mscore, cscore, baseurl, api_key, ntopagg, fname_AggS
             else:
                 dcf2p.append('NaN')
         except Exception as _row_err:
-            print('WARNING: %s row degraded to NaN in the AggScore CSV (%s: %s) -- the'
-                  ' remaining names and every later deliverable still run.'
-                  % (symb, type(_row_err).__name__, _row_err), flush=True)
+            gdg.bar_print('WARNING: %s row degraded to NaN in the AggScore CSV (%s: %s) -- the'
+                          ' remaining names and every later deliverable still run.'
+                          % (symb, type(_row_err).__name__, _row_err))
             _rows_degraded.append(symb)
         finally:
             for _v in _row_vectors:
                 del _v[_want:]              # discard a partial append, then pad to length
                 while len(_v) < _want:
                     _v.append('NaN')
+        # `len(_rows_degraded)` is the SAME list the summary below reports -- nothing computed
+        # for display, so the live view and the summary cannot disagree.  refresh=False: the
+        # update on the next line renders it.
+        pbar.set_postfix_str('degraded=%d' % len(_rows_degraded), refresh=False)
         pbar.update(n=1)
+    # THE BAR IS STILL OPEN from here down -- `pbar.close()` is at the END of the function, so
+    # every summary/warning between the loop and it lands on the bar's un-terminated line and
+    # gets glued to the right-hand end of it.  Routed through the bar-safe writer, same text.
     if _rows_degraded:
-        print('AGGSCORE-CSV DEGRADED-ROW SUMMARY: %d of %d name(s) had their API-sourced '
-              'columns written as NaN: %s'
-              % (len(_rows_degraded), len(BoComp_tocsv), ', '.join(map(str, _rows_degraded))),
-              flush=True)
+        gdg.bar_print('AGGSCORE-CSV DEGRADED-ROW SUMMARY: %d of %d name(s) had their API-sourced '
+                      'columns written as NaN: %s'
+                      % (len(_rows_degraded), len(BoComp_tocsv),
+                         ', '.join(map(str, _rows_degraded))))
     BoComp_tocsv['price'] = priceVec
     BoComp_tocsv['PE-ratio'] = pEratioVec
     BoComp_tocsv['beta'] = betaVec
@@ -1178,12 +1194,12 @@ def writeBoAggToCSV(fb_df, mscore, cscore, baseurl, api_key, ntopagg, fname_AggS
     elif 'CycleHeat' in fbdf_tocsv.columns:
         # Do NOT silently publish the weighted column again.  Emit the gap loudly instead:
         # a missing column is recoverable, a sign-inverted one is not detectable downstream.
-        print('!' * 78, flush=True)
-        print('!!! CycleHeat OMITTED from %s: postScoreMetric_raw was not supplied, and the\n'
-              '!!! only other source (postRank) holds the WEIGHTED z (w=-0.080), which is\n'
-              '!!! SIGN-INVERTED against the metric. Publishing a gap, not a wrong number.'
-              % fname_AggScoretop, flush=True)
-        print('!' * 78, flush=True)
+        gdg.bar_print('!' * 78)
+        gdg.bar_print('!!! CycleHeat OMITTED from %s: postScoreMetric_raw was not supplied, and the\n'
+                      '!!! only other source (postRank) holds the WEIGHTED z (w=-0.080), which is\n'
+                      '!!! SIGN-INVERTED against the metric. Publishing a gap, not a wrong number.'
+                      % fname_AggScoretop)
+        gdg.bar_print('!' * 78)
     # moatScore -- raw by construction (merged post-weighting by Sbocker, after the
     # postBoWrapper call); see above.
     if 'moatScore' in fbdf_tocsv.columns:
@@ -1227,9 +1243,9 @@ def writeBoAggToCSV(fb_df, mscore, cscore, baseurl, api_key, ntopagg, fname_AggS
         BoComp_tocsv['volAvg_report'] = BoComp_tocsv['source'].map(_vol['volAvg_report'])
         BoComp_tocsv['volAvg_asof'] = BoComp_tocsv['source'].map(_vol['volAvg_asof'])
     except Exception as _ve:
-        print(f'WARNING: volAvg report columns not added to {fname_AggScoretop} '
-              f'({type(_ve).__name__}: {_ve}); CSV otherwise unaffected. The columns are '
-              f'REPORT-ONLY, so nothing selected or ranked is affected either.', flush=True)
+        gdg.bar_print(f'WARNING: volAvg report columns not added to {fname_AggScoretop} '
+                      f'({type(_ve).__name__}: {_ve}); CSV otherwise unaffected. The columns are '
+                      f'REPORT-ONLY, so nothing selected or ranked is affected either.')
 
     # UNIVERSE STAMP IN THE RANKED CSV ITSELF (2026-08-03), not only in the sidecar.
     # This is the artifact most often read standalone, and its FILENAME carries only a
@@ -1242,8 +1258,8 @@ def writeBoAggToCSV(fb_df, mscore, cscore, baseurl, api_key, ntopagg, fname_AggS
         BoComp_tocsv['universe_fingerprint'] = (
             (universe_stamp or {}).get('universe_fingerprint') or 'unknown-not-stamped')
     except Exception as _se:
-        print(f'WARNING: universe stamp not added to {fname_AggScoretop} '
-              f'({type(_se).__name__}: {_se}); CSV otherwise unaffected.', flush=True)
+        gdg.bar_print(f'WARNING: universe stamp not added to {fname_AggScoretop} '
+                      f'({type(_se).__name__}: {_se}); CSV otherwise unaffected.')
 
     BoComp_tocsv.to_csv(fname_AggScoretop)
     pbar.close()
@@ -1308,7 +1324,11 @@ def createPresentation(finalBoRank_df, mscore, cscore, baseurl, api_key, topn, f
     ll5 = lastlast_5th.strftime('%Y-%d-%m')
     wb = openpyxl.Workbook()
     print(f'Writing top {topn} stocks to an .xlsx file for presentation')
-    pbar = tqdm(total=topn)
+    # Total from `symblist`, the list the loop iterates, not from the REQUESTED `topn`:
+    # `generalTopN(...).head(topn)` returns fewer names whenever the banded general pool is
+    # smaller than the ask, and the bar then stops short of its total for good.  Display only.
+    pbar = tqdm(total=len(symblist), desc='XLSX presentation', unit='page',
+                smoothing=0.05, dynamic_ncols=True)
     _pages_skipped = []
     for symb in symblist[::-1]:
         # HARDENED (fix, 2026-07-31): seven bare `requests.get(...).json()` calls per name,
@@ -1348,9 +1368,10 @@ def createPresentation(finalBoRank_df, mscore, cscore, baseurl, api_key, topn, f
         if km.empty or fr.empty or cf.empty:
             _missing = ', '.join(n for n, d in (('key-metrics', km), ('ratios', fr),
                                                 ('cash-flow', cf)) if d.empty)
-            print(f'  WARNING: {symb} presentation page SKIPPED -- empty/failed {_missing}. '
-                  f'The remaining pages and every later deliverable still run.', flush=True)
+            gdg.bar_print(f'  WARNING: {symb} presentation page SKIPPED -- empty/failed {_missing}. '
+                          f'The remaining pages and every later deliverable still run.')
             _pages_skipped.append(symb)
+            pbar.set_postfix_str('skipped=%d' % len(_pages_skipped), refresh=False)
             pbar.update(n=1)
             continue
 
@@ -1529,11 +1550,12 @@ def createPresentation(finalBoRank_df, mscore, cscore, baseurl, api_key, topn, f
 
         pbar.update(n=1)
 
+    # Still inside the bar's lifetime -- `pbar.close()` is below the workbook save.
     if _pages_skipped:
-        print('PRESENTATION SKIPPED-PAGE SUMMARY: %d of %d page(s) omitted for empty/failed '
-              'API data: %s'
-              % (len(_pages_skipped), len(symblist), ', '.join(map(str, _pages_skipped))),
-              flush=True)
+        gdg.bar_print('PRESENTATION SKIPPED-PAGE SUMMARY: %d of %d page(s) omitted for empty/failed '
+                      'API data: %s'
+                      % (len(_pages_skipped), len(symblist),
+                         ', '.join(map(str, _pages_skipped))))
 
     wb.save(fname)
     wb.close()

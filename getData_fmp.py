@@ -15,6 +15,31 @@ import reporting_period as rp
 from datetime import datetime
 
 
+def _bar_print(msg):
+    """`print()` replacement for ANYTHING emitted while a tqdm bar is live.
+
+    A bare `print()` writes its newline straight to the console while tqdm is
+    mid-render with '\\r': the bar's own line is never cleared, so a fragment of
+    it is stranded on screen and the bar restarts one line down.  Every
+    per-ticker guard that fires shreds the display a little more, and the
+    foreign listings in the wider universes (Korea / Paris / Amsterdam /
+    Toronto / LSE IOB) produce far more malformed statement shapes -- i.e. far
+    more guard hits -- than the old US-heavy default, which is why a defect that
+    has been latent since the guard was added is only now unmissable.
+
+    `tqdm.write` clears every live bar, emits the line, then redraws them.  It
+    is a no-op wrapper around a plain write when no bar exists, so this is safe
+    on the offline/dead-path callers too.
+
+    PRESENTATION ONLY: same text, same stream (stdout), same flush semantics as
+    the `print(..., flush=True)` calls it replaces.  tqdm's bar itself goes to
+    stderr, and `tqdm.write` clears stderr-backed bars for a stdout write, so
+    the two stay coordinated the way the interleaved console needs.
+    """
+    tqdm.write(msg, file=sys.stdout)
+    sys.stdout.flush()
+
+
 def get_fundamentals_fmp(Tickers_df, cdx_df, BoMetric_df, baseurl,
                          api_key,compyear, n=1, nrTaT=-1, startindex=0,period='quarter',limit=44):
     print('Fetching financial data from FMP and calculating relevant metrics.')
@@ -47,15 +72,30 @@ def get_fundamentals_fmp(Tickers_df, cdx_df, BoMetric_df, baseurl,
     # evidence about whether the two independent frequency signals ever disagree, and until
     # this existed the answer was unobservable rather than zero.
     freq_conflicts = []
-    if nrTaT < 0 and startindex == 0:
-        pbar = tqdm(total=len(Tickers_df))
-    elif nrTaT < 0 and startindex > 0:
-        pbar = tqdm(total=len(Tickers_df)-startindex)
-    else:
-        total = min(nrTaT,len(Tickers_df)-startindex)
-        pbar = tqdm(total=total)
     cntr = 0
     Tickers_df = Tickers_df.iloc[startindex: ,:]
+    # BAR TOTAL, TAKEN FROM THE FRAME THE LOOP ACTUALLY ITERATES (2026-08-06).
+    # It used to be computed from the PRE-slice frame, one line above the slice, in three
+    # branches that each re-derived the post-slice length by hand (`len(Tickers_df)-startindex`).
+    # Those agreed with the real iteration count on every branch reachable today -- but only
+    # by arithmetic that has to be re-proved every time the slice moves, and they disagreed
+    # on two off-nominal inputs: `-nrTaT 0` (total 0 while the `nrTaT > 0` break never fires,
+    # so the loop runs the WHOLE universe against a zero total) and a resume `startindex`
+    # past the end (a NEGATIVE total).  Measuring the sliced frame directly makes the total
+    # correct by construction on all three branches instead of by argument.
+    # Display only: `total` is read by nothing but the bar.
+    _bar_total = len(Tickers_df) if nrTaT <= 0 else min(nrTaT, len(Tickers_df))
+    # A 4-hour bar is the only thing the operator sees mid-run, so it carries the run's
+    # health, not just a count.  Every number in the postfix is `len()` of a list the loop
+    # ALREADY maintains and ALREADY prints in the post-run summary -- nothing is computed
+    # for display -- so the live view and the final report cannot disagree.
+    # smoothing=0.02 -> near-global average rate: per-ticker cost varies by ~an order of
+    # magnitude (5 HTTP calls, retries, backoff), and tqdm's default 0.3 makes the ETA on a
+    # 3k-ticker run swing wildly. ASCII only: a 4-hour run must not die on a console codepage.
+    pbar = tqdm(total=_bar_total, desc='FMP fundamentals', unit='ticker',
+                smoothing=0.02, dynamic_ncols=True,
+                bar_format='{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} '
+                           '[{elapsed}<{remaining}, {rate_fmt}] {postfix}')
     preReq_dict, BoMetric_Calc_dict, BoMetric_base_dict, BoMetric_mean_dict, BoMetric_diff_dict, \
         BoMetric_unity_dict, BoMetric_special_dict = cdic.getDicts()
     for row in Tickers_df.itertuples():
@@ -132,14 +172,31 @@ def get_fundamentals_fmp(Tickers_df, cdx_df, BoMetric_df, baseurl,
             except Exception as _tick_err:
                 tickersfailed.append(ticker)
                 parsefail.append(ticker)
-                print("PARSE-FAIL %s: %s: %s -- ticker SKIPPED, run continues."
-                      % (ticker, type(_tick_err).__name__, _tick_err), flush=True)
-                traceback.print_exc(file=sys.stdout)
+                _bar_print("PARSE-FAIL %s: %s: %s -- ticker SKIPPED, run continues."
+                           % (ticker, type(_tick_err).__name__, _tick_err))
+                # Same traceback, same stream, routed through the bar-safe writer: a
+                # multi-line `traceback.print_exc` is the single worst thing to emit into a
+                # live '\r' render.  format_exc() is the exact text print_exc() would have
+                # written; the trailing newline is stripped because tqdm.write adds one.
+                _bar_print(traceback.format_exc().rstrip('\n'))
 
         if nrTaT > 0 and cntr == nrTaT:
             break
         elif len(tickersfailed) > (cntr + 1)*20:
             break
+        # LIVE HEALTH, not just a count.  refresh=False -> no extra redraw; the update on the
+        # next line renders it. All values are len() of the run's own fail buckets:
+        #   fail  = tickersfailed  (every skip, the number the run is judged on)
+        #   empty / len / date     = the three getFsData_fmp gate buckets
+        #   parse = parsefail      (the per-ticker guard -- the one that climbs on foreign
+        #                           listings, and the reason to kill a run early)
+        #   posfb = joinfallback   (positional cross-statement fallback = mispairing risk)
+        #   freq  = freq_conflicts (reporting-frequency disagreements)
+        pbar.set_postfix_str(
+            'fail=%d (empty %d, len %d, date %d, parse %d) posfb=%d freq=%d'
+            % (len(tickersfailed), len(emptyfail), len(lenfail), len(datefail),
+               len(parsefail), len(joinfallback), len(freq_conflicts)),
+            refresh=False)
         pbar.update(n=1)
     pbar.close()
 
@@ -708,7 +765,10 @@ def symbchRestock(tckrs_df,baseurl,period,limit,api_key,compyear,timdir='old2new
     failstosucc = []
 
     print(f'Starting symbol restock: {timdir}')
-    pbar = tqdm(total=len(int))
+    # Labelled the same way as the fundamentals bar so a run with both is readable.  Nothing
+    # inside this loop prints, so it needs no bar-safe writer.
+    pbar = tqdm(total=len(int), desc='Symbol restock', unit='ticker',
+                smoothing=0.02, dynamic_ncols=True)
     for ticker in int:
         failbool_lvl2_agg = False
         resp_km = requests.get(f'{baseurl}/key-metrics/{ticker}?period={period}&limit={limit}&apikey={api_key}')

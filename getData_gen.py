@@ -6,6 +6,31 @@ import numpy as np
 import os
 import re
 import time
+import sys
+from tqdm import tqdm
+
+
+def bar_print(msg):
+    """`print()` replacement for anything emitted while a tqdm progress bar is live.
+
+    A bare `print()` puts its newline into the console while tqdm is mid-render with '\\r':
+    the bar's line is never cleared, so a fragment of it is stranded on screen and the bar
+    restarts one line down.  The warnings in `safe_json_list` below fire from INSIDE the
+    per-name loops of the AggScore-CSV and presentation stages, both of which drive a bar,
+    and they fire most when the API is throttled -- i.e. exactly when the operator most
+    needs to read them.
+
+    `tqdm.write` clears every live bar, writes the line, then redraws.  With no bar alive it
+    degrades to a plain write, so offline callers and tests are unaffected.
+
+    PRESENTATION ONLY: identical text, stream (stdout) and flush behaviour to the
+    `print(..., flush=True)` calls it replaces.  Lives here because this is the leaf module
+    the fetch and post-fetch stages both already import.  (`getData_fmp` and `failTests`
+    carry local twins: importing this module from `failTests` would make the import graph
+    circular.)
+    """
+    tqdm.write(msg, file=sys.stdout)
+    sys.stdout.flush()
 
 
 def safe_get(url, params=None, headers=None, timeout=10, retries=3, backoff=1):
@@ -151,17 +176,17 @@ def safe_json_list(url, params=None, headers=None, timeout=10, retries=3, backof
     status = getattr(resp, 'status_code', None)
     if status != 200:
         if verbose:
-            print('  WARNING: %s returned status %s -- that field degrades to NaN for this '
-                  'name; the stage continues.' % (label or url, status), flush=True)
+            bar_print('  WARNING: %s returned status %s -- that field degrades to NaN for this '
+                      'name; the stage continues.' % (label or url, status))
         return []
     try:
         data = resp.json()
     except Exception as _e:
         # THE throttled-200-with-an-HTML-body case.  Bare `.json()` raised here.
         if verbose:
-            print('  WARNING: %s returned a 200 with an unparseable body (%s) -- that field '
-                  'degrades to NaN for this name; the stage continues.'
-                  % (label or url, type(_e).__name__), flush=True)
+            bar_print('  WARNING: %s returned a 200 with an unparseable body (%s) -- that field '
+                      'degrades to NaN for this name; the stage continues.'
+                      % (label or url, type(_e).__name__))
         return []
     if isinstance(data, dict):
         if 'Error Message' in data or 'error' in str(data).lower():

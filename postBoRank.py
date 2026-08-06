@@ -108,7 +108,17 @@ def postBoScoreRanking(bmtop, bstop, cdxtop, baseurl, api_key, period='quarter',
     # reason channel because a refused-vs-missing channel was explicitly ruled out.
     npol.set_pool(pool_label or 'general')
 
-    pbar = tqdm(total=len(bstop['source'].unique()))
+    # TOTAL COUNTS WHAT THE LOOP ITERATES.  It used to be `bstop['source'].unique()` while the
+    # loop below walks the SERIES -- equal only as long as `bstop` carries one row per source,
+    # which is true today but is an assumption the bar was silently making (issuer clones
+    # producing a duplicated `source` are a known phenomenon in this codebase).  If it ever
+    # stops holding the bar runs past 100% rather than reporting it.  Display only: nothing
+    # reads `total` but the bar, and the iteration itself is untouched.
+    # `desc` distinguishes this from the two postBo bars, and this scorer runs ONCE PER POOL
+    # (general + five carve-out cohorts), so the pool label is what makes six identical bars
+    # tellable apart.
+    pbar = tqdm(total=len(bstop['source']), desc='Stage-2 scoring [%s]' % (pool_label or 'general'),
+                unit='ticker', smoothing=0.05, dynamic_ncols=True)
     for tempcntr, ticker in enumerate(bstop['source']):
         tempcdx = cdxtop.loc[cdxtop['source'] == ticker]
 
@@ -531,8 +541,10 @@ def _compute_ticker_metrics(ticker, tempcdx, dcf, bstop, nq, tempcntr,
     if not dcf.empty and tempcntr == 0 and not (
             'dcf' in dcf.columns and any(c in dcf.columns for c in
                                          ('Stock Price', 'StockPrice', 'stock_price'))):
-        print(f"  WARNING: DCF missing required columns. Available: {list(dcf.columns)}, "
-              f"need: ['dcf', price_col]", flush=True)
+        # Fires from INSIDE the per-ticker scoring loop, with that bar live -- bar-safe writer,
+        # same text.
+        gdg.bar_print(f"  WARNING: DCF missing required columns. Available: {list(dcf.columns)}, "
+                      f"need: ['dcf', price_col]")
     setv('DcfToPrice', sm.dcf_to_price(dcf, nq))
 
     # BoScore is a straight pass-through of the Stage-1 score (weight 0 in the live
@@ -608,13 +620,22 @@ def _safe_diagnose(fn, *args, **kwargs):
     a _FailedResponse did exactly this).  The failure is reported LOUDLY rather than swallowed:
     a silently-missing diagnostic is how the frequency watchdog went dark for a whole release.
     """
-    try:
-        return fn(*args, **kwargs)
-    except Exception as _e:
-        print("WARNING: diagnostic %s FAILED (%s: %s) -- scoring continues, but this "
-              "diagnostic's output is MISSING from the run log."
-              % (getattr(fn, '__name__', fn), type(_e).__name__, _e), flush=True)
-        return None
+    # EVERY caller of this helper prints while the per-ticker scoring BAR IS ALIVE (it opens
+    # before the loop and closes after normalisation), and these diagnostics are multi-line
+    # dumps -- the worst thing to emit into a live '\r' render, because the bar's own line is
+    # never cleared and a fragment of it is stranded on screen for the rest of the stage.
+    # `external_write_mode` clears every live bar, lets the block print exactly as before, then
+    # redraws: ONE wrap here instead of rewriting every print in every _diagnose_* helper, and
+    # the emitted text is byte-identical.  A no-op when no bar is alive (the post-close caller,
+    # the tests).  PRESENTATION ONLY -- the diagnostics themselves are untouched.
+    with tqdm.external_write_mode():
+        try:
+            return fn(*args, **kwargs)
+        except Exception as _e:
+            print("WARNING: diagnostic %s FAILED (%s: %s) -- scoring continues, but this "
+                  "diagnostic's output is MISSING from the run log."
+                  % (getattr(fn, '__name__', fn), type(_e).__name__, _e), flush=True)
+            return None
 
 
 def _diagnose_first_ticker_data(ticker, dcf, dcf_from_bulk, resp_dcf_status, resp_dcf, tempcdx):
