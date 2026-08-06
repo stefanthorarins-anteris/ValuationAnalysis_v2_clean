@@ -1039,12 +1039,36 @@ def piotroski(tempcdx, rpy=rp.DEFAULT_ROWS_PER_YEAR):
     MEASURED [panel]: 117 sources (1.51%) [universe], 33 of the 4,287 general-carved names
     (0.77%), **0 of the 100 deployed pool names** -- and every one of them arrives via
     `netCashProvidedByOperatingActivities` (p2 and p4).
-    AND DO NOT RECORD D-9 AS CLOSED BY THIS.  The NaN channel is the SMALL half.  A STRUCTURAL
-    ZERO is not a NaN and no NaN rule can reach it: `longTermDebt == 0` in both periods makes
-    p5 ("leverage fell") evaluate `0 < 0` = False and FAIL, forever, on 476 sources (6.17%);
-    `revenue == 0` does the same to p9 on 380, and `grossProfitMargin == 0` to p8 on 380.  That
-    is ~6.5x this fix, it is the provider-zero conflation (nan-policy.md section 5), and it
-    needs a provider-level presence flag at ingest -- not a metric change.
+    p5's STRUCTURAL ZERO IS NOW DISCRIMINATED (register B-8 extended to Piotroski, CEO ruling
+    2026-08-06).  The note below used to say p5 was a SEPARATE ruling because Piotroski is a
+    metric this project only MIMICS (D-9) and changing it would be a redesign.  THE CEO RULED
+    THE OTHER WAY: this is CONFORMANCE, NOT REDESIGN.  p5 asks "did long-term debt fall".  A
+    row whose `longTermDebt == 0` while a sibling debt field is strictly POSITIVE is levered
+    somewhere, so its zero is NON-DISCLOSURE OR MISALLOCATION -- and evaluating `0 < 0` on it
+    does not answer Piotroski's question, it fails it by default.  Applying
+    `_long_term_debt_undisclosed` (the SAME discriminator built for
+    `long_term_debt_change`) does not change WHAT p5 asks; it stops the metric answering a
+    question the data cannot support.  Absence is then NaN, which under the composite rule
+    above makes `Piotroski` NaN -- unavailable, imputed at the column median, neither credited
+    nor docked.  THAT is the honest place; a forced FAIL is a punishment for a provider gap.
+
+    SAME CAVEAT AS B-8, VERBATIM, BECAUSE IT IS THE SAME FIELDS.  `totalDebt` and
+    `shortTermDebt` were captured on 2026-08-05 and A SAVED PICKLE CAN NEVER GAIN A COLUMN, so
+    they are ABSENT FROM EVERY EXISTING PANEL.  When neither sibling is present the
+    discriminator CANNOT FIRE and this function behaves EXACTLY as it did before -- so the
+    change is UNEXERCISABLE on saved data and only becomes live after the next full fetch.  A
+    PRESENT-BUT-ZERO sibling is evidence FOR debt-freedom and correctly does not fire.  How
+    many of the 476 sources it will actually reach is therefore UNMEASURED and UNMEASURABLE
+    here: 476 is the count of sources whose p5 reads a zero, NOT the count whose zero is
+    contradicted -- the genuinely unlevered ones are a real observation and must keep failing
+    p5, because their leverage genuinely did not fall.
+
+    AND DO NOT RECORD D-9 AS CLOSED BY THIS.  Two of the three structural zeros are STILL
+    OPEN and no NaN rule reaches them: `revenue == 0` fails p9 on 380 sources and
+    `grossProfitMargin == 0` fails p8 on 380.  Neither has a sibling field that contradicts it
+    the way `totalDebt` contradicts `longTermDebt`, so the B-8 pattern does not transfer --
+    they need a provider-level presence flag at ingest, not a metric change (nan-policy.md
+    section 5).
     """
     try:
         lag = int(rpy)
@@ -1063,6 +1087,14 @@ def piotroski(tempcdx, rpy=rp.DEFAULT_ROWS_PER_YEAR):
             c = {k: _finite(curr[k]) for k in need_curr}
             p = {k: _finite(prev[k]) for k in need_prev}
             if any(v is None for v in c.values()) or any(v is None for v in p.values()):
+                return np.nan
+            #  B-8 EXTENDED TO p5 (CEO 2026-08-06): a `longTermDebt == 0` that a sibling
+            #  debt field CONTRADICTS is non-disclosure, so p5 is UNANSWERABLE and the
+            #  composite is NaN -- not a forced FAIL. Absent siblings (every saved pickle)
+            #  -> no verdict -> byte-identical behaviour. Placed with the other
+            #  all-inputs-present checks and BEFORE any component is scored, so a single
+            #  return covers it exactly as the NaN-input check above does.
+            if _long_term_debt_undisclosed(curr) or _long_term_debt_undisclosed(prev):
                 return np.nan
             ta_curr = c["totalAssets"]
             ta_prev = p["totalAssets"]

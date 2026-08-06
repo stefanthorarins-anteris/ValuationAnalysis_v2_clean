@@ -42,6 +42,7 @@ side-list uniformly.  Names with UNKNOWN market cap are KEPT (never dropped on a
 data gap -- conservative; better to keep a good name than silently discard it).
 """
 
+import math
 import os
 import re
 import sys
@@ -556,11 +557,72 @@ def _load_isin_map(isin_pickle=None):
     return dict(d) if isinstance(d, dict) else {}
 
 
+def _load_volavg_map(volavg_pickle=None):
+    """symbol -> (volAvg, asof_date) from the local volAvg pickle, written by
+    findAllSectors from the SAME already-fetched v3/profile payload as the ISIN map.
+
+    TWO ON-DISK SHAPES ARE ACCEPTED, and the reason is the whole point of this wiring
+    (register K-1, 2026-08-06):
+      * {sym: {'volAvg': v, 'asof': 'YYYY-MM-DD'}}  -- the DATED shape, written from
+        2026-08-06 onwards;
+      * {sym: v}                                   -- the UNDATED shape the capture-only
+        version wrote. Returned with asof None.
+    Both are normalised to (value, asof) here so no consumer has to branch.
+
+    WHY DATING WAS REQUIRED BEFORE WIRING.  Unlike a sector, an industry or an ISIN,
+    AVERAGE VOLUME IS TIME-VARYING, and findAllSectors merges MERGE-NEVER-OVERWRITE --
+    correct (the map must not shrink) but it therefore carries FORWARD a stale reading for
+    any symbol a run did not fetch. Without a per-entry date, a comparison between two
+    lines of one issuer could silently be a comparison between a fresh reading and a
+    six-month-old one -- i.e. between two market regimes -- and it would look exactly like
+    a liquidity difference. The date is what lets `_volavg_liquidity_term` refuse that
+    comparison instead of making it.
+
+    Returns {} when no pickle exists, which is the state of every run before the next
+    profile build -> the survivor rule falls back to exactly its pre-volAvg behaviour.
+    """
+    import glob
+    path = volavg_pickle
+    if not path:
+        # Glob the REPO ROOT, not the CWD -- same defect class as the sector map above.
+        cands = sorted(glob.glob(os.path.join(_MODULE_DIR, 'volavgdic_fmp_*.pickle')))
+        if not cands:
+            cands = sorted(glob.glob('volavgdic_fmp_*.pickle'))
+        path = cands[-1] if cands else None
+    else:
+        path = _resolve_repo_data(path)
+    if not path or not os.path.exists(path):
+        return {}
+    d = pd.read_pickle(path)
+    if not isinstance(d, dict):
+        return {}
+    out = {}
+    for sym, v in d.items():
+        if isinstance(v, dict):
+            out[sym] = (v.get('volAvg'), v.get('asof'))
+        else:
+            out[sym] = (v, None)
+    return out
+
+
 #  Loaded ONCE per process and memoised, because `_investability_key` is a sort key
 #  called O(group size * log) times per group over ~1,300 groups -- re-globbing the repo
 #  root there would be a disk hit per comparison. `None` means "not yet looked",
 #  `{}` means "looked, nothing there" (the pre-fetch steady state).
 _ISIN_MAP_CACHE = None
+_VOLAVG_MAP_CACHE = None
+
+
+def _volavg_map_cached():
+    global _VOLAVG_MAP_CACHE
+    if _VOLAVG_MAP_CACHE is None:
+        try:
+            _VOLAVG_MAP_CACHE = _load_volavg_map()
+        except Exception:
+            # A corrupt/unreadable volAvg pickle must not break the carve: degrade to the
+            # pre-volAvg survivor rule, the same path as "no pickle at all".
+            _VOLAVG_MAP_CACHE = {}
+    return _VOLAVG_MAP_CACHE
 
 
 def _isin_map_cached():
@@ -1106,6 +1168,133 @@ def _name_vocabulary_tag(name):
         return ''
 
 
+#  The liquidity gap a group must show before volume is allowed to decide anything: one
+#  ORDER OF MAGNITUDE, as a RATIO between values.  A ratio, not a bucket index -- see the
+#  long note in `_volavg_liquidity_term` for why the bucketed first cut was wrong.
+_VOLAVG_DECIDING_RATIO = 10.0
+
+
+def _volavg_liquidity_term(sym, group, volavg_map):
+    """The ordering signal average volume DOES support: which line of an issuer is the
+    LIQUID one, coarsened to ORDERS OF MAGNITUDE.  Lower (more negative) sorts first.
+
+    Returns 0 for every member -- i.e. ABSTAINS -- unless the whole group can be compared
+    honestly.  A constant added to every member of a group cannot change a sort, so
+    abstention is exactly "no opinion".
+
+    WHY VOLUME AND NOT SOMETHING ELSE (register K-1).  Three groups merge correctly and
+    pick the WRONG line: Robertet + its certificat (CBE.PA), Value8 + its preference line
+    (PREVA.AS), Samsung + its preferred GDR (SMSD.L).  All three are SAME-EXCHANGE with
+    names identical verbatim and an IDENTICAL derived price (price = marketCap /
+    weightedAverageShsOut, both issuer-level, so they cancel), so every canonicity marker
+    (a)-(e) is ruled out BY CONSTRUCTION and the key falls to the alphabetical tail, where
+    the non-common wins ('CBE' < 'RBT', 'PREVA' < 'VALUE', 'SMSD' < 'SMSN').  Volume reaches
+    them, and unlike an ISIN it is DIRECTIONAL BY CONSTRUCTION -- the common IS the liquid
+    line -- so no convention has to be invented to read it.
+
+    *** WHERE THE "ISIN CANNOT REACH THEM" CLAIM WAS TOO STRONG, corrected 2026-08-06. ***
+    It read: ISIN carries no security-type field, so `_isin_plurality_term` abstains on a
+    2-member group with 2 distinct ISINs.  Each half is true, but the PREMISE -- that these
+    are 2-member groups -- came from a SAMPLED universe that was SPLITTING them.  Robertet
+    has THREE lines upstream (RBT.PA, CBE.PA and 0NZN.L on LSE); the sample was dropping the
+    LSE line, and with it the second vote that lets plurality speak.  If 0NZN.L carries the
+    common's ISIN -- the usual pattern for an LSE IOB line, and NOT MEASURED HERE, no
+    isindic pickle exists -- then plurality is {common: 2, certificat: 1}, the term SPEAKS,
+    and it demotes the certificat correctly WITHOUT volume.  So on the full pool volume is
+    the SECOND of two terms that reach Robertet, not the only one; "volAvg is what fixes the
+    three K-1 picks" holds for Value8 and Samsung on the same argument as before, but for
+    Robertet it is unproven and probably over-attributed.  The two terms point the SAME way
+    here, so nothing is at risk -- but the attribution should not be relied on until the
+    first run with a profile build measures both maps.
+
+    POSITION IN THE KEY.  This is term 6, BELOW every canonicity marker and ABOVE ISIN
+    plurality, immediately above the alphabetical last resort.  Terms 1-5 are
+    byte-unchanged, so any group decided today by canonicity, share count, market cap or
+    symbol shape is decided IDENTICALLY.  The only groups volume can move are the ones that
+    fall past those -- 381 of 1,282 (29.7%) reach the raw alphabet today -- which is
+    precisely the failure surface.
+
+    VOLUME OUTRANKS ISIN, BY CEO RULING (2026-08-06).  The first cut placed it BELOW ISIN
+    as the conservative choice and flagged that as not obviously correct; the CEO chose
+    volume above ISIN, and the reasoning is the one that was flagged: volume is
+    DIRECTIONAL BY CONSTRUCTION -- the common IS the liquid line -- whereas ISIN plurality
+    is an IDENTITY INFERENCE that can point the wrong way.  Three depositary lines sharing
+    one ISIN against a common carrying its own would hand plurality to a depositary
+    receipt.  Where both speak, volume now wins; ISIN still decides every group volume
+    abstains on, which is most of them.  BOTH NO-DATA PATHS REMAIN BIT-IDENTICAL under the
+    swap -- an absent map makes its term a constant 0 across the group, and a constant
+    cannot move a sort whatever its position -- and that is the path every existing pickle
+    takes.
+
+    COMPARE VALUES, NOT THEIR FLOORS.  *** The first cut bucketed with
+    `-int(floor(log10(v)))` and that was WRONG, caught in review. ***  A decade INDEX has a
+    hard edge at every power of ten: volAvg 9,900 -> bucket 3 but 10,100 -> bucket 4, so a
+    2% difference spoke with FULL FORCE -- the exact opposite of the stated rationale that
+    near-ties tie.  And the direction mattered: a K-1 non-common line sitting just above a
+    boundary with its common just below made the term ACTIVELY SELECT THE NON-COMMON, which
+    is strictly worse than the abstention it was designed to fall back to, in the very
+    groups it was added for.  volAvg is re-read every fetch, so a line drifting across a
+    power of ten would also flip the survivor between runs.
+
+    The rule is therefore a RATIO against the group's own maximum: a member is demoted only
+    if it is at least `_VOLAVG_DECIDING_RATIO` (10x) LESS liquid than the most liquid line;
+    anything inside that band ties.  For a 2-member group that is exactly "decide iff
+    max/min >= 10".  For 3+ it generalises the way it should: {1e6, 9e5, 1e4} ties the two
+    big lines (they fall through to alphabet, as today) and demotes only the tiny one.  This
+    has no absolute edge anywhere -- scaling every value in a group by any factor leaves the
+    term unchanged -- and it keeps the property that was wanted: only a genuine
+    order-of-magnitude gap decides, and a 2% wobble never does.  A threshold still has a
+    boundary AT 10x, but that boundary flips between "volume decides" and "alphabet
+    decides", never between "picks A" and "picks B".
+
+    The three K-1 groups are expected to clear 10x comfortably (a certificat / preference
+    line / preferred GDR against its common), but that is an EXPECTATION, NOT A
+    MEASUREMENT: no volavgdic pickle exists yet and none of the six symbols is in any saved
+    panel, so this has never been evaluated on real values.  If a group turns out to sit
+    inside one order of magnitude, this term abstains there and the next term decides --
+    no worse than today, but not fixed either.
+
+    ABSTAIN UNLESS THE GROUP IS COMPARABLE.  Three conditions, and each one prevents a
+    specific way of deciding on something other than liquidity:
+      1. EVERY member must have a usable reading.  Otherwise a mapped member would sort
+         above an unmapped one and the survivor would be decided by DATA AVAILABILITY --
+         the exact defect the reviewer caught in the first ISIN cut.
+      2. EVERY member's reading must carry the SAME as-of date.  The map merges
+         never-overwrite, so a symbol this run did not fetch keeps a stale reading;
+         comparing it against a fresh one compares two market regimes and looks identical
+         to a liquidity difference.  An UNDATED map (the pre-2026-08-06 shape) has None
+         for every entry, which is self-consistently "all the same unknown date" -- so it
+         is allowed, and the staleness caveat rides on the FILENAME as it did before.
+      3. The decision to speak reads ONLY `group` and `volavg_map`, NEVER `sym` -- so the
+         abstain/discriminate choice cannot differ between two members of one group.
+    """
+    if not volavg_map or len(group) < 2:
+        return 0
+    vals, dates = {}, set()
+    for m in group:
+        v, asof = volavg_map.get(m, (None, None))
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            return 0                      # (1) a member with no usable reading -> abstain
+        if not math.isfinite(f) or f <= 0:
+            return 0
+        vals[m] = f
+        dates.add(asof)
+    if len(dates) > 1:
+        return 0                          # (2) mixed as-of dates -> refuse the comparison
+    top = max(vals.values())
+    #  A RATIO against the group's own maximum, so there is no absolute edge and a near-tie
+    #  ties. 0 = within an order of magnitude of the most liquid line (sorts first),
+    #  1 = at least 10x less liquid (demoted).
+    if all(top / v < _VOLAVG_DECIDING_RATIO for v in vals.values()):
+        return 0                          # no member is a decade behind -> nothing to say
+    mine = vals.get(sym)
+    if mine is None:
+        return 0                          # `sym` outside `group` -- no opinion about it
+    return 0 if top / mine < _VOLAVG_DECIDING_RATIO else 1
+
+
 def _non_canonical_tag(sym, name='', group=()):
     """The first non-common marker `sym` shows, or '' if it looks like the common.
 
@@ -1147,7 +1336,8 @@ def _non_canonical_tag(sym, name='', group=()):
 #  rule invites a reader to think the rule still consults the score.
 
 
-def _investability_key(sym, val_fn, sector_map=None, names=None, group=(), isin_map=None):
+def _investability_key(sym, val_fn, sector_map=None, names=None, group=(), isin_map=None,
+                       volavg_map=None):
     """Deterministic "most investable line" ordering key for an issuer's listings.
 
     CANONICITY CLASS FIRST, then the CEO's share count. Lowest sorts first:
@@ -1157,9 +1347,18 @@ def _investability_key(sym, val_fn, sector_map=None, names=None, group=(), isin_
          tier, which is the only place it works.
       3. -marketCap.
       4. digit-prefix, punctuation count, length -- the previous tail, unchanged.
-      5. ISIN plurality within the group (`_isin_plurality_term`) -- ADDED 2026-08-05,
+      5. volAvg liquidity, as a ratio against the group's most liquid line
+         (`_volavg_liquidity_term`) -- ADDED 2026-08-06. ABOVE ISIN by CEO ruling
+         (2026-08-06): volume is directional by construction, ISIN plurality is an
+         identity inference that can point the wrong way. See the note on that function.
+      6. ISIN plurality within the group (`_isin_plurality_term`) -- ADDED 2026-08-05,
          see below.
-      6. alphabetical -- the last resort, unchanged.
+      7. alphabetical -- the last resort, unchanged.
+
+    Both term 5 and term 6 return a CONSTANT 0 for the whole group when their map is
+    absent, and a constant cannot move a sort -- so every pre-2026-08-05 artifact and every
+    existing pickle resolves through this key bit-identically, and the 5/6 ORDER is
+    unobservable on any of them.
 
     WHY NOT SHARE COUNT FIRST, WHICH IS WHAT THE BRIEF ASSUMED. Because it was measured
     and it is a bad rule. FMP serves the ISSUER's own filed share count to every one of
@@ -1249,7 +1448,63 @@ def _investability_key(sym, val_fn, sector_map=None, names=None, group=(), isin_
     punct = sum(ch in '-.' for ch in sym)
     imap = _isin_map_cached() if isin_map is None else isin_map
     isin_t = _isin_plurality_term(sym, group, imap)
-    return (noncanon, -sh, -mc, digitpfx, punct, len(sym), isin_t, sym)
+    vmap = _volavg_map_cached() if volavg_map is None else volavg_map
+    vol_t = _volavg_liquidity_term(sym, group, vmap)
+    #  vol_t BEFORE isin_t -- CEO ruling 2026-08-06; see the term list above.
+    return (noncanon, -sh, -mc, digitpfx, punct, len(sym), vol_t, isin_t, sym)
+
+
+#  THE SURVIVOR-KEY TERM NAMES, IN KEY ORDER.  One name per element of the tuple
+#  `_investability_key` returns, so `dedup_to_issuers` can report WHICH TERM decided a
+#  group instead of leaving an operator to reconstruct it from the values.  Kept adjacent
+#  to the key itself: adding a term without adding its name here is a bug the assertion in
+#  `_deciding_term` turns into an exception rather than a silently mislabelled column.
+_KEY_TERM_NAMES = ('canonicity', 'shares', 'marketCap', 'digit_prefix', 'punctuation',
+                   'symbol_length', 'volavg', 'isin_plurality', 'alphabetical')
+_VOL_TERM_IX = _KEY_TERM_NAMES.index('volavg')
+_ISIN_TERM_IX = _KEY_TERM_NAMES.index('isin_plurality')
+
+
+def _same_key_term(a, b):
+    """Equality for ONE key element, with NaN == NaN.
+
+    `val_fn` serves whatever the panel holds, and a missing share count / market cap can
+    arrive as NaN rather than None. NaN != NaN, so a naive comparison would name `shares`
+    as THE DECIDING TERM for two lines that are both merely unmeasured -- a fabricated
+    decision in the one column added so an operator does not have to guess.
+    """
+    if a is b:
+        return True
+    try:
+        if a == b:
+            return True
+    except Exception:
+        return False
+    try:
+        return math.isnan(a) and math.isnan(b)
+    except (TypeError, ValueError):
+        return False
+
+
+def _deciding_term(surv_key, other_key):
+    """The name of the FIRST key element on which the survivor beat `other_key`.
+
+    Purely observational: it reads the two keys the sort already produced and reports
+    where they first diverge. It cannot move a survivor because it runs after the sort and
+    returns a string nothing consumes.
+
+    `''` means the two keys are element-for-element equal, which is only reachable for a
+    symbol against itself (the last term is the symbol, which is unique within a group) --
+    so an empty `decided_by` on a real dropped row is a signal that the grouping produced
+    a duplicate member, not a normal state.
+    """
+    assert len(surv_key) == len(_KEY_TERM_NAMES), (
+        '_investability_key returns %d terms but _KEY_TERM_NAMES has %d -- the audit '
+        'column would mislabel the deciding term' % (len(surv_key), len(_KEY_TERM_NAMES)))
+    for nm, a, b in zip(_KEY_TERM_NAMES, surv_key, other_key):
+        if not _same_key_term(a, b):
+            return nm
+    return ''
 
 
 def dedup_ranked(ranked_sources, cdx_df, names, scores=None, sector_map=None):
@@ -1496,22 +1751,74 @@ def dedup_to_issuers(BoScore_df, cdx_df, sector_map, names):
     cheaper / more liquid line at execution. One slot in the ranking, all lines visible
     for the trade. (Wiring that into the emitted CSV is a separate change in the
     emission layer; the data is produced here.)
+
+    THE RUN ANSWERS ITS OWN QUESTION ABOUT THE TIEBREAK (added 2026-08-06, reviewer).
+    Before this, the frame recorded neither term value, so on the three K-1 groups
+    (Robertet, Value8, Samsung) it was IMPOSSIBLE to tell from the run's own output whether
+    volAvg SPOKE AND THE DROPPED LINE LOST or whether volAvg ABSTAINED and something else
+    decided -- and group closure enlarged exactly those groups with the IOB lines most
+    likely to report volAvg 0 or null, which is an abstention trigger (condition 1 of
+    `_volavg_liquidity_term`). It was recoverable offline from the persisted volavgdic
+    pickle, but that is a second pass over a ~5-hour artifact to answer a question the run
+    already had the values for. Five OBSERVATIONAL columns, none of which the sort reads:
+
+      decided_by       the name of the first `_investability_key` term on which the
+                       survivor beat THIS dropped line (see `_KEY_TERM_NAMES`).
+      dropped_vol_t    this dropped line's volAvg term value
+      survivor_vol_t   the survivor's volAvg term value
+      dropped_isin_t   this dropped line's ISIN-plurality term value
+      survivor_isin_t  the survivor's ISIN-plurality term value
+
+    HOW TO READ ABSTAIN vs SPOKE-AND-LOST, which is the whole point. There is one row per
+    DROPPED member and none for the survivor, so the survivor's value is repeated on every
+    row of its group -- together those give EVERY member of the group, which is what the
+    distinction needs (the winner's value alone cannot make it):
+      * both columns NaN                -> the map does not exist, so the term was
+                                           STRUCTURALLY SILENT and could not have decided
+                                           anything. See below.
+      * 0 for the survivor AND 0 for every dropped row of the group -> the term ABSTAINED
+        (no reading, mixed as-of dates, or no member a decade behind). `_volavg_liquidity_term`
+        emits abstention as a LITERAL 0 for every member, which is why this is readable as a
+        value and not merely as a tie that cancels.
+      * 0 for the survivor and 1 on a dropped row -> volAvg SPOKE and that line lost on
+        liquidity. Whether it was DECISIVE is `decided_by == 'volavg'`; a term can speak
+        and still be overridden by canonicity / shares / cap above it.
+      * `decided_by` naming a term ABOVE volavg -> the group never reached the tiebreak.
+
+    NO-DATA IS REPORTED AS NaN, NOT AS 0, DELIBERATELY. Every pickle in existence today has
+    neither map, so both terms are a constant 0 for every member -- and a column of zeros
+    reads exactly like "the term looked and found every line comparable", which is a
+    DIFFERENT and much stronger statement than "there was nothing to look at". The absent-map
+    case is therefore blanked, and `diagnostics['volavg_map_n']` / `['isin_map_n']` carry the
+    entry counts so the state is a number an operator can see rather than an inference from a
+    column of zeros.
     """
     syms = list(BoScore_df['source'])
     comps, latest, _val = _issuer_components(syms, cdx_df, names)
 
     from collections import Counter
 
+    #  Loaded ONCE here and passed EXPLICITLY, where `_investability_key` would otherwise
+    #  fetch the same memoised objects itself -- same values, so the pick is untouched; the
+    #  reason to hoist them is that THIS site has to report whether each term had any data.
+    imap, vmap = _isin_map_cached(), _volavg_map_cached()
+    _vol_col = (lambda t: t) if vmap else (lambda t: None)
+    _isin_col = (lambda t: t) if imap else (lambda t: None)
+
     survivors, member_to_survivor, sector_override = set(), {}, {}
     rows, conflicts = [], []
     for members in comps.values():
-        def _key(s, _m=members):
-            # THE shared "most investable line" key (module-level _investability_key),
-            # so dedup_ranked and this survivor rule can never diverge. `sector_map` is
-            # passed as None because the key ignores it -- kept explicit so a reader does
-            # not think this site still prefers the tagged line.
-            return _investability_key(s, _val, None, names, _m)
-        surv = sorted(members, key=_key)[0]
+        # THE shared "most investable line" key (module-level _investability_key), so
+        # dedup_ranked and this survivor rule can never diverge. `sector_map` is passed as
+        # None because the key ignores it -- kept explicit so a reader does not think this
+        # site still prefers the tagged line.
+        # Computed ONCE PER MEMBER and reused for the sort AND the audit columns below.
+        # The key is a pure function of (sym, val_fn, names, members, imap, vmap) and the
+        # last term is the unique symbol, so the ordering is total: memoising it cannot
+        # change the survivor, it only stops recomputing it O(n log n) times per group.
+        keys = {s: _investability_key(s, _val, None, names, members, imap, vmap)
+                for s in members}
+        surv = sorted(members, key=keys.__getitem__)[0]
         survivors.add(surv)
         secs = [x for x in (sector_map.get(m) for m in members) if _is_known_sector(x)]
         prop = None
@@ -1536,13 +1843,25 @@ def dedup_to_issuers(BoScore_df, cdx_df, sector_map, names):
                              '|'.join(sorted(members)),
                              _non_canonical_tag(m, names.get(m, ''), members),
                              _val(m, 'price'), _val(m, 'weightedAverageShsOut'),
-                             _val(m, 'marketCap')))
+                             _val(m, 'marketCap'),
+                             #  OBSERVATIONAL ONLY -- read off the keys the sort has
+                             #  already produced, appended AFTER `surv` is fixed.
+                             _deciding_term(keys[surv], keys[m]),
+                             _vol_col(keys[m][_VOL_TERM_IX]),
+                             _vol_col(keys[surv][_VOL_TERM_IX]),
+                             _isin_col(keys[m][_ISIN_TERM_IX]),
+                             _isin_col(keys[surv][_ISIN_TERM_IX])))
     report = pd.DataFrame(rows, columns=['dropped', 'survivor', 'name',
                                          'orig_sector', 'propagated_sector', 'issuer_group',
                                          'non_canonical_tag', 'dropped_price',
-                                         'dropped_shares', 'dropped_marketCap'])
+                                         'dropped_shares', 'dropped_marketCap',
+                                         'decided_by', 'dropped_vol_t', 'survivor_vol_t',
+                                         'dropped_isin_t', 'survivor_isin_t'])
     diagnostics = {'n_lines_in': len(syms), 'n_issuers_out': len(comps),
                    'n_collapsed': len(syms) - len(comps),
+                   #  The state behind the blanked term columns, as a NUMBER: 0 = no map on
+                   #  disk, so `*_vol_t` / `*_isin_t` are NaN and neither term participated.
+                   'volavg_map_n': len(vmap), 'isin_map_n': len(imap),
                    'sector_conflicts': conflicts, 'report': report}
     return {'survivors': survivors, 'member_to_survivor': member_to_survivor,
             'sector_override': sector_override, 'diagnostics': diagnostics}

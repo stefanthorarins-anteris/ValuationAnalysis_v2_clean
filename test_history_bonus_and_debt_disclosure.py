@@ -153,3 +153,97 @@ def test_long_term_debt_change_still_returns_zero_for_a_genuinely_unlevered_name
     cdx = _panel([dict(totalAssets=1000.0, longTermDebt=0.0, totalDebt=0.0,
                        shortTermDebt=0.0)] * 5)
     assert sm.long_term_debt_change(cdx, rpy=4) == pytest.approx(0.0)
+
+
+# =========================================================================== #
+#  PIOTROSKI p5 -- THE SAME DISCRIMINATOR, APPLIED (CEO ruling 2026-08-06)       #
+#                                                                               #
+#  The earlier reading was that touching p5 would be REDESIGNING Piotroski, which  #
+#  the D-9 ruling forbids.  THE CEO REVERSED IT: this is CONFORMANCE.  p5 asks       #
+#  "did long-term debt fall".  On a row whose zero is CONTRADICTED by a sibling debt  #
+#  field, `0 < 0` does not ANSWER that question -- it fails it by default, on 476     #
+#  sources (6.17%).  Letting the metric say UNAVAILABLE instead does not change what   #
+#  Piotroski asks; it stops the metric answering a question the data cannot support.   #
+# =========================================================================== #
+
+def _p_rows(ltd_now, ltd_then, **extra):
+    """A 5-row newest-first panel that scores a DEFINED Piotroski composite, so the only
+    thing under test is p5's zero.  Every other component's inputs are held constant
+    across the two rows, which pins p1..p9 to values that do not move between cases."""
+    base = dict(totalAssets=1000.0, netIncome=100.0,
+                netCashProvidedByOperatingActivities=150.0, currentRatio=2.0,
+                weightedAverageShsOut=50.0, grossProfitMargin=0.4, revenue=800.0)
+    curr = dict(base, longTermDebt=ltd_now, **extra)
+    prev = dict(base, longTermDebt=ltd_then, **extra)
+    return pd.DataFrame([curr, prev, prev, prev, prev])
+
+
+def test_piotroski_nans_on_a_CONTRADICTED_zero_long_term_debt():
+    """*** THE FIX.  longTermDebt == 0 while totalDebt > 0: the entity is levered
+    somewhere, so its zero is non-disclosure and p5 is UNANSWERABLE -> the composite is
+    NaN, which takes the column-median treatment and neither credits nor docks. ***"""
+    cdx = _p_rows(0.0, 0.0, totalDebt=300.0)
+    assert np.isnan(sm.piotroski(cdx, rpy=4))
+
+
+def test_piotroski_nans_when_only_the_PRIOR_row_is_contradicted():
+    """p5 reads BOTH periods, so either row's contradicted zero makes the comparison
+    unsupportable -- same as `long_term_debt_change`, which checks both."""
+    curr = dict(totalAssets=1000.0, netIncome=100.0,
+                netCashProvidedByOperatingActivities=150.0, currentRatio=2.0,
+                weightedAverageShsOut=50.0, grossProfitMargin=0.4, revenue=800.0,
+                longTermDebt=40.0, totalDebt=300.0)
+    prev = dict(curr, longTermDebt=0.0)
+    assert np.isnan(sm.piotroski(pd.DataFrame([curr, prev, prev, prev, prev]), rpy=4))
+
+
+def test_piotroski_shortTermDebt_is_the_discriminator_too_not_just_totalDebt():
+    """The brief named `shortTermDebt` specifically. Both siblings must reach p5, because
+    `_long_term_debt_undisclosed` reads `_B8_DEBT_SIBLINGS`, not one field."""
+    assert 'shortTermDebt' in sm._B8_DEBT_SIBLINGS
+    assert np.isnan(sm.piotroski(_p_rows(0.0, 0.0, shortTermDebt=12.0), rpy=4))
+
+
+def test_piotroski_is_BYTE_IDENTICAL_when_the_siblings_are_ABSENT():
+    """*** THE CASE THAT DESCRIBES EVERY SAVED PICKLE, and the reason this change is
+    unexercisable on saved data.  `totalDebt` / `shortTermDebt` were captured on
+    2026-08-05 and a saved pickle can never gain a column, so on existing panels the
+    discriminator CANNOT fire and p5 must fail `0 < 0` exactly as it did before. ***"""
+    cdx = _p_rows(0.0, 0.0)
+    got = sm.piotroski(cdx, rpy=4)
+    assert not np.isnan(got), 'the no-sibling path must still produce a composite'
+    #  p5 fails (0 < 0 is False) and p3/p6/p8/p9 fail on unchanged inputs; p1, p2, p4 and
+    #  p7 pass. The VALUE is pinned so a later edit cannot quietly change the no-data path.
+    assert got == 4
+
+
+def test_piotroski_a_DISCLOSED_zero_still_fails_p5_and_that_is_correct():
+    """A genuinely unlevered balance sheet reports 0 on every debt field. Its leverage did
+    NOT fall, so p5 SHOULD fail -- and the composite must stay computable. This is the
+    boundary that makes the fix conformance rather than a free pass: it is why the 476
+    affected sources are an UPPER bound on what the discriminator will reach."""
+    cdx = _p_rows(0.0, 0.0, totalDebt=0.0, shortTermDebt=0.0)
+    got = sm.piotroski(cdx, rpy=4)
+    assert not np.isnan(got)
+    assert got == 4
+
+
+def test_piotroski_p5_still_PASSES_on_genuine_deleveraging_with_siblings_present():
+    """The discriminator must not fire on a NON-zero longTermDebt, so a real
+    deleveraging still scores its point with the sibling columns on the frame."""
+    cdx = _p_rows(10.0, 90.0, totalDebt=300.0)
+    got = sm.piotroski(cdx, rpy=4)
+    assert not np.isnan(got)
+    assert got == 5, 'p5 did not score on a genuine fall in the leverage ratio'
+
+
+def test_piotroski_and_long_term_debt_change_use_the_SAME_discriminator():
+    """Not "two rules that agree" -- ONE rule, called twice. If they ever diverge, the
+    composite and the extracted component would disagree about whether the same row's zero
+    is disclosed, which is the drift `_B8_DEBT_SIBLINGS` was named once to prevent."""
+    cdx = _p_rows(0.0, 0.0, totalDebt=300.0)
+    assert np.isnan(sm.piotroski(cdx, rpy=4))
+    assert np.isnan(sm.long_term_debt_change(cdx, rpy=4))
+    clean = _p_rows(0.0, 0.0, totalDebt=0.0, shortTermDebt=0.0)
+    assert not np.isnan(sm.piotroski(clean, rpy=4))
+    assert sm.long_term_debt_change(clean, rpy=4) == pytest.approx(0.0)

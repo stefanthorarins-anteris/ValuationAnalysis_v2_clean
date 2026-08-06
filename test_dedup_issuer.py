@@ -1004,3 +1004,481 @@ def test_unusable_isin_values_cannot_group(panel):
             'a single usable ISIN among junk must abstain, not win on count 1'
         )
     del panel
+
+
+# =========================================================================== #
+#  volAvg AS THE SURVIVOR DISCRIMINATOR (register K-1, wired 2026-08-06)        #
+#                                                                               #
+#  Same three properties the ISIN block pins, in the same order, because the      #
+#  wiring is deliberately the same shape: (1) NO DATA -> BIT-IDENTICAL, (2) what    #
+#  it actually buys, (3) every condition under which it must ABSTAIN.  The reason   #
+#  volAvg is wanted at all is that ISIN could NOT reach the three known-wrong      #
+#  picks -- it abstains on a 2-member group with 2 distinct ISINs -- while volume   #
+#  is DIRECTIONAL BY CONSTRUCTION: the common is the liquid line.                  #
+# =========================================================================== #
+
+def _pre_volavg_key(sym, val_fn, names=None, group=(), isin_map=None):
+    """The survivor key EXACTLY as it stood after ISIN and before volAvg (terms 1-5 +
+    symbol).  Duplicated rather than derived, for the same reason `_pre_isin_key` is: a
+    test that re-derives the old behaviour from the new code cannot detect the new code
+    changing it."""
+    nm = (names or {}).get(sym, '') if names else ''
+    noncanon = 1 if co._non_canonical_tag(sym, nm, group) else 0
+    sh = val_fn(sym, 'weightedAverageShsOut')
+    sh = sh if sh is not None else -1.0
+    mc = val_fn(sym, 'marketCap')
+    mc = mc if mc is not None else -1.0
+    digitpfx = 1 if sym[:1].isdigit() else 0
+    punct = sum(ch in '-.' for ch in sym)
+    imap = {} if isin_map is None else isin_map
+    return (noncanon, -sh, -mc, digitpfx, punct, len(sym),
+            co._isin_plurality_term(sym, group, imap), sym)
+
+
+def test_volavg_absent_is_bit_identical(panel):
+    """*** THE PROPERTY THAT MATTERS MOST, AND THE ONE THE BRIEF ASKED TO BE ASSERTED.
+    No volavgdic_fmp_*.pickle exists yet, so every saved pickle and every run before the
+    next profile build must produce the survivor -- and the whole ORDERING -- that the
+    pre-volAvg rule produced. ***
+    Checked with an EMPTY map and with the map the process would actually load, and as an
+    ORDERING rather than just a winner, because a term that reorders the LOSERS is still a
+    behaviour change (dedup_ranked's audit trail reads the loser list)."""
+    val, names = panel['val'], panel['names']
+    live_map = co._volavg_map_cached()
+    n_groups = 0
+    for m in panel['comps'].values():
+        if len(m) < 2:
+            continue
+        n_groups += 1
+        old = sorted(m, key=lambda s: _pre_volavg_key(s, val, names, m, {}))
+        for vmap in ({}, live_map):
+            new = sorted(m, key=lambda s: co._investability_key(
+                s, val, None, names, m, {}, vmap))
+            assert new == old, (
+                'volAvg changed the ordering of %s with volavg_map=%r; the no-volAvg path '
+                'is NOT bit-identical'
+                % (m, 'live' if vmap is live_map else 'empty'))
+    assert n_groups > 100, 'panel produced too few multi-line groups to be evidence'
+
+
+def test_volavg_absent_means_absent_not_silently_populated():
+    """The bit-identity above is only reassuring if the map really is empty today.  If a
+    profile build has landed and this fails, that is INFORMATION, not a defect -- but it
+    must not pass unnoticed, because the no-op claim stops holding at that moment."""
+    assert co._load_volavg_map() == {}, (
+        'a volavgdic_fmp_*.pickle now exists -- volAvg is LIVE in the survivor pick. '
+        'Re-measure the alphabetical-tail groups and update register K-1.')
+
+
+def _k1_shaped_group():
+    """The K-1 shape: two SAME-EXCHANGE lines, names identical VERBATIM, identical
+    issuer-level share count and market cap (so the derived price is identical too), no
+    -P suffix, no shared prefix, neither a .KS line.  Every canonicity marker is ruled out
+    BY CONSTRUCTION, so the key falls to the alphabetical tail and the NON-COMMON wins."""
+    group = ['CBE.PA', 'RBT.PA']
+    fake = {s: {'weightedAverageShsOut': 100.0, 'marketCap': 5.0} for s in group}
+    vf = lambda s, c: fake[s][c]
+    names = {s: 'Robertet SA' for s in group}
+    return group, vf, names
+
+
+def test_the_alphabetical_tail_really_does_pick_the_wrong_line_today():
+    """The premise of the whole change, asserted rather than left in prose: with no volAvg
+    data the Robertet-shaped group hands the win to the certificat."""
+    group, vf, names = _k1_shaped_group()
+    assert sorted(group, key=lambda s: co._investability_key(
+        s, vf, None, names, group, {}, {}))[0] == 'CBE.PA'
+
+
+def test_volavg_hands_the_group_to_the_LIQUID_line():
+    """WHAT THE TERM ACTUALLY BUYS.  Same group, same everything, plus volume readings a
+    decade apart: the common must now win despite sorting LAST alphabetically."""
+    group, vf, names = _k1_shaped_group()
+    vmap = {'CBE.PA': (1.2e3, '2026-08-06'), 'RBT.PA': (4.5e4, '2026-08-06')}
+    assert sorted(group, key=lambda s: co._investability_key(
+        s, vf, None, names, group, {}, vmap))[0] == 'RBT.PA', (
+        'volAvg did not demote the thinly-traded certificat')
+
+
+def test_volavg_cannot_outrank_a_canonicity_marker():
+    """POSITION IN THE KEY IS THE SAFETY ARGUMENT.  Give the NON-COMMON a million times the
+    volume of the common and put a canonicity marker on it: canonicity must still win, or
+    the measured 0.47% canonicity-first failure rate has regressed."""
+    group = ['SMSD.L', 'SMSN.L']
+    fake = {s: {'weightedAverageShsOut': 100.0, 'marketCap': 5.0} for s in group}
+    vf = lambda s, c: fake[s][c]
+    #  A name-vocabulary marker on the preferred line is the realistic case.
+    names = {'SMSD.L': 'Samsung Electronics Co., Ltd. Pfd Registered Shs Non-Voting',
+             'SMSN.L': 'Samsung Electronics Co., Ltd.'}
+    assert co._non_canonical_tag('SMSD.L', names['SMSD.L'], group), \
+        'the fixture no longer carries a canonicity marker, so it proves nothing'
+    vmap = {'SMSD.L': (1e9, '2026-08-06'), 'SMSN.L': (1e3, '2026-08-06')}
+    assert sorted(group, key=lambda s: co._investability_key(
+        s, vf, None, names, group, {}, vmap))[0] == 'SMSN.L'
+
+
+def _isin_vs_volavg_fixture():
+    """The group where the two terms DISAGREE -- the only fixture that can observe their
+    relative order.  ISIN plurality favours the ZZ* pair (two lines, one ISIN); volume
+    favours AAA by three orders of magnitude.  This is also the shape the CEO's reasoning
+    names: several lines sharing one ISIN against a single line with its own."""
+    group = ['AAA', 'ZZY', 'ZZZ']
+    fake = {s: {'weightedAverageShsOut': 100.0, 'marketCap': 5.0} for s in group}
+    vf = lambda s, c: fake[s][c]
+    names = {s: 'Same Issuer NV' for s in group}
+    imap = {'ZZY': 'NL0000000001', 'ZZZ': 'NL0000000001', 'AAA': 'US0000000002'}
+    vmap = {'AAA': (1e7, '2026-08-06'), 'ZZY': (1e4, '2026-08-06'),
+            'ZZZ': (1e3, '2026-08-06')}
+    return group, vf, names, imap, vmap
+
+
+def test_volavg_OUTRANKS_ISIN():
+    """*** CEO RULING 2026-08-06: volume above ISIN. ***  This test asserted the OPPOSITE
+    until that ruling -- the first cut put volAvg below ISIN as the conservative choice and
+    flagged it as not obviously correct.  The reasoning for the swap: volume is DIRECTIONAL
+    BY CONSTRUCTION (the common IS the liquid line), whereas ISIN plurality is an IDENTITY
+    INFERENCE that can point the wrong way -- three depositary lines sharing one ISIN
+    against a common carrying its own hand plurality to a depositary receipt, which is
+    exactly this fixture."""
+    group, vf, names, imap, vmap = _isin_vs_volavg_fixture()
+    #  Both terms must ACTUALLY SPEAK here, or the test proves nothing about their order.
+    assert len({co._volavg_liquidity_term(s, group, vmap) for s in group}) > 1, \
+        'the fixture must have volAvg actively speaking, or the test is vacuous'
+    assert len({co._isin_plurality_term(s, group, imap) for s in group}) > 1, \
+        'the fixture must have ISIN actively speaking, or the test is vacuous'
+    winner = sorted(group, key=lambda s: co._investability_key(
+        s, vf, None, names, group, imap, vmap))[0]
+    assert winner == 'AAA', (
+        'ISIN plurality outranked volume (winner %r) -- term order 5/6 has been swapped '
+        'back, against the CEO ruling' % winner)
+
+
+def test_ISIN_still_decides_every_group_volAvg_ABSTAINS_on():
+    """The other half of the swap, and the one that stops it being a regression: promoting
+    volume must not have DISPLACED ISIN, only preceded it.  Same fixture, volumes moved
+    inside one order of magnitude so volAvg abstains -- ISIN must then decide exactly as it
+    did before 2026-08-06."""
+    group, vf, names, imap, _vmap = _isin_vs_volavg_fixture()
+    vmap = {'AAA': (1.0e4, '2026-08-06'), 'ZZY': (1.1e4, '2026-08-06'),
+            'ZZZ': (1.2e4, '2026-08-06')}
+    assert {co._volavg_liquidity_term(s, group, vmap) for s in group} == {0}
+    winner = sorted(group, key=lambda s: co._investability_key(
+        s, vf, None, names, group, imap, vmap))[0]
+    assert winner in ('ZZY', 'ZZZ'), (
+        'volAvg abstained but ISIN no longer decides (winner %r) -- the reordering broke '
+        'the 2026-08-05 ISIN behaviour' % winner)
+
+
+def test_volavg_does_NOT_speak_across_a_POWER_OF_TEN_boundary():
+    """*** THE REGRESSION TEST FOR THE DEFECT THE REVIEWER CAUGHT.  The first cut bucketed
+    with `-int(floor(log10(v)))`, so 9,900 -> 3 and 10,100 -> 4 and a 2% DIFFERENCE SPOKE
+    WITH FULL FORCE -- flatly contradicting the stated rationale that near-ties tie. ***
+
+    Worse than useless: with the non-common just above the boundary and its common just
+    below, the term ACTIVELY SELECTED THE NON-COMMON in the exact groups it was added for,
+    and since volAvg is re-read every fetch a line drifting across a power of ten flipped
+    the survivor between runs.  The fix compares VALUES (max/min >= 10), which has no edge
+    anywhere.  Both orientations are checked, because the bucketed version was wrong in
+    both and only one of them loses a K-1 group."""
+    group, vf, names = _k1_shaped_group()
+    for lo_sym, hi_sym in (('CBE.PA', 'RBT.PA'), ('RBT.PA', 'CBE.PA')):
+        vmap = {lo_sym: (9900.0, '2026-08-06'), hi_sym: (10100.0, '2026-08-06')}
+        terms = [co._volavg_liquidity_term(s, group, vmap) for s in group]
+        assert terms == [0, 0], (
+            'volAvg spoke across the 10,000 boundary (%r): a 2%% volume difference decided '
+            'a survivor. terms=%r' % (vmap, terms))
+        #  And the whole ordering must be the pre-volAvg one, i.e. genuinely unchanged.
+        assert sorted(group, key=lambda s: co._investability_key(
+            s, vf, None, names, group, {}, vmap)) == sorted(
+                group, key=lambda s: _pre_volavg_key(s, vf, names, group, {}))
+
+
+def test_volavg_decides_at_exactly_TEN_TIMES_and_not_below_it():
+    """The threshold itself, pinned from both sides so a later edit to
+    `_VOLAVG_DECIDING_RATIO` cannot pass silently.  9.99x abstains, 10x decides -- and note
+    that the boundary that remains flips between "volume decides" and "alphabet decides",
+    never between "picks A" and "picks B", which is why it is tolerable where the
+    power-of-ten edge was not."""
+    group, vf, names = _k1_shaped_group()
+    for ratio, should_speak in ((9.99, False), (10.0, True), (10.01, True)):
+        vmap = {'CBE.PA': (1000.0, '2026-08-06'),
+                'RBT.PA': (1000.0 * ratio, '2026-08-06')}
+        spoke = len({co._volavg_liquidity_term(s, group, vmap) for s in group}) > 1
+        assert spoke is should_speak, 'ratio %s: spoke=%s' % (ratio, spoke)
+        if should_speak:
+            assert sorted(group, key=lambda s: co._investability_key(
+                s, vf, None, names, group, {}, vmap))[0] == 'RBT.PA'
+
+
+def test_volavg_term_is_SCALE_INVARIANT_which_is_what_kills_the_absolute_EDGE():
+    """The structural reason the fix has no power-of-ten edge, asserted rather than argued:
+    multiplying every reading in a group by any positive factor leaves every term
+    unchanged, because the rule reads only RATIOS.  The bucketed version failed this for
+    almost every factor -- which is another way of saying it had an absolute edge."""
+    group, _vf, _names = _k1_shaped_group()
+    base = {'CBE.PA': (1.2e3, '2026-08-06'), 'RBT.PA': (4.5e4, '2026-08-06')}
+    want = [co._volavg_liquidity_term(s, group, base) for s in group]
+    assert len(set(want)) > 1, 'the base fixture must be speaking'
+    for k in (1e-6, 0.37, 3.0, 7.3, 1e5, 9.9, 10.0):
+        scaled = {s: (v * k, d) for s, (v, d) in base.items()}
+        got = [co._volavg_liquidity_term(s, group, scaled) for s in group]
+        assert got == want, 'scaling by %s changed the term: %r != %r' % (k, got, want)
+
+
+VOLAVG_ABSTAIN_CASES = (
+    ('empty map', {}),
+    ('one member unmapped -- a survivor must never be decided by DATA AVAILABILITY',
+     {'CBE.PA': (1.2e3, '2026-08-06')}),
+    ('a None reading', {'CBE.PA': (None, '2026-08-06'), 'RBT.PA': (4.5e4, '2026-08-06')}),
+    ('a zero reading -- log10(0) is undefined and "no volume" is not "least volume"',
+     {'CBE.PA': (0.0, '2026-08-06'), 'RBT.PA': (4.5e4, '2026-08-06')}),
+    ('a non-numeric reading',
+     {'CBE.PA': ('n/a', '2026-08-06'), 'RBT.PA': (4.5e4, '2026-08-06')}),
+    ('a NaN reading',
+     {'CBE.PA': (float('nan'), '2026-08-06'), 'RBT.PA': (4.5e4, '2026-08-06')}),
+    ('MIXED as-of dates -- merge-never-overwrite carries a STALE reading forward, and '
+     'comparing it against a fresh one compares two market regimes',
+     {'CBE.PA': (1.2e3, '2026-02-01'), 'RBT.PA': (4.5e4, '2026-08-06')}),
+    ('both within ONE ORDER OF MAGNITUDE (2.25x) -- a near-tie in volume is not evidence '
+     'about which line is the common, so it must fall through to the alphabetical tail',
+     {'CBE.PA': (2.0e4, '2026-08-06'), 'RBT.PA': (4.5e4, '2026-08-06')}),
+    ('a 2% difference STRADDLING A POWER OF TEN -- the defect the reviewer caught: the '
+     'bucketed first cut let this decide a survivor with full force',
+     {'CBE.PA': (1.01e4, '2026-08-06'), 'RBT.PA': (9.9e3, '2026-08-06')}),
+)
+
+
+@pytest.mark.parametrize('label,vmap', VOLAVG_ABSTAIN_CASES,
+                         ids=[c[0][:40] for c in VOLAVG_ABSTAIN_CASES])
+def test_volavg_abstains_and_abstention_is_the_LITERAL_zero(label, vmap):
+    """Abstention must be the literal 0 for EVERY member -- auditable as a value, not as a
+    cancellation -- and the ordering must be the one the pre-volAvg key produces."""
+    group, vf, names = _k1_shaped_group()
+    vals = [co._volavg_liquidity_term(s, group, vmap) for s in group]
+    assert vals == [0, 0], (
+        '%s: expected literal-0 abstention for every member, got %r' % (label, vals))
+    assert sorted(group, key=lambda s: co._investability_key(
+        s, vf, None, names, group, {}, vmap)) == sorted(
+            group, key=lambda s: _pre_volavg_key(s, vf, names, group, {})), (
+        '%s: the term abstained but the ordering still moved' % label)
+
+
+def test_volavg_abstain_decision_never_reads_the_symbol_under_test():
+    """The reviewer's ISIN lesson, applied pre-emptively: the decision to SPEAK is a
+    function of (volavg_map, group) alone, so it cannot differ between two members of one
+    group -- which is what made the first ISIN cut decide on data availability."""
+    group, _vf, _names = _k1_shaped_group()
+    for _label, vmap in VOLAVG_ABSTAIN_CASES:
+        terms = {s: co._volavg_liquidity_term(s, group, vmap) for s in group}
+        assert len(set(terms.values())) == 1, (
+            'members of one group disagreed about whether to abstain: %r' % terms)
+
+
+def test_volavg_loader_reads_BOTH_the_dated_and_the_undated_shape(tmp_path):
+    """findAllSectors wrote a BARE value before 2026-08-06 and a {'volAvg','asof'} dict
+    after.  A pickle in either shape must load, because the CEO's other machine may hold
+    the older one -- and an undated entry must come back with asof None so the mixed-date
+    guard treats a wholly-undated map as self-consistent rather than refusing to work."""
+    dated = tmp_path / 'volavgdic_fmp_2026-08-06.pickle'
+    pd.to_pickle({'A': {'volAvg': 123.0, 'asof': '2026-08-06'}}, dated)
+    assert co._load_volavg_map(str(dated)) == {'A': (123.0, '2026-08-06')}
+    undated = tmp_path / 'volavgdic_fmp_2026-08-05.pickle'
+    pd.to_pickle({'A': 123.0, 'B': None}, undated)
+    assert co._load_volavg_map(str(undated)) == {'A': (123.0, None), 'B': (None, None)}
+
+
+def test_an_entirely_undated_map_still_discriminates():
+    """The corollary: an OLD undated pickle has asof None for every entry, which is
+    self-consistently "all the same unknown date", so it is allowed to speak.  Refusing it
+    would silently disable the fix on the one machine that already has a map."""
+    group, vf, names = _k1_shaped_group()
+    vmap = {'CBE.PA': (1.2e3, None), 'RBT.PA': (4.5e4, None)}
+    assert sorted(group, key=lambda s: co._investability_key(
+        s, vf, None, names, group, {}, vmap))[0] == 'RBT.PA'
+
+
+# =========================================================================== #
+#  THE RUN ANSWERS ITS OWN QUESTION ABOUT THE TIEBREAK  (2026-08-06)           #
+#                                                                              #
+#  The report frame recorded neither term value, so on the three K-1 groups it   #
+#  was impossible to tell from the run's own output whether volAvg SPOKE AND LOST #
+#  or ABSTAINED -- and group closure enlarged exactly those groups with the IOB   #
+#  lines most likely to report volAvg 0/null, which is an abstention trigger.     #
+# =========================================================================== #
+
+_TERM_COLS = ('decided_by', 'dropped_vol_t', 'survivor_vol_t',
+              'dropped_isin_t', 'survivor_isin_t')
+
+
+def _dedup_on_panel(panel, isin=None, volavg=None):
+    """`dedup_to_issuers` over the panel, optionally with injected maps."""
+    d, names = panel['d'], panel['names']
+    bs = pd.DataFrame({'source': panel['syms']})
+    old_i, old_v = co._ISIN_MAP_CACHE, co._VOLAVG_MAP_CACHE
+    try:
+        if isin is not None:
+            co._ISIN_MAP_CACHE = isin
+        if volavg is not None:
+            co._VOLAVG_MAP_CACHE = volavg
+        return co.dedup_to_issuers(bs, d['cdx_df'], {}, names)
+    finally:
+        co._ISIN_MAP_CACHE, co._VOLAVG_MAP_CACHE = old_i, old_v
+
+
+def test_the_new_audit_columns_DO_NOT_CHANGE_THE_PICK(panel):
+    """*** THE PROPERTY THE BRIEF ASKED TO BE ASSERTED: the columns are OBSERVATIONAL.
+    The survivor of every group must be bit-identical to an INDEPENDENT re-derivation that
+    sorts each group with `_investability_key` directly -- so neither the added columns nor
+    the memoisation of the key inside `dedup_to_issuers` moved a single pick. ***
+    Re-derived rather than compared against a stored list, because a stored list would only
+    say "unchanged since the day I stored it"."""
+    out = _dedup_on_panel(panel)
+    val, names = panel['val'], panel['names']
+    for members in panel['comps'].values():
+        expect = sorted(members, key=lambda s: co._investability_key(
+            s, val, None, names, members))[0]
+        for m in members:
+            assert out['member_to_survivor'][m] == expect, (
+                'survivor of %s moved: %r vs the independently re-derived %r'
+                % (sorted(members), out['member_to_survivor'][m], expect))
+    assert len(out['survivors']) == len(panel['comps'])
+
+
+def test_the_report_frame_carries_BOTH_TERMS_for_EVERY_MEMBER_of_a_group(panel):
+    """Per-GROUP readability, which is the requirement: one row per DROPPED member plus the
+    survivor's value repeated on it covers every member, and the winner's value alone
+    cannot distinguish abstain from spoke-and-lost."""
+    rep = _dedup_on_panel(panel)['diagnostics']['report']
+    for c in _TERM_COLS:
+        assert c in rep.columns, 'the report frame is missing %r' % c
+    assert len(rep) > 100, 'panel produced too few dropped rows to be evidence'
+    sizes = rep['issuer_group'].value_counts()
+    for grp, n_rows in sizes.items():
+        assert n_rows == len(grp.split('|')) - 1, (
+            'group %s has %d dropped rows for %d members -- the frame is not per-member '
+            'complete' % (grp, n_rows, len(grp.split('|'))))
+    for _i, r in rep.iterrows():
+        members = r['issuer_group'].split('|')
+        assert r['dropped'] in members and r['survivor'] in members
+
+
+def test_decided_by_names_the_TERM_THE_SORT_ACTUALLY_USED(panel):
+    """`decided_by` must be re-derivable from the two keys, and never blank on a real
+    dropped row (the last key term is the unique symbol, so two members cannot tie)."""
+    rep = _dedup_on_panel(panel)['diagnostics']['report']
+    val, names = panel['val'], panel['names']
+    for _i, r in rep.iterrows():
+        members = r['issuer_group'].split('|')
+        ks = co._investability_key(r['survivor'], val, None, names, members)
+        kd = co._investability_key(r['dropped'], val, None, names, members)
+        assert r['decided_by'] == co._deciding_term(ks, kd)
+        assert r['decided_by'] in co._KEY_TERM_NAMES, (
+            '%s -> %s: decided_by=%r is not a key term'
+            % (r['dropped'], r['survivor'], r['decided_by']))
+        #  and the survivor really did win on it
+        i = co._KEY_TERM_NAMES.index(r['decided_by'])
+        assert ks[i] < kd[i]
+
+
+def test_NO_DATA_reads_as_BLANK_and_not_as_a_DECISION(panel):
+    """*** THE HONEST-NO-DATA REQUIREMENT.  Every pickle in existence has neither map, so
+    both terms are a constant 0 -- and a column of zeros reads exactly like "the term looked
+    and found every line comparable", which is a different and much stronger claim than
+    "there was nothing to look at". ***"""
+    out = _dedup_on_panel(panel, isin={}, volavg={})
+    rep, diag = out['diagnostics']['report'], out['diagnostics']
+    assert diag['volavg_map_n'] == 0 and diag['isin_map_n'] == 0
+    for c in ('dropped_vol_t', 'survivor_vol_t', 'dropped_isin_t', 'survivor_isin_t'):
+        assert rep[c].isna().all(), (
+            '%s is not blank with no map on disk -- a constant 0 there would read as a '
+            'liquidity/identity finding that was never made' % c)
+    assert not (rep['decided_by'].isin(('volavg', 'isin_plurality'))).any(), \
+        'a term with no map cannot have decided anything'
+
+
+def _k1_cdx(syms):
+    """A minimal cdx frame for a K-1-shaped group: identical issuer-level share count and
+    market cap (so the derived price is identical too), one date, same exchange."""
+    n = len(syms)
+    return pd.DataFrame({'source': syms, 'date': ['2026-01-01'] * n,
+                         'weightedAverageShsOut': [100.0] * n,
+                         'marketCap': [5.0] * n, 'price': [0.05] * n,
+                         'netIncome': [7.0] * n, 'revenue': [9.0] * n})
+
+
+def test_ABSTAIN_and_SPOKE_AND_LOST_are_DISTINGUISHABLE_in_the_frame():
+    """*** THE QUESTION THE COLUMNS EXIST TO ANSWER, on a K-1-shaped group run through the
+    real function. ***  Same group three times: volumes a decade apart (the term SPEAKS and
+    the illiquid line loses on it), volumes inside one decade (ABSTAINS, the alphabet
+    decides), and mixed as-of dates (REFUSES the comparison -- also an abstention, and the
+    state the IOB lines in the closed K-1 groups can actually produce).  The three must not
+    look alike in the frame."""
+    syms = ['CBE.PA', 'RBT.PA']
+    cdx = _k1_cdx(syms)
+    names = {s: 'Robertet S.A.' for s in syms}
+    bs = pd.DataFrame({'source': syms})
+
+    def _run(vmap):
+        old_v, old_i = co._VOLAVG_MAP_CACHE, co._ISIN_MAP_CACHE
+        try:
+            co._VOLAVG_MAP_CACHE, co._ISIN_MAP_CACHE = vmap, {}
+            return co.dedup_to_issuers(bs, cdx, {}, names)
+        finally:
+            co._VOLAVG_MAP_CACHE, co._ISIN_MAP_CACHE = old_v, old_i
+
+    r = _run({'CBE.PA': (1.2e3, '2026-08-06'), 'RBT.PA': (4.5e4, '2026-08-06')})
+    rep = r['diagnostics']['report']
+    if rep.empty:
+        pytest.skip('the fixture did not group -- grouping is exercised elsewhere')
+    row = rep.iloc[0]
+    assert (row['survivor'], row['dropped']) == ('RBT.PA', 'CBE.PA')
+    assert (row['survivor_vol_t'], row['dropped_vol_t']) == (0, 1), \
+        'SPOKE-AND-LOST must read as survivor 0 / dropped 1'
+    assert row['decided_by'] == 'volavg'
+
+    row = _run({'CBE.PA': (4.0e4, '2026-08-06'),
+                'RBT.PA': (4.5e4, '2026-08-06')})['diagnostics']['report'].iloc[0]
+    assert row['survivor'] == 'CBE.PA', 'inside one decade the certificat still wins'
+    assert (row['survivor_vol_t'], row['dropped_vol_t']) == (0, 0), \
+        'ABSTAIN must read as 0 for EVERY member -- that is what separates it from a loss'
+    assert row['decided_by'] == 'alphabetical'
+
+    row = _run({'CBE.PA': (1.2e3, '2026-02-01'),
+                'RBT.PA': (4.5e4, '2026-08-06')})['diagnostics']['report'].iloc[0]
+    assert (row['survivor_vol_t'], row['dropped_vol_t']) == (0, 0), \
+        'a REFUSED comparison is an abstention and must read as one'
+    assert row['decided_by'] == 'alphabetical'
+
+
+def test_a_MISSING_reading_on_ONE_member_reads_as_ABSTAIN_not_as_a_LOSS():
+    """The state group closure MADE MORE LIKELY: an added IOB sibling reporting volAvg 0 or
+    null.  `_volavg_liquidity_term` abstains for the WHOLE group (condition 1), so a reader
+    must see three zeros -- not "the null line lost"."""
+    syms = ['CBE.PA', 'RBT.PA', '0NZN.L']
+    names = {s: 'Robertet S.A.' for s in syms}
+    bs = pd.DataFrame({'source': syms})
+    old_v, old_i = co._VOLAVG_MAP_CACHE, co._ISIN_MAP_CACHE
+    try:
+        co._ISIN_MAP_CACHE = {}
+        co._VOLAVG_MAP_CACHE = {'CBE.PA': (1.2e3, '2026-08-06'),
+                                'RBT.PA': (4.5e4, '2026-08-06'),
+                                '0NZN.L': (0, '2026-08-06')}     # the IOB line, volAvg 0
+        rep = co.dedup_to_issuers(bs, _k1_cdx(syms), {}, names)['diagnostics']['report']
+    finally:
+        co._VOLAVG_MAP_CACHE, co._ISIN_MAP_CACHE = old_v, old_i
+    if rep.empty:
+        pytest.skip('the fixture did not group -- grouping is exercised elsewhere')
+    assert set(rep['survivor_vol_t']) == {0} and set(rep['dropped_vol_t']) == {0}, \
+        'one unusable reading must abstain the whole group, not demote the null line'
+    assert set(rep['decided_by']) <= {'canonicity', 'alphabetical'}
+
+
+def test_the_deciding_term_does_not_invent_a_decision_out_of_NaN():
+    """`val_fn` can serve NaN for an unmeasured share count, and NaN != NaN -- so a naive
+    comparison would name `shares` as the deciding term for two lines that are both merely
+    unmeasured.  A fabricated decision in the one column added so nobody has to guess."""
+    k = (0, float('nan'), float('nan'), 0, 0, 4, 0, 0, 'AAAA')
+    other = k[:-1] + ('ZZZZ',)
+    assert co._deciding_term(k, other) == 'alphabetical'
+    assert co._same_key_term(float('nan'), float('nan'))
+    assert not co._same_key_term(float('nan'), 1.0)

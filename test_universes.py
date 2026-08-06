@@ -237,6 +237,18 @@ def fixture_df():
                         columns=['symbol', 'name', 'exchangeShortName', 'type'])
 
 
+@pytest.fixture(scope='module')
+def live_capture_names():
+    """symbol -> name from the LIVE 2026-08-04 FMP capture.  WHOLLY OFFLINE (a saved
+    pickle); skips rather than passing vacuously if the capture is not on this machine."""
+    p = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                     'available_traded_raw_2026-08-04.pickle')
+    if not os.path.exists(p):
+        pytest.skip('live capture absent: %s' % os.path.basename(p))
+    d = pd.read_pickle(p)
+    return dict(zip(d['symbol'], d['name']))
+
+
 @pytest.fixture
 def offline_wrapper(monkeypatch, tmp_path):
     """Run tickerfilterWrapper with NO network and NO artifacts written into the repo."""
@@ -289,9 +301,12 @@ def test_asia_appears_ONLY_in_the_asia_universes_and_amex_otc_nowhere(
     and that the ACCESS-EXCLUDED Asian venues (India / China A / Taiwan) still appear
     nowhere at all.  AMEX and OTC remain unwired pending a CEO decision.
     """
+    #  stock_CUR3K added 2026-08-06: it wires KSC/KOE DELIBERATELY, because the Korean
+    #  preferred families are one of the dedup cases the ~3,000-name shakedown run exists
+    #  to observe. It is Korea-gated like the other two.
     asia_universes = {n for n in un.names()
                       if set(un.exchanges(n) or ()) & set(un.ASIA_LIKELY_INVESTABLE)}
-    assert asia_universes == {'stock_ASIA1', 'stock_NA1_EU1_ASIA1'}, (
+    assert asia_universes == {'stock_ASIA1', 'stock_NA1_EU1_ASIA1', 'stock_CUR3K'}, (
         'an unexpected universe now wires likely-investable Asia: %s' % asia_universes)
     for name in un.names():
         if un.is_every_exchange(name):
@@ -300,9 +315,15 @@ def test_asia_appears_ONLY_in_the_asia_universes_and_amex_otc_nowhere(
         #  Never wired anywhere: unwired US venues and the access-excluded Asian ones.
         for leak in ('SIRI', 'OTCX', '2330.TW'):
             assert leak not in got, '%s leaked %s' % (name, leak)
-        for asian in ('7203.T', '005930.KS', '005935.KS'):
-            if name in asia_universes:
-                assert asian in got, '%s should contain %s' % (name, asian)
+        #  KEYED ON THE CODE, not on "is an Asia universe" (tightened 2026-08-06).  The
+        #  loose form assumed every Asia-wiring universe wires ALL of them, which
+        #  stock_CUR3K breaks on purpose: it wires KOREA ONLY, because the Korean preferred
+        #  families are the dedup case it exists to observe and Japan is not.  Asserting
+        #  per-code is strictly stronger anyway -- it now catches a universe that wires JPX
+        #  and returns no Japanese name, which the old form could not.
+        for asian, code in (('7203.T', 'JPX'), ('005930.KS', 'KSC'), ('005935.KS', 'KSC')):
+            if code in (un.exchanges(name) or ()):
+                assert asian in got, '%s wires %s but returned no %s' % (name, code, asian)
             else:
                 assert asian not in got, '%s leaked %s' % (name, asian)
 
@@ -1341,3 +1362,539 @@ def test_the_unwired_but_available_codes_are_recorded_rather_than_forgotten():
             if un.is_every_exchange(name):
                 continue
             assert c not in (d['exchanges'] or ())
+
+
+# --------------------------------------------------------------------------- #
+#  THE AD-HOC CURATED ~3,000 UNIVERSE (stock_CUR3K, CEO 2026-08-06)             #
+#                                                                               #
+#  THE GUARD THE CEO ASKED FOR IN SO MANY WORDS: "a test asserting every           #
+#  must-include ticker is present in the universe's resolved membership. The whole  #
+#  point is that these cannot be dropped by a later edit to the base rule."         #
+#  So the membership test below resolves through the REAL wrapper (offline, against  #
+#  a fixture table) rather than checking the registry tuple against itself -- a       #
+#  registry-only assertion would have passed even when the union was not applied.     #
+# --------------------------------------------------------------------------- #
+CUR3K = 'stock_CUR3K'
+
+
+#  UNPINNED SIBLINGS OF PINNED SYMBOLS -- symbol -> the name it shares with its pinned
+#  partner, taken from the live 2026-08-04 table.  These are in the fixture because they are
+#  the SECOND HALF of the closure defect: the pins are by SYMBOL, not by GROUP, so five
+#  pinned groups arrived incomplete even once the base rule closed upward.  Without these
+#  rows the "no partial group" test would pass vacuously.
+CUR3K_UNPINNED_SIBLINGS = {
+    '0NZN.L':    'Robertet S.A.',                          # RBT.PA + CBE.PA are pinned
+    'TROW':      'T. Rowe Price Group, Inc.',              # 0KNY.L is pinned
+    'FGN':       'F&G Annuities & Life, Inc.',             # FG is pinned
+    '000660.KS': 'SK hynix Inc.',                          # SKHY is pinned
+    '0VCO.L':    'Peyto Exploration & Development Corp.',  # PEY.TO is pinned
+}
+
+#  The pinned symbols whose live name matches a sibling above, so the fixture holds the
+#  group together the way the live table does.
+CUR3K_PINNED_SIBLING_NAMES = {
+    'RBT.PA': 'Robertet S.A.', 'CBE.PA': 'Robertet S.A.',
+    '0KNY.L': 'T. Rowe Price Group, Inc.',
+    'FG': 'F&G Annuities & Life, Inc.',
+    'SKHY': 'SK hynix Inc.',
+    'PEY.TO': 'Peyto Exploration & Development Corp.',
+}
+
+
+def _cur3k_fixture_rows():
+    """A pre-filter table containing EVERY pinned symbol, the UNPINNED SIBLINGS of the five
+    pinned groups that arrived incomplete, plus base-rule filler.
+
+    Names matter as much as symbols here: the base rule samples on the NORMALISED ISSUER
+    NAME, so a fixture that gave every row a unique name would not exercise the property
+    the sample exists for."""
+    rows = []
+    for sym, tag, _why in un.curated3k_manifest():
+        #  Give the members of a known group the SAME name, which is what they carry live.
+        if sym in CUR3K_PINNED_SIBLING_NAMES:
+            nm = CUR3K_PINNED_SIBLING_NAMES[sym]
+        elif sym in ('UHS', '0LJL.L'):
+            nm = 'Universal Health Services, Inc.'
+        elif sym in ('AEM', 'AEM.TO', '0R2J.L'):
+            nm = 'Agnico Eagle Mines Limited'
+        elif sym in ('VALUE.AS', 'PREVA.AS'):
+            nm = 'Value8 N.V.'
+        elif sym in ('SMSN.L', 'SMSD.L', 'BC94.L', '005930.KS', '005935.KS'):
+            nm = 'Samsung Electronics Co., Ltd.'
+        elif sym in ('CIM', 'CIMN'):
+            nm = 'Chimera Investment Corporation'
+        else:
+            nm = 'Issuer %s' % sym
+        ex = _exchange_of(sym)
+        rows.append({'symbol': sym, 'name': nm, 'type': 'stock',
+                     'exchangeShortName': ex, 'tag': tag})
+    #  The unpinned siblings, so the five incomplete pinned groups are OBSERVABLE here.
+    for sym, nm in CUR3K_UNPINNED_SIBLINGS.items():
+        rows.append({'symbol': sym, 'name': nm, 'type': 'stock',
+                     'exchangeShortName': _exchange_of(sym), 'tag': 'unpinned-sibling'})
+    #  Filler on every base-rule exchange, so the sample has something to sample.
+    for code in un.exchanges(CUR3K):
+        for i in range(60):
+            rows.append({'symbol': 'F%s%02d' % (code, i), 'name': 'Filler %s %02d' % (code, i),
+                         'type': 'stock', 'exchangeShortName': code, 'tag': 'filler'})
+    return pd.DataFrame(rows)
+
+
+def _exchange_of(sym):
+    """The venue each pinned symbol actually sits on -- including the three that sit
+    OUTSIDE the base rule, which is the case that proves the union is not exchange-bound."""
+    if sym.endswith('.TO'):
+        return 'TSX'
+    if sym.endswith('.PA'):
+        return 'PAR'
+    if sym.endswith('.AS'):
+        return 'AMS'
+    if sym.endswith('.L'):
+        return 'LSE'
+    if sym.endswith('.KS'):
+        return 'KSC'
+    if sym.endswith('.ST'):
+        return 'STO'          # EMBELL.ST -- NOT a base-rule exchange
+    if sym.endswith('.DE'):
+        return 'XETRA'        # EIN.DE / DRW3.DE -- NOT base-rule exchanges
+    return 'NASDAQ'
+
+
+def test_cur3k_every_must_include_symbol_RESOLVES_through_the_real_wrapper(
+        offline_wrapper):
+    """*** THE POINT OF THE MUST-INCLUDE LIST.  Each of these is a case that has been
+    MEASURED and that the first post-2026-08-05 fetch exists to OBSERVE, so a later edit to
+    a sample rate must not be able to drop one. ***
+    Resolved through `tickerfilterWrapper` offline, so it tests the UNION as applied, not
+    the registry tuple against itself."""
+    fixture = _cur3k_fixture_rows()
+    got = set(_syms(offline_wrapper(fixture, CUR3K, 'all', -1, 'http://x', 'k')))
+    missing = sorted(set(un.CURATED3K_MUST_INCLUDE_SYMBOLS) - got)
+    assert not missing, (
+        '%d pinned case(s) did not resolve: %s. Every one is an observation this run was '
+        'built to make -- do not relax this test, fix the membership rule.'
+        % (len(missing), missing))
+
+
+def test_cur3k_pins_reach_OUTSIDE_the_base_rule_exchanges(offline_wrapper):
+    """The three pins on unwired venues are the reason the union draws from the FULL table
+    rather than from the already-narrowed frame: observing them costs 3 names instead of
+    the ~1,375 that wiring STO + XETRA would cost."""
+    base = set(un.exchanges(CUR3K))
+    outside = {s for s in un.CURATED3K_MUST_INCLUDE_SYMBOLS
+               if _exchange_of(s) not in base}
+    assert outside == {'EMBELL.ST', 'EIN.DE', 'DRW3.DE'}, outside
+    got = set(_syms(offline_wrapper(_cur3k_fixture_rows(), CUR3K, 'all', -1,
+                                    'http://x', 'k')))
+    assert outside <= got
+
+
+def test_cur3k_covers_every_venue_the_measured_dedup_cases_live_on():
+    """"Must span the exchanges the known dedup cases live on" -- US, LSE including the
+    0-prefixed IOB lines, Toronto, Paris, Amsterdam, and enough Korea to carry the
+    preferred families.  That constraint alone is what rules out a single-region base."""
+    codes = set(un.exchanges(CUR3K))
+    assert {'NYSE', 'NASDAQ', 'LSE', 'TSX', 'PAR', 'AMS', 'KSC', 'KOE'} <= codes
+    pins = set(un.CURATED3K_MUST_INCLUDE_SYMBOLS)
+    assert {'0LJL.L', '0KNY.L', '0QQF.L', '0HQ7.L'} <= pins, 'the IOB lines'
+    assert {'UHS', 'AEM', 'AEM.TO'} <= pins, 'the must-MERGE pairs'
+    assert {'HEIA.AS', 'HEIO.AS'} <= pins, 'the must-NOT-merge pair'
+    assert {'CBE.PA', 'PREVA.AS', 'SMSD.L'} <= pins, 'the three K-1 wrong picks'
+    assert {'005930.KS', '005935.KS'} <= pins, 'the Korean preferred family'
+    assert 'CIMN' in pins, 'the Chimera NOTES line'
+
+
+def test_cur3k_the_seventeen_veto_ejects_and_the_six_controls_are_all_pinned():
+    """A veto with no observed non-ejections is not an observed veto, so the 6 clean
+    controls are pinned alongside the 17 ejects.  The 17 is an UPPER BOUND from the
+    superseded five-flag set -- which is exactly why they are pinned: the current set
+    differs and the difference is the observation."""
+    pins = set(un.CURATED3K_MUST_INCLUDE_SYMBOLS)
+    ejects = {'SBH', 'UHS', '0LJL.L', 'NWPX', 'BKE', 'BVFL', 'DDI', 'EMBELL.ST', 'FG',
+              'GMR.L', 'JEL.L', 'MU', 'PBYI', 'PEY.TO', 'RFX.L', 'SKHY', 'STRT'}
+    controls = {'0KNY.L', '0QQF.L', 'EIN.DE', 'NEXN', 'DRW3.DE', 'KFY'}
+    assert len(ejects) == 17 and ejects <= pins, sorted(ejects - pins)
+    assert len(controls) == 6 and controls <= pins, sorted(controls - pins)
+
+
+#  A CROSS-RATE group: one line on a TAKE-ALL venue (TSX) and one on a SAMPLED venue (NYSE
+#  at 170), with a bucket >= 170 so the OLD per-row rule kept the TSX line and dropped the
+#  NYSE one.  These are the REAL measured cases, and their buckets are all >= 170 -- which
+#  is why 218 groups split: 83% of names miss a 17% threshold.
+CUR3K_CROSS_RATE_CASES = (
+    #  (issuer name, [(symbol, exchange), ...])
+    ('Bank of Montreal',            [('BMO', 'NYSE'), ('BMO.TO', 'TSX')]),
+    ('BCE Inc.',                    [('BCE', 'NYSE'), ('BCE.TO', 'TSX')]),
+    ('Agnico Eagle Mines Limited',  [('AEM', 'NYSE'), ('AEM.TO', 'TSX'), ('0R2J.L', 'LSE')]),
+    ('Robertet S.A.',               [('RBT.PA', 'PAR'), ('CBE.PA', 'PAR'),
+                                     ('0NZN.L', 'LSE')]),
+)
+
+
+def test_cur3k_a_CROSS_RATE_group_is_NEVER_SPLIT_by_the_base_rule(offline_wrapper):
+    """*** THE PROPERTY THE PREVIOUS VERSION OF THIS TEST CLAIMED AND DID NOT CHECK.
+
+    That version asserted only `issuer_in_sample(norm, rate) == (bucket < rate)` FOR A
+    FIXED RATE -- a restatement of the function's own body -- and its two worked examples
+    were `del names`, i.e. DEAD CODE that made the test LOOK like it checked a group.  It
+    passed while the base rule split 218 groups, because closure is not a property of one
+    rate: the bucket is a function of the NAME but the threshold was read off the
+    EXCHANGE, and TSX/PAR/AMS are take-all while NYSE/NASDAQ/LSE keep buckets < 170. ***
+
+    So this test builds groups that STRADDLE TWO RATES, resolves them through the REAL
+    wrapper, and asserts the group arrives WHOLE.  Every fixture case has bucket >= 170, so
+    it FAILS on the per-row rule -- which is what makes it a regression test rather than a
+    restatement."""
+    rates = un.sample_rates(CUR3K)
+    rows = []
+    for nm, lines in CUR3K_CROSS_RATE_CASES:
+        norm = co._norm_issuer_name(nm)
+        bucket = un.issuer_sample_bucket(norm)
+        venue_rates = {rates.get(ex) for _s, ex in lines}
+        assert len(venue_rates) > 1, (
+            '%s no longer straddles two sample rates (%r) -- the fixture has stopped '
+            'testing the cross-rate case, which is the ONLY case that can split'
+            % (nm, venue_rates))
+        assert bucket >= min(r for r in venue_rates if r is not None), (
+            '%s (bucket %d) now passes the STRICTER rate on its own, so it would arrive '
+            'whole even under the broken per-row rule -- pick a different case'
+            % (nm, bucket))
+        rows += [{'symbol': s, 'name': nm, 'type': 'stock', 'exchangeShortName': ex}
+                 for s, ex in lines]
+    #  Filler so the sample has a pool, and so this is not a table of four groups.
+    for code in un.exchanges(CUR3K):
+        rows += [{'symbol': 'F%s%02d' % (code, i), 'name': 'Filler %s %02d' % (code, i),
+                  'type': 'stock', 'exchangeShortName': code} for i in range(40)]
+    got = set(_syms(offline_wrapper(pd.DataFrame(rows), CUR3K, 'all', -1, 'http://x', 'k')))
+    for nm, lines in CUR3K_CROSS_RATE_CASES:
+        members = {s for s, _ex in lines}
+        present = members & got
+        assert present in (set(), members), (
+            '%s arrived SPLIT: %s in, %s out. carveOut dedups PAIRWISE OVER THE POOL, so a '
+            'half-present group is not a smaller test of dedup -- it is NO test of dedup, '
+            'and it introduces a divergence from stock_NA1_EU1 where this group arrives '
+            'whole.' % (nm, sorted(present), sorted(members - present)))
+
+
+def test_cur3k_NO_multi_line_issuer_arrives_PARTIAL_from_the_real_wrapper(offline_wrapper):
+    """The general form of the property, over the whole resolved membership rather than four
+    hand-picked groups -- so a group shape nobody thought of cannot slip through.  Run over
+    the pinned-case fixture, which is where the multi-line groups are.
+
+    This covers BOTH halves of the defect: the base rule's per-row threshold AND the fact
+    that the pins are by SYMBOL, not by GROUP (five pinned groups arrived incomplete, and
+    the union adding one line of a group observes nothing)."""
+    fixture = _cur3k_fixture_rows()
+    got = set(_syms(offline_wrapper(fixture, CUR3K, 'all', -1, 'http://x', 'k')))
+    partial = []
+    for norm, g in fixture.groupby(fixture['name'].map(co._norm_issuer_name)):
+        members = set(g['symbol'])
+        if not norm or len(members) < 2:
+            continue
+        present = members & got
+        if present and present != members:
+            partial.append((norm, sorted(present), sorted(members - present)))
+    assert not partial, (
+        '%d multi-line issuer(s) arrived PARTIAL: %r' % (len(partial), partial))
+
+
+def test_cur3k_the_five_INCOMPLETE_pinned_groups_now_arrive_WHOLE(offline_wrapper):
+    """*** THE LOAD-BEARING CONSEQUENCE, `robertet s a` first. ***  Because the pins are by
+    SYMBOL and not by GROUP, five pinned groups arrived incomplete -- and `robertet s a` is
+    one of the THREE K-1 wrong-pick groups the survivor work exists to fix.  Observed as a
+    2-member group where production sees 3, the term that decides it in this run need not be
+    the term that decides it in production, and the observation does not transfer.  That is
+    the un-diagnostic outcome the run was kept short to avoid, so it is pinned by test."""
+    got = set(_syms(offline_wrapper(_cur3k_fixture_rows(), CUR3K, 'all', -1,
+                                    'http://x', 'k')))
+    for sib, nm in sorted(CUR3K_UNPINNED_SIBLINGS.items()):
+        partners = sorted(set(CUR3K_PINNED_SIBLING_NAMES) &
+                          {s for s, n in CUR3K_PINNED_SIBLING_NAMES.items() if n == nm})
+        assert partners, 'fixture bookkeeping: %s has no pinned partner' % sib
+        assert sib in got, (
+            '%s (%s) did NOT arrive, so the pinned group %s is observed as %d line(s) where '
+            'production sees %d -- the pin observes a group shape that does not exist '
+            'upstream.' % (sib, nm, partners, len(partners), len(partners) + 1))
+    #  Named explicitly, because this one decides whether "volAvg fixed Robertet" transfers.
+    assert {'RBT.PA', 'CBE.PA', '0NZN.L'} <= got, (
+        'the Robertet group must arrive at all THREE lines; with only RBT.PA + CBE.PA the '
+        'ISIN plurality term ABSTAINS (2 members, 2 distinct ISINs) and a different term '
+        'decides the survivor than the one that will decide it in production')
+
+
+def test_cur3k_the_sample_rate_is_resolved_PER_ISSUER_not_PER_ROW():
+    """The unit-level statement of the same thing, on the function that now owns the
+    decision.  A take-all venue anywhere in the group takes the WHOLE group; otherwise the
+    LEAST restrictive rate applies."""
+    rates = un.sample_rates(CUR3K)
+    assert un.most_permissive_rate({'NYSE', 'TSX'}, rates) is None, 'TSX is take-all'
+    assert un.most_permissive_rate({'NYSE', 'LSE'}, rates) == 170
+    assert un.most_permissive_rate({'NYSE', 'KSC'}, rates) == 250, 'the LESS restrictive'
+    assert un.most_permissive_rate({'KSC', 'KOE'}, rates) == 250
+    #  Empty -> take it: an issuer with no usable venue cannot be shown to be OUT, and
+    #  dropping on missing metadata is how a filter silently shrinks a universe.
+    assert un.most_permissive_rate(set(), rates) is None
+    #  And the per-rate primitive is still a pure function of the NAME, which is the OTHER
+    #  half of closure -- necessary, and on its own not sufficient.
+    for nm in ('Universal Health Services, Inc.', 'Agnico Eagle Mines Limited',
+               'Robertet S.A.', 'Samsung Electronics Co., Ltd.'):
+        norm = co._norm_issuer_name(nm)
+        b = un.issuer_sample_bucket(norm)
+        assert 0 <= b < un.CURATED3K_SAMPLE_DENOMINATOR
+        for rate in un.CURATED3K_SAMPLED.values():
+            assert un.issuer_in_sample(norm, rate) == (b < rate)
+
+
+def test_cur3k_sample_bucket_is_STABLE_not_process_salted():
+    """SHA1, not `hash()`.  Python salts `hash()` of a str per process, so a hash()-based
+    sample would resolve to a DIFFERENT universe on every invocation -- and silently.  The
+    bucket is pinned to a literal so a change of hash function cannot pass unnoticed."""
+    assert un.issuer_sample_bucket('robertet sa') == un.issuer_sample_bucket('robertet sa')
+    #  A recomputed-by-hand value: sha1('issuer:' + name), first 8 hex digits, mod 1000.
+    import hashlib as _h
+    for nm in ('robertet sa', 'value8 nv', ''):
+        want = int(_h.sha1(('issuer:' + nm).encode('utf-8')).hexdigest()[:8], 16) % 1000
+        assert un.issuer_sample_bucket(nm) == want
+
+
+def test_cur3k_an_unsampled_code_is_taken_WHOLE_not_sampled_at_zero():
+    """Absence from the `sample` dict means NO SAMPLING.  If it meant "rate 0" a typo'd
+    code would silently empty an exchange -- the EURONEXT/OSE defect in a new costume."""
+    rates = un.sample_rates(CUR3K)
+    for c in un.CURATED3K_TAKE_ALL:
+        assert c not in rates
+        assert un.issuer_in_sample('anything', rates.get(c)) is True
+    assert un.issuer_in_sample('anything', 0) is False, \
+        'an EXPLICIT zero must still mean "take nothing"'
+
+
+def test_cur3k_sample_rates_name_no_code_the_universe_does_not_wire():
+    """A rate keyed on an unwired code is dead configuration that reads as though it were
+    doing something.  Checked for EVERY universe, not just this one."""
+    for name in un.names():
+        assert un.check_sample_rates(name) == [], name
+
+
+def test_cur3k_expected_count_is_SCALED_by_the_sample_not_the_raw_sum():
+    """The operator reads "expected members" to sanity-check the run LENGTH.  Reporting the
+    unscaled 10,991 for a universe built to be ~3,000 would be actively misleading."""
+    exp = un.expected_count(CUR3K)
+    raw = sum(un._VERIFIED_COUNTS[c] for c in un.exchanges(CUR3K))
+    assert raw > 10000, 'the fixture assumption changed'
+    assert 2700 <= exp <= 3400, (
+        'stock_CUR3K expects %d members; the CEO asked for roughly 3,000' % exp)
+    #  `expected_count` now RETURNS the measured sizing for this universe (a per-code
+    #  scaling cannot model per-issuer closure), so asserting exp == measured would be
+    #  tautological.  What is still worth checking is that the OLD rate-scaled FORMULA has
+    #  not drifted far from the measurement: they answer the same question two ways, and a
+    #  large gap means one of them is stale.  The known post-closure gap is +135 (the
+    #  formula understates, because upward closure keeps issuers for a reason that lives on
+    #  a different exchange code).
+    rates = un.sample_rates(CUR3K)
+    formula = sum(
+        un._VERIFIED_COUNTS.get(c, 0) if rates.get(c) is None
+        else un._VERIFIED_COUNTS.get(c, 0) * rates[c] / un.CURATED3K_SAMPLE_DENOMINATOR
+        for c in un.exchanges(CUR3K)) + len(un.CURATED3K_MUST_INCLUDE_SYMBOLS)
+    gap = un.CURATED3K_ESTIMATED_MEMBERS - formula
+    assert 0 < gap < 400, (
+        'measured sizing %d vs rate-scaled formula %.0f (gap %+.0f). The gap must be '
+        'POSITIVE -- upward closure can only ADD members -- and small; a large or negative '
+        'gap means the measurement or the rates are stale.'
+        % (un.CURATED3K_ESTIMATED_MEMBERS, formula, gap))
+
+
+def test_cur3k_fingerprint_moves_when_a_RATE_or_a_PIN_moves():
+    """A sample rate and a must-include list are part of what the NAME means.  Changing a
+    rate from 17% to 20% changes membership as surely as adding an exchange code, so an
+    artifact must not claim the same provenance across it."""
+    base = un.definition_fingerprint(CUR3K)
+    entry = un.UNIVERSES[CUR3K]
+    old_sample, old_pins = entry['sample'], entry['must_include']
+    try:
+        entry['sample'] = dict(old_sample, NYSE=200)
+        assert un.definition_fingerprint(CUR3K) != base, 'a rate change did not move it'
+        entry['sample'] = old_sample
+        entry['must_include'] = old_pins + ('ZZZZ',)
+        assert un.definition_fingerprint(CUR3K) != base, 'a pin change did not move it'
+    finally:
+        entry['sample'], entry['must_include'] = old_sample, old_pins
+    assert un.definition_fingerprint(CUR3K) == base
+
+
+def test_cur3k_fingerprints_of_the_PRE_EXISTING_universes_are_UNTOUCHED():
+    """The sample/pin basis is appended only when non-empty, so every universe that
+    predates 2026-08-06 fingerprints to exactly the value it did before -- otherwise every
+    existing artifact would look like it came from a different definition."""
+    for name in un.names():
+        if name == CUR3K:
+            continue
+        d = un.UNIVERSES[name]
+        if d['symbols'] is not None:
+            basis = 'symbols:' + ','.join(sorted(d['symbols']))
+        elif d['every_exchange']:
+            basis = 'every-exchange'
+        else:
+            basis = 'exchanges:' + ','.join(sorted(d['exchanges']))
+        import hashlib as _h
+        assert un.definition_fingerprint(name) == \
+            _h.sha1(basis.encode('utf-8')).hexdigest()[:12], name
+
+
+def test_cur3k_banner_says_the_pool_is_not_production():
+    """~3,000 is a REAL pool -- a top-100 cut means something on it, which is why the CEO
+    chose it over 142 -- but it is still not production's ~10,693, so no pooled statistic
+    crosses over.  The banner must say so on every run, not the docstring."""
+    b = un.run_banner(CUR3K)
+    assert 'SAMPLED UNIVERSE' in b
+    assert 'NOT COMPARABLE' in b
+    assert 'universe_fingerprint' in b
+    assert 'SAMPLED on issuer NAME' in b
+    assert 'must-include' in b
+
+
+def test_cur3k_is_KOREA_GATED_like_every_other_korea_universe(offline_wrapper):
+    """It wires KSC/KOE, so `assert_korea_dedup_ready` must fire on it -- Korea cannot be
+    enabled by adding a registry entry."""
+    assert any(c in gdg.KOREA_EXCHANGE_CODES for c in un.exchanges(CUR3K))
+    fixture = _cur3k_fixture_rows()
+    import carveOut as _co
+    real = _co._non_canonical_tag
+    try:
+        del _co._non_canonical_tag
+        with pytest.raises(Exception) as e:
+            offline_wrapper(fixture, CUR3K, 'all', -1, 'http://x', 'k')
+        assert 'Korea' in str(e.value)
+    finally:
+        _co._non_canonical_tag = real
+
+
+def test_cur3k_runtime_estimate_is_stated_on_the_SAME_basis_as_the_test_universe():
+    """The CEO is choosing this universe specifically to keep the run SHORT, so the number
+    has to be defensible: 5 statement calls per source + 3 for the universe build, at the
+    per-call rate two independent runs imply (0.67-1.26 s/call from the 142-name run;
+    0.80 s/call from the 12h production run over 10,737 sources ATTEMPTED -- kept 9,012
+    plus 1,725 failed, because a failed source still costs its calls)."""
+    assert un.CURATED3K_API_CALLS == 5 * un.CURATED3K_ESTIMATED_MEMBERS + 3
+    lo, hi = un.CURATED3K_WALLCLOCK_HOURS
+    assert lo < hi
+    #  The stated band must actually follow from the stated per-call rates.
+    #  TOLERANCE TIGHTENED 0.5 -> 0.05 h (2026-08-06, reviewer).  At +-0.5 h the guard was
+    #  DECORATIVE: the band sat at (3.4, 4.9) -- the pre-group-closure 15,228-call figure --
+    #  while the coded call count had moved to 16,293, i.e. (3.6, 5.2), and the check passed
+    #  anyway because the drift was smaller than the tolerance.  0.05 h is one decimal place,
+    #  which is the precision the band is actually stated to, so a stale band now FAILS here
+    #  instead of being absorbed.  This is the cheap protection against the same class of
+    #  staleness in `expected_count` (see the fingerprint note in that docstring).
+    assert abs(lo - un.CURATED3K_API_CALLS * 0.80 / 3600.0) < 0.05, (
+        'CURATED3K_WALLCLOCK_HOURS lo=%r does not follow from %d calls at 0.80 s/call '
+        '(%.2f h) -- re-derive the band, do not widen the tolerance'
+        % (lo, un.CURATED3K_API_CALLS, un.CURATED3K_API_CALLS * 0.80 / 3600.0))
+    assert abs(hi - un.CURATED3K_API_CALLS * 1.15 / 3600.0) < 0.05, (
+        'CURATED3K_WALLCLOCK_HOURS hi=%r does not follow from %d calls at 1.15 s/call '
+        '(%.2f h) -- re-derive the band, do not widen the tolerance'
+        % (hi, un.CURATED3K_API_CALLS, un.CURATED3K_API_CALLS * 1.15 / 3600.0))
+    assert 3.0 <= lo and hi <= 5.5, 'the CEO was told ~4-5 h; keep the claim honest'
+    #  The label an operator READS must carry the same band as the constant a script uses.
+    assert '%.1f-%.1f h' % (lo, hi) in un.label(CUR3K), (
+        'the registry label and CURATED3K_WALLCLOCK_HOURS state different fetch lengths')
+
+
+def test_cur3k_cohort_estimate_sums_to_the_CODED_member_count():
+    """*** THE PAIR THAT WAS STALE, NOW PINNED (2026-08-06, reviewer). ***
+    `CURATED3K_COHORT_ESTIMATE` summed to 3,045 -- the PRE-group-closure member count --
+    while `CURATED3K_ESTIMATED_MEMBERS` had moved to 3,258, so an operator adding the cohort
+    column up got a universe 213 names smaller than the one the run builds.  The SHARES are
+    the measured quantity and the counts are those shares applied to the member count, so
+    the sum is a DERIVED figure and must track it."""
+    tot = sum(un.CURATED3K_COHORT_ESTIMATE.values())
+    assert tot == un.CURATED3K_ESTIMATED_MEMBERS, (
+        'CURATED3K_COHORT_ESTIMATE sums to %d but the universe is sized at %d -- re-scale '
+        'the cohort counts (the shares stay; only the base moves)'
+        % (tot, un.CURATED3K_ESTIMATED_MEMBERS))
+    #  The conclusion the table exists to support: `general` is comfortably above the
+    #  top-100 cut, so the general pool's top-100 and the veto's survivor count are real.
+    assert un.CURATED3K_COHORT_ESTIMATE['general'] > 100
+
+
+#  Pins whose why-string DELIBERATELY does not name a company, so the identity check below
+#  has nothing to compare.  DECLARED rather than silently absent, which is this file's
+#  standing convention (see `test_the_unverified_gates_are_declared` in test_dedup_issuer):
+#  each is a sibling row whose prose points at the group, and the named half of the group is
+#  pinned separately.
+CUR3K_WHY_STRINGS_WITHOUT_A_COMPANY_NAME = {
+    '0KNY.L': 'names only the T. Rowe Price GROUP role (IOB + veto control); TROW is the '
+              'unpinned sibling that carries the name',
+    'BC94.L': 'says "the third Samsung line on LSE"; SMSN.L/SMSD.L carry the full name',
+    'CIMN':   'says "a Chimera NOTES line"; CIM carries the full name',
+}
+
+
+def _fmp_name_token(fmp_name):
+    """The leading DISTINCTIVE words of an FMP company name, for a substring check.
+
+    Not a string equality, deliberately: the why-strings are prose and legitimately shorten
+    "Sally Beauty Holdings, Inc." to "Sally Beauty Holdings".  Corporate form and the
+    leading article are stripped (FMP writes "The Buckle, Inc." where the manifest writes
+    "Buckle Inc"), then the first two remaining words are required -- enough to have caught
+    BOTH real defects (SK hynix vs SkyHarbour, NWPX Infrastructure vs Northwest Pipe)
+    without failing on an abbreviation."""
+    s = str(fmp_name).strip()
+    if s.lower().startswith('the '):
+        s = s[4:]
+    words = []
+    for w in s.replace(',', ' ').split():
+        if w.strip('.').lower() in ('inc', 'corp', 'corporation', 'ltd', 'limited', 'plc',
+                                    'ab', 'publ', '(publ)', 'nv', 'n.v', 'sa', 's.a',
+                                    'ag', 'kgaa', 'co', 'group', '&'):
+            break
+        words.append(w)
+        if len(words) == 2:
+            break
+    return ' '.join(words) or s
+
+
+def test_every_pin_why_string_names_the_company_FMP_ACTUALLY_RETURNS(live_capture_names):
+    """*** THE MANIFEST IS WHAT THE OPERATOR READS, SO A WRONG NAME IS THE ONE STALE
+    NUMBER THAT ACTUALLY MATTERS. ***
+    `SKHY`'s why-string said "SK Growth Opportunities / SkyHarbour" -- two unrelated issuers
+    whose tickers merely look similar -- while FMP returns "SK hynix Inc." for it.  That is
+    precisely why the `000660.KS` sibling fires under group closure, so an operator checking
+    the closure against the manifest would have read a CORRECT closure as a DEFECT.  All 40
+    pins were then cross-checked against the live capture and `NWPX` was stale too (FMP
+    renamed Northwest Pipe to "NWPX Infrastructure").
+    Runs against the LIVE CAPTURE, i.e. the names FMP actually returns, not a hand table."""
+    why = dict((s, w) for s, _t, w in un.curated3k_manifest())
+    checked, absent = 0, []
+    for sym, w in why.items():
+        if sym in CUR3K_WHY_STRINGS_WITHOUT_A_COMPANY_NAME:
+            continue
+        nm = live_capture_names.get(sym)
+        if not nm:
+            absent.append(sym)
+            continue
+        checked += 1
+        tok = _fmp_name_token(nm)
+        assert tok.lower() in w.lower(), (
+            '%s: FMP returns %r but the why-string never mentions %r -- %r'
+            % (sym, nm, tok, w[:140]))
+    assert checked >= 30, (
+        'only %d of %d pins were checkable against the capture (absent: %s) -- too few to '
+        'be evidence' % (checked, len(why), absent))
+
+
+def test_the_pins_that_do_not_name_a_company_are_DECLARED():
+    """The exclusion list above must not decay into a place to hide a wrong name: every
+    entry has to be a real pin, and every pin NOT in it must be one this gate checked."""
+    syms = {s for s, _t, _w in un.curated3k_manifest()}
+    assert set(CUR3K_WHY_STRINGS_WITHOUT_A_COMPANY_NAME) <= syms
+    assert all(v for v in CUR3K_WHY_STRINGS_WITHOUT_A_COMPANY_NAME.values()), \
+        'every exclusion needs a stated reason'
+
+
+def test_the_two_WRONG_company_names_cannot_come_back():
+    """A named regression gate on the actual defect, independent of the token heuristic
+    above: the two wrong names must not appear anywhere in the manifest."""
+    blob = ' '.join(w for _s, _t, w in un.curated3k_manifest()).lower()
+    for bad in ('skyharbour', 'sk growth opportunities', 'northwest pipe'):
+        assert bad not in blob, (
+            '%r is back in a CUR3K why-string -- it names the WRONG company' % bad)

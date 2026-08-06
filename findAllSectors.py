@@ -169,8 +169,16 @@ def buildSectorIndustryMaps(symbols, baseurl, api_key, batch_size=100, pace=None
         #    * REGISTER J-1.  Nothing anywhere in the pipeline screens for liquidity, free float,
         #      volume or spread, while the market-cap bands now go below $50M. This is the first
         #      instrument that could.
-        #  DO NOT WIRE IT YET: it is absent from every saved artifact, so nothing that depends on
-        #  it is testable until after a fetch.
+        #  WIRED 2026-08-06 into carveOut._investability_key (term 6, below ISIN and above the
+        #  alphabetical last resort) -- and the PER-ENTRY AS-OF DATE below is what made wiring it
+        #  admissible.  Each entry is {'volAvg': value, 'asof': 'YYYY-MM-DD'} rather than a bare
+        #  value, because this map merges NEVER-OVERWRITE and average volume is TIME-VARYING: a
+        #  symbol this run did not fetch keeps its previous reading, and without a date a consumer
+        #  comparing two lines of one issuer cannot tell a liquidity difference from a
+        #  six-month-old reading versus a fresh one.  `carveOut._volavg_liquidity_term` ABSTAINS on
+        #  a group whose members' dates disagree, which is only possible because of this field.
+        #  The FILENAME still dates the run; it cannot date the ENTRIES, which is the distinction
+        #  that mattered.  `carveOut._load_volavg_map` reads the old bare-value shape too.
         volavgdic[sym] = prof.get('volAvg')
         sec = prof.get('sector')
         sectordic.setdefault(sec, []).append(sym)
@@ -206,22 +214,25 @@ def buildSectorIndustryMaps(symbols, baseurl, api_key, batch_size=100, pace=None
     merged_isin, n_kept_x = _merge_industry_dics(
         _read_pickle_or_none(_prev_isin) if _prev_isin else None, isindic)
     pd.to_pickle(merged_isin, f'isindic_fmp_{fidag}.pickle')
-    #  volAvg map: its OWN dated artifact, same shape and same merge discipline.
-    #  ONE DIFFERENCE THAT MATTERS AND MUST NOT BE FORGOTTEN WHEN THIS IS WIRED: unlike a sector,
-    #  an industry or an ISIN, average volume is TIME-VARYING.  Merging therefore carries FORWARD
-    #  a STALE reading for any symbol this run did not fetch, and the dict has no per-entry as-of
-    #  date -- only the filename dates the entries this run refreshed.  Merging is still right
-    #  (non-shrinking, same reason as the maps above), but a consumer must not read an entry as
-    #  current, and per-entry dating is the first thing to add when this gets wired.
+    #  volAvg map: its OWN dated artifact, same merge discipline, but PER-ENTRY DATED because
+    #  unlike a sector, an industry or an ISIN, average volume is TIME-VARYING.  Merging
+    #  never-overwrite still carries FORWARD a reading for any symbol this run did not fetch --
+    #  that is right (non-shrinking, same reason as the maps above) -- but now each entry says
+    #  WHEN it was read, so `carveOut._volavg_liquidity_term` can refuse to compare a fresh
+    #  reading against a stale one instead of doing it silently.  The FILENAME dates the RUN and
+    #  never could date the ENTRIES; that was the gap.
     _prev_volavg = _newest_dated_pickle('volavgdic_fmp_*.pickle')
+    volavg_dated = {s: {'volAvg': v, 'asof': fidag} for s, v in volavgdic.items()}
     merged_volavg, n_kept_v = _merge_industry_dics(
-        _read_pickle_or_none(_prev_volavg) if _prev_volavg else None, volavgdic)
+        _read_pickle_or_none(_prev_volavg) if _prev_volavg else None, volavg_dated)
     pd.to_pickle(merged_volavg, f'volavgdic_fmp_{fidag}.pickle')
     print(f'[sector/industry build] volAvg captured for '
           f'{sum(1 for v in volavgdic.values() if v is not None)} of {len(volavgdic)} symbols -> '
-          f'volavgdic_fmp_{fidag}.pickle (kept {n_kept_v} pre-existing entr(ies), which are '
-          f'STALE volumes -- see the note above). CAPTURE ONLY -- nothing reads it; registers '
-          f'K-1 and J-1 are NOT wired.')
+          f'volavgdic_fmp_{fidag}.pickle, each entry stamped asof={fidag} (kept {n_kept_v} '
+          f'pre-existing entr(ies), which carry THEIR OWN older asof -- a group with mixed '
+          f'dates is skipped by the dedup liquidity term rather than compared). WIRED into '
+          f'carveOut._investability_key (register K-1); register J-1 (a liquidity SCREEN) is '
+          f'still NOT wired.')
     print(f'[sector/industry build] ISIN captured for {sum(1 for v in isindic.values() if v)} '
           f'of {len(isindic)} symbols -> isindic_fmp_{fidag}.pickle (kept {n_kept_x} '
           f'pre-existing entr(ies)). CAPTURE ONLY -- register K-1 is NOT wired.')

@@ -633,6 +633,367 @@ TEST_UNIVERSE = (
 
 
 # =========================================================================== #
+#  THE ~3,000-NAME AD-HOC CURATED UNIVERSE  (CEO, 2026-08-06)                   #
+#                                                                               #
+#  "Something in between, we need to test the dedup properly also so just create #
+#   an ad-hoc curated with roughly 3k stocks."                                   #
+#                                                                               #
+#  WHAT IT IS FOR.  It is the FIRST FETCH after ~20 changes landed on 2026-08-05  #
+#  -- deliberately small, because the expectation is that something needs a tweak #
+#  and a re-fetch, and nobody wants to discover that 21 hours in.  It is a        #
+#  THROWAWAY SHAKEDOWN UNIVERSE, not a production scope.                         #
+#                                                                               #
+#  WHY NEITHER EXISTING OPTION WORKED.  `stock_TEST1` is 142 names, so a top-100  #
+#  cut is 70% of the pool and means nothing.  A North-America-only scope would    #
+#  not exercise CROSS-LISTING at all, which is the thing being tested.            #
+#                                                                               #
+#  THE SHAPE IS A BASE RULE **PLUS** AN EXPLICIT MUST-INCLUDE LIST, and the       #
+#  "plus" is the whole design.  A pure sampling rule cannot be trusted to contain #
+#  the specific measured dedup cases -- and a later edit to the rate would drop   #
+#  them silently, which is exactly the failure `TEST_UNIVERSE` was built to stop.  #
+#  So the measured cases are pinned BY SYMBOL, unioned in AFTER the base rule,    #
+#  and a test asserts every one of them resolves.                                #
+#                                                                               #
+#  ---------------------------------------------------------------------------  #
+#  THE BASE RULE: SAMPLE ON THE NORMALISED ISSUER **NAME**, NOT ON THE SYMBOL.    #
+#  ---------------------------------------------------------------------------  #
+#  This is the one non-obvious decision in the module and it is what makes the    #
+#  universe able to test dedup AT ALL.                                           #
+#                                                                               #
+#  A per-SYMBOL sample (hash the ticker, keep 17%) SPLITS EVERY CROSS-LISTING     #
+#  GROUP: UHS lands in, 0LJL.L does not, and the pool then contains one line of   #
+#  a two-line issuer.  carveOut's dedup edges are PAIRWISE OVER THE POOL, so a    #
+#  half-present group is not "a smaller test of dedup", it is NO test of dedup --  #
+#  the same production/test divergence documented at TEST_UNIVERSE_OPEN_GROUPS,   #
+#  reintroduced wholesale.  Sampling on `carveOut._norm_issuer_name` instead      #
+#  puts every line of an issuer in the SAME BUCKET.                               #
+#                                                                               #
+#  BUT THE BUCKET IS ONLY HALF THE DECISION, AND THE FIRST CUT OF THIS UNIVERSE   #
+#  GOT IT WRONG.  The bucket is a function of the NAME; the THRESHOLD it is       #
+#  compared against is a function of the EXCHANGE.  Holding one half constant     #
+#  closes nothing: with TSX/PAR/AMS unrated and NYSE/NASDAQ/LSE at 170, every     #
+#  cross-listed issuer with bucket >= 170 SPLIT -- measured at 218 split groups    #
+#  against 209 whole (51%) on the live 2026-08-04 table, including BMO/BMO.TO,    #
+#  BCE/BCE.TO, BN/BN.TO and AEM/AEM.TO/0R2J.L, all of which arrive WHOLE in       #
+#  stock_NA1_EU1.  The "splits ZERO" measurement that shipped with that cut was   #
+#  real but covered only Korean families -- KSC and KOE SHARE rate 250, so they    #
+#  cannot split against each other and the CROSS-RATE case was never measured.     #
+#  Since the pins are by SYMBOL and not by GROUP, it reached the pinned cases too: #
+#  five pinned groups arrived incomplete, `robertet s a` among them.               #
+#                                                                               #
+#  SO CLOSURE IS TWO RULES, NOT ONE (fixed 2026-08-06): hash the NAME, and then    #
+#  resolve each issuer name ONCE against the MOST PERMISSIVE RATE among the        #
+#  exchanges its lines occupy (`most_permissive_rate`) -- a line on an unrated,     #
+#  take-all venue pulls the whole group in.  Cost of closing upward, measured:      #
+#  +243 members (3,015 -> 3,258), ~+1,215 calls, ~+20 min of fetch.  THAT is what   #
+#  makes a group entirely IN or entirely OUT.                                      #
+#                                                                               #
+#  WHAT THE NAME-HASH DOES **NOT** CLOSE, stated because the limit is real: it     #
+#  groups by NAME, while the pipeline dedups by FUNDAMENTALS FINGERPRINT           #
+#  (`carveOut._issuer_components`).  Name-matching finds cross-listings; it does   #
+#  NOT catch a line FMP names differently from its sibling -- BWNB, whose name is   #
+#  TRUNCATED to "Babcock & Wilcox Enterprises, I", is the documented case.  Those  #
+#  groups can still arrive split.  Closure is BY CONSTRUCTION FOR SAME-NAMED       #
+#  LINES ONLY, which covers the cross-listings, the Korean preferred families and  #
+#  all three K-1 wrong-pick groups, and does not cover a renamed sibling.          #
+#                                                                               #
+#  IT IS SHA1, NOT `hash()`.  Python's `hash()` of a str is SALTED PER PROCESS     #
+#  (PYTHONHASHSEED), so a `hash()`-based sample would return a DIFFERENT UNIVERSE  #
+#  on every invocation -- unreproducible, and silently so.  It is also NOT a       #
+#  positional prefix (`-nrTaT N`), for the reasons in the TEST_UNIVERSE note: a    #
+#  prefix of `available-traded/list` moves whenever FMP reorders the list.         #
+#  The sample is therefore a PURE FUNCTION of the issuer name -- stable across      #
+#  runs, machines and list re-orderings, and re-derivable without checking in       #
+#  3,000 tickers.                                                                 #
+#                                                                               #
+#  ---------------------------------------------------------------------------  #
+#  WHY THESE EXCHANGES, AND WHY NOT ONE REGION                                    #
+#  ---------------------------------------------------------------------------  #
+#  The measured dedup cases LIVE on specific venues, so the venue list is derived  #
+#  from them rather than chosen for tidiness:                                     #
+#    NYSE/NASDAQ  UHS, AEM, MU, the veto ejects, the Chimera NOTES line            #
+#    LSE          the 0-prefixed IOB lines (0LJL.L, 0KNY.L, 0QQF.L, 0HQ7.L) and    #
+#                 the Samsung GDR pair -- the untradeable-at-size class (J-1)      #
+#    TSX          AEM.TO, PEY.TO -- the different-historical-statements merge      #
+#    PAR          Robertet + its certificat (CBE.PA)                              #
+#    AMS          Heineken/Heineken Holding (MUST NOT merge) and Value8 + PREVA.AS  #
+#    KSC/KOE      the preferred families that share the common's numeric root       #
+#  TSX / PAR / AMS are TAKEN WHOLE (662 + 577 + 103 statement-bearing = 1,342):     #
+#  they are small enough to cost little and each carries a case that a sample could #
+#  thin.  NYSE / NASDAQ / LSE / KSC / KOE are SAMPLED, because taking them whole is  #
+#  9,649 names -- the 21-hour run this universe exists to avoid.                    #
+#                                                                               #
+#  KOREA IS GATED, same as stock_ASIA1: `getData_gen.assert_korea_dedup_ready`     #
+#  must pass or this universe does not resolve.                                   #
+#                                                                               #
+#  ---------------------------------------------------------------------------  #
+#  !!! POOL-RELATIVE OUTPUT IS STILL NOT PRODUCTION OUTPUT !!!                     #
+#  ---------------------------------------------------------------------------  #
+#  Weaker than the TEST_UNIVERSE warning but NOT absent, and the difference is the  #
+#  point of choosing ~3,000 over 142.  A z-score here is computed against ~3,000    #
+#  peers instead of ~11,500, and a top-100 cut is the top ~3.3% of the pool rather  #
+#  than the top ~0.9%.  So the top-100 selection and the veto's survivor count are  #
+#  REAL NUMBERS on a REAL POOL -- which is what the CEO asked for -- but they are    #
+#  still NOT COMPARABLE to a stock_NA1_EU1 run, because the pool differs.  Read     #
+#  this run for BEHAVIOUR ("does the veto eject who we expect, does the dedup       #
+#  merge what we measured"), never as a pick list.                                  #
+# =========================================================================== #
+
+#  Taken WHOLE.  Small, and each carries a measured case a sample could thin.
+CURATED3K_TAKE_ALL = ('TSX', 'PAR', 'AMS')
+
+#  SAMPLED, as a count out of CURATED3K_SAMPLE_DENOMINATOR issuer-name buckets.
+#  Rates were CHOSEN BY MEASUREMENT against the live 2026-08-04 available-traded table
+#  (see CURATED3K_SIZING below), not picked to look round.
+CURATED3K_SAMPLED = {
+    'NYSE': 170, 'NASDAQ': 170, 'LSE': 170,     # 17.0% of issuer names
+    'KSC': 250, 'KOE': 250,                     # 25.0% -- Korea needs enough whole
+                                                # preferred FAMILIES to be worth fetching
+}
+CURATED3K_SAMPLE_DENOMINATOR = 1000
+
+#  Measured on the live 2026-08-04 `available_traded_raw` snapshot, type=='stock',
+#  scaled to statement-bearing by each code's own live verified/raw ratio (NYSE 0.973,
+#  NASDAQ 0.913, LSE 0.984, TSX 0.962, PAR 0.991, AMS 0.990, KSC 0.995, KOE 0.959).
+#  These are ESTIMATES of the resolved size, not assertions -- the instrument filter, the
+#  delisted prune and the sector filter all remove members afterwards, and the raw
+#  snapshot is NOT intersected with `financial-statement-symbol-lists`.
+#
+#  RE-MEASURED 2026-08-06 AFTER THE GROUP-CLOSURE FIX, and the numbers moved -- upward
+#  closure means a cross-listed issuer that misses the 17% threshold is now KEPT if any of
+#  its lines sits on a take-all venue, so the sampled codes gained.  Replayed end-to-end
+#  through `filter_non_common_instruments` + the base rule + the pin/sibling union over the
+#  live 2026-08-04 table: 3,015 -> 3,258 members (+243, ~+1,200 calls, ~+20 min of fetch).
+#  That cost is the price of the closure property and it was accepted deliberately.
+CURATED3K_SIZING = {
+    'TSX': 641, 'PAR': 582, 'AMS': 104,         # taken whole
+    'NYSE': 445, 'NASDAQ': 620, 'LSE': 529,     # sampled at 17.0%, closed UPWARD
+    'KSC': 223, 'KOE': 111,                     # sampled at 25.0%, closed UPWARD
+    'STO': 1, 'XETRA': 2,                       # pins on unwired venues (EMBELL.ST etc.)
+}
+CURATED3K_ESTIMATED_MEMBERS = sum(CURATED3K_SIZING.values())      # 3,258
+
+#  PER-COHORT FILL, MEASURED not guessed (2026-08-06).  Derived by replaying the base rule
+#  over the live 2026-08-04 table, intersecting with the saved 2026-01-08 panel (1,719
+#  sources) so that `carveOut.classify` has the REAL fundamentals its FIN-1 fingerprint
+#  needs, then applying the resulting shares to the 3,045 estimate.
+#
+#  WHY THE PANEL AND NOT THE LIVE TABLE.  Classifying off the sector map ALONE puts
+#  InvestmentVehicle at 2, which is wrong and would have been a bad answer to "is every
+#  cohort populated": FIN-1 is identified by an equity/assets FINGERPRINT plus the name
+#  rule, and with no fundamentals only the name half can fire.  The panel has
+#  fundamentals, so this is the honest basis.
+#
+#  IT IS A LOWER BOUND ON COVERAGE, TWICE OVER: the panel predates PAR/AMS/Korea entirely
+#  (so those 1,942 names contribute nothing to the shares), and it predates the instrument
+#  filter.  Estimates, not assertions -- deliberately NOT pinned by a test, because the
+#  real numbers arrive with the fetch and a hardcoded expectation would then be an
+#  obstacle rather than a check.
+#
+#  BASIS, 2026-08-06: the SHARES are the measured quantity; the COUNTS are those shares
+#  applied to `CURATED3K_ESTIMATED_MEMBERS`.  They previously summed to 3,045 -- the
+#  PRE-group-closure member count -- so the table and the coded member count disagreed by
+#  213 names and a reader adding the column up got the wrong universe size.  Re-scaled to
+#  the closed count (x1.070) with the panel shares unchanged; `test_universes` now asserts
+#  the sum matches, so the two cannot drift apart again.
+CURATED3K_COHORT_ESTIMATE = {
+    'general': 2419,            # 74.2% -- comfortably above 100, so the top-100 cut and
+                                #          the veto's survivor count are real numbers
+    'Mining': 356,              # 10.9%
+    'BalanceSheetFin': 252,     #  7.7%  FIN-3
+    'FinManager': 96,           #  2.9%  FIN-2
+    'REIT': 95,                 #  2.9%
+    'InvestmentVehicle': 40,    #  1.2%  FIN-1 -- the thinnest, and the one to watch
+}
+
+#  Fetch cost, on the SAME basis as TEST_UNIVERSE_API_CALLS: 5 statement calls per source
+#  plus 3 for the universe build.  Two independent readings of the per-call rate, kept
+#  apart because they disagree and the disagreement is the honest range:
+#    * the curated 142-name run   713 calls in 8-15 min  ->  0.67-1.26 s/call
+#    * the 2026-01-08 production run, 12h over 9,012 kept + 1,725 failed = 10,737
+#      sources ATTEMPTED (a failed source still costs its calls)  ->  0.80 s/call
+#  At 0.80-1.15 s/call, ~16,300 calls is 3.6-5.2 HOURS.  Against the ~12h/7,700 rough
+#  arithmetic this lands slightly LOW, and the reason is that the 12h denominator should
+#  be sources ATTEMPTED (10,737), not sources kept.
+#  BOTH FIGURES WERE STALE UNTIL 2026-08-06 (reviewer): the comment said ~15,228 calls and
+#  the band said (3.4, 4.9), i.e. the PRE-group-closure 3,045-member universe.  The
+#  wallclock guard's +-0.5 h tolerance was wide enough to absorb the error, which is why
+#  nothing failed -- it is tightened to +-0.05 h alongside this, so the guard actually
+#  guards.  The band is a DERIVED quantity: re-derive it from CURATED3K_API_CALLS whenever
+#  the member count moves.
+CURATED3K_API_CALLS = 5 * CURATED3K_ESTIMATED_MEMBERS + 3        # ~16,293
+CURATED3K_WALLCLOCK_HOURS = (3.6, 5.2)
+
+# --------------------------------------------------------------------------- #
+#  THE MUST-INCLUDE LIST.  Every entry is a case that has been MEASURED and that #
+#  this run exists to OBSERVE.  Unioned in AFTER the base rule, so no edit to a   #
+#  sample rate can drop one, and `test_universes` asserts each one resolves.      #
+#                                                                               #
+#  A must-include is NOT restricted to the base rule's exchanges -- it is applied  #
+#  to the full post-instrument-filter table by symbol.  That is deliberate: it is  #
+#  how EMBELL.ST (Stockholm), EIN.DE and DRW3.DE (XETRA) can be observed without   #
+#  wiring STO and XETRA and paying for another 1,375 names.                        #
+#                                                                               #
+#  Tags:                                                                          #
+#    must-merge      two lines that MUST collapse to one issuer                     #
+#    must-not-merge  two lines that MUST STAY SEPARATE                              #
+#    k1-wrongpick    merges correctly, picks the WRONG line today (register K-1)     #
+#    lse-iob         untradeable-at-size IOB line (register J-1)                     #
+#    veto-eject      on the superseded 5-flag veto's 17-name ejection list           #
+#    veto-clean      clean on every criterion -- the CONTROL group                   #
+#    group-closure   a sibling present only to close an issuer group                 #
+# --------------------------------------------------------------------------- #
+CURATED3K_MUST_INCLUDE = (
+    # --- cross-listings that MUST MERGE to one line -------------------------- #
+    ('UHS', 'must-merge',
+     'Universal Health Services (NYSE). With 0LJL.L its fundamentals are BYTE-IDENTICAL, '
+     'and the pair occupied TWO of the top 36 on the 2026-07-17 panel. The new dedup was '
+     'verified OFFLINE to catch them; this run is the live confirmation. UHS is ALSO on '
+     'the veto-eject list, so one name carries both observations'),
+    ('0LJL.L', 'must-merge',
+     'the LSE international-order-book line of Universal Health Services -- the other half '
+     'of the byte-identical pair, and itself an IOB line and a veto eject'),
+    ('AEM', 'must-merge',
+     'Agnico Eagle Mines (NYSE). Merges with AEM.TO, but the two lines carry DIFFERENT '
+     'HISTORICAL STATEMENTS -- aligned on their 22 common dates, netIncome differs on 20 of '
+     '22, operatingIncome and interestExpense on 22 of 22, with no NaN mismatch anywhere. '
+     'Register B-9, killed as a no-alternative issue. WHAT TO WATCH is WHICH LINE SURFACES, '
+     'because every history-integrating metric is listing-dependent'),
+    ('AEM.TO', 'must-merge',
+     'the Toronto line of Agnico Eagle -- the other half of B-9, and the reason TSX is in '
+     'the base rule at all'),
+    ('0R2J.L', 'group-closure',
+     'the LSE line of Agnico Eagle. Present for GROUP CLOSURE, not as a case: carveOut '
+     'dedup edges are PAIRWISE over the pool, so observing the AEM/AEM.TO pick with the '
+     'third line absent would observe a DIFFERENT group than production sees. All three '
+     'carry the identical derived price 168.56 and three different AggScores '
+     '(-0.3605 / -0.3320 / -0.3635)'),
+
+    # --- MUST NOT MERGE ------------------------------------------------------ #
+    ('HEIA.AS', 'must-not-merge',
+     'Heineken N.V. (Amsterdam), the OPERATING company. THE FALSE-POSITIVE GUARD: '
+     'Heineken Holding CONSOLIDATES it and reports about HALF the netIncome, so if these '
+     'two ever merge, `netIncome` has stopped being required-and-exact in the grouping key '
+     '-- which is the failure mode `getData_gen.isin_same_issuer_groups` warns about by '
+     'name. AMS is taken whole so the base rule already selects it; pinned anyway, because '
+     '"the rule happens to include it" is exactly the guarantee this list exists to replace'),
+    ('HEIO.AS', 'must-not-merge',
+     'Heineken Holding N.V. -- the consolidating parent, ~half the netIncome. The other '
+     'half of the must-NOT-merge pair'),
+
+    # --- the three known WRONG-LINE picks (register K-1, still open) ---------- #
+    #  All three are SAME-EXCHANGE, with names identical verbatim and an identical
+    #  DERIVED price (price = marketCap / weightedAverageShsOut, both issuer-level, so
+    #  they cancel).  Every canonicity marker (a)-(e) is ruled out BY CONSTRUCTION, so
+    #  the key falls through to the ALPHABETICAL tail and the NON-COMMON wins:
+    #  'CBE' < 'RBT', 'PREVA' < 'VALUE', 'SMSD' < 'SMSN'.  THAT is the behaviour to
+    #  observe -- and volAvg (wired 2026-08-06) is what should now change it.
+    ('RBT.PA', 'k1-wrongpick',
+     'Robertet SA (Paris), the COMMON. Should win its group'),
+    ('CBE.PA', 'k1-wrongpick',
+     "Robertet's CERTIFICAT D'INVESTISSEMENT (Paris). WINS today on the alphabetical tail "
+     "('CBE' < 'RBT'). Observe whether volAvg now demotes it"),
+    ('VALUE.AS', 'k1-wrongpick',
+     'Value8 N.V. (Amsterdam), the COMMON. Should win its group'),
+    ('PREVA.AS', 'k1-wrongpick',
+     "Value8's PREFERENCE line (Amsterdam). WINS today ('PREVA' < 'VALUE')"),
+    ('SMSN.L', 'k1-wrongpick',
+     'Samsung Electronics COMMON GDR (LSE). SMSN.L/BC94.L = 0.989'),
+    ('SMSD.L', 'k1-wrongpick',
+     'Samsung Electronics PREFERRED GDR (LSE). WINS today on the alphabetical tail. '
+     'SMSD.L/SMSN.L = 0.708 against the Seoul preferred/common ratio '
+     '005935.KS/005930.KS = 0.728 -- a 29% discount on identical fundamentals, i.e. exactly '
+     'what ranks to the TOP of a cheapness screen. NOTE: it is DELIBERATELY EXCLUDED from '
+     'TEST_UNIVERSE (see TEST_UNIVERSE_OPEN_GROUPS) because a 142-name reference list must '
+     'not contain instrument lines. It is INCLUDED HERE for the opposite reason -- this '
+     'universe exists to OBSERVE the wrong pick, not to avoid it'),
+    ('BC94.L', 'group-closure',
+     'the third Samsung line on LSE -- closes the group SMSD.L/SMSN.L would otherwise be '
+     'deduped against differently than in production'),
+    ('005930.KS', 'k1-wrongpick',
+     'Samsung Electronics COMMON in Seoul -- the 6th character is `0`, so the Korea '
+     'canonicity marker should keep it and demote its preferred'),
+    ('005935.KS', 'k1-wrongpick',
+     'Samsung Electronics PREFERRED in Seoul (6th character `5`). The named case behind the '
+     'whole Korea gate: it must be DEMOTED by the korea-preferred marker, not merely '
+     'out-sorted. THE UNVERIFIED HALF: whether FMP serves it its ISSUER\'S STATEMENTS -- i.e. '
+     'whether the family GROUPS at all -- is unproven until this fetch (ASIA_BLOCKER '
+     'residual). If it does not group, it survives as its own singleton and the marker '
+     'never gets a sibling to prefer'),
+
+    # --- the LSE IOB lines (register J-1: untradeable at size) --------------- #
+    ('0KNY.L', 'lse-iob',
+     'IOB line, and one of the SIX names clean on every forensic criterion -- so it is a '
+     'veto CONTROL and a liquidity case in one'),
+    ('0QQF.L', 'lse-iob',
+     'IOB line of Mikron Holding AG, also a clean-on-every-criterion control (the issuer '
+     'was unnamed here until 2026-08-06 -- not wrong, but unreadable for an operator)'),
+    ('0HQ7.L', 'lse-iob',
+     'IOB line of Buckle Inc. Derived price 54.80, IDENTICAL to BKE -- the pair that '
+     'demonstrates price cannot discriminate an issuer\'s lines'),
+
+    # --- the 17 names the superseded five-flag veto ejected ------------------ #
+    #  THE 17 IS AN UPPER BOUND, and that is WHY they are here.  It comes from the
+    #  SUPERSEDED five-flag set; the CURRENT set differs, and observing WHICH of these
+    #  the live veto now ejects -- and whether it ejects something not on this list -- is
+    #  the point.  UHS and 0LJL.L are also above as the must-merge pair.
+    ('SBH', 'veto-eject', 'Sally Beauty Holdings (NYSE)'),
+    ('NWPX', 'veto-eject',
+     'NWPX Infrastructure (NASDAQ) -- FMP\'s name since the issuer renamed; the why-string '
+     'carried the PRE-RENAME name until 2026-08-06'),
+    ('BKE', 'veto-eject',
+     'Buckle Inc (NYSE) -- also the common half of the 0HQ7.L identical-price pair'),
+    ('BVFL', 'veto-eject', 'BV Financial (NASDAQ)'),
+    ('DDI', 'veto-eject', 'DoubleDown Interactive (NASDAQ)'),
+    ('EMBELL.ST', 'veto-eject',
+     'Embellence Group (STOCKHOLM). STO is NOT in the base rule -- this is the case that '
+     'proves a must-include reaches outside the base exchanges'),
+    ('FG', 'veto-eject', 'F&G Annuities & Life (NYSE)'),
+    ('GMR.L', 'veto-eject', 'Gaming Realms (LSE)'),
+    ('JEL.L', 'veto-eject', 'Jersey Electricity (LSE)'),
+    ('MU', 'veto-eject', 'Micron Technology (NASDAQ)'),
+    ('PBYI', 'veto-eject', 'Puma Biotechnology (NASDAQ)'),
+    ('PEY.TO', 'veto-eject', 'Peyto Exploration & Development (Toronto)'),
+    ('RFX.L', 'veto-eject', 'Ramsdens Holdings (LSE)'),
+    ('SKHY', 'veto-eject',
+     'SK hynix Inc. (NASDAQ) -- the unsponsored US line of the Seoul semiconductor maker. '
+     'THE WHY-STRING NAMED TWO UNRELATED ISSUERS UNTIL 2026-08-06 (tickers that merely look '
+     'similar; the wrong names are recorded in the review, not repeated here). FMP returns '
+     '"SK hynix Inc." for BOTH this symbol and 000660.KS, which is exactly WHY the '
+     '000660.KS sibling fires under group closure (CUR3K_UNPINNED_SIBLINGS) -- a manifest '
+     'naming the wrong company would have made that closure look like a defect'),
+    ('STRT', 'veto-eject', 'Strattec Security (NASDAQ)'),
+
+    # --- the 6 clean on EVERY criterion: the veto CONTROL group -------------- #
+    #  A veto with no observed non-ejections is not an observed veto.  (0KNY.L and
+    #  0QQF.L are in this cohort too and are listed above as IOB lines.)
+    ('EIN.DE', 'veto-clean', 'Einhell Germany (XETRA) -- outside the base rule'),
+    ('NEXN', 'veto-clean', 'Nexxen International (NASDAQ)'),
+    ('DRW3.DE', 'veto-clean',
+     'Drägerwerk preference line (XETRA) -- outside the base rule'),
+    ('KFY', 'veto-clean', 'Korn Ferry (NYSE)'),
+
+    # --- the Chimera NOTES line --------------------------------------------- #
+    ('CIM', 'group-closure',
+     'Chimera Investment Corp COMMON (NYSE) -- the sibling CIMN needs, and a REIT'),
+    ('CIMN', 'k1-wrongpick',
+     'a Chimera NOTES line. CAUGHT WINNING ITS GROUP during the dedup build, on marketCap, '
+     'while scoring as a SUCCESS against the labeller -- because the labeller IS the rule '
+     '(`_non_canonical_tag` recognises no marker on it). It is the named reason the 0.47% '
+     'canonicity-first failure rate is a LOWER BOUND and must not be quoted as the failure '
+     'rate. Watch whether it still wins'),
+)
+
+CURATED3K_MUST_INCLUDE_SYMBOLS = tuple(s for s, _t, _w in CURATED3K_MUST_INCLUDE)
+
+
+def curated3k_manifest():
+    """The must-include list as (symbol, tag, why) triples -- the self-documenting record,
+    same shape and same purpose as `test_universe_manifest`."""
+    return tuple(CURATED3K_MUST_INCLUDE)
+
+
+# =========================================================================== #
 #  THE REGISTRY.  One entry per universe scope.  Both `configuration` (which     #
 #  validates the -tickerfilter argument) and `getData_gen` (which applies it)    #
 #  read THIS, so a name that validates always resolves and vice versa.          #
@@ -647,6 +1008,20 @@ TEST_UNIVERSE = (
 #    note        any caveat the operator must see before trusting the output      #
 #                                                                               #
 #  EXACTLY ONE of exchanges / symbols / every_exchange is set per entry.         #
+#                                                                               #
+#  TWO OPTIONAL keys, added 2026-08-06 for stock_CUR3K and read via `.get` so     #
+#  every other entry is untouched (a required key would have meant editing all     #
+#  ten entries to say "not me", which is noise, not information):                 #
+#    sample        {exchangeShortName: n} -- keep only issuer NAMES whose bucket    #
+#                  is < n out of CURATED3K_SAMPLE_DENOMINATOR. A code in            #
+#                  `exchanges` but absent from `sample` is taken WHOLE.             #
+#                  THE RATE IS RESOLVED PER ISSUER, NOT PER ROW: an issuer's whole    #
+#                  group is decided by the MOST PERMISSIVE rate among the venues its  #
+#                  lines occupy (`most_permissive_rate`), which is what keeps          #
+#                  cross-rate groups from splitting. See that function.               #
+#    must_include  tuple of symbols unioned in AFTER the base rule, from the FULL    #
+#                  post-instrument-filter table -- so a must-include is NOT           #
+#                  restricted to `exchanges`.                                        #
 # =========================================================================== #
 _US = ('NYSE', 'NASDAQ')
 _EU_CORE = ('LSE', 'XETRA', 'STO', 'ICE')
@@ -732,6 +1107,25 @@ UNIVERSES = {
              'cohort scoring, the top-100 pool and the top-20/top-5 selections are all '
              'functions of pool composition; on 142 names they are not comparable to '
              'production. Use it to check that code paths RUN, never to read a pick.'),
+    'stock_CUR3K': dict(
+        label='AD-HOC CURATED ~3,250 -- TSX PAR AMS whole + NYSE NASDAQ LSE @17% and '
+              'KSC KOE @25% of issuer NAMES resolved PER ISSUER at the most permissive '
+              'rate, plus 40 pinned dedup/veto cases and their siblings '
+              '(3,258 pre-filter) -- ~16,300 calls, ~3.6-5.2 h fetch',
+        exchanges=CURATED3K_TAKE_ALL + tuple(sorted(CURATED3K_SAMPLED)),
+        symbols=None, every_exchange=False, was=None,
+        sample=dict(CURATED3K_SAMPLED),
+        must_include=CURATED3K_MUST_INCLUDE_SYMBOLS,
+        note='THE FIRST FETCH AFTER THE 2026-08-05 CHANGES, deliberately small so a '
+             'needed tweak costs ~4 h to rediscover instead of ~21 h. The base rule '
+             'samples on the NORMALISED ISSUER NAME (not the symbol), so every line of '
+             'an issuer is IN or OUT together and cross-listing groups arrive CLOSED -- '
+             'a per-symbol sample would split them and test nothing. 39 measured '
+             'dedup/veto cases are pinned by symbol so no rate edit can drop them '
+             '(asserted in test_universes). KOREA IS GATED: '
+             'getData_gen.assert_korea_dedup_ready must pass. POOL-RELATIVE OUTPUT IS '
+             'REAL BUT NOT PRODUCTION -- a top-100 cut is the top ~3.3% of this pool '
+             'against ~0.9% in production, so read BEHAVIOUR, never a pick list.'),
     'stock_FULL1': dict(
         label='FULL -- every exchange FMP serves with statements (~49,000 names)',
         exchanges=None, symbols=None, every_exchange=True, was=None,
@@ -785,6 +1179,129 @@ def is_every_exchange(name):
     return _entry(name)['every_exchange']
 
 
+def sample_rates(name):
+    """{exchangeShortName: keep_n_out_of_CURATED3K_SAMPLE_DENOMINATOR}, or {} when the
+    universe takes every member of its exchanges.
+
+    A code present in `exchanges` but ABSENT from this dict is taken WHOLE -- absence
+    means "no sampling", never "sample at zero", so a typo'd code cannot silently empty
+    an exchange.  `check_sample_rates` asserts the dict names no code the universe does
+    not wire, which is the other half of that guard.
+    """
+    return dict(_entry(name).get('sample') or {})
+
+
+def must_include(name):
+    """Symbols unioned in AFTER the base rule, or () when there are none.
+
+    NOT restricted to the universe's `exchanges`: applied to the full
+    post-instrument-filter table by symbol, which is how a Stockholm or XETRA case is
+    observable without wiring (and paying for) those venues.
+    """
+    return tuple(_entry(name).get('must_include') or ())
+
+
+def check_sample_rates(name):
+    """Return the sampled codes that the universe does not actually wire.
+
+    Empty list = the sample dict and the exchange tuple agree.  A non-empty one is the
+    EURONEXT/OSE defect in a new costume: a rate keyed on a code no filter selects is
+    dead configuration that reads as though it were doing something.
+    """
+    rates = sample_rates(name)
+    if not rates:
+        return []
+    codes = set(exchanges(name) or ())
+    return sorted(c for c in rates if c not in codes)
+
+
+#  Namespaced so the bucket for a given issuer name can never collide with some future
+#  hash over a different quantity in this module.
+_SAMPLE_HASH_PREFIX = 'issuer:'
+
+
+def issuer_sample_bucket(norm_name):
+    """Stable bucket in [0, CURATED3K_SAMPLE_DENOMINATOR) for a NORMALISED issuer name.
+
+    SHA1, NOT `hash()`.  Python salts `hash()` of a str per process (PYTHONHASHSEED), so
+    a `hash()`-based sample would resolve to a DIFFERENT universe on every invocation --
+    and silently, because both runs look equally plausible.  This is a pure function of
+    the name: stable across runs, machines and any re-ordering of
+    `available-traded/list`.
+
+    The caller supplies the ALREADY-NORMALISED name (`carveOut._norm_issuer_name`) so
+    this module does not have to import carveOut, and so the sample and the pipeline's
+    own issuer grouping cannot drift onto two different normalisations.
+    """
+    h = hashlib.sha1((_SAMPLE_HASH_PREFIX + (norm_name or '')).encode('utf-8'))
+    return int(h.hexdigest()[:8], 16) % CURATED3K_SAMPLE_DENOMINATOR
+
+
+def issuer_in_sample(norm_name, rate):
+    """Is this issuer name kept at `rate` out of CURATED3K_SAMPLE_DENOMINATOR?
+
+    `rate` None or >= the denominator means "take everything", so an unsampled code needs
+    no special case at the call site.
+
+    ONE RATE ONLY.  This answers the per-rate question; it is NOT the membership decision
+    for an issuer whose lines straddle two rates -- see `most_permissive_rate`, which is
+    what the caller must resolve FIRST.
+    """
+    if rate is None or rate >= CURATED3K_SAMPLE_DENOMINATOR:
+        return True
+    if rate <= 0:
+        return False
+    return issuer_sample_bucket(norm_name) < int(rate)
+
+
+def most_permissive_rate(codes, rates):
+    """The ONE rate an issuer's whole group is decided by: the most permissive rate among
+    the exchange codes its lines occupy.  `None` = take the group whole.
+
+    *** THIS IS WHAT MAKES GROUPS ARRIVE CLOSED.  HASHING THE NAME IS NOT ENOUGH. ***
+    Fixed 2026-08-06 after review; the original cut got this WRONG and the error was
+    measured, not hypothetical.
+
+    THE DEFECT.  The bucket is a function of the NAME, but the THRESHOLD it is compared
+    against was a function of the EXCHANGE -- so a two-part decision was being made with
+    only its first part held constant.  TSX/PAR/AMS carry no rate (kept unconditionally)
+    while NYSE/NASDAQ/LSE keep buckets < 170, so ANY issuer with lines on both sets split
+    whenever its bucket was >= 170 -- 83% of the time.  Replayed through the real code path
+    over the live 2026-08-04 table: of the multi-line groups that appeared in the pool at
+    all, 218 arrived SPLIT against 209 whole -- 51%.  BMO/BMO.TO, BCE/BCE.TO, BN/BN.TO,
+    AEM/AEM.TO/0R2J.L all arrive WHOLE in stock_NA1_EU1, so the SAMPLE was introducing the
+    divergence it existed to avoid.  The "splits ZERO" measurement that shipped with the
+    first cut was real but covered only Korean families, and KSC/KOE SHARE rate 250 -- so
+    they cannot split against each other and the cross-rate case was never measured.
+
+    AND IT REACHED THE PINNED CASES, because the pins are by SYMBOL, not by GROUP: five
+    pinned groups arrived incomplete, `robertet s a` among them (RBT.PA + CBE.PA present,
+    0NZN.L on LSE absent) -- one of the three K-1 wrong-pick groups, observed as a 2-member
+    group where production sees 3.
+
+    WHY UPWARD (most permissive) AND NOT DOWNWARD.  Closing downward -- dropping the whole
+    group when any of its lines is out -- also closes it, but it thins the universe by
+    exactly the cross-listed names this universe exists to test, and it would drop pinned
+    groups entirely.  Closing upward costs members (measured: +243, 3,015 -> 3,258, ~+1,215
+    calls, ~+20 min of fetch) and buys the property outright.  A line on an unrated
+    (take-all) code therefore pulls the WHOLE group in.
+
+    `codes` empty -> None (take it): an issuer with no usable venue cannot be shown to be
+    outside the sample, and dropping on missing metadata is how a filter silently shrinks
+    a universe (the EURONEXT lesson).
+    """
+    eff = None
+    seen = False
+    for c in codes:
+        r = rates.get(c)
+        if r is None or int(r) >= CURATED3K_SAMPLE_DENOMINATOR:
+            return None                        # a take-all venue pulls the group in whole
+        r = int(r)
+        eff = r if not seen else max(eff, r)
+        seen = True
+    return eff if seen else None
+
+
 def label(name):
     return _entry(name)['label']
 
@@ -800,13 +1317,55 @@ def expected_count(name):
     A SANITY EXPECTATION, not an assertion: a real run legitimately lands under it,
     because the instrument filter, the delisted prune and the sector filter all remove
     members AFTER the exchange filter.
+
+    A SAMPLED universe's expectation is the per-code verified count SCALED BY ITS RATE,
+    plus the must-include list.  Returning the unscaled sum would be actively misleading
+    -- it would advertise 10,991 for a universe built to be ~3,000, i.e. exactly the
+    "expected members" line an operator reads to sanity-check the run length.
+
+    BUT A PER-CODE SCALING CANNOT MODEL PER-ISSUER CLOSURE, and after the 2026-08-06
+    group-closure fix that gap is material: a cross-listed issuer that misses the 17%
+    threshold is now KEPT because one of its lines sits on a take-all venue, and no
+    per-code factor can express "kept for a reason that lives on a different code".  The
+    formula understated the closed universe by 135 (3,123 vs a MEASURED 3,258 -- ~25 min of
+    fetch), so where a REPLAYED measurement exists it is used instead of the formula.  A
+    measurement beats a model here; the formula stays as the fallback for any future
+    sampled universe that has not been replayed.
+
+    KNOWN SILENT-STALENESS PATH, NAMED RATHER THAN CLOSED (reviewer, 2026-08-06).  The
+    `stock_CUR3K` branch is special-cased BY NAME, so it is exact today but keeps returning
+    the STORED measurement if the universe DEFINITION moves -- with no symptom, because the
+    number still looks plausible.  A `definition_fingerprint` (hash the exchange set + sample
+    rates + must-include list, and refuse the stored figure when it does not match) is the
+    real close and is NOT DONE -- deliberately deferred rather than rushed in ahead of the
+    fetch.  THE CHEAPER PROTECTION IS IN PLACE INSTEAD: `test_universes` now derives the
+    wallclock band from `CURATED3K_API_CALLS` at +-0.05 h (was +-0.5 h, wide enough to absorb
+    the 3,045 -> 3,258 drift) and asserts `CURATED3K_COHORT_ESTIMATE` sums to the coded member
+    count, so a definition change that moves the member count trips a test.  It does NOT catch
+    a definition change that leaves the count unmoved; that residual is the fingerprint's.
     """
     d = _entry(name)
     if d['symbols'] is not None:
         return len(d['symbols'])
     if d['every_exchange']:
         return None
-    return sum(_VERIFIED_COUNTS.get(c, 0) for c in d['exchanges'])
+    if name == 'stock_CUR3K':
+        return CURATED3K_ESTIMATED_MEMBERS
+    rates = sample_rates(name)
+    total = 0.0
+    for c in d['exchanges']:
+        v = _VERIFIED_COUNTS.get(c, 0)
+        r = rates.get(c)
+        if r is None or r >= CURATED3K_SAMPLE_DENOMINATOR:
+            total += v
+        else:
+            total += v * (float(r) / CURATED3K_SAMPLE_DENOMINATOR)
+    #  Must-includes are a UNION, so a member the base rule already selected is not
+    #  counted twice -- but which ones those are is only knowable against the live table,
+    #  so this over-counts by the overlap.  Over-counting is the safe direction for a
+    #  sanity expectation and the count is 39, i.e. ~1%.
+    total += len(must_include(name))
+    return int(round(total))
 
 
 # --------------------------------------------------------------------------- #
@@ -864,6 +1423,12 @@ def definition_fingerprint(name):
     is over the SORTED membership basis (exchange codes, or the explicit ticker list),
     so it is insensitive to the order they happen to be written in but changes the
     moment a code or a ticker is added or removed.
+
+    A SAMPLE RATE AND A MUST-INCLUDE LIST ARE PART OF WHAT THE NAME MEANS, so both are in
+    the basis: changing a rate from 17% to 20% changes the membership just as surely as
+    adding an exchange code, and an artifact must not claim the same provenance across
+    that change.  Appended AFTER the exchange basis and only when non-empty, so every
+    pre-2026-08-06 universe fingerprints to exactly the value it did before.
     """
     d = _entry(name)
     if d['symbols'] is not None:
@@ -872,6 +1437,13 @@ def definition_fingerprint(name):
         basis = 'every-exchange'
     else:
         basis = 'exchanges:' + ','.join(sorted(d['exchanges']))
+    rates = sample_rates(name)
+    if rates:
+        basis += '|sample/%d:' % CURATED3K_SAMPLE_DENOMINATOR + ','.join(
+            '%s=%d' % (c, rates[c]) for c in sorted(rates))
+    mi = must_include(name)
+    if mi:
+        basis += '|must:' + ','.join(sorted(mi))
     return hashlib.sha1(basis.encode('utf-8')).hexdigest()[:12]
 
 
@@ -890,6 +1462,10 @@ def provenance(name):
         'universe_symbols': list(d['symbols']) if d['symbols'] else None,
         'universe_every_exchange': bool(d['every_exchange']),
         'universe_expected_count': expected_count(name),
+        'universe_sample': dict(sample_rates(name)) or None,
+        'universe_sample_denominator': (
+            CURATED3K_SAMPLE_DENOMINATOR if sample_rates(name) else None),
+        'universe_must_include': list(must_include(name)) or None,
         'universe_definition_changed': name in MEMBERSHIP_CHANGED_2026_08_02,
         'universe_previous_exchanges': list(d['was']) if d['was'] else None,
         'universe_codes_verified': '2026-08-02',
@@ -941,6 +1517,17 @@ def run_banner(name, resolved_count=None):
     if d['symbols'] is not None:
         out.append('  explicit ticker list  : %d names (frozen in universes.TEST_UNIVERSE)'
                    % len(d['symbols']))
+    rates = sample_rates(name)
+    if rates:
+        whole = [c for c in (d['exchanges'] or ()) if c not in rates]
+        out.append('  SAMPLED on issuer NAME: %s   (out of %d buckets)'
+                   % (' '.join('%s=%d' % (c, rates[c]) for c in sorted(rates)),
+                      CURATED3K_SAMPLE_DENOMINATOR))
+        out.append('  taken WHOLE           : %s' % (' '.join(whole) or '(none)'))
+    mi = must_include(name)
+    if mi:
+        out.append('  must-include (pinned) : %d symbol(s), unioned in AFTER the base '
+                   'rule' % len(mi))
     out.append('  note                  : %s' % d['note'])
 
     if name in MEMBERSHIP_CHANGED_2026_08_02:
@@ -974,6 +1561,23 @@ def run_banner(name, resolved_count=None):
             '!!! Ranks and scores from this run are',
             '!!! NOT comparable to a production run and must never be quoted as a result.',
             '!!! It answers "does the code path run correctly", never "what is cheap".',
+            bang,
+        ]
+
+    if rates:
+        out += [
+            bang,
+            '!!! SAMPLED UNIVERSE -- A SHAKEDOWN SCOPE, NOT A PRODUCTION ONE.',
+            '!!! Membership is a deterministic sample of ISSUER NAMES plus %d pinned'
+            % len(mi),
+            '!!! cases, so the POOL is ~%s members against ~10,693 in production.'
+            % (('%d' % exp) if exp is not None else '?'),
+            '!!! Every pool-relative number (z-scores, percentile cuts, cohort scoring,',
+            '!!! the top-100 pool, the top-20 and the per-band top-5s) is therefore REAL',
+            '!!! but NOT COMPARABLE to a production run: a top-100 cut here is roughly the',
+            '!!! top 3% of the pool against ~0.9% in production. Read this run for',
+            '!!! BEHAVIOUR -- what the dedup merges, which line survives, whom the veto',
+            '!!! ejects -- never as a pick list. Match artifacts by universe_fingerprint.',
             bang,
         ]
 

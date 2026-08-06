@@ -859,6 +859,91 @@ def assert_korea_dedup_ready(tickdf, tfilt, verbose=True):
     return True
 
 
+def _apply_issuer_sample(df, tfilt):
+    """Keep only rows whose ISSUER NAME falls in the universe's per-exchange sample.
+
+    A no-op (returns `df` unchanged) for every universe with no `sample` key, which is
+    every universe except stock_CUR3K -- so this cannot alter an existing scope.
+
+    SAMPLED ON THE NORMALISED ISSUER NAME, NOT ON THE SYMBOL, and that is the whole
+    reason the function exists rather than a one-line `.sample(frac=)`.  carveOut's dedup
+    edges are PAIRWISE OVER THE POOL, so a per-symbol sample lands UHS without 0LJL.L and
+    the pool then holds one line of a two-line issuer -- which is not a smaller test of
+    dedup, it is no test of dedup.  It uses `carveOut._norm_issuer_name` -- the pipeline's
+    OWN normaliser -- so the sample and the dedup cannot drift onto two different notions
+    of "same issuer".
+
+    *** THE NAME HASH ALONE DOES NOT CLOSE A GROUP, AND THE FIRST CUT OF THIS FUNCTION
+    ASSUMED IT DID.  Fixed 2026-08-06 after review. ***  The bucket is a function of the
+    name, but the THRESHOLD was read PER ROW off that row's exchange, so an issuer with
+    lines on an unrated venue (TSX/PAR/AMS, take-all) and a rated one (NYSE/NASDAQ/LSE at
+    170) SPLIT whenever its bucket was >= 170 -- 83% of the time.  Measured on the live
+    2026-08-04 table: 218 groups split, 209 whole, and five PINNED groups arrived
+    incomplete (the pins are by symbol, not by group).  So the rate is now resolved ONCE
+    PER ISSUER, against the MOST PERMISSIVE rate among the venues that issuer's lines
+    occupy -- `universes.most_permissive_rate`, where the full measurement lives.
+
+    THE RESOLUTION IS POOL-RELATIVE, and the caveat is real: the venues considered are the
+    ones this issuer occupies IN THE ALREADY-EXCHANGE-FILTERED FRAME.  A line on a venue
+    the universe does not wire at all cannot pull the group in, because it is not there to
+    be seen -- so closure is closure WITHIN the universe's exchange set, which is the only
+    closure that matters to a pairwise dedup over this pool.
+
+    THE OTHER LIMIT, STATED: the pipeline dedups on a FUNDAMENTALS FINGERPRINT, not on the
+    name, so a sibling FMP names differently (BWNB, truncated to "Babcock & Wilcox
+    Enterprises, I") is NOT held together by this and can still arrive split.  Closure is
+    by construction for SAME-NAMED lines only.
+
+    Rows with no usable name are KEPT, never dropped: an unnamed row cannot be shown to be
+    outside the sample, and dropping on missing metadata is how a filter silently shrinks
+    a universe (the EURONEXT lesson).
+    """
+    import universes as un
+    rates = un.sample_rates(tfilt)
+    if not rates or not len(df):
+        return df
+    bad = un.check_sample_rates(tfilt)
+    if bad:
+        # Dead configuration that reads as though it were doing something -- the
+        # EURONEXT/OSE defect class. Raise rather than warn: it is a registry typo, and
+        # the run costs hours.
+        raise Exception(
+            'universe %r samples exchange code(s) %s that it does not wire (%s). A rate '
+            'keyed on an unwired code is dead configuration -- fix universes.UNIVERSES.'
+            % (tfilt, bad, ' '.join(un.exchanges(tfilt) or ())))
+    import carveOut as _co
+    norm = df['name'].map(_co._norm_issuer_name) if 'name' in df.columns else None
+    if norm is None:
+        raise Exception(
+            'universe %r samples on the issuer NAME but the pre-filter table has no '
+            '`name` column -- refusing to fall back to a per-symbol sample, which would '
+            'split every cross-listing group and silently stop testing dedup.' % tfilt)
+    # PASS 1 -- collect the venues each issuer NAME occupies, so its rate can be resolved
+    # once for the whole group instead of once per row.
+    venues = {}
+    for code, nm in zip(df['exchangeShortName'], norm):
+        if nm:
+            venues.setdefault(nm, set()).add(code)
+    # PASS 2 -- one decision per issuer, applied to every one of its rows.
+    decision = {nm: un.issuer_in_sample(nm, un.most_permissive_rate(cs, rates))
+                for nm, cs in venues.items()}
+    keep = [True if not nm else decision[nm] for nm in norm]   # unnamed -> keep
+    out = df[pd.Series(keep, index=df.index)].reset_index(drop=True)
+    by_code = out['exchangeShortName'].value_counts().to_dict()
+    # The cross-rate count is REPORTED because it is the number the first cut got wrong:
+    # an operator can see from the banner that upward closure actually fired.
+    cross = sum(1 for cs in venues.values()
+                if len({rates.get(c) for c in cs}) > 1)
+    print('UNIVERSE %s: issuer-name sample kept %d of %d exchange-filtered row(s) -- %s '
+          '(%d issuer name(s), %d of them straddling two sample rates and therefore '
+          'resolved at the most permissive one)'
+          % (tfilt, len(out), len(df),
+             ' '.join('%s=%d' % (c, by_code.get(c, 0))
+                      for c in sorted(set(df['exchangeShortName']))),
+             len(venues), cross), flush=True)
+    return out
+
+
 def tickerfilterWrapper(tickdf,tfilt,sfilt,mcapf,baseurl,api_key):
     """Apply a named universe scope from `universes.UNIVERSES` to the pre-filter table.
 
@@ -983,6 +1068,74 @@ def tickerfilterWrapper(tickdf,tfilt,sfilt,mcapf,baseurl,api_key):
     else:
         df = filter_tickers(tickers_df_stock, 'exchangeShortName', list(codes),
                             mcapf, api_key)
+        df = _apply_issuer_sample(df, tfilt)
+
+    # ------------------------------------------------------------------------------ #
+    #  MUST-INCLUDE UNION, AFTER the base rule and OUTSIDE its exchanges.             #
+    #                                                                                #
+    #  Placed here rather than inside the branch above so it applies to whatever      #
+    #  membership rule ran, and drawn from `tickers_df_stock` -- the FULL              #
+    #  post-instrument-filter table -- not from `df`.  Two consequences, both wanted:   #
+    #    * a pinned case on an exchange the universe does not wire (EMBELL.ST on STO,   #
+    #      EIN.DE / DRW3.DE on XETRA) still arrives, so observing it costs 1 name        #
+    #      instead of the 1,375 that wiring STO+XETRA would cost;                       #
+    #    * a pinned symbol the INSTRUMENT FILTER removes stays removed.  That is not a   #
+    #      leak in the pin, it is the filter doing its job on the one code path (see the #
+    #      note above), and it is REPORTED below rather than silently absorbed.          #
+    #                                                                                #
+    #  AND THE PINS ARE GROUP-CLOSED, ADDED 2026-08-06 (review).  A pin names a SYMBOL,  #
+    #  but every case it exists to observe is about a GROUP -- so a pin that arrives      #
+    #  without its siblings is a pin that observes nothing.  Closing the base rule        #
+    #  upward fixes the pinned groups that STRADDLE two rates (robertet, peyto), but NOT   #
+    #  the ones whose lines share one rate and fall out together: `t rowe price`           #
+    #  (0KNY.L pinned, TROW not), `sk hynix` (SKHY, no 000660.KS), `f g annuities life`     #
+    #  (FG, no FGN).  Those arrived as SINGLETONS -- and a singleton IOB control is not a   #
+    #  control.  So each pinned symbol also pulls its SAME-NAME siblings.                  #
+    #                                                                                #
+    #  RESTRICTED TO THE UNIVERSE'S OWN EXCHANGES, deliberately: an unwired venue is       #
+    #  reachable for an EXPLICIT pin (that is the point above) but must not be reachable   #
+    #  by implication, or one pinned Samsung line would drag in every Samsung listing FMP   #
+    #  serves on a dozen venues. Only applied where a `sample` exists, so no other          #
+    #  universe's membership moves by a single row.                                        #
+    # ------------------------------------------------------------------------------ #
+    pinned = un.must_include(tfilt)
+    if pinned:
+        want = set(pinned)
+        siblings = set()
+        if un.sample_rates(tfilt) and 'name' in tickers_df_stock.columns:
+            import carveOut as _co
+            _norm = tickers_df_stock['name'].map(_co._norm_issuer_name)
+            pin_names = {n for n in _norm[tickers_df_stock['symbol'].isin(list(pinned))]
+                         if n}
+            siblings = set(tickers_df_stock['symbol'][
+                _norm.isin(pin_names)
+                & tickers_df_stock['exchangeShortName'].isin(list(codes))]) - want
+            want |= siblings
+        extra = tickers_df_stock[
+            tickers_df_stock['symbol'].isin(list(want))
+            & ~tickers_df_stock['symbol'].isin(set(df['symbol']))]
+        if siblings:
+            print('UNIVERSE %s: must-include GROUP CLOSURE -- %d same-issuer sibling(s) of '
+                  'a pinned symbol pulled in so no pinned group arrives as a singleton: %s'
+                  % (tfilt, len(siblings), ', '.join(sorted(siblings))), flush=True)
+        absent = sorted(set(pinned) - set(df['symbol']) - set(extra['symbol']))
+        added_pins = set(extra['symbol']) & set(pinned)
+        if len(extra):
+            df = pd.concat([df, extra], ignore_index=True)
+        print('UNIVERSE %s: must-include -- %d of %d pinned symbol(s) added by the union '
+              '(%d already selected by the base rule), plus %d sibling(s); %d row(s) total'
+              % (tfilt, len(added_pins), len(pinned),
+                 len(pinned) - len(added_pins) - len(absent),
+                 len(extra) - len(added_pins), len(extra)), flush=True)
+        if absent:
+            # LOUD, because the entire value of a pinned case is that it is OBSERVED.
+            # A pin can legitimately vanish (delisted, renamed, moved venue) or be
+            # removed by the instrument filter -- both are findings, neither is silent.
+            print('!!! UNIVERSE %s: %d pinned symbol(s) did NOT resolve -- %s. Each one is '
+                  'a case this run was built to OBSERVE, so the observation is MISSING, '
+                  'not merely absent: check whether it left FMP\'s list or was removed by '
+                  'filter_non_common_instruments before reading the dedup results.'
+                  % (tfilt, len(absent), ', '.join(absent)), flush=True)
 
     # The debt/preferred/warrant/rights filter (audit M-5) has ALREADY run, above, on the
     # FULL type=='stock' table -- see the note there. It used to run HERE, after the
