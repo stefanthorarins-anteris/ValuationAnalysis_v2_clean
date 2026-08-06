@@ -1,5 +1,7 @@
 import calcMetrics as cm
 import calcScore as cs
+import createDicts as cdic
+import meanBars as mb
 import nan_policy as npol
 import getData_gen as gdg
 import postBoRank as pbr
@@ -287,6 +289,30 @@ def postBoWrapper(dmdic, as_of=None):
     BoScore_df = cs.simpleScore_fromDict(bmdf, bmav, bmda, n, as_of=as_of,
                                         freq_map=_freq_map)
 
+    # --- MEAN-BAR FAILSAFE BAND (register C-12, CEO 2026-08-06) ----------------
+    # The seven `mean` criteria are scored against STORED CONSTANTS since C-12, which is
+    # what removes the sample-dependence and the pooled-median lookahead -- but a constant
+    # cannot notice that the world moved.  So the run MEASURES each bar's realised pass
+    # rate on the population Stage-1 actually scored and WRITES IT DOWN.
+    # IT NEVER CHANGES A BAR, and that is the design, not a limitation: a bar that re-fits
+    # itself to hold a pass rate IS the pooled median with a longer time constant.
+    # HERE, and not in the emission block below, because this is the one place the FULL
+    # post-manual-elimination panel is in memory -- the cohorts and the top-100 are
+    # selected samples, and a bar judged on a selected sample is judged on the selection.
+    # ONCE per run: postBoWrapper runs exactly once, the same reason npol.reset_counts()
+    # sits above.  Best-effort inside meanBars; it cannot abort the run.
+    _mean_dict = cdic.getDicts()[3]
+    mb.emit_calibration(
+        bmdf,
+        {'m' + k[0].upper() + k[1:]: _mean_dict[k]['Sign'] for k in _mean_dict},
+        universe=(dmdic.get('universe') or dmdic.get('tickerfilter') or 'unknown'),
+        #  THE ONLY OPT-IN IN THE REPO (2026-08-06).  This is the production scoring seam, so
+        #  this is the one report allowed to advance or seed the breach-streak hysteresis.
+        #  Every offline/research caller reaches `emit_calibration` through its default
+        #  `streak_participant=False` and therefore cannot chain a streak off a research panel
+        #  -- see meanBars._prior_streaks for the `_unknown`-basename hole this closes.
+        streak_participant=True)
+
     # --- Phase-1 cohort carve-out (BEFORE the head(100) selection) -------------
     # Partition the full BoScore-ranked universe into a GENERAL pool + three
     # disjoint side-cohorts (REITs / Mining / investment vehicles) and apply a
@@ -303,6 +329,10 @@ def postBoWrapper(dmdic, as_of=None):
     # small/degenerate cohort (e.g. qcut on ~10 names) can crash at most its own
     # side-list -- never the general ranking that already succeeded.
     carve = None
+    #  Did the PRE-veto short-pool warning already fire?  Read by the post-veto re-check
+    #  below so a pool that was short before the veto is not warned about twice with the
+    #  same number, while a pool the VETO shortened is always reported.
+    _short_warned = False
     try:
         import carveOut as co
         carve = co.partition_universe(BoScore_df, cdx_df, dmdic.get('Tickers_df'),
@@ -318,6 +348,7 @@ def postBoWrapper(dmdic, as_of=None):
               f"below_floor={diag['n_below_floor']}, unknown_mcap_kept={diag['n_unknown_mcap']})",
               flush=True)
         if gp_count < 100:
+            _short_warned = True
             print(f"CARVE-OUT WARNING: general pool has only {gp_count} names (<100); "
                   f"top-100 selection is short -- top-20 may not fully fill.", flush=True)
     except Exception as e:
@@ -345,6 +376,61 @@ def postBoWrapper(dmdic, as_of=None):
         carve = None
         general_scores = BoScore_df
         gp_count = len(general_scores)
+
+    # --- STAGE-1 RED-FLAG VETO (CEO, 2026-08-05) -- FLAG DEFAULT OFF -----------
+    # Ejects a name that persistently fails ANY of five solvency / earnings-reality flags,
+    # BEFORE the head(100) and head(25) cuts, on ALL SIX POOLS.  The mechanism, the five flags,
+    # the `<=1 of 8` fail definition and why it is not `psbrfilter` are in `stage1_veto`.
+    # WITH THE FLAG OFF THIS IS A NO-OP and the pipeline is bit-identical -- `apply_veto` returns
+    # its input frame unchanged, so the `try` below cannot alter a shipped run today.
+    # GUARDED like the carve-out, and for the same reason: the veto must never be able to destroy
+    # the main deliverable.  A failure (e.g. an older panel with no `uInterestCoverage` column)
+    # degrades to the UN-VETOED pool with a loud warning, never to a crash.
+    veto_reports = {}
+    _gp_pre_veto = gp_count
+    try:
+        import stage1_veto as sv
+        general_scores, _vrep = sv.apply_veto(general_scores, bmdf, pool_label='general')
+        veto_reports['general'] = _vrep
+        if carve is not None and _vrep['enabled']:
+            #  ONE call per cohort: it returns (kept, report) together, so the report's `n_in`
+            #  is the PRE-veto count.  Calling it twice would report the post-veto pool as the
+            #  input and every cohort would look like it ejected nobody.
+            _vetoed = {lab: sv.apply_veto(cs, bmdf, pool_label=lab)
+                       for lab, cs in carve['cohorts'].items()}
+            carve['cohorts'] = {lab: kept for lab, (kept, _r) in _vetoed.items()}
+            veto_reports.update({lab: r for lab, (_k, r) in _vetoed.items()})
+        gp_count = len(general_scores)
+    except Exception as _e:
+        print('WARNING: STAGE-1 VETO DID NOT RUN -- pools are UN-VETOED this run (%s: %s)'
+              % (type(_e).__name__, _e), file=sys.stderr, flush=True)
+        print('WARNING: STAGE-1 VETO DID NOT RUN -- pools are UN-VETOED this run (%s: %s)'
+              % (type(_e).__name__, _e), flush=True)
+        veto_reports = {}
+
+    # --- SHORT-POOL RE-CHECK, AFTER THE VETO (reviewer, 2026-08-05) -------------
+    # THE DEFECT THIS CLOSES: the carve-out's `<100` warning above fires on the PRE-veto
+    # count and was never re-checked, so with the flag ON the veto could drop the general
+    # pool under 100 and the run would ship a short top-100 SILENTLY -- the one thing the
+    # original warning exists to prevent.
+    # THE CAUSE IS PART OF THE MESSAGE, not decoration: a pool short because we
+    # DELIBERATELY ejected red-flag names is a working veto and may be entirely acceptable;
+    # a pool short because the universe was thin is a data problem. A bare count cannot
+    # tell those apart, and they call for opposite responses.
+    _veto_ejected = _gp_pre_veto - gp_count
+    if gp_count < 100 and (_veto_ejected > 0 or not _short_warned):
+        if _veto_ejected > 0 and _gp_pre_veto >= 100:
+            _cause = (f"THE STAGE-1 VETO CAUSED THE SHORTFALL: it ejected {_veto_ejected} "
+                      f"of {_gp_pre_veto} names, which were enough before the veto ran")
+        elif _veto_ejected > 0:
+            _cause = (f"BOTH causes: the pool was ALREADY short at {_gp_pre_veto} before the "
+                      f"veto, and the veto then ejected {_veto_ejected} more")
+        else:
+            _cause = ("the STAGE-1 VETO ejected 0 names -- the shortfall is the universe/carve, "
+                      "not the veto")
+        print(f"SHORT-POOL WARNING: general pool has only {gp_count} names (<100) going into "
+              f"head(100); top-100 selection is short -- top-20 may not fully fill. {_cause}.",
+              flush=True)
 
     # --- MAIN ranking + resdic: built first, independent of the cohorts --------
     BoS_dftop100 = general_scores.head(100)
@@ -383,7 +469,11 @@ def postBoWrapper(dmdic, as_of=None):
 
     resdic = {**rankdic, **{'BoS_dftop100': BoS_dftop100, 'BoM_dftop100': BoM_dftop100, 'cdx_dftop100': cdx_dftop100,
                           'BoScore_df': BoScore_df, 'psbrfilter': psbrfilter,  # NOT WIRED — see above comment
-                          'general_pool_count': gp_count}}
+                          'general_pool_count': gp_count,
+                          # per-pool veto report (see stage1_veto). {} when the flag is off or
+                          # the layer did not run -- so a reader can tell "no ejections" from
+                          # "the veto was not applied", which a bare count could not.
+                          'stage1_veto': veto_reports}}
 
     # --- Side-lists: guarded best-effort, AFTER resdic is complete -------------
     # Only runs if the partition succeeded.  Per-cohort try/except so one

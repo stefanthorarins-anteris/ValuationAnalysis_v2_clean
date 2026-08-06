@@ -36,20 +36,33 @@ from scipy.stats import spearmanr
 warnings.filterwarnings("ignore")
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import stage2_pit as s2
+import scoringWeights as sw          # SINGLE SOURCE OF TRUTH for every scoring weight
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PICKLE = os.path.join(
     REPO, "Boresults_dic-fmp_stock_NA1_EU1_all_2026-01-09_len8106_manelim3692_fails1725.pickle")
 
-WEIGHTS = {  # from createDicts.getPostDict (the AggScore weights)
-    "RoA": 2, "earnYield": 2, "grahamNumberToPrice": 1, "bVpRatio": 0.25,
-    "revenueGrowth": 1, "incomeQuality": 1, "returnOnEquity": 1,
-    "returnOnCapitalEmployed": 1, "currentRatio": 0.35, "grossProfitMargin": 0.75,
-    "freeCashFlowYield": 2, "freeCashFlowPerShareGrowth": 1.5, "tbVpRatio": 0.5,
-    "EPStoEPSmean": 0.5, "priceGrowth": 0.5, "Altman-Z": 0.5, "Piotroski": 0.75,
-    "CycleHeat": -0.5,
-    # excluded from panel: DcfToPrice(0.35, unavailable), marketCapRevQuants(0.25), BoScore(0.1)
-}
+#  THIS ARM RUNS ON THE **LEGACY** VECTOR, NOT THE DEPLOYED ONE (register I-4, 2026-08-05).
+#  It used to hold a SIXTH hand-copied weight table, commented "from createDicts.getPostDict
+#  (the AggScore weights)" -- i.e. labelled as though it were deployed.  It was byte-identical
+#  to `scoringWeights.LEGACY`, the pre-2026-07-14 vector, and the two differ materially (e.g.
+#  DcfToPrice 0.35 legacy vs 0.000 deployed).  The copy is now GONE: this reads the named
+#  vector directly, so it cannot drift, and the assertion below makes it impossible for a
+#  later reader to mistake this arm's basis for the deployed one.
+#
+#  IF YOU WANT THE DEPLOYED VECTOR HERE, say so explicitly -- import `sw.DEPLOYED`.  Silently
+#  swapping it would change what this whole analysis measures.
+_ALL_LEGACY_WEIGHTS = dict(sw.LEGACY)
+assert _ALL_LEGACY_WEIGHTS != dict(sw.DEPLOYED), (
+    "model_vs_metric is a LEGACY-vector arm; if LEGACY ever equals DEPLOYED the label here "
+    "is meaningless and the arm needs re-basing deliberately, not by coincidence.")
+
+#  Excluded because the offline panel cannot supply them, NOT because they are unweighted:
+#  DcfToPrice (0.35 legacy, no PIT DCF -- BoDCF.py is broken), marketCapRevQuants (0.25,
+#  pool-relative), BoScore (0.1, a Stage-1 output).
+_NOT_ON_PANEL = ("DcfToPrice", "marketCapRevQuants", "BoScore",
+                 "shareCountChange", "longTermDebtChange")
+WEIGHTS = {k: v for k, v in _ALL_LEGACY_WEIGHTS.items() if k not in _NOT_ON_PANEL}
 
 
 def build_panel(cdx):
@@ -77,6 +90,30 @@ def build_panel(cdx):
     m["freeCashFlowPerShareGrowth"] = fcfps.groupby(df["source"]).pct_change(4)
     m["tbVpRatio"] = df["tangibleBookValuePerShare"] / df["price"]
     m["priceGrowth"] = -g["price"].pct_change(1)
+    #  2026-08-06.  `interestCoverage` and `navPerShareGrowth` joined METRIC_KEYS, so they are
+    #  in `WEIGHTS`/`METRICS` (LEGACY carries every canonical key, at 0.000 for these two) and
+    #  every consumer that indexes the panel by `METRICS` -- persistence_and_variance,
+    #  correlation_matrix, information_coefficient, and new_scorer_bench's W_THEORY channels --
+    #  demanded a column that did not exist.  It raised (KeyError in test_pit_engine) rather
+    #  than skipping, which is the good failure mode; the panel is the thing that was missing.
+    #
+    #  BOTH ARE PANEL-RESOLUTION ANALOGUES, NOT the live reductions.  This panel is per-QUARTER
+    #  by construction (see the module docstring: "metric definitions mirror the Stage-2 loop at
+    #  per-quarter resolution"), so a head(nq)-mean or a window-endpoint pair has no meaning
+    #  here -- the same licence under which `revenueGrowth` is a 4-quarter pct_change rather
+    #  than the live windowed reduction.  What must match live is the GUARD, because that is
+    #  what decides which rows exist at all:
+    #    * interestCoverage refuses `interestExpense <= 0` (stage2_metrics.interest_coverage:
+    #      FMP reports 0 for a debt-free name, and dividing would mark it up or down on an
+    #      artifact of having no debt).  A negative operatingIncome is NOT refused.
+    #    * navPerShareGrowth refuses a non-positive book value at either end (a negative book
+    #      value is a different object, not a bad score) -- masked here BEFORE the pct_change so
+    #      neither endpoint of the growth can be non-positive.
+    oi = df["operatingIncome"]
+    ie = df["interestExpense"].where(df["interestExpense"] > 0)
+    m["interestCoverage"] = oi / ie
+    bvps = df["bookValuePerShare"].where(df["bookValuePerShare"] > 0)
+    m["navPerShareGrowth"] = bvps.groupby(df["source"]).pct_change(4)
     # Altman-Z (row-wise)
     ta = df["totalAssets"].replace(0, np.nan)
     tl = df["totalLiabilities"].replace(0, np.nan)

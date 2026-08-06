@@ -53,13 +53,19 @@ YAHOO_FETCH_SPACING_S = 0.6
 #  `shareCountChange` / `longTermDebtChange` (E-2, 2026-08-04) had to be added in BOTH places,
 #  and the coverage guard lives in reviewReference
 #  (`assert_allow_list_covers_the_weighted_metrics`).  `test_e2_weight_vector` asserts the two
-#  lists agree, so they cannot drift apart silently again.
+#  lists agree, so they cannot drift apart silently again.  `grahamNumberToPrice` (D-10,
+#  2026-08-05) is the second metric to be added in both places; see reviewReference for why.
 PLAYBOOK_METRICS = [
     'returnOnCapitalEmployed', 'returnOnEquity', 'RoA', 'grossProfitMargin',
     'freeCashFlowYield', 'currentRatio', 'earnYield', 'revenueGrowth',
     'incomeQuality', 'Altman-Z', 'Piotroski', 'bVpRatio', 'tbVpRatio',
+    'grahamNumberToPrice',
     'freeCashFlowPerShareGrowth', 'moatScore', 'CycleHeat',
     'shareCountChange', 'longTermDebtChange',
+    #  2026-08-06: `interestCoverage` (S Tier 1, general + Mining/REIT/FIN-2) and
+    #  `navPerShareGrowth` (FIN-1's R Tier 1).  See reviewReference for the proxy caveat that
+    #  must travel with the second one.
+    'interestCoverage', 'navPerShareGrowth',
 ]
 
 COHORTS = ['REIT', 'Mining', 'InvestmentVehicle', 'FinManager', 'BalanceSheetFin']

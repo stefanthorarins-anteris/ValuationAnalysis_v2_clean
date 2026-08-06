@@ -164,6 +164,22 @@ STAGE2_METRIC_SPEC = {
                              'Piotroski p5 (falling leverage) made continuous: the CHANGE '
                              'in a stock/stock ratio, so scale-free on both sides; the '
                              'rpy-row lag carries the frequency'),
+    #  THE S-BLOCK TIER-1 INSTRUMENT (2026-08-06).  Both legs are the SAME PERIOD'S FLOW, so
+    #  the ratio is frequency-invariant and takes NO per-quarter factor -- deliberately the
+    #  same declaration Stage-1 makes for its own `uInterestCoverage` (createDicts: "BOTH LEGS
+    #  ARE THE SAME PERIOD'S FLOW ... it gets NO reporting_period.STAGE1_FLOW_CORRECTION
+    #  entry").  The two stages agreeing on the frequency treatment is not cosmetic: they read
+    #  the same two fields, and a factor on one side only would make a semi-annual filer's
+    #  Stage-1 and Stage-2 coverage readings differ by 2x.
+    'interestCoverage':     (WINDOW_SCORING, FREQ_SCALE_FREE,
+                             'operatingIncome (flow) / interestExpense (flow), same period -- '
+                             'the scale cancels, exactly as in the Stage-1 criterion'),
+    #  FIN-1's R-block Tier-1 carrier (2026-08-06).  See scoringWeights D.4 for WHY this is
+    #  not the price-to-NAV metric that was asked for.
+    'navPerShareGrowth':    (WINDOW_SCORING, FREQ_SCALE_FREE,
+                             'a ratio of two book-values-per-share (stock/stock) raised to '
+                             '1/years -- the scale cancels and the ANNUALISATION carries the '
+                             'frequency, because `years` is derived from the row count and rpy'),
     'marketCapRevQuants':   (WINDOW_POINT_IN_TIME, FREQ_NOT_A_TIME_SERIES,
                              'a POOL-level market-cap quartile code read off the newest row'),
     'DcfToPrice':           (WINDOW_SCORING, FREQ_NOT_A_TIME_SERIES,
@@ -650,6 +666,102 @@ def free_cash_flow_per_share_growth(tempfcf, tempshares, nq,
                    tempcdx=tempcdx, scoring_nq=nq)
 
 
+def interest_coverage(tempcdx, nq, rpy=rp.DEFAULT_ROWS_PER_YEAR):
+    """operatingIncome / interestExpense, head(nq) mean -- the S block's Tier-1 instrument
+    (call site: postBoRank._compute_ticker_metrics).
+
+    "Can one period's operating profit cover one period's interest bill?"  This is the
+    question a STOCK leverage ratio cannot answer, and until 2026-08-06 the Stage-2 solvency
+    block had no direct instrument for it at all -- `currentRatio` is a liquidity proxy and
+    `Altman-Z` is a 1968 discriminant fitted on US manufacturers.
+
+    Both legs are the SAME PERIOD'S FLOW, so the ratio is frequency-invariant: it takes no
+    per-quarter factor, only the averaging window scales.  That matches Stage-1's own
+    `uInterestCoverage`, which deliberately has no STAGE1_FLOW_CORRECTION entry.
+
+    THE GUARD IS THE SUBSTANTIVE HALF, and it is the same one Stage-1 makes (calcMetrics):
+    **rows with `interestExpense <= 0` are REFUSED (NaN), not scored.**  FMP reports 0 for a
+    DEBT-FREE name, so dividing would give +/-inf -> a debt-free company would be marked down
+    or up on an arithmetic artifact of having no debt.  Refusing the row hands the leverage
+    question to the rest of the block instead.  A NEGATIVE interestExpense (a net-interest-
+    income presentation, which is why this metric is out of domain for FIN-3 altogether) is
+    refused on the same line.
+
+    A negative `operatingIncome` over a positive interest bill is NOT refused: an operating
+    loss that cannot service the debt is a real and adverse reading, and it is the exact
+    reading this block exists to catch.
+    """
+    oi = pd.to_numeric(tempcdx["operatingIncome"], errors="coerce")
+    ie = pd.to_numeric(tempcdx["interestExpense"], errors="coerce")
+    #  refuse the row rather than divide: see the guard note above
+    ie = ie.where(ie > 0)
+    return _reduce((oi / ie).replace([np.inf, -np.inf], np.nan),
+                   'interestCoverage', rp.scale_window(nq, rpy), rpy,
+                   tempcdx=tempcdx, scoring_nq=nq)
+
+
+def nav_per_share_growth(tempcdx, nq, rpy=rp.DEFAULT_ROWS_PER_YEAR):
+    """Annualised growth of BOOK VALUE PER SHARE across the scoring window -- FIN-1's R-block
+    Tier-1 carrier (call site: postBoRank._compute_ticker_metrics).
+
+        (BVPS_newest / BVPS_oldest) ** (1 / years) - 1,   years = (rows - 1) / rpy
+
+    **THIS IS A PROXY, AND THE NAME OVERSTATES IT.**  The NAV leg is GAAP
+    `bookValuePerShare`, which EQUALS net asset value per share only under US
+    investment-company accounting (ASC 946, where the portfolio is carried at fair value).
+    For every other vehicle in the cohort it is an APPROXIMATION whose error is whatever the
+    balance sheet carries at cost rather than at fair value.  No endpoint this pipeline
+    fetches publishes a real NAV, so no exact form is available; do not read, quote or render
+    this column as a fund-published NAV.  (reviewReference.METRIC_BASIS repeats the caveat on
+    the review page, which is the artifact the CEO actually reads.)
+
+    WHAT IT MEASURES, AND WHY IT IS NOT `bVpRatio` AGAIN.  It is deliberately NOT the
+    price-to-NAV DISCOUNT -- that level is already carried by `bVpRatio` (P-A), and a
+    discount-persistence column measures rho = +0.806 against it.  This asks whether the NAV
+    is REAL: a stated NAV that is an accounting artifact fails to COMPOUND, whatever the
+    discount to it.  Measured on the 88-name FIN-1 cohort: computable on 87, and
+    rho = -0.277 against `bVpRatio`.  Full reasoning in scoringWeights D.4.
+
+    REFUSED (NaN) when either endpoint is absent or <= 0.  A non-positive book value makes the
+    ratio meaningless rather than merely large -- and for a vehicle whose thesis IS its book
+    value, a negative one is a different object, not a bad score.  Fractional powers of a
+    negative base are also undefined, so there is nothing to compute.  NaN then imputes to the
+    column MEDIAN like every other Stage-2 metric; it is never 0.0, which on a positive-weight
+    column would assert "did not compound" -- a judgement made from missing data.
+
+    Both legs are per-share stocks, so the ratio is scale-free and currency-invariant; the
+    ANNUALISATION carries the frequency, because `years` is derived from the row count and
+    `rpy` (a 16-row quarterly window and an 8-row semi-annual one are both 4 years).
+    """
+    try:
+        bvps = pd.to_numeric(tempcdx["bookValuePerShare"], errors="coerce")
+        bvps = bvps.replace([np.inf, -np.inf], np.nan)
+        w = rp.scale_window(nq, rpy)
+        #  POLICY GATE, the `eps_to_eps_mean` idiom: this metric is an ENDPOINT PAIR, not a
+        #  reduction, so it cannot be expressed through `_reduce` -- but it IS a registered
+        #  windowed metric and must therefore take the same NAME-level calendar-gap refusal as
+        #  every other one.  Only the NaN-ness of `_gate` is used; its value (the mean BVPS
+        #  over the window) is not the metric.
+        _gate = _reduce(bvps, 'navPerShareGrowth', w, rpy, tempcdx=tempcdx, scoring_nq=nq)
+        if pd.isna(_gate):
+            return np.nan
+        if w and len(bvps) > w:
+            bvps = bvps.head(w)
+        rows = len(bvps)
+        if rows < 2:
+            return np.nan
+        newest = _finite(bvps.iloc[0])
+        oldest = _finite(bvps.iloc[rows - 1])
+        if newest is None or oldest is None or newest <= 0 or oldest <= 0:
+            return np.nan
+        years = (rows - 1) / float(rpy)
+        if years <= 0:
+            return np.nan
+        return (newest / oldest) ** (1.0 / years) - 1.0
+    except Exception:
+        return np.nan
+
+
 def tbv_p_ratio(tempcdx, nq, rpy=rp.DEFAULT_ROWS_PER_YEAR):
     """Tangible book value per share / price, head(nq) mean
     (call site: postBoRank._compute_ticker_metrics).
@@ -1083,6 +1195,35 @@ def share_count_change(tempcdx, rpy=rp.DEFAULT_ROWS_PER_YEAR):
         return np.nan
 
 
+#  The B-8 sibling fields, named once.  `totalDebt` and `shortTermDebt` were captured on
+#  2026-08-05 and are ABSENT FROM EVERY EXISTING PICKLE, so every reader of this must treat
+#  "column not on the frame" as NO VERDICT rather than as evidence either way.
+_B8_DEBT_SIBLINGS = ('totalDebt', 'shortTermDebt')
+
+
+def _long_term_debt_undisclosed(row):
+    """Is this row's `longTermDebt == 0` CONTRADICTED by a sibling debt field?
+
+    True  -- longTermDebt is exactly 0 while some sibling is strictly positive: the entity
+             is levered somewhere, so the zero is non-disclosure/misallocation, not
+             debt-freedom.
+    False -- everything else, INCLUDING the case where no sibling is present at all.  That
+             degradation is the point: on a panel without the siblings this function can
+             never fire and callers behave exactly as they did before B-8.
+    """
+    ltd = _finite(row.get("longTermDebt") if hasattr(row, "get") else row["longTermDebt"])
+    if ltd is None or ltd != 0:
+        return False
+    for col in _B8_DEBT_SIBLINGS:
+        try:
+            sib = _finite(row[col])
+        except (KeyError, IndexError):
+            continue          # column absent from this panel -> no verdict from it
+        if sib is not None and sib > 0:
+            return True
+    return False
+
+
 def long_term_debt_change(tempcdx, rpy=rp.DEFAULT_ROWS_PER_YEAR):
     """YoY change in the long-term-debt-to-assets RATIO -- Piotroski p5 made continuous
     (call site: postBoRank._compute_ticker_metrics).
@@ -1111,11 +1252,30 @@ def long_term_debt_change(tempcdx, rpy=rp.DEFAULT_ROWS_PER_YEAR):
     upstream zero-fill to undo, but the consequence must be stated plainly rather than left
     implied: **if FMP's 0 ever conflates "has no long-term debt" with "did not disclose it",
     this metric reads the second as the first, and the -0.15 weight then awards a PASS for
-    missing data -- in the one cohort where leverage IS the solvency signal.** That is the
-    exact failure mode this module refuses everywhere else (see the piotroski note above), and
-    it is unguardable from inside this function: the two cases are the same byte on the wire.
-    Distinguishing them needs a provider-level presence flag, which is a data-acquisition
-    question, not a metric one.
+    missing data -- in the one cohort where leverage IS the solvency signal.**
+
+    THE NON-DISCLOSURE DISCRIMINATOR (register B-8, CEO ruling 2026-08-05).  The note above
+    said the two cases are "the same byte on the wire".  They are not, once the SIBLING debt
+    fields are on the frame: a row with `longTermDebt == 0` while `totalDebt > 0` (or
+    `shortTermDebt > 0`) is levered somewhere, so its zero is NON-DISCLOSURE OR
+    MISALLOCATION, not a debt-free balance sheet -- whereas all of them at zero is genuinely
+    unlevered.  RULING: the non-disclosure case is **NaN**, i.e. the metric is UNAVAILABLE
+    and takes the existing secondary (column-median) NaN treatment.  ABSENCE IS NOT A PASS;
+    it is the -0.15 weight that makes the distinction directional, so conflating them hands
+    a free pass to non-disclosers.
+
+    DEGRADATION IS THE NORMAL CASE TODAY, and it is deliberate.  `totalDebt` /
+    `shortTermDebt` were captured on 2026-08-05 and **A SAVED PICKLE CAN NEVER GAIN A
+    COLUMN**, so they are ABSENT FROM EVERY EXISTING PANEL.  When neither sibling is present
+    the discriminator cannot fire and this function behaves EXACTLY AS IT DID BEFORE -- a
+    reported zero stays a real observation.  So this change is unexercisable on saved data
+    and only becomes live after the next full fetch; the test pins both directions.
+    A PRESENT-BUT-ZERO sibling is evidence FOR debt-freedom and correctly does not fire.
+
+    STILL OPEN, and NOT closed by this: `piotroski`'s p5 reads the same conflated zero and
+    fails `0 < 0` forever on 476 sources (6.17%).  The identical discriminator would fix it,
+    but p5 is a component of a metric this project is deliberately only MIMICKING (D-9), so
+    it is a separate ruling, not a silent ride-along on this one.
     """
     try:
         rows = _yoy_rows(tempcdx, rpy)
@@ -1129,6 +1289,10 @@ def long_term_debt_change(tempcdx, rpy=rp.DEFAULT_ROWS_PER_YEAR):
         ltd_now = _finite(curr["longTermDebt"])
         ltd_then = _finite(prev["longTermDebt"])
         if ltd_now is None or ltd_then is None:
+            return np.nan
+        # B-8: a zero that the sibling debt fields CONTRADICT is non-disclosure -> NaN.
+        # Absent siblings (every saved pickle) -> no verdict -> unchanged behaviour.
+        if _long_term_debt_undisclosed(curr) or _long_term_debt_undisclosed(prev):
             return np.nan
         return ltd_now / ta_now - ltd_then / ta_then
     except Exception:

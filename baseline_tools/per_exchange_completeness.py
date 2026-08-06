@@ -92,6 +92,12 @@ STAGE2_INPUTS = {
     'tbVpRatio':                  ['tangibleBookValuePerShare', 'price'],
     'EPStoEPSmean':               ['netIncome', 'weightedAverageShsOut'],
     'CycleHeat':                  ['netIncome', 'weightedAverageShsOut', 'date'],
+    #  2026-08-06.  Without these two the completeness report SILENTLY omitted them: line ~148
+    #  builds its cdx column set from this dict's VALUES, so a missing key drops the raw legs
+    #  from the panel and the metric simply never appears -- no error, just an under-reported
+    #  coverage table for the S block's new Tier-1 instrument.
+    'interestCoverage':           ['operatingIncome', 'interestExpense'],
+    'navPerShareGrowth':          ['bookValuePerShare'],
     'DcfToPrice':                 ['LIVE_DCF_ENDPOINT'],
     'BoScore':                    ['STAGE1_SCORE'],
     'priceGrowth':                ['price'],

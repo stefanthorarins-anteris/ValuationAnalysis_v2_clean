@@ -396,7 +396,6 @@ def build_bometric_rows(tempfund, tempMetric_df, rpy, n=1, dicts=None):
         restr = key
         strUp = ratioOpCalcDicts[key]['Upper']
         strDn = ratioOpCalcDicts[key]['Lower']
-        tf = cm.calc_simpleRatio(tempfund, strUp, strDn)
         # FLOW-SCALE CORRECTION (specialist annualization ruling, 2026-07-25).
         # A semi-annual row's flow covers 6 months, so any flow/stock or
         # stock/flow Stage-1 ratio reads ~2x (or ~0.5x) purely from the
@@ -405,9 +404,9 @@ def build_bometric_rows(tempfund, tempMetric_df, rpy, n=1, dicts=None):
         # is absolute (true annualisation) or scale-free (per-quarter basis).
         # Factor is exactly 1.0 for every unaffected key and for quarterly
         # names on the scale-free keys -> no-op.
+        # Applied inside `_form_values` below, once per FORM (the ratio itself is now built
+        # per form too -- see the I-5 note there).
         _ff = rp.stage1_flow_factor(key, rpy)
-        if _ff != 1.0:
-            tf = [(v * _ff) if v is not None else v for v in tf]
         # DOMAIN GUARD (sign-inversion fix, 2026-08-04).  A ratio whose adverse quantity is
         # in the DENOMINATOR inverts sign instead of failing, and where the ratio cannot be
         # rewritten in yield form the out-of-domain rows are refused here.  Declared per
@@ -459,16 +458,42 @@ def build_bometric_rows(tempfund, tempMetric_df, rpy, n=1, dicts=None):
             return out if b is None else cm.apply_boundary_imputation(tempfund, out, b,
                                                                      admissible=adm)
 
+        # UPPER/LOWER ARE NOW READ PER *FORM*, LIKE THE GUARD (issue I-5, 2026-08-05).
+        #
+        # WHAT THIS FIXES, AND IT IS ONE CRITERION.  `ratioOpCalcDicts` above is a MERGED dict,
+        # so a key living in two dicts collapses to ONE entry and the LAST one wins (diff).  Four
+        # keys are shared -- `bookToPrice` (mean+diff), `currentRatio` (unity+diff),
+        # `grossProfitMargin` (mean+diff) and `returnOnAssets` (base+diff) -- and for the first
+        # THREE both forms declare the SAME Upper/Lower, so reading per-form is BIT-IDENTICAL
+        # for them.  `returnOnAssets` is the exception and the reason for this change: its BASE
+        # entry declares `netIncome / totalAssets` while its DIFF entry names FMP's own
+        # `returnOnAssets` field, so the merge silently handed the Tier-S w = 1.0 BASE column the
+        # VENDOR FIELD and the declared expression was never computed.  The defect was reported
+        # in the 2026-08-04 sign-inversion pass and left in place pending a ruling; the CEO's
+        # ruling (2026-08-05) is the standing one -- "compute things we can rather than using the
+        # FMP" -- so the base column is now what it declares.
+        # MEASURED IMPACT: the two agree closely (median ratio 1.0000, 97.3% of 175,699 rows
+        # within 1%), and the sign -- which is all a `> 0` base test reads -- flips on ~26 of
+        # 175,827 rows (0.015%).  So this barely moves a score, and that is the point: the change
+        # is that the criterion computes what it says, not that the output improves.
+        # THE DIFF FORM IS UNCHANGED and still reads the vendor field, by declaration.
+        def _form_values(spec):
+            """This FORM's ratio: its own Upper/Lower, the key's flow factor, then guard."""
+            v = cm.calc_simpleRatio(tempfund, spec['Upper'], spec['Lower'])
+            if _ff != 1.0:
+                v = [(x * _ff) if x is not None else x for x in v]
+            return _guarded(v, spec)
+
         if key in BoMetric_base_dict:
-            tempMetric_df[restr] = _guarded(tf, BoMetric_base_dict[key])
+            tempMetric_df[restr] = _form_values(BoMetric_base_dict[key])
         if key in BoMetric_mean_dict:
             mrestr = "m" + restr[0].upper() + restr[1:]
-            tempMetric_df[mrestr] = _guarded(tf, BoMetric_mean_dict[key])
+            tempMetric_df[mrestr] = _form_values(BoMetric_mean_dict[key])
         if key in BoMetric_unity_dict:
             urestr = "u" + restr[0].upper() + restr[1:]
-            tempMetric_df[urestr] = _guarded(tf, BoMetric_unity_dict[key])
+            tempMetric_df[urestr] = _form_values(BoMetric_unity_dict[key])
         if key in BoMetric_diff_dict:
-            tempdf['forDiff'] = _guarded(tf, BoMetric_diff_dict[key])
+            tempdf['forDiff'] = _form_values(BoMetric_diff_dict[key])
             tf = cm.calc_diff(tempdf, 'forDiff', n, rpy=rpy)
             drestr = "d" + restr[0].upper() + restr[1:]
             tempMetric_df[drestr] = tf

@@ -149,7 +149,52 @@ def getDicts():
     #   Defensive Internal Ratio
 
     preReq_dict = {'bs': ['totalAssets', 'longTermDebt', 'inventory', 'totalStockholdersEquity', 'totalLiabilities',
-                          'totalCurrentAssets', 'totalCurrentLiabilities','propertyPlantEquipmentNet', 'otherCurrentAssets'],
+                          'totalCurrentAssets', 'totalCurrentLiabilities','propertyPlantEquipmentNet', 'otherCurrentAssets',
+                          # --- CAPTURE ONLY, NOT WIRED (2026-08-05) --------------------------
+                          # `totalDebt` and `cashAndCashEquivalents` are ALREADY IN the paid
+                          # v3/balance-sheet-statement response and were discarded at ingest, so
+                          # capturing them costs ZERO extra API calls -- the same free capture as
+                          # `eps` / `period` / `reportedCurrency` below.
+                          #
+                          # WHY THEY ARE WANTED.  Together they give the REAL OPERAND
+                          # `netDebt = totalDebt - cashAndCashEquivalents`, which is what the
+                          # three-branch leverage rule (calcMetrics.net_debt_three_branch) needs
+                          # and does not have: today it recovers sign(netDebt) as
+                          # sign(ratio) x sign(EBITDA proxy), which is unrecoverable wherever the
+                          # proxy is zero and is a proxy near zero everywhere else.
+                          #
+                          # A SAVED PICKLE CAN NEVER GAIN A COLUMN, which is the whole reason to
+                          # capture now: the upcoming fetch is the only cheap chance.  They are
+                          # ABSENT FROM EVERY EXISTING PICKLE, so NOTHING may read them yet --
+                          # DO NOT rewire the leverage rule to them until a panel that carries
+                          # them exists, or the rule becomes untestable on saved data.
+                          'totalDebt', 'cashAndCashEquivalents',
+                          # `shortTermDebt`: CAPTURE ONLY, NOT WIRED -- and it is here for
+                          # REGISTER B-8, not for the leverage rule (2026-08-05).
+                          #
+                          # B-8 IS THAT FMP CONFLATES "no long-term debt" WITH "not disclosed":
+                          # `longTermDebt` is 0.00% NaN and 25.33% EXACTLY ZERO on the local
+                          # panel, so the provider sends 0 rather than omitting the key -- which
+                          # makes `longTermDebtChange`'s NaN branch unreachable and, because that
+                          # metric carries a NEGATIVE weight, awards a PASS in FIN-1, the one
+                          # cohort where leverage IS the solvency signal.
+                          #
+                          # A KEY-PRESENCE MARKER WOULD NOT FIX IT, AND WAS DELIBERATELY NOT
+                          # BUILT.  Presence is ALREADY OBSERVABLE -- an absent key becomes NaN
+                          # when the response list is framed, so the measured 0.00% NaN rate IS
+                          # the presence measurement, and it says the key is present on every
+                          # row.  A boolean presence column would therefore be CONSTANT TRUE: it
+                          # records nothing and the next reader would trust it.  The
+                          # discriminator B-8 needs does not exist in this response.
+                          # WHAT DOES DISCRIMINATE, and it is free on this same call: a row with
+                          # `longTermDebt == 0` while `totalDebt > 0` (or `shortTermDebt > 0`) is
+                          # evidence of NON-DISCLOSURE OR MISALLOCATION, not of debt-freedom,
+                          # whereas all three at zero is a genuinely unlevered balance sheet.
+                          # That is a real test and it is offline-repairable from the pickles
+                          # once these columns exist -- which is why only the CAPTURE half rides
+                          # this fetch.  THE SCORING HALF (what `longTermDebtChange` should do
+                          # once the cross-check is available) IS DELIBERATELY NOT IN THIS BUILD.
+                          'shortTermDebt'],
                    'inc': ['netIncome', 'grossProfit', 'revenue', 'weightedAverageShsOut', 'weightedAverageShsOutDil', 'depreciationAndAmortization',
                            'sellingGeneralAndAdministrativeExpenses', 'operatingIncome','interestExpense',
                            # eps / epsdiluted: ALREADY IN the paid v3/income-statement response and
@@ -175,6 +220,14 @@ def getDicts():
                            # growth artifact.  Rebuilding it from an unrounded per-share series removes
                            # that noise.
                            'eps', 'epsdiluted',
+                           # `ebitda`: CAPTURE ONLY, NOT WIRED (2026-08-05).  Already in the paid
+                           # v3/income-statement response and discarded at ingest.  It is the
+                           # vendor's OWN EBITDA -- the quantity FMP will not tell us today, and
+                           # the reason `net_debt_three_branch` has to reconstruct the sign of
+                           # EBITDA from `operatingIncome + depreciationAndAmortization`.  With
+                           # it, that proxy (and its ~229 unrecoverable zero-proxy rows) can be
+                           # retired.  ABSENT FROM EVERY SAVED PICKLE -- capture now, wire later.
+                           'ebitda',
                            # reportedCurrency: the statement's reporting currency (USD/SEK/EUR/...).
                            # Captured (was discarded at ingest) so marketCap -- stored in this same
                            # reporting currency -- can be converted to USD for market-cap banding
@@ -269,7 +322,19 @@ def getDicts():
                             'sharesOutstanding':            {'Operation': ['d'],        'Sign': -1},
                             'EPS':                          {'Operation': ['d'],        'Sign': 1},
                             'EquityToAssets':               {'Operation': ['m'],        'Sign': 1},
-                            'netDebtToEBITDA':              {'Operation': ['u'],        'Sign': -1},
+                            # `netDebtToEBITDA` USED TO BE HERE with Operation ['u'], Sign -1.
+                            # It became a `special` (the three-branch leverage rule, CEO
+                            # 2026-08-05), and a `special`'s column is created from
+                            # BoMetric_special_dict in utils.initBoMetric_fromDict -- NOT from
+                            # this dict.  Leaving the entry here would create an EMPTY
+                            # `uNetDebtToEBITDA` column that nothing ever fills.
+                            #
+                            # NEW (2026-08-05): interestCoverage = operatingIncome /
+                            # interestExpense, tested against unity (i.e. `> 1x covered`).
+                            # Sign +1 -- more coverage is better.  BOTH LEGS ARE THE SAME
+                            # PERIOD'S FLOW, so the ratio is frequency-invariant and it
+                            # deliberately has NO reporting_period.STAGE1_FLOW_CORRECTION entry.
+                            'interestCoverage':             {'Operation': ['u'],        'Sign': 1},
                             'netProfitMargin':              {'Operation': ['m'],        'Sign': 1},
                           }
 
@@ -328,7 +393,21 @@ def getDicts():
         # separate, unmeasured channel that needs those two fields at ingest.
         # A rate > 1 is also out of the natural domain but is NOT the inversion defect and is
         # NOT guarded here: 1,267 head(8) rows, contributing only 63 passes (0.24%).
-        'effectiveTaxRate':             {'Upper': 'effectiveTaxRate',                       'Lower': 'Identity',                'Tier': 'C', 'Sign': -1, 'Guard': 'tax_rate_nonnegative'},
+        # TIER 'N' (w = 0) SINCE 2026-08-05 -- WAS TIER 'C' (w = 0.30).  CEO DECISION: the
+        # criterion is REMOVED FROM THE GATE, not repaired.  The guard above stays (it is still
+        # the right domain if the criterion is ever restored), and so does the measurement that
+        # motivated it -- what changed is the ECONOMICS.  Its apparent correlation with quality
+        # was traced to a DATA-AVAILABILITY channel, not to tax efficiency: `effectiveTaxRate`
+        # is NaN on 25.7% of rows, so the criterion was substantially measuring "does this
+        # company report a usable tax line", which is a filer/coverage property and not a
+        # statement about the business.  A criterion that scores completeness under the name of
+        # a business quantity is worse than an absent one, because its weight is spent on the
+        # wrong axis while its NAME says otherwise.
+        # NOT DELETED, for the reason DUPLICATE_DIFF_CRITERIA gives at the top of this module: a
+        # registry entry is cheap, deleting it drops a panel column (a schema change for every
+        # saved pickle) and changes the NaN-accounting readout, and keeping it means restoring
+        # the criterion is a one-character edit with this note attached.
+        'effectiveTaxRate':             {'Upper': 'effectiveTaxRate',                       'Lower': 'Identity',                'Tier': 'N', 'Sign': -1, 'Guard': 'tax_rate_nonnegative'},
         'currentRatio':                 {'Upper': 'currentRatio',                           'Lower': 'Identity',                'Tier': 'B', 'Sign': 1},
         # INVERTED: longTermDebt/totalAssets, Sign -1 (ruling Q1.2, 2026-07-26).
         # It was totalAssets/longTermDebt with Sign +1.  longTermDebt == 0 on 17,824 of
@@ -489,10 +568,80 @@ def getDicts():
         # NaN-scores-as-a-fail to reach the right answer.  The 208 missing-input rows stay NaN.
         # Predicate in calcMetrics.STAGE1_BOUNDARY_IMPUTATIONS, limit + derivation in
         # nan_policy.BOUNDARY_LIMIT.  Sign STAYS +1 and the Tier is untouched.
-        'grahamNumberToPrice':  {'Upper': 'grahamNumber',       'Lower': 'price',       'Tier': 'S', 'Sign': 1, 'Boundary': 'graham_adverse'},
-        # GUARDED EBITDA > 0, NOT inverted (sign-inversion fix, 2026-08-04).
+        # TIER 'N' (w = 0) SINCE 2026-08-05 -- WAS TIER 'S' (w = 1.0).  CEO DECISION, and it is
+        # a DEMOTION of the criterion, not a repair of it: the boundary imputation above stays
+        # exactly as it is.  Reason: the metric is REMOVED FROM THE STAGE-1 GATE while it is
+        # retained in Stage-2 (`grahamNumberToPrice`, Tier 3 there pending audit D3) -- so the
+        # two stages now DELIBERATELY disagree about it, and that asymmetry is the decision.
+        # Stage-1 is a completeness/quality gate over the whole universe, where a criterion that
+        # is undefined-and-adverse on 37.5% of rows (23,212 of 61,832 newest-8) spends a w = 1.0
+        # Tier-S budget mostly on stating that a company lost money -- which returnOnAssets,
+        # CFO and CFOlessEarnings already state at Tier S, three times over.  Stage-2 RANKS a
+        # pool of 100 survivors, where the same column is a cheapness reading among many.
+        # DO NOT "fix the inconsistency" by demoting the Stage-2 metric to match -- it is
+        # retained there by explicit CEO decision (2026-08-05).  Sigma-w for Stage-1 goes
+        # 18.65 -> 17.85 together with the dEffectiveTaxRate demotion and the interestCoverage
+        # addition; see the note on `interestCoverage` below.
+        'grahamNumberToPrice':  {'Upper': 'grahamNumber',       'Lower': 'price',       'Tier': 'N', 'Sign': 1, 'Boundary': 'graham_adverse'},
+        # NEW CRITERION (CEO, 2026-08-05).  interestCoverage = operatingIncome /
+        # interestExpense, tested against UNITY, i.e. "does one period's operating profit cover
+        # one period's interest bill at least once".  TIER 'B' (w = 0.50) -- and the tier is a
+        # DECISION, not a measurement:
+        #   * It is a meaningful leverage instrument in its own right and the pipeline had none
+        #     on the FLOW side -- every existing leverage criterion reads a STOCK
+        #     (netDebtToEBITDA, debtEquityRatio, assetsToLongTermLiabilities, EquityToAssets).
+        #     Interest coverage is the question "can it service the debt out of current
+        #     earnings", which is the one a stock ratio cannot answer.
+        #   * It must NOT outrank the existing stock-leverage criterion at Tier A, hence B and
+        #     not A: netDebtToEBITDA remains the primary leverage carrier.
+        #   * It partially offsets the 1.30 of Stage-1 weight removed the same day by demoting
+        #     `uGrahamNumberToPrice` (Tier S, 1.00) and `dEffectiveTaxRate` (Tier C, 0.30).
+        #     Sigma-w over the Stage-1 registry goes 18.65 -> 17.85.  Any tool that hard-codes
+        #     18.65 (baseline_tools/verify_part5_defects.py prints it) is now stale.
+        # BOTH LEGS ARE THE SAME PERIOD'S FLOW, so the ratio is frequency-invariant: it gets NO
+        # reporting_period.STAGE1_FLOW_CORRECTION entry, deliberately, and the unity bar is a
+        # per-period bar that means the same thing for a semi-annual filer as for a quarterly
+        # one.  (Contrast netDebtToEBITDA, a STOCK over a flow, which needs the factor.)
+        # GUARDED `interestExpense > 0`, and the guard is the substantive half of the design.
+        # FMP reports 0 for a debt-free name, so without it every debt-free company would come
+        # out +/-inf -> NaN -> FAIL a debt-safety test for having no debt -- exactly the defect
+        # `assetsToLongTermLiabilities` was inverted to fix.  Refusing the row instead hands the
+        # leverage question to `netDebtToEBITDA`, whose net-cash branch PASSES a debt-free name
+        # on an explicit operand condition.  So the two criteria are complementary by
+        # construction rather than by coincidence.
+        # SIGN +1: more coverage is better.
+        # NOT MEASURED ON A PANEL, and this is the one caveat on the whole change: both inputs
+        # are already fetched, but no saved pickle carries a `uInterestCoverage` column, so its
+        # pass rate and its correlation with the rest of the gate are UNKNOWN until the next
+        # fetch.  It is added on economic grounds, at a mid tier, for that reason.
+        'interestCoverage':     {'Upper': 'operatingIncome',    'Lower': 'interestExpense', 'Tier': 'B', 'Sign': 1, 'Guard': 'interest_expense_positive'},
+        }
+
+    BoMetric_special_dict ={
+        # THE THREE-BRANCH LEVERAGE RULE (CEO, 2026-08-05).  `netDebtToEBITDA` WAS A `unity`
+        # CRITERION HERE-ABOVE with `Guard: ebitda_positive`; it is now a `special`, because the
+        # rule the CEO ruled for has THREE branches and neither `Guard` (a refusal mask) nor
+        # `Boundary` (a finite-limit fill) can express one.  THE FULL REASONING, the four
+        # measured sign cells, why the net-cash branch must never compute the ratio, how
+        # sign(netDebt) is recovered and what that recovery cannot do lives in
+        # `calcMetrics.net_debt_three_branch` -- beside the arithmetic, once.
         #
-        # THE GUARD KEYS ON THE DENOMINATOR ALONE, AND THAT IS THE WHOLE POINT.  This
+        # SIGN IS NOW +1, AND THE FLIP IS NOT A BUG.  The old unity column held the LEVERAGE
+        # RATIO and was scored `-(ratio - 1) > 0`; the new column holds a VERDICT-BEARING
+        # margin (positive = passes), so higher is better.  Read the sign-convention rule at
+        # the top of this module: a form change that moves the tested quantity flips the sign,
+        # a domain shrink does not.  Tier 'A' and w = 0.75 are UNCHANGED.
+        #
+        # THE PANEL COLUMN IS RENAMED `uNetDebtToEBITDA` -> `netDebtToEBITDA` (a `special`'s
+        # column is its key, unprefixed, like `returnOnEquity` and
+        # `capitalExpenditureCoverageRatio`).  That is a SCHEMA CHANGE: `calcScore`'s schema
+        # gate will refuse any panel built before today, which is correct -- an older panel
+        # cannot be scored by this rule.
+        'netDebtToEBITDA':                  {'Tier': 'A', 'Sign': 1},
+        # ---- the pre-existing specials -------------------------------------------------
+        # (the old netDebtToEBITDA unity commentary follows, kept because it records the
+        #  measurement that justified the 2026-08-04 guard this rule supersedes)
+        # THE GUARD KEYED ON THE DENOMINATOR ALONE, AND THAT WAS THE WHOLE POINT.  This
         # criterion has FOUR sign cells and only ONE of them is the defect.  Measured over the
         # 61,481 head(8) rows (sign(netDebt) recovered as sign(ratio) x sign(EBITDA proxy)):
         #   netDebt>0 EBITDA>0  33,615 rows  pass 0.2222  23.8% of passes  normal, correct
@@ -526,11 +675,7 @@ def getDicts():
         # EBITDA is the `operatingIncome + depreciationAndAmortization` PROXY (FMP does not
         # give the EBITDA behind its own netDebtToEBITDA), so the cell counts are indicative
         # near zero; the guard's DIRECTION does not depend on the proxy.
-        # SIGN STAYS -1: less net debt per unit of EBITDA is still better.
-        'netDebtToEBITDA':      {'Upper': 'netDebtToEBITDA',    'Lower': 'Identity',    'Tier': 'A', 'Sign': -1, 'Guard': 'ebitda_positive'}
-                             }
-
-    BoMetric_special_dict ={
+        # (end of the retained 2026-08-04 commentary.)
         # CFO - netIncome > 0 -- the sign-SAFE replacement for the old
         # uIncomeQuality unity test (domain review S1, fixed 2026-07-26).
         #

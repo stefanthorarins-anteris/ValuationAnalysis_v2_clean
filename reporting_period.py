@@ -617,7 +617,11 @@ def annualize_factor(rpy):
 # because the key still resolved and still returned a plausible factor.  If you ever inverse a
 # Stage-1 ratio, check this table in the same edit.
 STAGE1_FLOW_CORRECTION = {
-    # mean tests: cross-sectional vs the median -> scale-free -> per-quarter basis
+    # mean tests: SINCE C-12 (2026-08-06) these are tested against ABSOLUTE STORED BARS
+    # (meanBars.BARS), no longer against the pooled median -- so the old "scale-free, any common
+    # basis will do" justification is GONE, yet the mode is UNCHANGED and must stay 'per_quarter':
+    # the bars are STATED ON THE PER-QUARTER BASIS THIS FACTOR PRODUCES.  Switching either yield
+    # to 'annualize' against an unchanged bar would silently QUADRUPLE the threshold.
     'earningsYield':            ('flow_num', 'per_quarter'),
     'freeCashFlowToMarketCap':  ('flow_num', 'per_quarter'),   # was pfcfRatio / 'flow_den'
     'salesToMarketCap':         ('flow_num', 'per_quarter'),   # w=0, corrected for consistency

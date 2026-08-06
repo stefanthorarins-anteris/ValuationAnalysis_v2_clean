@@ -54,7 +54,12 @@ def _cdx(n=20, months=3, freq=rp.QUARTERLY, **cols):
                 #  frame (a per-metric frame is how a metric gets left out of a sweep)
                 returnOnAssets=0.05, earningsYield=0.05, pbRatio=2.0,
                 returnOnCapitalEmployed=0.08, returnOnEquity=0.10, incomeQuality=1.5,
-                tangibleBookValuePerShare=4.0, freeCashFlow=60.0, netIncomePerShare=0.5)
+                tangibleBookValuePerShare=4.0, freeCashFlow=60.0, netIncomePerShare=0.5,
+                #  `interestCoverage`'s two legs (2026-08-06).  interestExpense must be
+                #  STRICTLY POSITIVE or the metric refuses the row by design -- a debt-free
+                #  name has no coverage ratio -- and the fixture would then measure the guard
+                #  instead of the seam.
+                operatingIncome=120.0, interestExpense=10.0)
     d = {k: [v] * n for k, v in base.items()}
     d['date'] = _dates(n, months)
     d[rp.FREQ_COLUMN] = [freq] * n
@@ -499,6 +504,13 @@ _WINDOWED_DISPATCH = {
     'priceGrowth': lambda f: sm.price_growth(f, 16, rpy=4),
     'EPStoEPSmean': lambda f: sm.eps_to_eps_mean(f, rpy=4),
     'CycleHeat': lambda f: sm.cycleheat(f, rpy=4),
+    #  2026-08-06.  `interestCoverage` is an ordinary head(w) reduction and goes through
+    #  `_reduce` directly.  `navPerShareGrowth` CANNOT -- it is an ENDPOINT PAIR, not a
+    #  reduction -- so it takes the `eps_to_eps_mean` policy-gate idiom instead: `_reduce` is
+    #  called for its NaN-ness and its value discarded.  That is exactly the arrangement this
+    #  seam test exists to verify, so the metric is listed here rather than exempted.
+    'interestCoverage': lambda f: sm.interest_coverage(f, 16, rpy=4),
+    'navPerShareGrowth': lambda f: sm.nav_per_share_growth(f, 16, rpy=4),
 }
 
 

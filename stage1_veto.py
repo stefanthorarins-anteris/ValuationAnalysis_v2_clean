@@ -1,0 +1,349 @@
+"""stage1_veto.py  --  THE STAGE-1 RED-FLAG VETO LAYER  (CEO, 2026-08-05)
+
+WHAT IT IS, AND HOW IT DIFFERS FROM THE GATE IT SITS ON
+-------------------------------------------------------
+Stage-1 proper is a WEIGHTED PASS-RATE SUM: every criterion contributes `w x (passes/8)`, so a
+name that fails one criterion outright loses that criterion's weight and can still make the
+top-100 on the strength of the others.  For most criteria that is the right shape -- they are
+QUALITY readings and they trade off.
+
+Five of them are not.  They are SOLVENCY / EARNINGS-REALITY conditions where failing
+persistently is not a lower score, it is a disqualification:
+
+    returnOnAssets     > 0      is it profitable on its asset base at all
+    CFOlessEarnings    > 0      is the profit cash rather than an accrual
+    uCurrentRatio      > 1      can it pay its current liabilities
+    netDebtToEBITDA    (rule)   is the leverage serviceable      (three-branch, calcMetrics)
+    uInterestCoverage  > 1      does operating profit cover the interest bill
+
+`k >= 1` ejects: ONE persistent red flag is enough.  That is the CEO's decision and it is the
+whole design -- a veto that needed two flags would be a second scoring layer wearing a
+disqualification's name.
+
+FAIL IS DEFINED AS `PASSED <= 1 OF THE NEWEST 8 ROWS`, NOT `0 OF 8`
+-------------------------------------------------------------------
+Deliberate, and the reason is a data property rather than a leniency: a single bad vendor print
+-- one restated quarter, one mis-signed line -- must not be able to eject a name on its own.
+Requiring `0 of 8` would make the veto maximally sensitive to exactly the noise this repo keeps
+finding in the feed.  `<= 1 of 8` still means "essentially never passes over two years" while
+tolerating one bad row.  It is a THRESHOLD, so it is stated here once and named
+`FAIL_MAX_PASSES`; do not inline it.
+
+...AND THAT DEFINITION IS ONLY APPLIED ON 8 ROWS OF *EVIDENCE*  (register C-15, CEO 2026-08-06)
+------------------------------------------------------------------------------------------------
+`FAIL_MAX_PASSES = 1` is an ABSOLUTE count, so on its own it is nonsense on a short window: a
+source with ONE row that PASSED that row scores `passes = 1 <= 1` and would fail -- on ALL FIVE
+flags at once -- so a 100% pass rate would be read as a persistent red flag and the name ejected.
+A source must never be ejected BECAUSE its window is short.
+
+A PROPORTIONAL rule (fail when `passes/rows <= 1/8`) keeps a verdict on every window length, but
+it is the wrong reading of this threshold and it does not fix the real problem.  `<= 1` is not a
+rate -- its stated justification is an ABSOLUTE allowance for ONE bad vendor print, which does
+not scale down.  Worse, proportional would still eject a 2-row source that failed both rows: 6
+months of data used to make a claim worded as "essentially never passes over TWO YEARS".  The
+defect is not the arithmetic, it is EVIDENCE SUFFICIENCY.  So the rule is a floor -- but a
+PER-FLAG one, on EVIDENCE rather than on rows:
+
+    a flag may FAIL only when it has `WINDOW_ROWS` rows of COUNTABLE EVIDENCE and passed at
+    most `FAIL_MAX_PASSES` of them.  Otherwise it ABSTAINS -- it neither fails nor passes,
+    and it is excluded from the `k` count.
+
+WHY PER-FLAG, AND WHAT THE OLD PER-SOURCE FLOOR GOT WRONG.  The previous version counted ROWS,
+not rows of evidence, and the module said so and flagged it as an unresolved tension: "a source
+with a full 8-row window whose `uInterestCoverage` is NaN in 7 of them can still fail on 1 row of
+real evidence".  That tension is unresolvable with a BLANKET rule, because the two candidate
+blanket rules are each right on some flags and catastrophic on others -- and this was MEASURED,
+not argued:
+
+    with `EJECT_MIN_FLAGS = 1`, `uInterestCoverage` un-abstained fails 2,856 sources (36.8% of
+    the universe); abstained it fails 1,188 (15.3%).  1,668 sources -- 21.5% OF THE UNIVERSE --
+    would be EJECTED OUTRIGHT FOR HAVING NO DEBT.
+
+That is the largest defect in this layer as it was coded, and it is a pure artifact: FMP reports
+`interestExpense` as 0 for a debt-free name, `calcMetrics`'s `interest_expense_positive` guard
+correctly refuses the row (a debt-free company does not HAVE a coverage ratio), NaN is not a pass
+-- and the veto then read "cannot service its interest" off a company with no interest to service.
+
+So the rule is stated PER FIELD, because "what does a refused row MEAN" is a property of the
+field and of nothing else:
+
+  * ADVERSE / MOOT field -- EVERY ROW COUNTS, and a refused row counts as a NON-PASS.  This is
+    exactly the current behaviour, so four of the five flags are BIT-IDENTICAL to before.
+  * BENIGN field -- only ADMISSIBLE rows count, toward both the evidence floor and the passes.
+
+`MIN_WINDOW_ROWS` FALLS OUT AS A SPECIAL CASE and is DELETED rather than kept alongside.  A
+5-row source has at most 5 rows of evidence on every flag, so every flag abstains and it cannot
+be ejected -- today's behaviour DERIVED from the evidence rule instead of stated separately
+beside it.  Two rules that happen to agree are a rule and a coincidence waiting to diverge.
+
+WHAT THIS COSTS, STATED PLAINLY.  A source with 7 rows of unbroken red flags is NOT ejected.
+That is a chosen FALSE NEGATIVE, and the asymmetry is why: ejection is absolute and removes a
+name from the deliverable outright, while a NON-ejected bad name still has to survive the whole
+weighted Stage-1 score, the carve-out and the top-100 cut.  Wrongly ejecting on thin evidence is
+the more expensive error for a disqualification layer.
+ABSTAINING IS A DIFFERENT DECISION FROM FAILING, AND IT OPENS ITS OWN HOLE: a short-history
+source is UN-VETOABLE on that flag, so a young company can be hard to disqualify at all.  That is
+related to but NOT a resolution of register C-7 (unequal history length across sources) -- C-7 is
+about whether unequal history biases the SCORE, and it stays OPEN.
+
+ABSTENTIONS ARE COUNTED PER FLAG, NOT PER SOURCE, and the change of unit is the point: a source
+that abstained on `uInterestCoverage` because it is DEBT-FREE and a source that abstained on
+everything because its history is short are different facts, and a per-source count cannot tell
+them apart -- it would report "1,668 names not fully evaluated" and hide that they are all one
+flag and all for one benign reason.  A veto that silently declined to evaluate a fifth of a pool
+would otherwise be indistinguishable from one that found it clean.  See
+design/stage1-veto-decisions.md.
+
+BEHIND A FLAG, DEFAULT OFF -- NON-NEGOTIABLE
+--------------------------------------------
+`ENABLED = False`.  With the flag off `apply_veto` is a NO-OP that returns its input unchanged,
+so current pipeline behaviour is BIT-IDENTICAL.  Two reasons, both the CEO's:
+  * it can be A/B'd OFFLINE from saved pickles without touching a shipped run, and
+  * nothing ships into the gate silently.  Turning it on is a visible, single-line event.
+
+Set it by assigning the module attribute (`import stage1_veto as sv; sv.ENABLED = True`) or by
+passing `enabled=True` to `apply_veto` -- an explicit argument always wins over the module
+default, so a research script never has to mutate global state.
+
+WHERE IT RUNS
+-------------
+BEFORE the `head(100)` cut, on ALL SIX POOLS (the general pool and the five carve-out cohorts).
+It GATES the pool and the survivors are then ranked, which is the only placement that makes it
+a veto: applied after the cut it would merely shorten a shortlist, and applied to the general
+pool alone it would say a red flag matters less in a cohort.  A red flag is a red flag.  Per-pool
+ejection counts are LOGGED, because a veto that silently removed a third of a cohort would be
+indistinguishable from one that removed nobody.
+
+WHAT IT IS NOT -- `psbrfilter`
+------------------------------
+`postBo.psbrfilter` (postBo.py) is a DIFFERENT mechanism and is deliberately untouched: it is a
+-1.5 cutoff on Stage-2 `z x w` columns, so its threshold means a different bar per metric, and it
+is inert (stored in resdic, wired to nothing) pending its own soundness review.  This layer is
+not a revival of it and must not be merged with it.
+"""
+
+import numpy as np
+import pandas as pd
+
+#  --- THE FLAG.  DEFAULT OFF.  See the module docstring. --------------------------------
+ENABLED = False
+
+#  --- THE THREE PARAMETERS, EACH A STATED DECISION --------------------------------------
+#  Rows of the newest-first per-source window a flag is evaluated over.  8 is Stage-1's own
+#  scoring window (`calcScore.calcByTier`'s head(n)); using a different one would mean the veto
+#  and the score disagreed about what "recently" means.
+WINDOW_ROWS = 8
+#  A flag FAILS when it passed at most this many of `WINDOW_ROWS` rows of EVIDENCE.  1, not 0 --
+#  see the docstring.
+FAIL_MAX_PASSES = 1
+#  NO `MIN_WINDOW_ROWS` -- DELETED AT C-15, DELIBERATELY.  The per-source row floor is now a
+#  DERIVED consequence of the per-flag evidence floor (a 5-row source has <= 5 evidence rows on
+#  every flag, so every flag abstains).  Do not re-add it: a second rule that merely agrees with
+#  the first is the pair that silently diverges later.
+#  Failed flags needed to eject.  1 -- one persistent red flag is a disqualification.
+EJECT_MIN_FLAGS = 1
+
+#  --- THE FIVE FLAGS: BoMetric_df column -> the row-level pass condition -----------------
+#  Each condition is stated on the COLUMN AS THE PANEL CARRIES IT, so no arithmetic is
+#  re-implemented here and no threshold is restated:
+#    * `returnOnAssets` is the base column (netIncome/totalAssets since I-5), tested `> 0`.
+#    * `CFOlessEarnings` is CFO - netIncome, tested `> 0`.
+#    * `uCurrentRatio` is the RATIO itself (the `u` prefix is the column's name, not a
+#      transform), so the unity bar is `> 1`.
+#    * `netDebtToEBITDA` is the THREE-BRANCH VERDICT column, already positive-means-pass -- the
+#      rule lives in `calcMetrics.net_debt_three_branch` and is NOT duplicated here.
+#    * `uInterestCoverage` is operatingIncome/interestExpense, so the bar is `> 1`.
+#  NaN is NOT a pass in any of them (`> x` is False for NaN), which matches
+#  `calcScore.calcByTier`'s NaN-scores-as-a-fail ruling -- the veto and the gate read a missing
+#  row the same way, deliberately.
+FLAGS = {
+    'returnOnAssets':    lambda s: s > 0,
+    'CFOlessEarnings':   lambda s: s > 0,
+    'uCurrentRatio':     lambda s: s > 1,
+    'netDebtToEBITDA':   lambda s: s > 0,
+    'uInterestCoverage': lambda s: s > 1,
+}
+
+#  --- WHAT A REFUSED ROW MEANS, PER FIELD (register C-15, CEO 2026-08-06) ---------------
+#  The evidence floor above needs to know, for each flag, whether a REFUSED row (NaN in the
+#  panel column -- a guard refusal or a non-computable input) is EVIDENCE or a GAP.  That is
+#  a property of the field, so it is ruled on per field, each ruling SOURCE-VERIFIED against
+#  the NaN channel that actually produces the refusal.  `counts` is today's behaviour.
+#
+#    'counts'        every row counts toward the evidence floor, and a refused row counts as
+#                    a NON-PASS.  Use when refusal is itself adverse (ADVERSE), or when it is
+#                    so rare / so gated upstream that the distinction cannot bite (MOOT).
+#    'not_evidence'  only ADMISSIBLE (non-refused) rows count -- toward the floor AND toward
+#                    the passes.  Use when refusal has NO adverse reading (BENIGN).
+#
+#  ONLY ONE FLAG IS BENIGN.  This is not a general softening of the veto; it is one field
+#  where the refusal was measurably reading the opposite of the truth.
+FIELD_EVIDENCE = {
+    #  MOOT -> treated as adverse.  Inputs are 0.00% NaN, so the ONLY channel into a refusal
+    #  is `totalAssets <= 0` (97 rows) -- a degenerate balance sheet, which is adverse on any
+    #  reading.  Ruled explicitly rather than left to the default so it is a decision.
+    'returnOnAssets':    'counts',
+    #  MOOT.  Gated at source: `failTests.py:96,158-172` rejects a ticker outright if any
+    #  statement is empty or short, so the residual is 0.44% of rows across 4 sources.  Too
+    #  small to move a verdict either way; ruled 'counts' to stay bit-identical.
+    'CFOlessEarnings':   'counts',
+    #  MOOT -> adverse.  Never absent in the panel.
+    'uCurrentRatio':     'counts',
+    #  ADVERSE, and this one is load-bearing rather than incidental.  All three inputs are
+    #  0.00% NaN, so a refusal is NEVER missing data: `net_debt_three_branch` falls through to
+    #  NaN exactly when EBITDA <= 0 AND the name is not net cash -- which IS the adverse
+    #  condition.  Abstaining here would let "loses money at the EBITDA line and carries net
+    #  debt" dodge the leverage flag entirely, i.e. the flag would go quiet precisely on the
+    #  names it exists for.
+    'netDebtToEBITDA':   'counts',
+    #  BENIGN -> abstain.  THE ONE THAT CHANGES, and the measured defect behind C-15: of the
+    #  19.74pp of refused rows, 19.01pp are `interestExpense == 0`, i.e. DEBT-FREE names that
+    #  the `interest_expense_positive` guard refuses because a debt-free company does not HAVE
+    #  a coverage ratio.  Counting that as a non-pass ejected 1,668 sources (21.5% of the
+    #  universe) FOR HAVING NO DEBT.  The residual refusals -- 0.70% negative reported interest
+    #  expense (the ratio inverts sign) and 0.03% genuinely NaN -- have no adverse reading
+    #  either, so they abstain too rather than being split out.
+    #  A debt-free name is NOT thereby unvetted on leverage: `netDebtToEBITDA`'s net-cash
+    #  branch still evaluates it, on an explicit operand condition.
+    'uInterestCoverage': 'not_evidence',
+}
+
+
+def failed_flags(bm_df):
+    """{source: sorted list of FAILED flag names} over every source in `bm_df`.
+
+    `bm_df` is a Stage-1 BoMetric panel (many sources).  Rows are taken NEWEST-FIRST per source
+    -- the same contract `calcScore.simpleScore_fromDict` enforces -- and re-sorted here rather
+    than assumed, because nothing on the live path guarantees the ingestion order.
+
+    A source with too little EVIDENCE on a flag simply does not carry that flag here: an
+    abstention is not a failure.  A source that abstained on all five maps to an EMPTY list.
+    Use `_evaluate` if you also need to know WHICH flags abstained -- an empty list here means
+    "clean" and "not evaluated" alike, which is precisely why the report carries the
+    abstentions separately, and per flag.
+    """
+    return _evaluate(bm_df)[0]
+
+
+def _flag_evidence(win, col, cond, refusal):
+    """(n_evidence, passes) for one flag on one source's window.
+
+    `refusal == 'counts'`   -> every row is evidence and a refused (NaN) row is a NON-PASS,
+                               since `> x` is False for NaN.  n_evidence == len(win), so this
+                               branch reproduces the old per-source row floor EXACTLY.
+    `refusal == 'not_evidence'` -> only admissible rows count, on BOTH sides.  Restricting the
+                               pass count too is redundant arithmetically (NaN never passes)
+                               but not redundant as code: it states that the passes and the
+                               floor are counted over the SAME set, which is the invariant a
+                               later edit could otherwise break silently.
+    """
+    vals = pd.to_numeric(win[col], errors='coerce')
+    if refusal == 'not_evidence':
+        vals = vals[vals.notna()]
+    return len(vals), int(cond(vals).sum())
+
+
+def _evaluate(bm_df):
+    """(failed, abstained) -- `{source: [failed flag names]}` and
+    `{source: {flag: n_evidence}}` for every (source, flag) pair that ABSTAINED for want of
+    evidence.  Split out from `failed_flags` so `apply_veto` can REPORT the abstentions
+    without a second pass over the panel; the public single-value contract of `failed_flags`
+    is unchanged.
+    """
+    missing = [c for c in FLAGS if c not in bm_df.columns]
+    if missing:
+        raise KeyError(
+            'stage1_veto: the panel is missing %d veto column(s): %s. These are Stage-1 '
+            'criterion columns, so a panel that lacks them was built by an older metric set '
+            'and CANNOT be vetoed -- re-fetch, or run with the veto off. Scoring the veto on a '
+            'subset of its flags would silently weaken it.' % (len(missing), missing))
+
+    df = bm_df
+    if 'date' in df.columns:
+        df = df.copy()
+        df['date'] = pd.to_datetime(df['date'], errors='coerce')
+        df = df.sort_values(['source', 'date'], ascending=[True, False])
+
+    out, abstained = {}, {}
+    for source, grp in df.groupby('source', sort=False):
+        win = grp.head(WINDOW_ROWS)
+        bad = []
+        for col, cond in FLAGS.items():
+            n_ev, passes = _flag_evidence(win, col, cond, FIELD_EVIDENCE[col])
+            #  THE EVIDENCE FLOOR (C-15).  `FAIL_MAX_PASSES` is an ABSOLUTE count, so it is
+            #  only meaningful over a full window: on 1 row of evidence a flag that PASSED
+            #  that row scores `passes = 1 <= 1` and would fail -- a 100% pass rate read as a
+            #  persistent red flag.  Under the floor the flag ABSTAINS: it is not a failure
+            #  and it is not a pass, and it does not reach the `k` count either way.
+            if n_ev < WINDOW_ROWS:
+                abstained.setdefault(source, {})[col] = n_ev
+            elif passes <= FAIL_MAX_PASSES:
+                bad.append(col)
+        out[source] = sorted(bad)
+    return out, abstained
+
+
+def apply_veto(scores_df, bm_df, pool_label='general', enabled=None, verbose=True):
+    """`scores_df` with vetoed sources removed.  Returns (kept, report).
+
+    `scores_df` is a Stage-1 score frame carrying a `source` column (`BoScore_df` or a carve-out
+    cohort's slice of it); `bm_df` is the panel those scores were computed from.
+
+    OFF BY DEFAULT AND BIT-IDENTICAL WHEN OFF: with `enabled` falsy the input frame is returned
+    UNCHANGED (the same object, not a copy) and `report['enabled']` is False.  An explicit
+    `enabled=` argument overrides the module flag so a research script never mutates globals.
+    """
+    if enabled is None:
+        enabled = ENABLED
+    report = {'pool': pool_label, 'enabled': bool(enabled), 'n_in': len(scores_df),
+              'n_ejected': 0, 'n_out': len(scores_df), 'by_flag': {}, 'ejected': [],
+              #  ABSTENTIONS, PER FLAG (C-15) -- `{flag: number of sources in THIS pool that
+              #  abstained on it}`.  Per FLAG and not per SOURCE deliberately: the dominant
+              #  abstention is `uInterestCoverage` on DEBT-FREE names, and a per-source count
+              #  would report those as "not evaluated" alongside genuinely short-history names
+              #  and hide that they are one flag with one benign cause.  Reported, not hidden:
+              #  "found clean" and "never evaluated" are different facts.
+              'n_short_window': {}, 'short_window': {}}
+    if not enabled:
+        return scores_df, report
+
+    bad, abstained = _evaluate(bm_df)
+    ejected = [s for s in scores_df['source']
+               if len(bad.get(s, [])) >= EJECT_MIN_FLAGS]
+    by_flag = {}
+    for s in ejected:
+        for f in bad[s]:
+            by_flag[f] = by_flag.get(f, 0) + 1
+    #  Restricted to this pool's members, so the six per-pool reports sum to something meaningful
+    #  instead of each repeating the whole panel's abstentions.
+    pool_short = {s: abstained[s] for s in scores_df['source'] if s in abstained}
+    n_short_by_flag = {}
+    for _flags in pool_short.values():
+        for f in _flags:
+            n_short_by_flag[f] = n_short_by_flag.get(f, 0) + 1
+
+    kept = scores_df[~scores_df['source'].isin(set(ejected))]
+    report.update(n_ejected=len(ejected), n_out=len(kept),
+                  by_flag=dict(sorted(by_flag.items())), ejected=sorted(ejected),
+                  n_short_window=dict(sorted(n_short_by_flag.items())),
+                  short_window={s: dict(sorted(f.items()))
+                                for s, f in sorted(pool_short.items())})
+    if verbose:
+        #  PER-POOL LOGGING IS PART OF THE DESIGN, not debug output: a veto that removed most of
+        #  a cohort and one that removed nobody are indistinguishable without it.
+        print('STAGE-1 VETO [%s]: %d -> %d names (%d ejected, k>=%d of 5 flags failed at '
+              '<=%d of %d EVIDENCE rows). Ejections by flag: %s'
+              % (pool_label, report['n_in'], report['n_out'], report['n_ejected'],
+                 EJECT_MIN_FLAGS, FAIL_MAX_PASSES, WINDOW_ROWS,
+                 report['by_flag'] or '{}'), flush=True)
+        if n_short_by_flag:
+            #  PER FLAG.  A count of names would say "1,668 not evaluated" and conceal that
+            #  every one is `uInterestCoverage` on a debt-free balance sheet -- the exact
+            #  confusion between "found clean" and "declined to look" this line exists to stop.
+            print('STAGE-1 VETO [%s]: ABSTENTIONS by flag (under %d rows of countable evidence, '
+                  'so the flag could not fail -- these names passed THAT flag UNCHECKED): %s. '
+                  'For `uInterestCoverage` the usual cause is a DEBT-FREE name (no interest '
+                  'expense, so no coverage ratio exists), not missing data.'
+                  % (pool_label, WINDOW_ROWS, dict(sorted(n_short_by_flag.items()))),
+                  flush=True)
+    return kept, report

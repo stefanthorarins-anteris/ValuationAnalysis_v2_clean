@@ -34,28 +34,40 @@ import stage2_metrics as s2m
 # --------------------------------------------------------------------------- #
 #  A.  the general vector                                                     #
 # --------------------------------------------------------------------------- #
-#  Section 15.3's table re-derived at the CEO's DECIDED budgets
-#  (P 0.26 R 0.1634 N 0.1290 D 0.26 S 0.0860 M 0.0516 C 0.0500 -- section 15.5 variant (b),
-#  durability HELD EQUAL to cheapness).  18 non-zero weights.
+#  Section 15.3's table re-derived at the CEO's DECIDED budgets, AS RE-BUDGETED FOR THE S
+#  BLOCK ON 2026-08-06: W_S 0.0860 -> 0.1200 to pay for `interestCoverage` (S's first Tier-1
+#  member), with the 0.034 taken PROPORTIONALLY from the other six blocks (x 0.880/0.914).
+#  P 0.250328  R 0.157322  N 0.124201  D 0.250328  S 0.120000  M 0.049680  C 0.048140.
+#  **19** non-zero weights now, not 18.
+#
+#  WHAT THE PROPORTIONAL TAKE BUYS, and it is why this table could be re-derived by
+#  multiplication rather than re-argued: every ratio among NON-S metrics is preserved exactly.
+#  So P stays equal to D (Rule PROP's 1:1 residual split is untouched) and the thesis margin
+#  is numerically unchanged at 1.2928.  Only the three S weights are a new argument.
 DESIGN_GENERAL = {
-    'earnYield':                   0.126750,
-    'incomeQuality':               0.098040,
-    'freeCashFlowPerShareGrowth':  0.086667,
-    'CycleHeat':                  -0.077400,
-    'bVpRatio':                    0.068250,
-    'freeCashFlowYield':           0.065360,
-    'RoA':                         0.065000,
-    'returnOnCapitalEmployed':     0.065000,
-    'currentRatio':                0.057333,
-    'EPStoEPSmean':                0.051600,
-    'marketCapRevQuants':          0.051600,
-    'grahamNumberToPrice':         0.042250,
-    'Piotroski':                   0.033333,
-    'Altman-Z':                    0.028667,
-    'tbVpRatio':                   0.022750,
-    'grossProfitMargin':           0.021667,
-    'returnOnEquity':              0.021667,
-    'revenueGrowth':               0.016667,
+    'earnYield':                   0.122035,
+    'incomeQuality':               0.094393,
+    'freeCashFlowPerShareGrowth':  0.083443,
+    'CycleHeat':                  -0.074521,
+    'bVpRatio':                    0.065711,
+    'freeCashFlowYield':           0.062929,
+    'RoA':                         0.062582,
+    'returnOnCapitalEmployed':     0.062582,
+    #  THE THREE S WEIGHTS -- the only ones that are a new decision rather than a rescale.
+    #  W_S = 0.120 over tiers {1,2,3} at tau 3:2:1 gives 0.060 / 0.040 / 0.020, which
+    #  DELIBERATELY costs the two incumbents ~30%: holding them harmless would have needed
+    #  W_S = 0.1720, and the CEO capped at 0.120 instead.
+    'interestCoverage':            0.060000,
+    'currentRatio':                0.040000,
+    'Altman-Z':                    0.020000,
+    'EPStoEPSmean':                0.049681,
+    'marketCapRevQuants':          0.049681,
+    'grahamNumberToPrice':         0.040678,
+    'Piotroski':                   0.032093,
+    'tbVpRatio':                   0.021904,
+    'grossProfitMargin':           0.020861,
+    'returnOnEquity':              0.020861,
+    'revenueGrowth':               0.016047,
 }
 
 
@@ -66,15 +78,18 @@ def test_the_general_vector_IS_the_decided_one():
     non_zero = {k: v for k, v in sw.DEPLOYED.items() if v != 0.0}
     assert set(non_zero) == set(DESIGN_GENERAL), sorted(
         set(non_zero) ^ set(DESIGN_GENERAL))
-    assert len(non_zero) == 18
+    assert len(non_zero) == 19
 
 
-def test_the_five_zeros_are_the_ones_they_should_be():
-    """Three by decision (DcfToPrice / BoScore / priceGrowth) and two by DOMAIN -- the
-    FIN-1-only extractions carry no general-pool weight."""
+def test_the_six_zeros_are_the_ones_they_should_be():
+    """Three by decision (DcfToPrice / BoScore / priceGrowth) and THREE by DOMAIN -- the
+    FIN-1-only columns carry no general-pool weight.  `navPerShareGrowth` joined them on
+    2026-08-06: book-value-per-share growth is FIN-1's R-block thesis test, and for an
+    operating company book value is a residual rather than the thesis (scoringWeights D.4)."""
     zeros = {k for k, v in sw.DEPLOYED.items() if v == 0.0}
     assert zeros == set(sw.DELIBERATELY_ZEROED) | {'shareCountChange',
-                                                   'longTermDebtChange'}
+                                                   'longTermDebtChange',
+                                                   'navPerShareGrowth'}
 
 
 def test_sigma_abs_w_is_EXACTLY_one_in_float():
@@ -115,7 +130,13 @@ def _largest_other(vector, metric):
 def test_earnYield_is_the_LARGEST_single_weight_in_the_general_vector():
     """"P/E is essentially the final boss" -- the legibility property behind the whole lens.
     It reads 1.29x against `incomeQuality`, and the design records that it FAILED under the
-    previous budget pair, which is precisely why it is a test and not a comment."""
+    previous budget pair, which is precisely why it is a test and not a comment.
+
+    THE RATIO IS UNCHANGED BY THE 2026-08-06 S RE-BUDGET, and that is the property the
+    proportional take was chosen for: both metrics are non-S, so both scale by the same
+    0.880/0.914 and the margin is invariant.  It is asserted anyway -- a flat or hand-picked
+    take of the same 0.034 would have moved it, so the invariance is a consequence of the
+    METHOD, not a fact about the numbers."""
     ey = abs(sw.DEPLOYED[sw.THESIS_METRIC])
     other = _largest_other(sw.DEPLOYED, sw.THESIS_METRIC)
     assert ey > other, (ey, other)
@@ -131,6 +152,11 @@ def test_the_margin_SURVIVES_the_D3_fix_and_this_is_the_forward_trap():
     cheapness: at the proportional alternative (W_R = 0.1748) `incomeQuality` would be
     0.10488 and the D3 fix would break the margin outright.
 
+    THE HEADROOM SHRANK WITH THE 2026-08-06 S RE-BUDGET -- 0.00336 -> 0.003235 -- because both
+    sides scale by 0.880/0.914 while their RATIO is unchanged.  So the trap is no more likely
+    to spring than it was, but it is 3.7% closer in absolute terms, and any further take out of
+    the non-S blocks shrinks it again.
+
     So this test is the instruction as much as the check: when D3 is fixed, re-run it, and do
     NOT fix D3 and a block budget in the same change."""
     post_d3 = dict(sw.GENERAL_ASSIGNMENT)
@@ -138,11 +164,11 @@ def test_the_margin_SURVIVES_the_D3_fix_and_this_is_the_forward_trap():
     post_d3['grahamNumberToPrice'] = (block, sub, 2, sign)
     v = sw._block_vector(sw.GENERAL_BUDGETS, post_d3)
     ey, iq = abs(v['earnYield']), abs(v['incomeQuality'])
-    assert ey == pytest.approx(0.1014, abs=5e-5)
-    assert iq == pytest.approx(0.09804, abs=5e-6)
+    assert ey == pytest.approx(0.097628, abs=5e-6)
+    assert iq == pytest.approx(0.094393, abs=5e-6)
     assert ey > iq, ('the D3 fix has broken the thesis margin -- see scoringWeights B.6; '
                      'the recorded remedy is W_P >= 0.27', ey, iq)
-    assert ey - iq == pytest.approx(0.00336, abs=5e-5), 'and the headroom is this thin'
+    assert ey - iq == pytest.approx(0.003235, abs=5e-6), 'and the headroom is this thin'
 
 
 @pytest.mark.parametrize('label', ['FinManager'])
@@ -161,7 +187,7 @@ def test_the_margin_also_holds_in_the_non_exempt_cohorts(label):
 def test_the_Mining_exemption_is_recorded_AND_earned():
     """Mining is DECLARED exempt, and the reason is not "it fails" -- it currently PASSES at
     1.17x.  The exemption is that post-D3 the failure is NOT RECOVERABLE at any admissible
-    budget: it would need W_P > 1.538 * W_N = 0.291 here, or W_N cut below its cohort
+    budget: it would need W_P > 1.538 * W_N = 0.280 here, or W_N cut below its cohort
     deviation, and that deviation is the entire purpose of the cohort.
 
     Both halves are asserted, because an exemption recorded without its mechanism is just a
@@ -170,6 +196,8 @@ def test_the_Mining_exemption_is_recorded_AND_earned():
     v = sw.COHORT_WEIGHTS['Mining']
     ey = abs(v[sw.THESIS_METRIC])
     assert ey > _largest_other(v, sw.THESIS_METRIC), 'today it passes'
+    #  UNCHANGED by the 2026-08-06 S re-budget: every Mining block rescales by the same
+    #  factor, and neither `earnYield` nor `CycleHeat` is an S metric.
     assert ey / _largest_other(v, sw.THESIS_METRIC) == pytest.approx(1.1707, abs=5e-4)
 
     post_d3 = dict(sw._cohort_assignment('Mining'))
@@ -188,17 +216,32 @@ def test_the_Mining_exemption_is_recorded_AND_earned():
 #  residual split 1:1.  The Mining and REIT rows are the two that show the rules doing work:
 #  Mining's D is pinned BELOW its residual share by the contamination override (P takes the
 #  freed weight), and REIT's P and D come out exactly equal to the general 0.26.
+#
+#  RE-DERIVED AT THE 2026-08-06 S BUDGETS.  Three of the five are a PURE RESCALE of the row
+#  they replace (x 0.880/0.914 on every block), because their S RATIO equals the anchor's 0.10
+#  and so their residual scales with everything else: Mining, REIT and FinManager.
+#
+#  **BalanceSheetFin IS NOT**, and it is the one row a reader must not skim.  Its S ratio is
+#  0.14, i.e. ABOVE the 0.10 anchor, so Rule PROP hands it a LARGER absolute S increase
+#  (0.1204 -> 0.1680) -- and FIN-3 spends none of it (capital adequacy is still invisible to
+#  the pipeline, and `interestCoverage` is declared OOD there: for a bank, interest expense is
+#  a cost of goods, not a financing charge).  That extra budget comes OUT OF THE P/D RESIDUAL,
+#  so FIN-3's cheapness and durability fall by more than the proportional 3.7% (0.3194 ->
+#  0.3001, i.e. -6.0%) and its reported unpriced risk rises 12.04% -> 16.80%.  That is Rule UNM
+#  working as designed -- the solvency question got more expensive everywhere, and the one
+#  cohort that cannot answer it honestly reports more of its budget unspent -- but it IS a real
+#  re-ranking of the FIN-3 side-list, not a rescale.
 DESIGN_COHORT_BUDGETS = {
-    'Mining':            {'P': 0.2726, 'R': 0.1720, 'N': 0.1892, 'D': 0.1872,
-                          'S': 0.0860, 'M': 0.0430, 'C': 0.0500},
-    'REIT':              {'P': 0.2600, 'R': 0.1978, 'N': 0.1032, 'D': 0.2600,
-                          'S': 0.0860, 'M': 0.0430, 'C': 0.0500},
+    'Mining':            {'P': 0.2625, 'R': 0.1656, 'N': 0.1822, 'D': 0.1802,
+                          'S': 0.1200, 'M': 0.0414, 'C': 0.0481},
+    'REIT':              {'P': 0.2503, 'R': 0.1904, 'N': 0.0994, 'D': 0.2503,
+                          'S': 0.1200, 'M': 0.0414, 'C': 0.0481},
     'InvestmentVehicle': {'P': 0.5500, 'R': 0.1500, 'N': 0.0000, 'D': 0.0000,
                           'S': 0.1500, 'M': 0.1500, 'C': 0.0000},
-    'FinManager':        {'P': 0.2686, 'R': 0.1548, 'N': 0.1204, 'D': 0.2686,
-                          'S': 0.0860, 'M': 0.0516, 'C': 0.0500},
-    'BalanceSheetFin':   {'P': 0.3194, 'R': 0.0688, 'N': 0.1376, 'D': 0.3194,
-                          'S': 0.1204, 'M': 0.0344, 'C': 0.0000},
+    'FinManager':        {'P': 0.2586, 'R': 0.1490, 'N': 0.1159, 'D': 0.2586,
+                          'S': 0.1200, 'M': 0.0497, 'C': 0.0481},
+    'BalanceSheetFin':   {'P': 0.3001, 'R': 0.0662, 'N': 0.1325, 'D': 0.3001,
+                          'S': 0.1680, 'M': 0.0331, 'C': 0.0000},
 }
 
 
@@ -215,8 +258,8 @@ def test_no_cohort_shaves_the_thesis_below_the_P_floor(label):
     of this docstring claimed the floor "does real work in Mining", and that is false under the
     budgets we ship.
 
-    Mining's contamination override gives P the residual, so it lands at 0.2726, ABOVE the
-    0.26 floor; every other cohort clears it as well.  The floor was load-bearing at the old
+    Mining's contamination override gives P the residual, so it lands at 0.2625, ABOVE the
+    0.250328 floor; every other cohort clears it as well.  The floor was load-bearing at the old
     proportional anchor (Rule PROP alone put Mining at 0.2256) and is kept against a future
     ratio edit -- but a test whose docstring asserts work it is not doing trains the reader to
     disbelieve the docstrings.  The assertion is still worth having; the claim was not."""
@@ -234,7 +277,7 @@ def test_the_P_floor_is_SLACK_everywhere_and_that_is_recorded_not_assumed():
     #  REIT lands EXACTLY on the general 0.26 -- by arithmetic coincidence of its own ratios,
     #  not by the clamp.  Pinned separately so "equal to the floor" is not read as "clamped".
     assert sw._cohort_budgets('REIT')['P'] == pytest.approx(sw.GENERAL_BUDGETS['P'], abs=1e-12)
-    assert sw._cohort_budgets('Mining')['P'] == pytest.approx(0.2726, abs=5e-5)
+    assert sw._cohort_budgets('Mining')['P'] == pytest.approx(0.2625, abs=5e-5)
 
 
 def test_Rule_PROP_puts_the_residual_on_P_and_D_in_the_GENERAL_P_to_D_ratio():
@@ -264,16 +307,56 @@ def test_REIT_sub_block_scaling_FIRES_and_hands_P_A_the_majority():
     assert v['earnYield'] > 0, 'poor instrument, not zeroed'
 
 
-def test_REIT_and_FIN3_hold_their_survival_budget_UNSPENT_and_report_it():
-    """Rule UNM, and the half that is easy to lose: the budget is held, the spendable
-    weights renormalise to 1, and the residue is REPORTED.  Without the report,
-    renormalising silently converts "we cannot measure this" into "this does not matter"."""
-    for label, want in (('REIT', 0.0860), ('BalanceSheetFin', 0.1204)):
-        v = sw.COHORT_WEIGHTS_RAW[label]
-        assert v['currentRatio'] == 0.0 and v['Altman-Z'] == 0.0, label
-        assert sw.COHORT_UNPRICED_RISK[label] == pytest.approx(want, abs=5e-5), label
+def test_REIT_UNPARKS_its_survival_budget_and_FIN3_still_holds_ITS_unspent():
+    """RULE UNM, AND THE EVENT IT WAS BUILT FOR (CEO, 2026-08-06).
+
+    REIT's S budget was held unspent under a note reading "until net-debt/EBITDA OR INTEREST
+    COVERAGE exists".  `interestCoverage` now exists as a Stage-2 metric, so the condition is
+    DISCHARGED and REIT's unpriced risk goes 8.60% -> 0%.  `Altman-Z` and `currentRatio` stay
+    OOD -- nothing about THEM improved -- so the block is a lone Tier-1 member holding the
+    whole 0.120.
+
+    FIN-3 IS THE CONTROL, and the reason this is one test rather than two: it did NOT unpark.
+    Its S question is capital adequacy, which the pipeline still cannot see, and
+    `interestCoverage` is OOD there because a bank's interest expense is a cost of goods rather
+    than a financing charge.  So its held budget RISES with the general S budget (12.04% ->
+    16.80%) instead of being spent -- which is Rule UNM's point: a question that got more
+    expensive and that the cohort still cannot answer means MORE unpriced risk reported.
+
+    THE LIMIT ON THE REIT HALF, recorded here because no assertion can carry it: interest
+    coverage INSTRUMENTS the refinancing question, it does not ANSWER it.  A REIT's real
+    solvency risk is the maturity wall and the LTV covenant, and a name that covers today's
+    interest bill can still fail to roll its debt.  0% unpriced means "the block now has an
+    instrument", not "REIT leverage risk is priced"."""
+    reit = sw.COHORT_WEIGHTS_RAW['REIT']
+    assert reit['currentRatio'] == 0.0 and reit['Altman-Z'] == 0.0
+    assert reit['interestCoverage'] == pytest.approx(0.120, abs=1e-12), \
+        'the lone Tier-1 member takes the whole S budget'
+    assert sw.COHORT_UNPRICED_RISK['REIT'] == pytest.approx(0.0, abs=1e-12)
+
+    fin3 = sw.COHORT_WEIGHTS_RAW['BalanceSheetFin']
+    assert fin3['interestCoverage'] == 0.0, 'OOD: a bank pays interest as a cost of goods'
+    assert fin3['currentRatio'] == 0.0 and fin3['Altman-Z'] == 0.0
+    assert sw.COHORT_UNPRICED_RISK['BalanceSheetFin'] == pytest.approx(0.1680, abs=5e-5)
+
     for label in ('Mining', 'FinManager', 'InvestmentVehicle'):
         assert sw.COHORT_UNPRICED_RISK[label] == pytest.approx(0.0, abs=1e-12), label
+
+
+def test_interestCoverage_carries_S_TIER_1_wherever_the_question_APPLIES():
+    """The other half of the same decision, asserted rather than left as a side effect: it is a
+    GENERAL metric, so Mining and FIN-2 inherit it and their S blocks restructure from tiers
+    {2,3} to {1,2,3}.  `currentRatio` goes from two-thirds of S to one-third of it in both --
+    a real shift in those two side-lists, beyond the proportional rescale."""
+    for label, want in (('Mining', 0.060), ('FinManager', 0.060), ('REIT', 0.120)):
+        assert sw.COHORT_WEIGHTS_RAW[label]['interestCoverage'] == pytest.approx(
+            want, abs=1e-12), label
+    for label in ('Mining', 'FinManager'):
+        v = sw.COHORT_WEIGHTS_RAW[label]
+        assert v['interestCoverage'] > v['currentRatio'] > v['Altman-Z'], label
+    #  ... and it is OOD in exactly the two cohorts where the ratio is not a solvency reading
+    for label in ('InvestmentVehicle', 'BalanceSheetFin'):
+        assert sw.COHORT_WEIGHTS[label]['interestCoverage'] == 0.0, label
 
 
 def test_FIN3_declares_ROE_above_earnYield_on_purpose():
@@ -283,8 +366,8 @@ def test_FIN3_declares_ROE_above_earnYield_on_purpose():
     rather than becoming a surprise."""
     v = sw.COHORT_WEIGHTS_RAW['BalanceSheetFin']
     assert v['returnOnEquity'] > v['earnYield']
-    assert v['returnOnEquity'] == pytest.approx(0.19164, abs=5e-6)
-    assert v['RoA'] == pytest.approx(0.12776, abs=5e-6)
+    assert v['returnOnEquity'] == pytest.approx(0.180047, abs=5e-6)
+    assert v['RoA'] == pytest.approx(0.120032, abs=5e-6)
     assert v['returnOnCapitalEmployed'] == 0.0, 'OOD: no meaningful capital-employed base'
     assert v['grossProfitMargin'] == 0.0, 'OOD: no gross margin exists'
 
@@ -299,7 +382,8 @@ def test_the_FIN1_tier_fix_SURVIVES_the_rescale():
     not move it -- verified here by re-deriving the cohort WITHOUT the two new metrics, i.e.
     exactly the vector the design published."""
     assignment = {m: spec for m, spec in sw._cohort_assignment('InvestmentVehicle').items()
-                  if m not in ('shareCountChange', 'longTermDebtChange')}
+                  if m not in ('shareCountChange', 'longTermDebtChange',
+                               'navPerShareGrowth')}
     v = sw.normalise(sw._block_vector(sw._cohort_budgets('InvestmentVehicle'), assignment))
     assert v['bVpRatio'] == pytest.approx(0.392857, abs=5e-6)
     assert v['tbVpRatio'] == pytest.approx(0.392857, abs=5e-6)
@@ -317,8 +401,14 @@ def test_the_two_new_metrics_UNPARK_FIN1s_R_and_S_blocks():
     two binary-derived columns INSTRUMENT those blocks; they do not fully ANSWER them.
     Reading the 0% unpriced figure as "FIN-1's NAV risk is now priced" would overclaim."""
     v = sw.COHORT_WEIGHTS['InvestmentVehicle']
-    assert v['shareCountChange'] == pytest.approx(-0.15, abs=1e-12)
+    #  R NOW SPLITS 3:2 (2026-08-06): `navPerShareGrowth` took R's Tier 1, so
+    #  `shareCountChange` -- which guards ONE way the NAV fails -- drops from the whole 0.15 to
+    #  0.06.  S is untouched: `interestCoverage` is OOD in FIN-1 (no operating income), so
+    #  `longTermDebtChange` keeps the whole 0.15.
+    assert v['navPerShareGrowth'] == pytest.approx(0.09, abs=1e-12)
+    assert v['shareCountChange'] == pytest.approx(-0.06, abs=1e-12)
     assert v['longTermDebtChange'] == pytest.approx(-0.15, abs=1e-12)
+    assert v['interestCoverage'] == 0.0, 'OOD: a BDC has no operating income'
     assert v['bVpRatio'] == pytest.approx(0.275, abs=1e-12)
     assert v['tbVpRatio'] == pytest.approx(0.275, abs=1e-12)
     assert v['marketCapRevQuants'] == pytest.approx(0.15, abs=1e-12)
@@ -326,18 +416,19 @@ def test_the_two_new_metrics_UNPARK_FIN1s_R_and_S_blocks():
     assert sw.COHORT_UNPRICED_RISK['InvestmentVehicle'] == pytest.approx(0.0, abs=1e-12)
     #  and the signs: more dilution / more leverage must be WORSE
     assert v['shareCountChange'] < 0 and v['longTermDebtChange'] < 0
+    #  ... and MORE NAV compounding is BETTER, so this one is positive
+    assert v['navPerShareGrowth'] > 0
 
 
-def test_the_two_new_metrics_score_in_NO_other_pool():
+def test_the_three_FIN1_only_metrics_score_in_NO_other_pool():
     """They are FIN-1-only instruments by design.  Asserted because a cohort-only metric that
     leaks a general-pool weight would re-weight the main deliverable silently."""
-    assert sw.DEPLOYED['shareCountChange'] == 0.0
-    assert sw.DEPLOYED['longTermDebtChange'] == 0.0
-    for label in sw.COHORT_LABELS:
-        if label == 'InvestmentVehicle':
-            continue
-        assert sw.COHORT_WEIGHTS[label]['shareCountChange'] == 0.0, label
-        assert sw.COHORT_WEIGHTS[label]['longTermDebtChange'] == 0.0, label
+    for metric in ('shareCountChange', 'longTermDebtChange', 'navPerShareGrowth'):
+        assert sw.DEPLOYED[metric] == 0.0, metric
+        for label in sw.COHORT_LABELS:
+            if label == 'InvestmentVehicle':
+                continue
+            assert sw.COHORT_WEIGHTS[label][metric] == 0.0, (label, metric)
 
 
 def test_Piotroski_carries_NO_weight_in_FIN1_or_FIN3():
@@ -361,7 +452,8 @@ def test_both_new_metrics_reach_the_REVIEW_PAGE_and_the_two_copies_agree():
     """
     import generate_presentation as gp
     import reviewReference as rr
-    for metric in ('shareCountChange', 'longTermDebtChange'):
+    for metric in ('shareCountChange', 'longTermDebtChange',
+                   'interestCoverage', 'navPerShareGrowth'):
         assert metric in rr.PLAYBOOK_METRICS, metric
         assert metric in gp.PLAYBOOK_METRICS, metric
         assert metric in rr.METRIC_BASIS, '%s needs a declared basis/units' % metric
@@ -380,7 +472,13 @@ def test_the_allow_list_is_TIED_to_the_weight_vector_now():
     import reviewReference as rr
     covered = rr.assert_allow_list_covers_the_weighted_metrics()
     assert covered['InvestmentVehicle'] == pytest.approx(0.85, abs=0.005)
-    assert covered['general'] == pytest.approx(0.855, abs=0.005)
+    #  general 0.855 -> 0.8968 on 2026-08-05 (register D-10): `grahamNumberToPrice` was
+    #  resolved to be a UNITLESS ratio and moved off `_ALLOW_LIST_EXEMPT` onto the
+    #  allow-list, so the general review page now explains 4.2pp more of its own score.
+    #  The number moved because the page got better, not because the guard was loosened.
+    #  general 0.897 -> 0.9006 on 2026-08-06: `interestCoverage` is on the allow-list and
+    #  carries 0.060, so the page explains a further 0.4pp of its own score.
+    assert covered['general'] == pytest.approx(0.9006, abs=0.005)
     #  and the residual is NAMED rather than merely tolerated
     for pool, (_cov, missing) in rr.allow_list_coverage().items():
         for m in missing:
@@ -611,3 +709,103 @@ def test_the_MECHANISM_the_C_block_OOD_ruling_rests_ON():
     #  now been brought into line with them rather than the other way round
     assert np.isnan(s2m.share_count_change(_perfect_nine(weightedAverageShsOut=np.nan)))
     assert np.isnan(s2m.long_term_debt_change(_perfect_nine(longTermDebt=np.nan)))
+
+
+# --------------------------------------------------------------------------- #
+#  F.  the two 2026-08-06 metrics themselves                                  #
+# --------------------------------------------------------------------------- #
+def _panel(n=16, **cols):
+    """A minimal NEWEST-FIRST quarterly cdx slice carrying both new metrics' inputs."""
+    base = dict(bookValuePerShare=5.0, operatingIncome=120.0, interestExpense=10.0)
+    base.update({k: v for k, v in cols.items() if not isinstance(v, (list, tuple))})
+    d = {k: [v] * n for k, v in base.items()}
+    for k, v in cols.items():
+        if isinstance(v, (list, tuple)):
+            d[k] = list(v)
+    d['date'] = pd.date_range('2026-01-01', periods=n, freq='-3ME')
+    d['source'] = ['T'] * n
+    d['reportingFrequency'] = ['quarterly'] * n
+    return pd.DataFrame(d)
+
+
+def _compounding(rate, n=16, start=5.0):
+    """BVPS NEWEST-FIRST compounding at `rate`/yr: row 0 is the newest and largest."""
+    return [start * (1.0 + rate) ** (-i / 4.0) for i in range(n)]
+
+
+def test_navPerShareGrowth_recovers_the_ANNUAL_rate_it_was_given():
+    """The arithmetic, on a series constructed to compound at a known rate.  A 16-row
+    quarterly window spans (16-1)/4 = 3.75 years, so the endpoint ratio must be un-compounded
+    by that and not by the row count."""
+    assert s2m.nav_per_share_growth(_panel(bookValuePerShare=_compounding(0.10)),
+                                    16, rpy=4) == pytest.approx(0.10, abs=1e-9)
+    assert s2m.nav_per_share_growth(_panel(bookValuePerShare=_compounding(-0.05)),
+                                    16, rpy=4) == pytest.approx(-0.05, abs=1e-9)
+    #  a NAV that does not compound at all -- the signature the metric exists to catch
+    assert s2m.nav_per_share_growth(_panel(), 16, rpy=4) == pytest.approx(0.0, abs=1e-12)
+
+
+def test_navPerShareGrowth_REFUSES_a_non_positive_or_absent_endpoint():
+    """NaN, never 0.0.  On a POSITIVE-weight column a 0.0 would assert "did not compound",
+    which is a judgement made from missing data -- and a fractional power of a negative base
+    is undefined anyway.  NaN imputes to the column median downstream."""
+    for endpoint in (0, 15):          # newest row and the oldest row inside the window
+        bv = [5.0] * 16
+        bv[endpoint] = -1.0
+        assert np.isnan(s2m.nav_per_share_growth(_panel(bookValuePerShare=bv), 16, rpy=4))
+        bv[endpoint] = 0.0
+        assert np.isnan(s2m.nav_per_share_growth(_panel(bookValuePerShare=bv), 16, rpy=4))
+        bv[endpoint] = np.nan
+        assert np.isnan(s2m.nav_per_share_growth(_panel(bookValuePerShare=bv), 16, rpy=4))
+
+
+def test_navPerShareGrowth_scales_its_window_to_a_SEMI_ANNUAL_filer():
+    """8 semi-annual rows are the same 3.5 CALENDAR years as 8 quarterly rows are 1.75 --
+    so the same nominal window must return the same ANNUAL rate for either frequency, which
+    is the whole reason `years` is derived from rpy rather than hard-coded."""
+    q = s2m.nav_per_share_growth(_panel(n=16, bookValuePerShare=_compounding(0.08, 16)),
+                                 16, rpy=4)
+    sa = [5.0 * 1.08 ** (-i / 2.0) for i in range(8)]
+    h = s2m.nav_per_share_growth(_panel(n=8, bookValuePerShare=sa), 16, rpy=2)
+    assert q == pytest.approx(0.08, abs=1e-9)
+    assert h == pytest.approx(0.08, abs=1e-9)
+
+
+def test_interestCoverage_is_x_covered_and_REFUSES_a_debt_free_name():
+    """The guard is the substantive half and it matches Stage-1's (createDicts /
+    calcMetrics): FMP reports `interestExpense == 0` for a debt-free company, so dividing
+    would mark it +/-inf -- a solvency verdict handed out for HAVING NO DEBT.  Refusing the
+    row hands the leverage question to the rest of the block instead."""
+    assert s2m.interest_coverage(_panel(), 16, rpy=4) == pytest.approx(12.0)
+    assert np.isnan(s2m.interest_coverage(_panel(interestExpense=0.0), 16, rpy=4))
+    assert np.isnan(s2m.interest_coverage(_panel(interestExpense=-4.0), 16, rpy=4))
+
+
+def test_interestCoverage_scores_an_OPERATING_LOSS_rather_than_refusing_it():
+    """The asymmetry with the guard above, and it is deliberate: a loss that cannot service
+    the debt is a REAL and adverse reading -- the exact reading the S block exists to catch --
+    whereas a missing denominator is not a reading at all."""
+    loss = s2m.interest_coverage(_panel(operatingIncome=-30.0), 16, rpy=4)
+    assert loss == pytest.approx(-3.0)
+    assert loss < s2m.interest_coverage(_panel(), 16, rpy=4)
+
+
+def test_the_two_new_metrics_are_REGISTERED_or_the_run_refuses():
+    """`postBoScoreRanking` refuses a pool containing an unregistered metric, so a weight
+    without a registry row is a dead pipeline rather than a silently-defaulted window."""
+    assert s2m.unregistered_metrics(list(sw.METRIC_KEYS)) == []
+    for key in ('interestCoverage', 'navPerShareGrowth'):
+        assert s2m.flow_factor(key, 2) == 1.0, '%s is scale-free: no per-quarter factor' % key
+        assert s2m.window_quarters(key, 16) == 16
+        assert key in s2m.windowed_metric_keys()
+
+
+def test_navPerShareGrowth_is_LABELLED_A_PROXY_where_the_CEO_reads_it():
+    """It is book equity per share, not a fund-published NAV -- exact only under ASC 946.
+    The caveat has to travel with the column into the review artifact, not just live in a
+    docstring, because the artifact is what gets read."""
+    import reviewReference as rr
+    basis = rr.METRIC_BASIS['navPerShareGrowth']
+    assert 'PROXY' in basis
+    assert 'BOOK VALUE PER SHARE' in basis.upper()
+    assert 'ASC-946' in basis or 'ASC 946' in basis

@@ -42,7 +42,11 @@ POSTBM_ORDER = ('RoA', 'earnYield', 'grahamNumberToPrice', 'bVpRatio', 'revenueG
 POSTNEW_ORDER = ('freeCashFlowYield', 'freeCashFlowPerShareGrowth', 'DcfToPrice',
                  'marketCapRevQuants', 'Altman-Z', 'Piotroski', 'tbVpRatio', 'BoScore',
                  'EPStoEPSmean', 'priceGrowth', 'CycleHeat',
-                 'shareCountChange', 'longTermDebtChange')
+                 'shareCountChange', 'longTermDebtChange',
+                 #  APPENDED 2026-08-06 (S-block Tier 1, and FIN-1's R-block Tier 1).  The
+                 #  ORDER is the frozen part: appending leaves every existing
+                 #  `postScoreMetric_df` column exactly where it was.
+                 'interestCoverage', 'navPerShareGrowth')
 EQMET = {'RoA': 'returnOnAssets', 'earnYield': 'earningsYield',
          'grahamNumberToPrice': 'grahamNumberToPrice', 'bVpRatio': 'pbRatio',
          'revenueGrowth': 'revenue', 'incomeQuality': 'incomeQuality',
@@ -103,7 +107,7 @@ def test_the_deployed_vector_normalises_to_EXACTLY_one():
     postBm, postNew = cdic.getPostDict()
     W = {**{k: v['w'] for k, v in postBm.items()},
          **{k: v['w'] for k, v in postNew.items()}}
-    assert len(W) == 23
+    assert len(W) == 25
     #  EXACT float equality, not a tolerance, and it survived E-2's move to a DERIVED vector:
     #  `_block_vector` computes each weight as W_B * sigma * tau / n and the 18 results still
     #  sum to exactly 1.0 in binary floating point.  Keeping the assertion exact is what makes
@@ -121,7 +125,7 @@ def test_every_named_vector_covers_EXACTLY_the_canonical_key_set():
     vector whose other weights are ~0.05.  scoringWeights._validate() refuses at import;
     this asserts the refusal covers every vector."""
     canon = set(sw.METRIC_KEYS)
-    assert len(sw.METRIC_KEYS) == 23
+    assert len(sw.METRIC_KEYS) == 25
     assert set(sw.DEPLOYED) == canon
     assert set(sw.LEGACY) == canon
     for label, vec in sw.COHORT_WEIGHTS_RAW.items():
@@ -216,8 +220,12 @@ def test_the_legacy_vector_is_NOT_the_deployed_one():
     #  21 of the 23, not all 23: `shareCountChange` / `longTermDebtChange` are 0 in BOTH --
     #  0 in LEGACY because the pre-2026-07-14 pipeline had no such columns, and 0 in DEPLOYED
     #  because they are FIN-1-only instruments.  Two genuine agreements, not a broken derivation.
-    assert len(differ) == 21, '21 of 23 differ; got %d' % len(differ)
-    assert set(sw.METRIC_KEYS) - set(differ) == {'shareCountChange', 'longTermDebtChange'}
+    #  22 of 25 now: `interestCoverage` joined the differing set on 2026-08-06 (0 in LEGACY,
+    #  0.060 deployed).  `navPerShareGrowth` did NOT -- it is 0 in BOTH, because it is a
+    #  FIN-1-only instrument and the general vector never carried it.
+    assert len(differ) == 22, '22 of 25 differ; got %d' % len(differ)
+    assert set(sw.METRIC_KEYS) - set(differ) == {'shareCountChange', 'longTermDebtChange',
+                                                 'navPerShareGrowth'}
 
 
 def test_cohort_BoScore_is_now_ZERO_in_all_five_vectors():
@@ -271,9 +279,15 @@ def test_the_five_cohort_vectors_SPEND_what_they_should_and_normalise_to_one():
                       for want of any instrument) until `shareCountChange` and
                       `longTermDebtChange` were extracted from Piotroski to carry them.
     """
+    #  REIT UNPARKED ITS S BUDGET ON 2026-08-06 (CEO).  The note said "held unspent until
+    #  net-debt/EBITDA or interest coverage exists"; `interestCoverage` now exists as a
+    #  Stage-2 metric, so REIT spends 1.0 rather than 0.914.
+    #  FIN-3 did NOT unpark and now spends LESS (0.8796 -> 0.832): its S ratio is above the
+    #  anchor, so Rule PROP raised its HELD budget 0.1204 -> 0.1680 along with the general S
+    #  budget, and capital adequacy is still invisible to the pipeline.
     expected_spendable = {
-        'Mining': 1.0, 'REIT': 0.914, 'InvestmentVehicle': 1.0,
-        'FinManager': 1.0, 'BalanceSheetFin': 0.8796,
+        'Mining': 1.0, 'REIT': 1.0, 'InvestmentVehicle': 1.0,
+        'FinManager': 1.0, 'BalanceSheetFin': 0.832,
     }
     assert set(sw.COHORT_WEIGHTS_RAW) == set(expected_spendable)
     for label, want in expected_spendable.items():
@@ -359,3 +373,34 @@ def _import_baseline_tool(name):
         sys.path.append(here)
     os.environ.setdefault('VA_OFFLINE_NO_DCF', '1')   # before postBoRank is reached
     return importlib.import_module(name)
+
+
+# --------------------------------------------------------------------------- #
+#  THE TIER-'N' DEAD SET (register C-11, CEO ruling 2026-08-05)               #
+# --------------------------------------------------------------------------- #
+#  RULING: the eight Tier-'N' criteria are KEPT, not deleted -- but their inertness is
+#  now ASSERTED rather than merely commented.  Keeping them was chosen over deleting
+#  because deleting is not free (it drops columns from BoMetric_df, so an older saved
+#  panel and a newer one stop sharing a schema and calcScore's schema gate is
+#  column-EXACT; it also changes the Stage-1 NaN-accounting readout's per-name criterion
+#  count and name list).  The cost of keeping them is that they are computed for
+#  nothing, which is cheap.  The RISK of keeping them -- one tier edit making a dead
+#  criterion live, or resurrecting the dEPS/dNetIncomePerShare double-count -- is what
+#  these tests remove.
+def test_the_tier_N_criteria_are_ENUMERATED_and_every_one_is_inert():
+    """The dead set is a DECLARED list, not an emergent property of the registry.
+
+    If a criterion leaves Tier N this test fails and the reader has to say so out loud --
+    which for `netIncomePerShare` specifically also means confronting the duplicate-pair
+    guard above."""
+    expected_dead = {
+        'grahamNetNet', 'salesToInventory', 'salesToAssets', 'effectiveTaxRate',
+        'grossProfit', 'netIncomePerShare', 'salesToMarketCap', 'grahamNumberToPrice',
+    }
+    dicts = cdic.getBaseMeanDiffUnitySpecialDicts()
+    found = {k for d in dicts for k, spec in d.items() if spec.get('Tier') == 'N'}
+    assert found == expected_dead, (
+        'the Tier-N dead set changed: added %s, removed %s. A criterion joining or '
+        'leaving the dead set is a scoring decision -- update this list deliberately.'
+        % (sorted(found - expected_dead), sorted(expected_dead - found)))
+    assert _tier_weight('N') == 0.0, 'Tier N must map to weight 0'

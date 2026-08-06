@@ -207,7 +207,7 @@ FIN2_MANAGER_OVERRIDE = {
 # Both names are RE-EXPORTED here unchanged, because every consumer reads them off this
 # module: postBo (`co.COHORT_WEIGHTS.get(label)`), tune_run (cohort priors),
 # test_post_fetch_hardening, reviewReference.  Keys are the REAL metric keys from
-# createDicts.getPostDict() (all 21) and are enforced to be exactly that set by
+# createDicts.getPostDict() (all 25 as of 2026-08-06) and are enforced to be exactly that set by
 # scoringWeights._validate().  Threaded into postBoScoreRanking(weight_override=...) per
 # cohort; the general/main pool uses NO override (default weights).  weight 0 -> metric
 # dropped from AggScore (constant/neutral in rankOfRanks); does not change cohort
@@ -527,6 +527,136 @@ def _load_industry_map(industry_pickle=None):
         return {}
     d = pd.read_pickle(path)
     return dict(d) if isinstance(d, dict) else {}
+
+
+def _load_isin_map(isin_pickle=None):
+    """symbol -> ISIN (FMP v3/profile `isin` field), from the local ISIN pickle
+    (already a flat dict symbol->isin, written by findAllSectors). If no explicit path
+    is given, use the NEWEST isindic_fmp_*.pickle present. Returns {} if none found ->
+    the survivor rule then falls back to exactly its pre-ISIN behaviour.
+
+    Same shape as _load_industry_map on purpose: findAllSectors writes both maps from the
+    SAME already-fetched profile payload, so they share the dated-glob convention. An
+    ABSENT pickle is the normal state on every run before the next full profile build, so
+    {} is a supported answer, not a degraded one.
+    """
+    import glob
+    path = isin_pickle
+    if not path:
+        # Glob the REPO ROOT, not the CWD -- same defect class as the sector map above.
+        cands = sorted(glob.glob(os.path.join(_MODULE_DIR, 'isindic_fmp_*.pickle')))
+        if not cands:
+            cands = sorted(glob.glob('isindic_fmp_*.pickle'))
+        path = cands[-1] if cands else None
+    else:
+        path = _resolve_repo_data(path)
+    if not path or not os.path.exists(path):
+        return {}
+    d = pd.read_pickle(path)
+    return dict(d) if isinstance(d, dict) else {}
+
+
+#  Loaded ONCE per process and memoised, because `_investability_key` is a sort key
+#  called O(group size * log) times per group over ~1,300 groups -- re-globbing the repo
+#  root there would be a disk hit per comparison. `None` means "not yet looked",
+#  `{}` means "looked, nothing there" (the pre-fetch steady state).
+_ISIN_MAP_CACHE = None
+
+
+def _isin_map_cached():
+    global _ISIN_MAP_CACHE
+    if _ISIN_MAP_CACHE is None:
+        try:
+            _ISIN_MAP_CACHE = _load_isin_map()
+        except Exception:
+            # A corrupt/unreadable ISIN pickle must not break the carve: degrade to the
+            # pre-ISIN survivor rule, which is the same path as "no pickle at all".
+            _ISIN_MAP_CACHE = {}
+    return _ISIN_MAP_CACHE
+
+
+def _clean_isin(x):
+    """Normalised ISIN, or '' when unusable. Deliberately strict-ish but NOT a check-digit
+    validator: this value is only ever compared for EQUALITY inside one issuer group, so a
+    malformed-but-consistent string is harmless, while a `None`/NaN/'' must not group."""
+    if not isinstance(x, str):
+        return ''
+    s = x.strip().upper()
+    return s if len(s) >= 6 and s.isalnum() else ''
+
+
+def _isin_plurality_term(sym, group, isin_map):
+    """The ONE ordering signal an ISIN actually supports: how many of the group's members
+    share THIS line's ISIN. Lower (more negative) sorts first, so the plurality security
+    wins. Returns 0 -- a constant for every member, i.e. NO effect on the ordering -- when
+    the ISIN cannot discriminate within this group.
+
+    WHY PLURALITY AND NOT SOMETHING STRONGER. An ISIN (ISO 6166) is a country prefix + an
+    OPAQUE national security number + a check digit. It carries NO security-type field, so
+    NOTHING inside an ISIN says "this line is the common and that one is the preference
+    share". Any rule of the form "lower NSIN is the common" or "the .KS-style class digit"
+    is a national-numbering-agency convention, not a property of the identifier, and would
+    be an invented rule dressed as a derivation -- so it is not here.
+    What an ISIN DOES tell you is IDENTITY: two lines with the SAME ISIN are the same
+    security on two venues; two lines with DIFFERENT ISINs are genuinely different
+    securities. Plurality is the only ordering that follows from identity alone, and it
+    follows for a real reason: an issuer's COMMON line is the one that gets cross-listed
+    and depositary-programmed, so it tends to appear under one ISIN on SEVERAL lines of
+    the group, while a certificat / preference / notes line appears once.
+    CONSEQUENCE, STATED PLAINLY: in a 2-member group with 2 distinct ISINs this term is a
+    TIE and decides nothing. That is exactly the shape of all three known failing groups
+    (CBE.PA/RBT.PA, PREVA.AS/VALUE.AS, SMSD.L/SMSN.L), so THIS TERM DOES NOT FIX THEM.
+    See design/stage1-veto-decisions.md (register K-1) for what would.
+
+    ABSTENTION IS NOT "ISIN SAYS THE PICK DOES NOT MATTER". A group whose members all
+    share one ISIN still contains an LSE IOB line the CEO cannot buy at size (register
+    J-1) -- same security, different tradeability. Abstaining here hands that decision
+    back to the canonicity markers, which are the terms that see it.
+
+    NO-DATA MUST NOT BE A PENALTY  (reviewer, 2026-08-05 -- this was a real defect).
+    The first cut returned the abstain value 0 for a member whose ISIN was missing or
+    unusable, WHILE the discriminating branch emitted only values <= -1. 0 is therefore
+    the WORST value in the term's own range, so a member the profile map merely LACKED
+    sorted BELOW a member holding a SINGLETON ISIN -- the survivor of a mixed-availability
+    group got decided by ISIN DATA AVAILABILITY rather than by the plurality signal. Two
+    properties are now structural rather than incidental, and each is a case-exhaustive
+    consequence of the code shape below (see the two tests in test_dedup_issuer):
+      (a) NO-DATA TIES WITH A SINGLETON. "No ISIN for this line" and "an ISIN only this
+          line holds" both mean exactly `ISIN TELLS US NOTHING HERE`, so they must be the
+          same value. In the discriminating branch a member's value is
+          `-max(count, 1)`, and an absent ISIN yields count 0 -> -1, the same -1 a
+          singleton holder gets. Since every present ISIN has count >= 1, -1 is also the
+          LEAST-PREFERRED value the branch can emit: absence can never rank below an
+          active value, and can never rank above one either.
+      (b) GROUP-WIDE ABSTENTION SURVIVES MIXED AVAILABILITY. The abstain test is now
+          evaluated BEFORE this line's own ISIN is looked up, so the abstain/discriminate
+          decision is a function of (isin_map, group) ALONE -- it cannot differ between
+          two members of the same group. When the term abstains, every member gets a
+          literal 0, including the unmapped ones.
+    The "auditable as a value, not as a cancellation" property is kept deliberately: an
+    abstention is the literal 0 in the emitted key, not a coincidental tie.
+    """
+    if not isin_map or len(group) < 2:
+        return 0
+    counts = {}
+    for m in group:
+        i = _clean_isin(isin_map.get(m))
+        if i:
+            counts[i] = counts.get(i, 0) + 1
+    # ABSTAIN -> literal 0 for every member, so "this term did nothing" is auditable as a
+    # value and not merely as a tie that happens to cancel. Two abstain cases:
+    #   * one distinct usable ISIN in the group -- nothing to separate;
+    #   * no ISIN held by more than one member (the 1-1 split of a 2-member group) --
+    #     there IS no plurality, and a uniform -1 would only masquerade as a decision.
+    # THIS TEST READS ONLY `group` AND `isin_map`, NEVER `sym` -- that is what makes the
+    # abstention group-wide (property (b) above) instead of per-member.
+    if len(counts) < 2 or max(counts.values()) < 2:
+        return 0
+    #  `max(..., 1)` IS THE FIX, not a defensive tidy: it floors a missing/unusable ISIN
+    #  (count 0) onto the SINGLETON value -1 instead of letting it fall out at 0, which
+    #  the branch above has already reserved for "this term did nothing".
+    mine = _clean_isin(isin_map.get(sym))
+    return -max(counts.get(mine, 0), 1)
 
 
 def _latest_fundamentals(cdx_df):
@@ -1017,7 +1147,7 @@ def _non_canonical_tag(sym, name='', group=()):
 #  rule invites a reader to think the rule still consults the score.
 
 
-def _investability_key(sym, val_fn, sector_map=None, names=None, group=()):
+def _investability_key(sym, val_fn, sector_map=None, names=None, group=(), isin_map=None):
     """Deterministic "most investable line" ordering key for an issuer's listings.
 
     CANONICITY CLASS FIRST, then the CEO's share count. Lowest sorts first:
@@ -1026,8 +1156,10 @@ def _investability_key(sym, val_fn, sector_map=None, names=None, group=()):
       2. -weightedAverageShsOut  -- the CEO's size discriminator, INSIDE a canonicity
          tier, which is the only place it works.
       3. -marketCap.
-      4. digit-prefix, punctuation count, length, alphabetical -- the previous tail,
-         unchanged and fully deterministic.
+      4. digit-prefix, punctuation count, length -- the previous tail, unchanged.
+      5. ISIN plurality within the group (`_isin_plurality_term`) -- ADDED 2026-08-05,
+         see below.
+      6. alphabetical -- the last resort, unchanged.
 
     WHY NOT SHARE COUNT FIRST, WHICH IS WHAT THE BRIEF ASSUMED. Because it was measured
     and it is a bad rule. FMP serves the ISSUER's own filed share count to every one of
@@ -1073,6 +1205,34 @@ def _investability_key(sym, val_fn, sector_map=None, names=None, group=()):
     ISIN is the only discriminator available for them; see the K4 note in
     _issuer_components and design/dedup-policy.md section 10.
 
+    ISIN WIRED 2026-08-05 (CEO: "on the K-1, just pick one that makes the most sense"),
+    AS TERM 5 -- IMMEDIATELY ABOVE THE ALPHABETICAL LAST RESORT AND NOWHERE HIGHER.
+    That position is the whole safety argument, and it is chosen, not incidental:
+      *  NEVER WORSE THAN TODAY, PROVABLY. Terms 1-4 are byte-unchanged and sit ABOVE it,
+         so any group that today is decided by canonicity, share count, market cap or the
+         symbol-shape tail is decided IDENTICALLY. The only groups ISIN can move are the
+         ones that today fall through to raw alphabet -- 381 of 1,282 (29.7%) -- which is
+         precisely the failure surface. The measured 0.47% canonicity-first failure rate
+         cannot regress, because nothing ISIN does can outrank a canonicity marker.
+      *  BIT-IDENTICAL WITH NO ISIN DATA. `_isin_plurality_term` returns a constant 0 for
+         every member when the map is empty / NO member is mapped / the group has one
+         distinct usable ISIN, and a constant added to every member of a group cannot
+         change a sort. Every existing pickle is in that state (no isindic_fmp_*.pickle
+         exists yet), so this change is a NO-OP until the next profile build lands.
+         Asserted in test_dedup_issuer (test_isin_absent_is_bit_identical).
+      *  PARTIAL ISIN DATA CANNOT REORDER A GROUP EITHER (reviewer, 2026-08-05). The
+         first cut penalised an UNMAPPED member relative to a mapped one, so a
+         half-populated map moved survivors on data availability alone. Fixed in
+         `_isin_plurality_term`: absence now ties with a singleton, and the
+         abstain decision is taken before this line's ISIN is read. See that note.
+      *  WHAT IT DOES NOT DO. It does NOT resolve the three known-wrong groups. All three
+         are 2-member with (almost certainly) 2 distinct ISINs, where plurality ties. An
+         ISIN carries no security-type field, so no honest rule reads "common" out of one;
+         see the long note in `_isin_plurality_term`. UNVERIFIED, and flagged as such: no
+         isindic pickle exists yet and the six symbols are absent from the panel, so the
+         actual ISIN values for those groups have NOT been read -- the claim that they
+         differ rests on issuer structure, not on this repo's data.
+
     `sector_map` IS ACCEPTED AND IGNORED, deliberately and not by accident. It used to
     be criterion 1 ("prefer a line the sector map already tags"), which meant FMP's
     sector TAGGING decided which ticker the CEO saw. Sector propagation happens
@@ -1087,7 +1247,9 @@ def _investability_key(sym, val_fn, sector_map=None, names=None, group=()):
     mc = mc if mc is not None else -1.0
     digitpfx = 1 if sym[:1].isdigit() else 0
     punct = sum(ch in '-.' for ch in sym)
-    return (noncanon, -sh, -mc, digitpfx, punct, len(sym), sym)
+    imap = _isin_map_cached() if isin_map is None else isin_map
+    isin_t = _isin_plurality_term(sym, group, imap)
+    return (noncanon, -sh, -mc, digitpfx, punct, len(sym), isin_t, sym)
 
 
 def dedup_ranked(ranked_sources, cdx_df, names, scores=None, sector_map=None):

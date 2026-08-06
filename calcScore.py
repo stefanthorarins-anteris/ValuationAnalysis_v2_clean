@@ -1,8 +1,19 @@
+import math
+
 import pandas as pd
 import numpy as np
 from tqdm import tqdm
 import createDicts as cdic
 import reporting_period as rp
+import meanBars as mb
+
+# --- HISTORY BONUS (register C-7, CEO ruling 2026-08-05) ----------------------
+# Named here rather than inline so the two numbers the ruling actually fixes are in one
+# place and a test can assert them.  The shape, the scale argument and the honest side
+# effects are documented at the single use site in `simpleScore_fromDict`.
+HISTORY_BONUS_MAX = 0.05             # bonus at saturation; HALF the smallest criterion
+                                     # difference (a Tier-D criterion over a full window)
+HISTORY_BONUS_SATURATION_ROWS = 40   # ROWS available to the source, not the head(n) window
 
 def simpleScore_fromDict(bm_df,bm_ave,bm_da,n=8,as_of=None,freq_map=None):
     """Stage-1 per-symbol scoring.
@@ -117,7 +128,14 @@ def simpleScore_fromDict(bm_df,bm_ave,bm_da,n=8,as_of=None,freq_map=None):
             tempscore = tempscore + temp
         for key in dict_mean:
             mkey = "m" + key[0].upper() + key[1:]
-            temp = calcByTier('mean', dict_mean[key]['Tier'], dict_mean[key]['Sign'], bmdf_tick[mkey], bm_ave[mkey],key,_nw,nan_sink=_tick_nan)
+            #  THE BAR IS A STORED CONSTANT, NOT THE POOLED MEDIAN (register C-12, 2026-08-06).
+            #  `bm_ave[mkey]` is `getAves2`'s median of this column over EVERY company and
+            #  EVERY date, so it made the criterion a rank rather than a bar, moved with the
+            #  sample, and carried future data into a past row in any backtest.  `mean_bar`
+            #  returns the stated constant, or RAISES for a mean criterion nobody has given
+            #  one -- see meanBars.  The pooled median is still passed in because one
+            #  DECLARED exception (`mSalesToMarketCap`, Tier N, w = 0) still uses it.
+            temp = calcByTier('mean', dict_mean[key]['Tier'], dict_mean[key]['Sign'], bmdf_tick[mkey], mb.mean_bar(mkey, bm_ave[mkey]),key,_nw,nan_sink=_tick_nan)
             tempscore = tempscore + temp
         for key in dict_diff:
             dkey = "d" + key[0].upper() + key[1:]
@@ -130,6 +148,54 @@ def simpleScore_fromDict(bm_df,bm_ave,bm_da,n=8,as_of=None,freq_map=None):
         for key in dict_special:
             temp = calcByTier('special', dict_special[key]['Tier'], dict_special[key]['Sign'], bmdf_tick[key], bm_ave[key],key,_nw,nan_sink=_tick_nan)
             tempscore = tempscore + temp
+
+        # HISTORY BONUS (register C-7, CEO ruling 2026-08-05).  A concave, saturating
+        # bonus for a LONGER AVAILABLE PANEL, added to the Stage-1 score.
+        #
+        #     bonus = HISTORY_BONUS_MAX * sqrt(min(rows, HISTORY_BONUS_SATURATION_ROWS)
+        #                                      / HISTORY_BONUS_SATURATION_ROWS)
+        #
+        # WHAT IT IS NOT.  It does not correct a punishment, because SHORT HISTORY IS NOT
+        # PUNISHED TODAY -- calcByTier returns `resvec.head(n).mean()`, and the mean of a
+        # 4-row source is the mean over those 4 rows, so a short source has the SAME
+        # EXPECTED score as a long one, just a NOISIER estimate of it.  (If any comment
+        # anywhere still says short history is penalised, it is wrong: the estimator is
+        # unbiased and only its variance moves.)  This bonus therefore pays for ESTIMATOR
+        # CONFIDENCE, not for a missing pass.
+        #
+        # ROWS, NOT CALENDAR SPAN, and that follows from the same fact: the quantity a
+        # longer panel buys is more BERNOULLI TRIALS behind each criterion's pass rate, and
+        # trials are counted in rows.  So it is deliberately NOT frequency-scaled -- the
+        # same ruling (Q2, 2026-07-26) that leaves the head(n) window unscaled.  HONEST
+        # CONSEQUENCE, stated rather than implied: for a quarterly filer 40 rows is 10
+        # calendar years, for a SEMI-ANNUAL filer the same 40 rows is 20.  The CEO's ruling
+        # says "40 quarters"; on a semi-annual source that is 40 ROWS, i.e. a longer
+        # calendar span for the same bonus.
+        #
+        # SCALE -- checked against the score geometry rather than assumed, because the
+        # whole point is that it must be decisive for ties and never more:
+        #   * max BoScore                       17.85
+        #   * rank-100 -> rank-20 span           0.7875   (bonus max = 6.3% of it)
+        #   * smallest criterion difference      0.1      (a Tier-D criterion over a full
+        #                                                  window), so 0.05 is EXACTLY HALF
+        # 90.9% of names share their score with another name and currently break
+        # ALPHABETICALLY (the C-13 tiebreak), so a 0.05 bonus decisively resolves ties and
+        # flips genuinely close calls, and can NEVER outweigh one full Tier-D criterion
+        # differing.  It is a tiebreak with a reason, not a new criterion.
+        #
+        # WHY sqrt AND NOT log.  Both are concave and both saturate; sqrt was chosen because
+        # it spreads MORE of the bonus across the range the panel actually occupies (median
+        # panel length is 20 rows): sqrt gives 0.0224 / 0.0354 / 0.0500 at 8 / 20 / 40 rows,
+        # a 0.0276 spread, against log's 0.0204.  Required shape properties hold: 40 rows
+        # (0.0500) > 30 rows (0.0433); the 30->40 increment (0.0067) is smaller than the
+        # 20->30 increment (0.0079); and 80 rows gives EXACTLY the same 0.0500 as 40.
+        #
+        # SIDE EFFECT, accepted eyes-open: the bonus is monotone in listing age, so it is a
+        # small systematic tilt toward long-listed companies.  That is the intended
+        # direction (more trials = more trustworthy pass rates), but it IS a tilt.
+        _hist_rows = len(bmdf_tick)
+        tempscore = tempscore + HISTORY_BONUS_MAX * math.sqrt(
+            min(_hist_rows, HISTORY_BONUS_SATURATION_ROWS) / HISTORY_BONUS_SATURATION_ROWS)
 
         tbs_df.loc[tbs_df['source'] == ticker, 'score'] = tempscore
         if _nan_acct is not None:
@@ -168,7 +234,25 @@ def simpleScore_fromDict(bm_df,bm_ave,bm_da,n=8,as_of=None,freq_map=None):
         print('  worst by NaN tier-weight: '
               + '; '.join('%s n=%d w=%.2f %s' % (k, v[0], v[1], v[2][:4])
                           for k, v in _worst), flush=True)
-    tbs_df.sort_values('score', ascending=False,inplace=True)
+    # DETERMINISTIC TIEBREAK (issue C-13, 2026-08-05).  This used to be
+    # `sort_values('score', ascending=False)` -- pandas' DEFAULT kind is 'quicksort', which is
+    # NOT STABLE, so the order among tied scores depended on an implementation detail of the
+    # sort and could differ between runs, pandas versions, or even input orderings of the same
+    # universe.  The Stage-1 score is heavily QUANTIZED (a sum of tier weights times k/8
+    # window fractions), and 90.9% of names share their exact score with at least one other
+    # name -- so the head(100) cut lands INSIDE a tie block essentially always, and which names
+    # made the pool was not reproducible.
+    #
+    # THIS IS NOW LOAD-BEARING RATHER THAN HYGIENE: the veto layer (stage1_veto) sits on top of
+    # this boundary and ejects names BEFORE the cut, so a non-reproducible boundary would make
+    # the veto's own A/B measurements non-reproducible too.
+    #
+    # `kind='mergesort'` is pandas' stable sort, and `source` (the ticker) is an explicit
+    # secondary key so the tiebreak is a STATED RULE rather than "whatever order the panel
+    # arrived in".  Ticker is arbitrary but it is deterministic, total, and carries no
+    # information that could bias the pick -- which is exactly what a tiebreak should be.
+    tbs_df.sort_values(['score', 'source'], ascending=[False, True],
+                       kind='mergesort', inplace=True)
     return tbs_df
 
 def calcByTier(dict,Tier,Sign,metvec,avec,met,n,nan_sink=None):

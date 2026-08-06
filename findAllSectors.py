@@ -136,12 +136,42 @@ def buildSectorIndustryMaps(symbols, baseurl, api_key, batch_size=100, pace=None
             f'{n_calls} call(s); {len(missing)} requested symbol(s) had no returned '
             f'profile, key {_mask_key(api_key)}) -- refusing to persist a partial map')
 
-    sectordic, industrydic = {}, {}
+    sectordic, industrydic, isindic, volavgdic = {}, {}, {}, {}
     for prof in profiles:
         sym = prof.get('symbol') if isinstance(prof, dict) else None
         if not sym:
             continue
         industrydic[sym] = prof.get('industry')
+        #  ISIN: CAPTURE ONLY, NOT WIRED (register K-1, CEO 2026-08-05).
+        #  It was ALREADY IN this response and discarded here, so capturing it costs ZERO extra
+        #  API calls -- `getData_gen`'s K-1 note says exactly that ("the pipeline ALREADY FETCHES
+        #  IT: v3/profile returns `isin`") and it was still being dropped on this line.
+        #  WHY IT IS WANTED.  ISIN is the ONLY discriminator for the three dedup groups that
+        #  merge correctly but pick the WRONG LINE (Robertet's certificat, Value8's preference
+        #  line, Samsung's preferred GDR): same exchange, names identical verbatim, derived price
+        #  identical -- no other marker can reach them.  381 of 1,282 groups (29.7%) currently
+        #  fall through to an ALPHABETICAL tiebreak.
+        #  DO NOT WIRE IT INTO THE DEDUP PICK RULE YET.  It is absent from every existing
+        #  artifact, so nothing depending on it can be tested until after a fetch -- and
+        #  `getData_gen.isin_same_issuer_groups`'s own note records the reason the naive rule is
+        #  unsafe (Heineken N.V. vs Heineken Holding N.V. is a REAL false positive).
+        isindic[sym] = prof.get('isin')
+        #  volAvg: CAPTURE ONLY, NOT WIRED (MD, 2026-08-05).  Same deal as the ISIN above -- it is
+        #  on the SAME already-fetched v3/profile payload, so capturing it costs ZERO extra API
+        #  calls, and a fetch is the only chance we ever get to gain a column.
+        #  WHY IT IS WANTED, TWICE OVER:
+        #    * REGISTER K-1.  An ISIN carries no security-type field, so `_isin_plurality_term`
+        #      ABSTAINS on 2-member groups and the three known-wrong picks (Robertet's certificat,
+        #      Value8's preference line, Samsung's preferred GDR) stay unresolved. Average volume
+        #      is what would actually reach them: the common line is the LIQUID one, and unlike an
+        #      ISIN this field is DIRECTIONAL BY CONSTRUCTION (more is the common) rather than an
+        #      opaque identifier we would have to invent a convention for.
+        #    * REGISTER J-1.  Nothing anywhere in the pipeline screens for liquidity, free float,
+        #      volume or spread, while the market-cap bands now go below $50M. This is the first
+        #      instrument that could.
+        #  DO NOT WIRE IT YET: it is absent from every saved artifact, so nothing that depends on
+        #  it is testable until after a fetch.
+        volavgdic[sym] = prof.get('volAvg')
         sec = prof.get('sector')
         sectordic.setdefault(sec, []).append(sym)
 
@@ -167,6 +197,34 @@ def buildSectorIndustryMaps(symbols, baseurl, api_key, batch_size=100, pace=None
     fidag = datetime.today().strftime('%Y-%m-%d')
     pd.to_pickle(merged_sector, 'sectorsdic_fmp.pickle')
     pd.to_pickle(merged_industry, f'industrydic_fmp_{fidag}.pickle')
+    #  ISIN map: written as its OWN dated artifact, merged with the same
+    #  MERGE-NEVER-OVERWRITE discipline as the industry map (it is the identical shape,
+    #  symbol -> value, so `_merge_industry_dics` is the right helper and not a coincidence).
+    #  A SEPARATE FILE rather than a column on an existing one, deliberately: nothing reads it
+    #  yet, and a new file cannot change the schema of an artifact something already consumes.
+    _prev_isin = _newest_dated_pickle('isindic_fmp_*.pickle')
+    merged_isin, n_kept_x = _merge_industry_dics(
+        _read_pickle_or_none(_prev_isin) if _prev_isin else None, isindic)
+    pd.to_pickle(merged_isin, f'isindic_fmp_{fidag}.pickle')
+    #  volAvg map: its OWN dated artifact, same shape and same merge discipline.
+    #  ONE DIFFERENCE THAT MATTERS AND MUST NOT BE FORGOTTEN WHEN THIS IS WIRED: unlike a sector,
+    #  an industry or an ISIN, average volume is TIME-VARYING.  Merging therefore carries FORWARD
+    #  a STALE reading for any symbol this run did not fetch, and the dict has no per-entry as-of
+    #  date -- only the filename dates the entries this run refreshed.  Merging is still right
+    #  (non-shrinking, same reason as the maps above), but a consumer must not read an entry as
+    #  current, and per-entry dating is the first thing to add when this gets wired.
+    _prev_volavg = _newest_dated_pickle('volavgdic_fmp_*.pickle')
+    merged_volavg, n_kept_v = _merge_industry_dics(
+        _read_pickle_or_none(_prev_volavg) if _prev_volavg else None, volavgdic)
+    pd.to_pickle(merged_volavg, f'volavgdic_fmp_{fidag}.pickle')
+    print(f'[sector/industry build] volAvg captured for '
+          f'{sum(1 for v in volavgdic.values() if v is not None)} of {len(volavgdic)} symbols -> '
+          f'volavgdic_fmp_{fidag}.pickle (kept {n_kept_v} pre-existing entr(ies), which are '
+          f'STALE volumes -- see the note above). CAPTURE ONLY -- nothing reads it; registers '
+          f'K-1 and J-1 are NOT wired.')
+    print(f'[sector/industry build] ISIN captured for {sum(1 for v in isindic.values() if v)} '
+          f'of {len(isindic)} symbols -> isindic_fmp_{fidag}.pickle (kept {n_kept_x} '
+          f'pre-existing entr(ies)). CAPTURE ONLY -- register K-1 is NOT wired.')
     print(f'[sector/industry build] {len(industrydic)} symbols fetched -> '
           f"sectorsdic_fmp.pickle + industrydic_fmp_{fidag}.pickle "
           f'({n_calls} batched profile call(s); {len(missing)} requested symbol(s) '
@@ -186,7 +244,15 @@ def _read_pickle_or_none(path):
 
 
 def _newest_industry_pickle():
-    cands = sorted(glob.glob('industrydic_fmp_*.pickle'))
+    return _newest_dated_pickle('industrydic_fmp_*.pickle')
+
+
+def _newest_dated_pickle(pattern):
+    """Newest (lexicographically last, i.e. newest ISO date) match, or None.
+
+    Extracted from `_newest_industry_pickle` when the ISIN map was added -- the date is ISO so
+    a lexicographic sort IS a chronological one, which is the property both callers rely on."""
+    cands = sorted(glob.glob(pattern))
     return cands[-1] if cands else None
 
 

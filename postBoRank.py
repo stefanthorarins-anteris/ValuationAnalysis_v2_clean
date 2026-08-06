@@ -515,6 +515,11 @@ def _compute_ticker_metrics(ticker, tempcdx, dcf, bstop, nq, tempcntr,
     # `postScoreMetric_df`'s schema pool-dependent, and every consumer reads it as fixed.
     setv('shareCountChange', sm.share_count_change(tempcdx, rpy=rpy))
     setv('longTermDebtChange', sm.long_term_debt_change(tempcdx, rpy=rpy))
+    # 2026-08-06.  `interestCoverage` carries S's Tier 1 in the general vector and in Mining /
+    # REIT / FIN-2; `navPerShareGrowth` carries R's Tier 1 in FIN-1 ONLY and 0.000 everywhere
+    # else.  Both are computed for EVERY pool for the schema reason stated just above.
+    setv('interestCoverage', sm.interest_coverage(tempcdx, nq, rpy=rpy))
+    setv('navPerShareGrowth', sm.nav_per_share_growth(tempcdx, nq, rpy=rpy))
     setv('priceGrowth', sm.price_growth(tempcdx, nq, rpy=rpy))
     # rpy MUST be passed: CycleHeat is a self-reference z-score, so its window length
     # decides the baseline. It was the only metric in this block taking neither nq nor

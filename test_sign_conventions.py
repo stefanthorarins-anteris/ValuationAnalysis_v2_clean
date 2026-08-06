@@ -128,9 +128,18 @@ _EXPECTED = [
     ('mean',  'debtEquityRatio',    'debtEquityRatio',   'Identity', 'C', -1, 'equity_positive'),
     ('diff',  'freeCashFlowToEquity', 'freeCashFlow',
      'totalStockholdersEquity', 'B', +1, 'equity_positive'),
-    ('unity', 'netDebtToEBITDA',    'netDebtToEBITDA',   'Identity', 'A', -1, 'ebitda_positive'),
-    ('diff',  'effectiveTaxRate',   'effectiveTaxRate',  'Identity', 'C', -1,
+    #  `netDebtToEBITDA` LEFT THIS TABLE on 2026-08-05: it is no longer a `unity` criterion with
+    #  a guard but a `special` three-branch rule (Sign +1, no Guard).  Pinned by
+    #  test_netDebtToEBITDA_three_branch_rule below instead.
+    #  `effectiveTaxRate` is now Tier 'N' (w = 0) -- REMOVED FROM THE GATE by CEO decision
+    #  2026-08-05 -- but the GUARD is still declared and still correct, so the spec stays pinned
+    #  here with the new tier.
+    ('diff',  'effectiveTaxRate',   'effectiveTaxRate',  'Identity', 'N', -1,
      'tax_rate_nonnegative'),
+    #  NEW 2026-08-05.  The guard is the substantive half: FMP reports interestExpense == 0 for a
+    #  debt-free name, and a debt-free company has no coverage ratio.
+    ('unity', 'interestCoverage',   'operatingIncome',   'interestExpense', 'B', +1,
+     'interest_expense_positive'),
 ]
 
 
@@ -648,48 +657,192 @@ def test_negative_equity_refused_by_debt_equity_and_fcf_to_equity():
         _weight('mean', 'debtEquityRatio'), 'debt-free must PASS a leverage-safety test'
 
 
-def test_netDebtToEBITDA_refuses_perverse_cell_and_keeps_genuine_net_cash():
-    """THE most load-bearing test in this file.
+def test_netDebtToEBITDA_three_branch_rule():
+    """THE most load-bearing test in this file -- ALL FOUR SIGN CELLS OF THE THREE-BRANCH RULE.
 
-    This criterion has four sign cells and only ONE is the defect.  A careless guard breaks the
-    37.8%-of-passes cell that is genuinely correct, so both are asserted here:
+    (CEO, 2026-08-05.)  The predecessor test pinned the two-branch guarded form; the rule now
+    has three branches and the FOURTH CELL FLIPPED from refuse to PASS:
 
-      netDebt > 0, EBITDA < 0  ->  ratio NEGATIVE -> passes `< 1` -> PERVERSE, must be refused
-      netDebt < 0, EBITDA > 0  ->  ratio NEGATIVE -> passes `< 1` -> GENUINE, must SURVIVE
+      netDebt > 0, EBITDA > 0  ->  test the annualised ratio < 1.0     (unchanged)
+      netDebt < 0, EBITDA > 0  ->  PASS   (genuine net cash; 37.8% of passes, must SURVIVE)
+      netDebt > 0, EBITDA <= 0 ->  REFUSED (debt and no earnings -- the 2026-08-04 defect)
+      netDebt < 0, EBITDA <= 0 ->  PASS   <- THE FIX.  Net cash means no leverage problem.
 
-    Both have exactly ONE negative operand, so nothing that counts negatives can separate them;
-    only the DENOMINATOR's sign can.
+    sign(netDebt) is recovered as sign(ratio) x sign(EBITDA proxy), so a cell is set up by
+    choosing the RATIO's sign and the PROXY's sign together -- which is also what proves the
+    net-cash branch is an OPERAND condition: cell 4's ratio is POSITIVE (negative/negative) and
+    it must pass WITHOUT its magnitude being consulted.
     """
-    # PERVERSE: EBITDA <= 0 (operatingIncome + D&A <= 0) with debt outstanding.
+    w = _weight('special', 'netDebtToEBITDA')
+
+    # --- cell 1: debt, earnings.  Ordinary test on the ANNUALISED ratio ------------------
+    # rpy=4 -> flow factor 0.25, so the `< 1.0` bar is on ratio*0.25, i.e. ratio < 4 annualised.
+    assert _score(_stage1(_frame(netDebtToEBITDA=0.5)), 'netDebtToEBITDA', 'special',
+                  'netDebtToEBITDA') == w, 'low leverage must pass'
+    assert _score(_stage1(_frame(netDebtToEBITDA=8.0)), 'netDebtToEBITDA', 'special',
+                  'netDebtToEBITDA') == 0.0, 'high leverage must fail'
+
+    # --- cell 2: NET CASH with positive EBITDA -> ratio negative -> PASS -----------------
+    genuine = _stage1(_frame(netDebtToEBITDA=-1.5))
+    assert _score(genuine, 'netDebtToEBITDA', 'special', 'netDebtToEBITDA') == w, \
+        'GENUINE NET CASH (37.8% of this criterion\'s passes) must still pass'
+
+    # --- cell 3: DEBT with non-positive EBITDA -> REFUSED (NaN -> fail) ------------------
+    # ratio NEGATIVE with proxy NEGATIVE -> sign product POSITIVE -> not net cash -> branch 3.
     perverse = _stage1(_frame(operatingIncome=-60.0, depreciationAndAmortization=30.0,
                               netDebtToEBITDA=-2.0))
-    assert np.isnan(perverse['uNetDebtToEBITDA']).all(), \
-        'EBITDA <= 0 must be out of domain'
-    assert _score(perverse, 'uNetDebtToEBITDA', 'unity', 'netDebtToEBITDA') == 0.0, \
-        'a levered company with no earnings still scores as the safest on the balance sheet'
+    assert np.isnan(perverse['netDebtToEBITDA']).all(), \
+        'debt with no earnings must be REFUSED, not scored'
+    assert _score(perverse, 'netDebtToEBITDA', 'special', 'netDebtToEBITDA') == 0.0, \
+        'a levered company with no earnings must not score as the safest balance sheet'
 
-    # GENUINE net cash: EBITDA > 0, ratio negative because NET DEBT is negative.
-    genuine = _stage1(_frame(netDebtToEBITDA=-1.5))
-    assert not np.isnan(genuine['uNetDebtToEBITDA']).all(), \
-        'the guard has refused a row with POSITIVE EBITDA -- it must key on the denominator'
-    assert _score(genuine, 'uNetDebtToEBITDA', 'unity', 'netDebtToEBITDA') == \
-        _weight('unity', 'netDebtToEBITDA'), \
-        'GENUINE NET CASH (37.8% of this criterion\'s passes) has been broken by the guard'
+    # --- cell 4: NET CASH with non-positive EBITDA -> PASS.  THE FIX. --------------------
+    # ratio POSITIVE (negative netDebt / negative EBITDA) with proxy NEGATIVE.
+    net_cash_loss = _stage1(_frame(operatingIncome=-60.0, depreciationAndAmortization=30.0,
+                                   netDebtToEBITDA=0.5))
+    assert _score(net_cash_loss, 'netDebtToEBITDA', 'special', 'netDebtToEBITDA') == w, \
+        'net cash with negative EBITDA must PASS -- there is no leverage problem to have'
 
-    # and ordinary low leverage still passes, high leverage still fails.
-    assert _score(_stage1(_frame(netDebtToEBITDA=0.5)), 'uNetDebtToEBITDA', 'unity',
-                  'netDebtToEBITDA') == _weight('unity', 'netDebtToEBITDA')
-    assert _score(_stage1(_frame(netDebtToEBITDA=4.0)), 'uNetDebtToEBITDA', 'unity',
-                  'netDebtToEBITDA') == 0.0
+    # AND IT MUST NOT BE PASSING ON THE RATIO'S APPARENT MERIT.  A net-cash row with a LARGE
+    # positive ratio (netDebt -100 / EBITDA -1 = 100) would FAIL a `< 1` test on magnitude, so
+    # if it passes, the branch is keying on the OPERAND SIGN and not on the ratio.  This is the
+    # single assertion that separates the required fix from the sign-inversion defect class.
+    big = _stage1(_frame(operatingIncome=-60.0, depreciationAndAmortization=30.0,
+                         netDebtToEBITDA=100.0))
+    assert _score(big, 'netDebtToEBITDA', 'special', 'netDebtToEBITDA') == w, \
+        'the net-cash branch must pass on the OPERAND sign, never on the ratio magnitude'
+    assert (np.asarray(big['netDebtToEBITDA'], dtype=float) == 1.0).all(), \
+        'the net-cash branch must emit its admission SENTINEL, not a computed ratio margin'
+
+    # --- the two unrecoverable states are REFUSED, never rewarded ------------------------
+    # EBITDA proxy exactly zero: sign(netDebt) cannot be recovered at all.
+    zero_proxy = _stage1(_frame(operatingIncome=-30.0, depreciationAndAmortization=30.0,
+                                netDebtToEBITDA=-2.0))
+    assert np.isnan(zero_proxy['netDebtToEBITDA']).all(), \
+        'a zero EBITDA proxy leaves sign(netDebt) unrecoverable -- refuse, never reward'
+    # a missing vendor ratio with healthy EBITDA: branch 2 has nothing to test.
+    no_ratio = _stage1(_frame(netDebtToEBITDA=np.nan))
+    assert np.isnan(no_ratio['netDebtToEBITDA']).all()
+
+
+def test_netDebtToEBITDA_carries_no_guard_key():
+    """The old `ebitda_positive` guard IS branch 2's condition and must not be re-declared.
+
+    Restoring a `Guard` here would refuse the net-cash cell before the rule ever saw it -- i.e.
+    it would silently undo the fix while looking like a tightening.
+    """
+    spec = _dict_by_kind('special')['netDebtToEBITDA']
+    assert spec['Tier'] == 'A', 'the tier is unchanged by the form change'
+    assert spec['Sign'] == +1, (
+        'the column now holds a verdict-bearing margin (positive = passes), not the leverage '
+        'ratio, so the sign is +1')
+    assert 'Guard' not in spec, (
+        'the three-branch rule states its own domain in calcMetrics.net_debt_three_branch. A '
+        '`Guard: ebitda_positive` here would refuse the net-cash-with-negative-EBITDA cell '
+        'before the rule ran -- undoing the 2026-08-05 fix while looking like a tightening.')
+
+
+def test_interestCoverage_bar_and_debt_free_guard():
+    """`operatingIncome / interestExpense > 1`, and a DEBT-FREE name is refused not failed."""
+    w = _weight('unity', 'interestCoverage')
+    # covered 18x (90 / 5) -> passes
+    assert _score(_stage1(_frame()), 'uInterestCoverage', 'unity', 'interestCoverage') == w
+    # covered 0.5x -> fails the unity bar (it is IN domain: the interest bill is real)
+    thin = _stage1(_frame(operatingIncome=5.0, interestExpense=10.0))
+    assert not np.isnan(thin['uInterestCoverage']).all(), 'a real interest bill is in domain'
+    assert _score(thin, 'uInterestCoverage', 'unity', 'interestCoverage') == 0.0
+    # exactly 1.0x is NOT > 1 -> fails.  The bar is stated as `> 1`, so pin the boundary.
+    exact = _stage1(_frame(operatingIncome=10.0, interestExpense=10.0))
+    assert _score(exact, 'uInterestCoverage', 'unity', 'interestCoverage') == 0.0
+    # DEBT-FREE (FMP reports 0) -> REFUSED, not "failed for having no debt".
+    free = _stage1(_frame(interestExpense=0.0))
+    assert np.isnan(free['uInterestCoverage']).all(), (
+        'interestExpense == 0 is a DEBT-FREE name; it has no coverage ratio and must be '
+        'refused. The leverage question for it is carried by netDebtToEBITDA.')
+    # a negative reported interest expense inverts the ratio's sign -> also refused.
+    assert np.isnan(_stage1(_frame(interestExpense=-5.0))['uInterestCoverage']).all()
+
+
+def test_capex_coverage_bar_is_self_funding_not_two_times():
+    """`CFO > |capex|` (the definition of self-funding capex), not `CFO > 2 x |capex|`."""
+    # the panel column is FMP's CFO/capex with capex NEGATIVE, so -ratio is CFO/|capex|.
+    # 1.5x covered: FAILED under the old 2x bar, PASSES under the derived one.
+    mid = _stage1(_frame(capitalExpenditureCoverageRatio=-1.5))
+    assert _score(mid, 'capitalExpenditureCoverageRatio', 'special',
+                  'capitalExpenditureCoverageRatio') == \
+        _weight('special', 'capitalExpenditureCoverageRatio'), \
+        'CFO at 1.5x capex IS self-funding and must pass the derived bar'
+    # 0.5x covered: not self-funding -> still fails.
+    under = _stage1(_frame(capitalExpenditureCoverageRatio=-0.5))
+    assert _score(under, 'capitalExpenditureCoverageRatio', 'special',
+                  'capitalExpenditureCoverageRatio') == 0.0
+    # exactly 1.0x is NOT > 1 -> fails.  Pin the boundary so the bar cannot drift to `>=`.
+    exact = _stage1(_frame(capitalExpenditureCoverageRatio=-1.0))
+    assert _score(exact, 'capitalExpenditureCoverageRatio', 'special',
+                  'capitalExpenditureCoverageRatio') == 0.0
+
+
+def test_returnOnAssets_base_computes_what_it_declares():
+    """Issue I-5: the BASE column is `netIncome/totalAssets`, not FMP's `returnOnAssets` field.
+
+    The frames here set the two to DIFFERENT values on purpose -- that is the only way to tell
+    which one the column is built from, and the merged-dict collapse used to make it the vendor
+    field silently.
+    """
+    bm = _stage1(_frame(netIncome=50.0, totalAssets=1000.0, returnOnAssets=-0.99))
+    assert np.allclose(np.asarray(bm['returnOnAssets'], dtype=float), 0.05), \
+        'the base column must be netIncome/totalAssets as DECLARED, not the vendor field'
+    # the DIFF form is UNCHANGED and still reads the vendor field, by declaration.
+    dv = _stage1(_frame(returnOnAssets=[0.10] * 6 + [0.02] * 6, netIncome=50.0))
+    assert _score(dv, 'dReturnOnAssets', 'diff', 'returnOnAssets') > 0.0, \
+        'the diff form still reads the vendor field -- a rising vendor RoA must still score'
+
+
+def test_effectiveTaxRate_and_grahamNumberToPrice_are_off_the_gate():
+    """Both demoted to Tier 'N' (w = 0) by CEO decision 2026-08-05 -- they score EXACTLY 0."""
+    base, mean, diff, unity, special = cdic.getBaseMeanDiffUnitySpecialDicts()
+    assert diff['effectiveTaxRate']['Tier'] == 'N'
+    assert unity['grahamNumberToPrice']['Tier'] == 'N'
+    # a criterion at Tier N contributes 0 whatever the data says -- the columns still exist and
+    # are still computed, which is what keeps the demotion a one-character edit to reverse.
+    falling = _stage1(_frame(effectiveTaxRate=[0.15] * 6 + [0.30] * 6))
+    assert _score(falling, 'dEffectiveTaxRate', 'diff', 'effectiveTaxRate') == 0.0
+    assert _score(_stage1(_frame()), 'uGrahamNumberToPrice', 'unity',
+                  'grahamNumberToPrice') == 0.0
+    # the Boundary imputation on grahamNumberToPrice is UNTOUCHED by the demotion.
+    assert 'Boundary' in unity['grahamNumberToPrice']
+
+
+def test_stage1_total_weight_is_17_85():
+    """Sigma-w over the Stage-1 registry: 18.65 -> 17.85 (CEO changes of 2026-08-05).
+
+    -1.00 uGrahamNumberToPrice (S->N), -0.30 dEffectiveTaxRate (C->N), +0.50 uInterestCoverage.
+    A DERIVED total, summed from the registry rather than transcribed, so it moves with the next
+    tier edit instead of becoming a stale literal (which is what 18.65 became).
+    """
+    _TIER_W = {'S': 1.0, 'A': 0.75, 'B': 0.5, 'C': 0.3, 'D': 0.1}
+    total = 0.0
+    for d in cdic.getBaseMeanDiffUnitySpecialDicts():
+        for spec in d.values():
+            total += _TIER_W.get(spec['Tier'], 0.0)
+    assert abs(total - 17.85) < 1e-9, 'Stage-1 Sigma-w is %.4f, expected 17.85' % total
 
 
 def test_negative_effective_tax_rate_refused():
     neg = _stage1(_frame(effectiveTaxRate=-0.5))
     assert np.isnan(neg['dEffectiveTaxRate']).all(), \
         'a negative effective tax rate must not read as improving tax efficiency'
-    # a rate FALLING within the admissible domain still passes (Sign -1 on the diff)
+    # A rate FALLING within the admissible domain is still a PASS on the column -- but the
+    # criterion is Tier 'N' (w = 0) since 2026-08-05, so its SCORE is 0 by weight and not by
+    # domain.  Both are asserted separately, because collapsing them would let a future
+    # re-promotion pass this test while the guard was broken.
     falling = _stage1(_frame(effectiveTaxRate=[0.15] * 6 + [0.30] * 6))
-    assert _score(falling, 'dEffectiveTaxRate', 'diff', 'effectiveTaxRate') > 0.0
+    _col = pd.to_numeric(pd.Series(list(falling['dEffectiveTaxRate'])), errors='coerce').head(8)
+    assert (_col < 0).any(), (
+        'a FALLING tax rate must still produce a negative diff (Sign -1 -> a pass) -- the '
+        'demotion to Tier N removes the WEIGHT, not the measurement')
+    assert _score(falling, 'dEffectiveTaxRate', 'diff', 'effectiveTaxRate') == 0.0, \
+        'Tier N means w = 0, so the criterion scores 0 however well the company does'
     # a ZERO rate is a real answer and stays in domain
     zero = _stage1(_frame(effectiveTaxRate=0.0))
     assert not np.isnan(zero['dEffectiveTaxRate']).all()

@@ -42,6 +42,9 @@ CURRENCY GUARD (ARTIFACT 2/3):
   ARE present (EPStoEPSmean in per-share earnings units; marketCapRevQuants, a pool
   rank) are deliberately EXCLUDED by the allow-list.  A cohort mixes GBp / USD / CAD, so
   aggregating an absolute-currency field would be meaningless.
+
+  `grahamNumberToPrice` USED TO BE LISTED HERE AS CURRENCY-DENOMINATED.  It is not, and
+  this header was the side that was wrong -- see register D-10 (resolved 2026-08-05).
 """
 
 import os
@@ -62,12 +65,24 @@ import pandas as pd
 # vector between them, and without them a FIN-1 review page explained only 55.0% of its own
 # score -- see `assert_allow_list_covers_the_weighted_metrics` for the measured coverage and the
 # guard that now keeps this list tied to the weight vector.
+#
+# `grahamNumberToPrice` ADDED 2026-08-05 (register D-10).  The module header used to list it
+# among the currency-denominated inputs while METRIC_BASIS called it unitless; only one could
+# be right and the HEADER was wrong.  grahamNumber = sqrt(22.5 * EPS_ttm * BVPS) has units of
+# sqrt(currency^2 / share^2) = CURRENCY PER SHARE, and `price` is currency per share, so the
+# currency cancels exactly.  The decisive argument is not the algebra but the COMPANY IT
+# KEEPS: `bVpRatio` and `tbVpRatio` are the SAME FORM -- a per-share statement quantity over
+# price -- and both have always been on this list.  Excluding only grahamNumberToPrice was
+# internally inconsistent, not conservative.  It carries real Stage-2 weight (P-E Tier 3), so
+# leaving it off the page left part of the score unexplained.
 PLAYBOOK_METRICS = [
     'returnOnCapitalEmployed', 'returnOnEquity', 'RoA', 'grossProfitMargin',
     'freeCashFlowYield', 'currentRatio', 'earnYield', 'revenueGrowth',
     'incomeQuality', 'Altman-Z', 'Piotroski', 'bVpRatio', 'tbVpRatio',
+    'grahamNumberToPrice',
     'freeCashFlowPerShareGrowth', 'moatScore', 'CycleHeat',
     'shareCountChange', 'longTermDebtChange',
+    'interestCoverage', 'navPerShareGrowth',
 ]
 
 # Fields that must NEVER be aggregated as a cohort distribution (absolute-currency or
@@ -94,13 +109,6 @@ _ALLOW_LIST_EXEMPT = {
     'EPStoEPSmean':
         'in per-share EARNINGS units, so it is currency-denominated and already in '
         '_CURRENCY_ABSOLUTE_DENY.',
-    'grahamNumberToPrice':
-        "excluded per this module's own header comment, which lists it among the inputs that "
-        'must not leak into a cohort distribution. FLAGGED INCONSISTENCY, not resolved here: '
-        'METRIC_BASIS below describes it as a "ratio of trailing-year Graham to price '
-        '(unitless)", which would make it currency-INVARIANT and therefore admissible. The '
-        'header comment and METRIC_BASIS disagree; the pre-existing behaviour (excluded) is '
-        'preserved and the disagreement is recorded rather than silently decided.',
     'BoScore': 'w = 0 in every vector since E-2 -- nothing to explain.',
     'DcfToPrice': 'w = 0.000 (deliberately zeroed; no point-in-time DCF exists).',
     'priceGrowth': 'w = 0.000 (deliberately zeroed; uncorrected semi-annual level bias).',
@@ -242,6 +250,11 @@ def _pool_raw_fast(sources, cdx_df, nq=16):
         #  the reference artifact has to show them or a FIN-1 page cannot explain its own score.
         r['shareCountChange'] = sm.share_count_change(t, rpy=_rpy)
         r['longTermDebtChange'] = sm.long_term_debt_change(t, rpy=_rpy)
+        #  2026-08-06.  `interestCoverage` carries 0.060 of the general vector (S Tier 1) and
+        #  `navPerShareGrowth` 0.090 of FIN-1's -- both large enough that a review page without
+        #  them cannot explain its own score.
+        r['interestCoverage'] = sm.interest_coverage(t, nq, rpy=_rpy)
+        r['navPerShareGrowth'] = sm.nav_per_share_growth(t, nq, rpy=_rpy)
         # rpy passed for lockstep with the live scorer (fix 2026-07-30) -- every other metric
         # on these lines already scales its window to the filer's frequency; CycleHeat was the
         # one that did not, so the reference artifact reported a different h than the deck.
@@ -501,6 +514,17 @@ METRIC_BASIS = {
                         'POSITIVE = dilution, and the weight is NEGATIVE',
     'longTermDebtChange': 'annual YoY change in the longTermDebt/totalAssets ratio '
                           '(unitless); POSITIVE = leverage added, and the weight is NEGATIVE',
+    'interestCoverage': 'operatingIncome / interestExpense over the scoring window '
+                        '(unitless, x-covered); same-period flow/flow, so NOT annualized. '
+                        'Rows with interestExpense <= 0 are REFUSED, not scored as infinite '
+                        '-- a debt-free name has no coverage ratio',
+    'navPerShareGrowth': 'PROXY -- annualised growth of BOOK VALUE PER SHARE over the '
+                         'scoring window (unitless rate/yr). The NAV leg is GAAP book '
+                         'equity per share: EXACT only for ASC-946 investment companies '
+                         'and an APPROXIMATION for every other vehicle. It is NOT a '
+                         'fund-published NAV and NOT a price-to-NAV discount (that level '
+                         'is bVpRatio); it asks whether the stated NAV COMPOUNDS. '
+                         'Non-positive or absent endpoints are REFUSED',
     'CycleHeat': 'self-normalised z, capped [-3,3] (unitless)',
     'grahamNumberToPrice': 'ratio of trailing-year Graham to price (unitless)',
     'bVpRatio': 'stock/stock ratio (unitless)',

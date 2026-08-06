@@ -424,7 +424,13 @@ def test_parallel_candidate_scores():
                 "marketCap", "tangibleBookValuePerShare", "totalAssets",
                 "totalLiabilities", "totalCurrentAssets", "totalCurrentLiabilities",
                 "totalStockholdersEquity", "operatingIncome", "longTermDebt",
-                "netCashProvidedByOperatingActivities"]
+                "netCashProvidedByOperatingActivities",
+                #  2026-08-06: the raw legs of `interestCoverage` and `navPerShareGrowth`.
+                #  `rng.normal(base*100, 20)` is drawn strictly positive below, so both clear
+                #  their guards (interestExpense > 0, bookValuePerShare > 0) and the channels
+                #  are actually EXERCISED here rather than being all-NaN and silently absent
+                #  from the composite.
+                "interestExpense", "bookValuePerShare"]
     rows = []
     for si in range(8):
         base = 1.0 + si

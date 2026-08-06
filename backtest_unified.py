@@ -888,13 +888,17 @@ def run_top100_postrank_ols(dmdic, verbose=True):
     
     # Get postRank metric columns (the ones we care about)
     # These are the normalized metrics used in ranking
-    postrank_metrics = ['RoA', 'earnYield', 'grahamNumberToPrice', 'bVpRatio', 'revenueGrowth',
-                        'incomeQuality', 'returnOnEquity', 'returnOnCapitalEmployed', 
-                        'currentRatio', 'grossProfitMargin', 'freeCashFlowYield',
-                        'freeCashFlowPerShareGrowth', 'DcfToPrice', 'marketCapRevQuants',
-                        'Altman-Z', 'Piotroski', 'tbVpRatio', 'BoScore', 'EPStoEPSmean',
-                        'priceGrowth', 'CycleHeat', 'moatScore']
-    
+    #  DERIVED, NOT LISTED (2026-08-06).  This was a hand-written transcription of the Stage-2
+    #  key set, and the next line drops anything not present in the frame -- so a metric added
+    #  to the vector and forgotten here was SILENTLY EXCLUDED from the attribution regression.
+    #  No error, no empty column, just a regressor missing from the report: the failure mode
+    #  that nothing catches.  `interestCoverage` (w = 0.060) and `navPerShareGrowth` were both
+    #  in that state.  Reading `sw.METRIC_KEYS` makes the list impossible to drift.
+    #  `moatScore` is appended because it is NOT a Stage-2 scored metric -- it is merged into
+    #  postRank after getAggScore (Sbocker.py) -- so it is not in the canon and must be named.
+    import scoringWeights as sw
+    postrank_metrics = list(sw.METRIC_KEYS) + ['moatScore']
+
     # Filter to metrics that exist in the data
     available_metrics = [m for m in postrank_metrics if m in analysis_df.columns]
 

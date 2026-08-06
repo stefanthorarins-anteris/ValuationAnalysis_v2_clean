@@ -58,11 +58,19 @@ POSTBM_EQMET = {
 
 # the "new" Stage-2 metrics -- computed in postBoRank rather than read from an eqMet.
 #
-# THE LAST TWO ARE APPENDED, NOT INSERTED (E-2, 2026-08-04).  `shareCountChange` and
+# EVERYTHING AFTER `CycleHeat` IS APPENDED, NOT INSERTED.  `shareCountChange` and
 # `longTermDebtChange` are the two Piotroski components extracted as standalone metrics for
-# the FIN-1 vector (see the C-block / FIN-1 notes in section B).  They go at the END because
-# this tuple's ORDER is the column order of `postScoreMetric_df`, and appending leaves every
-# existing column exactly where it was.
+# the FIN-1 vector (E-2, 2026-08-04; see the C-block / FIN-1 notes in section B).
+# `interestCoverage` and `navPerShareGrowth` are the 2026-08-06 additions (S-block Tier 1 in
+# every non-exempt vector, and FIN-1's R-block Tier 1 respectively).  They go at the END
+# because this tuple's ORDER is the column order of `postScoreMetric_df`, and appending
+# leaves every existing column exactly where it was.
+#
+# `interestCoverage` LIVES HERE AND NOT IN `POSTBM_EQMET` for two reasons, both structural:
+# there is no `interestCoverage` COLUMN on cdx_df to be an eqMet (Stage-1 builds
+# `uInterestCoverage` in calcMetrics from operatingIncome / interestExpense, which is a
+# criterion column, not a fundamentals field), and inserting a key into POSTBM_EQMET would
+# move every column that follows it.
 POSTNEW_KEYS = (
     'freeCashFlowYield',
     'freeCashFlowPerShareGrowth',
@@ -77,6 +85,8 @@ POSTNEW_KEYS = (
     'CycleHeat',
     'shareCountChange',
     'longTermDebtChange',
+    'interestCoverage',
+    'navPerShareGrowth',
 )
 
 # all 23 keys in EMISSION order (postBm block, then postNew block).
@@ -150,7 +160,30 @@ SIGMA_P = {'E': 0.65, 'A': 0.35}
 #               design (issue E-3) is PARKED.  It dissolves when E-3 unparks and its 0.05
 #               returns to the six blocks pro rata.  Do not let a reader infer a
 #               seven-question taxonomy from this vector.
-GENERAL_BUDGETS = {
+#
+# THE S RE-BUDGET (CEO, 2026-08-06).  `interestCoverage` joins S as its FIRST EVER Tier-1
+# member, and the CEO raised W_S from 0.0860 to **0.120** to pay for it.  0.120 is a
+# DELIBERATE UNDER-FUND of the harmless-to-the-incumbents level: holding `currentRatio` and
+# `Altman-Z` at their present weights while inserting a Tier-1 member would have needed
+# W_S = 0.1720 (3:2:1 over the same tau ladder), and the CEO capped at 0.120 instead, so
+# both existing members lose ~30% (currentRatio 0.0573 -> 0.0400, Altman-Z 0.0287 ->
+# 0.0200).  That is the decision, not a rounding consequence: the solvency block gets a
+# direct instrument and the two proxies it had are demoted to pay for most of it.
+#
+# THE OTHER 0.034 IS TAKEN PROPORTIONALLY FROM THE SIX NON-S BLOCKS, and proportionally is
+# the whole point -- a flat or hand-picked take would have re-opened every budget argument
+# in section 15.  Scaling the non-S blocks by (1 - W_S_new)/(1 - W_S_old) = 0.880/0.914
+# preserves EVERY ratio among non-S metrics, and in particular preserves the CEO's
+# deliberate cheapness = durability equality (P and D stay exactly equal at 0.250328) and
+# therefore Rule PROP's 1:1 residual split for the cohorts.  Nothing else about the block
+# model moves.
+#
+# WRITTEN AS A DERIVATION, NOT AS SEVEN DECIMALS, for the reason in the section header:
+# 0.26 * 0.880/0.914 is a non-terminating decimal, and transcribing its display value is
+# how Sigma|w| becomes 0.999999 and `_validate()` halts every import.  `_PRE_S_BUDGETS` is
+# PROVENANCE -- the budgets as the CEO decided them on 2026-08-04, before the S re-budget --
+# and must not be "updated"; the live table is what the scaling below produces.
+_PRE_S_BUDGETS = {
     'P': 0.26,
     'R': 0.1634,
     'N': 0.1290,
@@ -159,6 +192,10 @@ GENERAL_BUDGETS = {
     'M': 0.0516,
     'C': 0.0500,
 }
+W_S = 0.120
+_S_SCALE = (1.0 - W_S) / (1.0 - _PRE_S_BUDGETS['S'])
+GENERAL_BUDGETS = {b: (W_S if b == 'S' else w * _S_SCALE)
+                   for b, w in _PRE_S_BUDGETS.items()}
 
 # --- B.3  metric -> (block, sub-block, tier, sign) -------------------------- #
 # THE GENERAL POOL'S ASSIGNMENT.  A metric ABSENT from this table is OUT OF THE SCHEME and
@@ -196,7 +233,15 @@ GENERAL_ASSIGNMENT = {
     'freeCashFlowPerShareGrowth': ('D', '-', 2, +1),
     'grossProfitMargin':          ('D', '-', 3, +1),   # T2 if neutralisation is turned ON
     'returnOnEquity':             ('D', '-', 3, +1),
-    'currentRatio':               ('S', '-', 2, +1),   # S has NO Tier-1 member: carriage note
+    # S GAINED ITS FIRST TIER-1 MEMBER on 2026-08-06 -- the carriage note that used to sit on
+    # `currentRatio` ("S has NO Tier-1 member") is RETIRED, not merely edited.  Interest
+    # coverage states S's question -- can the equity survive its own debt service -- with no
+    # proxy step, which is what Tier 1 means; `currentRatio` is a liquidity proxy for it and
+    # `Altman-Z` is a 1968 discriminant fitted on US manufacturers, i.e. the right question in
+    # a form known to be off-domain for most of this universe.  Their demotion to 2 and 3 is
+    # therefore a re-reading of the SAME ladder, not a penalty.
+    'interestCoverage':           ('S', '-', 1, +1),
+    'currentRatio':               ('S', '-', 2, +1),
     'Altman-Z':                   ('S', '-', 3, +1),
     'marketCapRevQuants':         ('M', '-', 2, +1),   # single member -> tier label inert
     'Piotroski':                  ('C', '-', 2, +1),   # the CEO's 2/3 of the holding pen
@@ -363,6 +408,8 @@ LEGACY = {
     'CycleHeat':                 -0.5,   # Negative weight penalizes hot late-cycle stocks
     'shareCountChange':           0,     # did not exist pre-2026-07-14 -- see the note above
     'longTermDebtChange':         0,     # did not exist pre-2026-07-14 -- see the note above
+    'interestCoverage':           0,     # did not exist pre-2026-07-14 -- see the note above
+    'navPerShareGrowth':          0,     # did not exist pre-2026-07-14 -- see the note above
 }
 
 
@@ -477,11 +524,31 @@ _COHORT_DELTAS = {
     'Mining': dict(ood=(), retier={}, add={}, c_ood=False),
 
     'REIT': dict(
-        # Rule UNM with ZERO members: `Altman-Z` and `currentRatio` are the wrong
-        # instruments for a business that runs negative working capital BY DESIGN, and
-        # zeroing them in the old vector removed the SOLVENCY QUESTION from the most
-        # leverage-sensitive cohort in the set.  The budget is held and reported unspent
-        # until net-debt/EBITDA or interest coverage exists.
+        # THE S BUDGET IS UNPARKED (CEO, 2026-08-06), AND DELIBERATELY SO -- not as a side
+        # effect of `interestCoverage` landing in GENERAL_ASSIGNMENT.
+        #
+        # WHAT THIS NOTE USED TO SAY, kept so the condition and its discharge read together:
+        # "Rule UNM with ZERO members: `Altman-Z` and `currentRatio` are the wrong instruments
+        # for a business that runs negative working capital BY DESIGN, and zeroing them in the
+        # old vector removed the SOLVENCY QUESTION from the most leverage-sensitive cohort in
+        # the set.  The budget is held and reported unspent UNTIL NET-DEBT/EBITDA OR INTEREST
+        # COVERAGE EXISTS."
+        #
+        # THE CONDITION IS MET, BY `interestCoverage` -- the second of the two named
+        # instruments, added to Stage-1 on 2026-08-05 (createDicts, Tier B) and promoted to a
+        # Stage-2 S-block Tier-1 metric on 2026-08-06.  (`netDebtToEBITDA` also exists now, as
+        # a Stage-1 three-branch `special`, but it is NOT a Stage-2 column, so it is not what
+        # discharges this.)  `Altman-Z` and `currentRatio` STAY out of domain for exactly the
+        # reason above -- nothing about them improved -- so REIT's S block is a lone Tier-1
+        # member and takes the whole cohort S budget (0.120), and REIT's reported unpriced
+        # risk goes 8.6% -> 0%.
+        #
+        # AND THE HONEST LIMIT, on the same footing as FIN-1's in D.3: interest coverage
+        # instruments the refinancing question, it does not fully ANSWER it.  A REIT's real
+        # solvency risk is the maturity WALL and the LTV covenant, neither of which a
+        # flow-coverage ratio can see; a name that comfortably covers today's interest bill
+        # can still fail to roll its debt.  0% unpriced means "the block now has an
+        # instrument", not "REIT leverage risk is priced".
         ood=('Altman-Z', 'currentRatio'),
         # GAAP net income for a property company bears almost no relation to distributable
         # cash, so BOTH P-E members are Tier 3 and sub-block scaling (rule 5) fires: P-A
@@ -506,7 +573,16 @@ _COHORT_DELTAS = {
              'CycleHeat', 'EPStoEPSmean',                 # N: mark-to-market noise
              'RoA', 'returnOnCapitalEmployed', 'returnOnEquity',
              'grossProfitMargin', 'freeCashFlowPerShareGrowth',   # D: no operating business
-             'currentRatio', 'Altman-Z'),                 # S: no working-capital cycle
+             'currentRatio', 'Altman-Z',                  # S: no working-capital cycle
+             # `interestCoverage` IS OOD HERE FOR THE SAME REASON THE WHOLE D BLOCK IS
+             # (2026-08-06): it is operatingIncome / interestExpense, and a closed-end fund
+             # or BDC has NO OPERATING INCOME -- its P&L is mark-to-market portfolio revaluation
+             # plus a management fee.  The numerator is the same quantity FIN-1 already declares
+             # inapplicable eleven lines up, so admitting it into S here would contradict that
+             # ruling.  FIN-1's S question is answered by `longTermDebtChange` (leverage
+             # DIRECTION against the regulatory asset-coverage limit), which stays this block's
+             # sole member and keeps the whole 0.15.
+             'interestCoverage'),
         # `tbVpRatio` CO-PRIMARY with `bVpRatio`.  For an investment vehicle the
         # book-to-tangible-book wedge is not a goodwill GUARD on the thesis, it IS the
         # thesis's failure mode: goodwill from acquired management contracts, capitalised
@@ -527,8 +603,15 @@ _COHORT_DELTAS = {
         # [MEASUREMENT GATE] asked for exactly this measurement and its stated consequence is a
         # price-to-NAV / discount-persistence METRIC REQUEST, not a further weight change.
         retier={'tbVpRatio': 1},
-        # THE TWO EXTRACTED PIOTROSKI COMPONENTS -- see the block note below.
-        add={'shareCountChange':   ('R', '-', 2, -1),
+        # THE TWO EXTRACTED PIOTROSKI COMPONENTS -- see the block note below -- plus
+        # `navPerShareGrowth`, added 2026-08-06 as R's TIER-1 CARRIER (see D.4).  R's 0.15 now
+        # splits 3:2 over the two occupied tiers: navPerShareGrowth +0.090, shareCountChange
+        # -0.060 (it previously held R alone at 0.150).  NOTHING IN P MOVES -- `bVpRatio` and
+        # `tbVpRatio` keep 0.275 each, which is the point: this is the minimal change that
+        # instruments R's question properly without re-opening the co-primary split that the
+        # E-2 design argued and measured.
+        add={'navPerShareGrowth':  ('R', '-', 1, +1),
+             'shareCountChange':   ('R', '-', 2, -1),
              'longTermDebtChange': ('S', '-', 2, -1)},
         c_ood=True),
 
@@ -538,7 +621,18 @@ _COHORT_DELTAS = {
         ood=('returnOnCapitalEmployed',      # capital employed is not a meaningful denominator
              'grossProfitMargin',            # no gross margin exists
              'freeCashFlowPerShareGrowth', 'freeCashFlowYield',   # bank FCF is not a quantity
-             'Altman-Z', 'currentRatio'),    # 1968 US manufacturers; deposits are not debt
+             'Altman-Z', 'currentRatio',     # 1968 US manufacturers; deposits are not debt
+             # `interestCoverage` IS OOD HERE TOO, AND THIS IS A DECISION MADE ON PURPOSE
+             # (2026-08-06) rather than a metric quietly riding into a cohort.  For a bank or
+             # insurer interest expense is a COST OF GOODS, not a financing charge: paying
+             # depositors and policyholders IS the business, so operatingIncome /
+             # interestExpense is a spread-margin reading dressed as a solvency ratio, and a
+             # bank with a fat net interest margin would score as "safe" on it.  FIN-3's S
+             # question is CAPITAL ADEQUACY (CET1 / risk-weighted assets), the pipeline still
+             # cannot see it, and Rule UNM therefore still holds this cohort's S budget
+             # UNSPENT -- now at 0.168 rather than 0.1204, because the S ratio propagates the
+             # raised general budget.  Unparking REIT (CEO, 2026-08-06) was scoped to REIT.
+             'interestCoverage'),
         # ROE is the industry's own yardstick on regulated scarce capital.  This is FIN-3's
         # DECLARED thesis-margin exemption: ROE ends up above `earnYield` on purpose.
         retier={'returnOnEquity': 1, 'RoA': 2},
@@ -587,6 +681,39 @@ _COHORT_DELTAS = {
 #   * Neither column is in `reviewReference.PLAYBOOK_METRICS` or the presentation deck, so a
 #     FIN-1 name's review page does not yet explain 30% of its score.  Both are
 #     currency-invariant and therefore admissible there; wiring them is a separate change.
+
+
+# --- D.4  `navPerShareGrowth` -- FIN-1's R-block Tier 1 (2026-08-06) -------- #
+# WHAT THE CEO ASKED FOR AND WHAT THIS IS INSTEAD, stated first because the substitution is
+# the substantive part of the change and a reader must not mistake this column for the thing
+# it replaced.  The ask was a PRICE-TO-NAV instrument for FIN-1.  A genuine one is NOT
+# COMPUTABLE here: no endpoint this pipeline fetches carries a fund-published NAV, and the
+# only surrogate is GAAP book equity -- which equals NAV only under US investment-company
+# accounting (ASC 946) and is an approximation everywhere else.  Worse, that surrogate is
+# ALREADY IN THE VECTOR as `bVpRatio`, and a discount-PERSISTENCE column measures rho = +0.806
+# against it: a price-to-NAV metric built this way would be `bVpRatio` wearing a new name and
+# would concentrate the P-A thesis rather than instrument R.
+#
+# SO THE COLUMN MEASURES A DIFFERENT QUESTION -- not the discount LEVEL (already carried) but
+# whether the NAV IS REAL.  A fund whose stated NAV is an accounting artifact has one
+# observable signature: NAV PER SHARE THAT FAILS TO COMPOUND.  That is exactly R's question
+# ("is the quantity the thesis rests on an artifact?") applied to the P-A thesis, and it sits
+# at Tier 1 because it states that question with no proxy step, where `shareCountChange`
+# (Tier 2) guards ONE specific way it fails -- issuance below NAV.
+#
+# IT IS A PROXY AND IS LABELLED ONE EVERYWHERE (docstring, reviewReference.METRIC_BASIS): the
+# NAV leg is `bookValuePerShare`, exact for ASC-946 vehicles and approximate for the rest of
+# the cohort.  Do not let it read as a fund-published NAV in any artifact.
+#
+# MEASURED ON THE LIVE FIN-1 COHORT (88 names): computable on 87 of 88, and rho = -0.277
+# against `bVpRatio` -- a genuinely independent axis, which is the whole reason it is worth a
+# Tier-1 slot that a price-to-NAV rebuild would not have earned.
+#
+# FIN-1 ONLY, and that is a scope decision rather than a claim that the quantity is
+# meaningless elsewhere: for an operating company book value per share is a residual, not the
+# thesis, so its growth rate would be a weak durability reading competing with instruments D
+# already has.  It is absent from GENERAL_ASSIGNMENT, so it scores 0.000 in the general pool
+# and in the other four cohorts by construction.
 
 
 def _cohort_budgets(label):

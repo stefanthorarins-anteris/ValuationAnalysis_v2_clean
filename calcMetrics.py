@@ -63,6 +63,17 @@ STAGE1_DOMAIN_GUARDS = {
     # be a much larger and unrelated change.
     'tax_rate_nonnegative':
         lambda df: pd.to_numeric(df['effectiveTaxRate'], errors='coerce') >= 0,
+    # `uInterestCoverage` = operatingIncome / interestExpense (new criterion, 2026-08-05).
+    # FMP reports `interestExpense` as 0 for a DEBT-FREE name, and a debt-free company does not
+    # HAVE a coverage ratio -- the quantity does not exist rather than being large.  0 in the
+    # denominator would give +/-inf -> NaN anyway; the guard states the domain instead of
+    # relying on that accident, and it also refuses the (rare) NEGATIVE reported interest
+    # expense, where the ratio inverts sign exactly like the rest of this family.
+    # `> 0` and not `>= 0`: zero is the debt-free case, which is REFUSED here on purpose --
+    # the leverage question for a debt-free name is carried by `netDebtToEBITDA`'s net-cash
+    # branch, which passes it on an explicit operand condition.  Refusing never rewards.
+    'interest_expense_positive':
+        lambda df: pd.to_numeric(df['interestExpense'], errors='coerce') > 0,
     #  NO PEG ENTRY, DELIBERATELY -- see the `PEG` note in createDicts.BoMetric_special_dict and
     #  `peg_local` below.  PEG's domain is INTRINSIC TO ITS FORMULA (without a positive trailing
     #  EPS there is no P/E for a growth rate to be compared against, so the value does not exist
@@ -567,6 +578,102 @@ def apply_boundary_imputation(df, values, boundary, admissible=None):
     return np.where(ok & np.isnan(v), float(limit[0]), v).tolist()
 
 
+# =========================================================================== #
+#  netDebtToEBITDA -- THE THREE-BRANCH LEVERAGE RULE  (CEO, 2026-08-05)         #
+# =========================================================================== #
+#  WHAT CHANGED.  Until now this criterion was a UNITY test on FMP's `netDebtToEBITDA` with a
+#  `Guard: ebitda_positive`, i.e. TWO branches: EBITDA > 0 -> test the ratio < 1; otherwise
+#  refuse (NaN -> fail).  That refused 9,200 head(8) rows -- NET CASH with non-positive EBITDA
+#  -- which the CEO has now ruled must PASS: net cash means there is no leverage problem
+#  whatever earnings do.  The four measured cells over the 61,481 head(8) rows of the
+#  2026-07-17 CORRECTED panel and the required behaviour of each:
+#
+#      netDebt > 0, EBITDA > 0   33,615 rows   test netDebt/EBITDA < 1.0   (unchanged)
+#      netDebt < 0, EBITDA > 0   11,844 rows   PASS  (already passed via a negative ratio)
+#      netDebt > 0, EBITDA <= 0   6,324 rows   FAIL  (debt, no earnings -- correct today, kept
+#                                                     as a REFUSAL so the NaN accounting still
+#                                                     records it as non-computable)
+#      netDebt < 0, EBITDA <= 0   9,200 rows   PASS  <- THE FIX
+#
+#  WHY THIS IS A `special` FORM AND NOT A GUARD OR A BOUNDARY.  Neither existing mechanism can
+#  express a three-branch rule, and forcing one would be worse than adding a formula:
+#    * A `Guard` is a REFUSAL MASK.  It can only shrink a domain, so it cannot ADMIT the
+#      net-cash cell -- and relaxing the guard to let the ratio through is the one thing that
+#      must not happen (see the next paragraph).
+#    * A `Boundary` FILLS an undefined row with the metric's ANALYTIC LIMIT, and the project's
+#      own rule admits it only where that limit is FINITE and is not the metric's BEST value.
+#      Here netDebt/EBITDA -> -infinity as EBITDA -> 0+ with netDebt < 0, which is both
+#      infinite and the best side, so the boundary rule's own escape clause says REFUSE.  Using
+#      it anyway would put a tuned sentinel where a derived limit is required.
+#    * `special` is where this repo already keeps criteria that are FORMULAS rather than
+#      Upper/Lower ratios (`CFOlessEarnings`, `PEG`, `returnOnEquity`,
+#      `capitalExpenditureCoverageRatio`), and PEG's note states the principle directly: a
+#      domain that is INTRINSIC to the rule belongs inside the rule, stated once.
+#
+#  THE NET-CASH BRANCH NEVER COMPUTES THE RATIO, AND THAT IS THE WHOLE POINT.  negative divided
+#  by negative is a POSITIVE ratio of ARBITRARY magnitude -- netDebt -100 / EBITDA -200 = 0.5,
+#  which would clear a `< 1` bar on apparent merit.  That is exactly the defect class the eight
+#  sign-inversion fixes closed, and re-opening it here would be a regression dressed as a
+#  feature.  So branch 1 tests the SIGN OF THE OPERAND and returns a verdict; the ratio's
+#  magnitude enters ONLY in branch 2, where both operands are admissible.
+#
+#  HOW sign(netDebt) IS OBTAINED, AND ITS ONE LIMITATION.  `netDebt` is NOT a fetched field
+#  today, so the operand's sign is recovered the same way the measurement that produced the
+#  table above recovered it:  sign(netDebt) = sign(ratio) x sign(EBITDA proxy),  with the proxy
+#  = operatingIncome + depreciationAndAmortization (FMP publishes `netDebtToEBITDA` but not the
+#  EBITDA behind it).  Consequences, stated rather than buried:
+#    * Where the proxy is ZERO or NaN the operand's sign is NOT RECOVERABLE, so the row is
+#      REFUSED (~229 zero-proxy head(8) rows, 0.37%).  Refusing never rewards, and it keeps the
+#      expected post-change NaN rate at ~10.8% rather than manufacturing passes.
+#    * ratio == 0 exactly means netDebt == 0 -- neither net debt nor net cash.  With EBITDA > 0
+#      branch 2 scores it as a PASS (zero leverage); with EBITDA <= 0 it falls to branch 3 and
+#      is refused.  A genuine zero net-debt position with no earnings is arguably a pass, but it
+#      is not recoverable from a zero ratio without the operand itself.
+#    * `totalDebt` and `cashAndCashEquivalents` are being CAPTURED for the next fetch (see
+#      createDicts.preReq_dict) precisely so this recovery can be replaced by the real operand
+#      `netDebt = totalDebt - cash`.  DO NOT rewire this function to them until a panel that
+#      actually carries them exists -- they are absent from every saved pickle.
+#
+#  THE FLOW LEG IS THIS FUNCTION'S RESPONSIBILITY NOW.  `build_bometric_rows` applies
+#  `rp.stage1_flow_factor` only inside its ratio loop, and a `special` never enters that loop.
+#  `netDebtToEBITDA` is ('flow_den', 'annualize') -- a net-debt STOCK over ONE PERIOD's EBITDA
+#  -- so the factor (0.25 quarterly, 0.5 semi-annual) is what makes the `< 1.0` bar an ANNUAL
+#  one.  Dropping it here would have raised the bar 4x for every name.
+#
+#  THE EMITTED COLUMN IS A VERDICT-BEARING QUANTITY, NOT A LEVERAGE RATIO.  Sign +1, scored as
+#  `value > 0`:
+#      +1.0        branch 1 admission (net cash).  A SENTINEL -- the magnitude means nothing.
+#      1.0 - r     branch 2, the headroom below the 1.0x bar; > 0 iff r < 1.  Informative.
+#      NaN         branch 3 / unrecoverable, refused -> scores as a fail, as today.
+#  Nothing downstream reads this column except `calcScore.calcByTier`'s sign test and the NaN
+#  accounting, so a mixed sentinel/margin column is safe -- but do NOT start reading it as a
+#  ratio.
+def net_debt_three_branch(df, rpy=rp.DEFAULT_ROWS_PER_YEAR):
+    """The three-branch leverage verdict for one source's frame (newest-first).
+
+    Returns a float Series positionally aligned to `df`: > 0 pass, <= 0 fail, NaN refused.
+    """
+    r = pd.to_numeric(df['netDebtToEBITDA'], errors='coerce')
+    ebitda = (pd.to_numeric(df['operatingIncome'], errors='coerce')
+              + pd.to_numeric(df['depreciationAndAmortization'], errors='coerce'))
+
+    #  BRANCH 1 -- NET CASH.  An OPERAND condition: sign(netDebt) < 0, recovered as
+    #  sign(ratio) x sign(EBITDA).  np.sign is 0 for an exact zero and NaN for NaN, so a
+    #  zero/NaN proxy or a zero/NaN ratio yields a product that is NOT < 0 and the row falls
+    #  through -- which is the intended refusal, not an oversight.
+    net_cash = (np.sign(r) * np.sign(ebitda)) < 0
+
+    #  BRANCH 2 -- the ordinary debt-service test, on the ANNUALISED ratio.
+    factor = rp.stage1_flow_factor('netDebtToEBITDA', rpy)
+    margin = 1.0 - (r * factor)
+
+    #  BRANCH 3 is the fall-through: neither net cash nor admissible EBITDA -> NaN.
+    out = pd.Series(np.nan, index=df.index, dtype='float64')
+    out = out.mask(ebitda > 0, margin)
+    out = out.mask(net_cash, 1.0)
+    return out
+
+
 #maybe check if denom is 0?
 def calc_simpleRatio(df,strUp,strDn):
 #    res = pd.DataFrame()
@@ -626,7 +733,7 @@ def calc_diff(df,metstr,n,rpy=rp.DEFAULT_ROWS_PER_YEAR):
 #  the same silent-default shape as an unregistered Stage-2 metric, and it is closed the same
 #  way: fail loudly, naming the key.
 _SPECIAL_KEYS = ('CFOlessEarnings', 'PEG', 'returnOnEquity',
-                 'capitalExpenditureCoverageRatio')
+                 'capitalExpenditureCoverageRatio', 'netDebtToEBITDA')
 
 
 def calc_special(df,metstr,n,rpy=rp.DEFAULT_ROWS_PER_YEAR,guard=None):
@@ -705,10 +812,32 @@ def calc_special(df,metstr,n,rpy=rp.DEFAULT_ROWS_PER_YEAR,guard=None):
     # dimensionless deviation), so leaving it in place invited exactly the Stage-1/Stage-2
     # same-name-different-basis confusion that the accruals divergence came from. Nothing
     # referenced it, so no stored artifact changes.
+    elif metstr == 'netDebtToEBITDA':
+        #  THE THREE-BRANCH LEVERAGE RULE (CEO, 2026-08-05) -- see `net_debt_three_branch`
+        #  above for the four measured cells, why this is a `special` rather than a `Guard`,
+        #  and why the net-cash branch must never compute the ratio.  It carries NO `Guard`
+        #  key: the old `ebitda_positive` guard IS branch 2's condition, now stated once
+        #  inside the rule (same reasoning as PEG's domain).  The flow factor is applied
+        #  inside the rule, because a `special` never passes through the ratio loop where
+        #  `build_bometric_rows` applies it.
+        res[metstr] = net_debt_three_branch(df, rpy=rpy).values
     elif metstr == 'capitalExpenditureCoverageRatio':
         tempce2cr = df[metstr]
         ce2cr = -tempce2cr.fillna(0)
-        res[metstr] = ce2cr - 2
+        #  THE BAR IS `CFO > |capex|`, NOT `CFO > 2 x |capex|` (CEO, 2026-08-05).
+        #  DERIVED, WHICH IS THE POINT OF THE CHANGE.  `capitalExpenditureCoverageRatio` is
+        #  CFO / capex, and capex is reported NEGATIVE, so `-ratio` is CFO / |capex|.  The
+        #  criterion `-ratio - 1 > 0` is therefore exactly `CFO > |capex|` -- which IS the
+        #  definition of SELF-FUNDING capital expenditure: the business pays for its own
+        #  investment out of operating cash rather than out of financing.  So the bar is a
+        #  definition, not a tuning parameter, and it needs no provenance beyond itself.
+        #  THE OLD `- 2` (CFO > 2x capex) HAD NO RECORDED SOURCE anywhere in the repo or the
+        #  design folder -- it demanded twice-covered capex, a materially stricter and
+        #  UNDERIVED bar, and that missing provenance is the whole reason it moved.
+        #  UNCHANGED and deliberately so: the `fillna(0)` above, which turns a missing ratio
+        #  into 0 -> -1 -> a FAIL (defect D10, a separate open item -- do not fold a second
+        #  change into this one).
+        res[metstr] = ce2cr - 1
 
     if guard is not None:
         res[metstr] = apply_domain_guard(df, res[metstr].tolist(), guard)

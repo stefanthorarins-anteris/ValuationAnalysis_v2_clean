@@ -76,6 +76,13 @@ CFG = {
     # S  (0.12)
     "Altman-Z":                   ("S", +1, 0.072, 7),
     "currentRatio":               ("S", +1, 0.048, 7),
+    #  ADDED 2026-08-06 so W_THEORY (which is DERIVED from the shipped vector) has a channel
+    #  for the S block's new Tier-1 metric.  effW = 0.0 ON PURPOSE, and it is the only honest
+    #  value: this tuple's third field is the PRIOR CLUSTER-AND-CAP scheme's weight, that
+    #  scheme is a FROZEN historical comparison arm that was benched and failed do-no-harm,
+    #  and it never assigned `interestCoverage` anything.  Inventing a number here would
+    #  silently re-bench a scheme nobody ran.  `h` follows the other two S channels.
+    "interestCoverage":           ("S", +1, 0.000, 7),
     # G  (0.09)
     "freeCashFlowPerShareGrowth": ("G", +1, 0.054, 1),
     "revenueGrowth":              ("G", +1, 0.036, 2),
@@ -119,6 +126,12 @@ _BENCH_KEY_ORDER = (
     "Altman-Z", "RoA", "returnOnCapitalEmployed", "CycleHeat", "_logmcap",
     "EPStoEPSmean", "freeCashFlowPerShareGrowth", "currentRatio", "bVpRatio",
     "tbVpRatio", "grahamNumberToPrice", "returnOnEquity", "revenueGrowth",
+    #  APPENDED 2026-08-06, not inserted: the S block gained `interestCoverage` at Tier 1
+    #  (w = 0.060) and it carries real general-pool weight, so the bench must have a channel
+    #  for it or it would bench a different scheme than the pipeline ships.  Appending keeps
+    #  every EXISTING channel in its float-addition position, so the only movement in S_th is
+    #  the new term itself.
+    "interestCoverage",
 )
 _BENCH_RENAME = {"marketCapRevQuants": "_logmcap"}
 _BENCH_EXCLUDED = {
@@ -132,6 +145,9 @@ _BENCH_EXCLUDED = {
     # refuses rather than quietly benching a different scheme than the pipeline ships.
     "shareCountChange":   "FIN-1-only extraction; no general-pool weight, no CFG channel",
     "longTermDebtChange": "FIN-1-only extraction; no general-pool weight, no CFG channel",
+    #  2026-08-06, same premise and the same enforced assertion: FIN-1's R-block Tier-1
+    #  carrier, w = 0.000 in the general vector.
+    "navPerShareGrowth":  "FIN-1-only instrument; no general-pool weight, no CFG channel",
 }
 _deployed = sw.deployed_weights()
 for _k, _why_excluded in _BENCH_EXCLUDED.items():

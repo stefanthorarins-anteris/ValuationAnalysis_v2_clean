@@ -794,3 +794,213 @@ def test_the_unverified_gates_are_declared():
     for fn in UNVERIFIED_GATES:
         assert fn in here and callable(here[fn]), (
             '%s is declared as an unverified gate but no longer exists as a test' % fn)
+
+
+# =========================================================================== #
+#  ISIN WIRED INTO THE SURVIVOR PICK -- register K-1 (CEO 2026-08-05)           #
+#                                                                               #
+#  The load-bearing test is the FIRST one: with no ISIN data -- the state of      #
+#  every pickle in the repo today -- the pick must be BIT-IDENTICAL to the        #
+#  pre-ISIN rule.  The others pin what the term does and, just as importantly,     #
+#  what it does NOT do (it does not resolve the three known-wrong groups).         #
+# =========================================================================== #
+
+def _pre_isin_key(sym, val_fn, names=None, group=()):
+    """The survivor key EXACTLY as it stood before ISIN was wired (terms 1-4 + symbol).
+    Duplicated here on purpose: a test that re-derives the old behaviour from the new
+    code could not detect the new code changing it."""
+    nm = (names or {}).get(sym, '') if names else ''
+    noncanon = 1 if co._non_canonical_tag(sym, nm, group) else 0
+    sh = val_fn(sym, 'weightedAverageShsOut')
+    sh = sh if sh is not None else -1.0
+    mc = val_fn(sym, 'marketCap')
+    mc = mc if mc is not None else -1.0
+    digitpfx = 1 if sym[:1].isdigit() else 0
+    punct = sum(ch in '-.' for ch in sym)
+    return (noncanon, -sh, -mc, digitpfx, punct, len(sym), sym)
+
+
+def test_isin_absent_is_bit_identical(panel):
+    """*** THE PROPERTY THAT MATTERS MOST.  No isindic_fmp_*.pickle exists yet, so the
+    CEO may run the pipeline before the next profile build; on that path the survivor of
+    EVERY group must be the one the pre-ISIN rule picked. ***
+    Checked with an EMPTY map and with the map the process would actually load, and
+    checked as an ORDERING (the full sorted member list), not just the winner."""
+    val, names = panel['val'], panel['names']
+    live_map = co._isin_map_cached()
+    n_groups = 0
+    for m in panel['comps'].values():
+        if len(m) < 2:
+            continue
+        n_groups += 1
+        old = sorted(m, key=lambda s: _pre_isin_key(s, val, names, m))
+        for imap in ({}, live_map):
+            new = sorted(m, key=lambda s: co._investability_key(
+                s, val, None, names, m, imap))
+            assert new == old, (
+                'ISIN changed the ordering of %s with isin_map=%r; the no-ISIN path is '
+                'NOT bit-identical' % (m, 'live' if imap is live_map else 'empty'))
+    assert n_groups > 100, 'panel produced too few multi-line groups to be evidence'
+
+
+def test_isin_absent_means_absent_not_silently_populated():
+    """The bit-identity above is only reassuring if the map really is empty today.  If a
+    profile build has landed and this fails, that is INFORMATION, not a defect -- but it
+    must not pass unnoticed, because the no-op claim stops holding at that moment."""
+    assert co._load_isin_map() == {}, (
+        'an isindic_fmp_*.pickle now exists -- ISIN is LIVE in the survivor pick. '
+        'Re-measure the alphabetical-tail groups and update register K-1.')
+
+
+def test_isin_plurality_decides_the_multi_venue_common():
+    """WHAT THE TERM ACTUALLY BUYS.  Three lines, one issuer: the common cross-listed on
+    two venues (same ISIN) plus a single odd line (different ISIN).  Nothing above the
+    alphabetical tail separates them, and the odd line sorts FIRST alphabetically, so
+    without ISIN it would win.  Plurality must hand it to the common."""
+    fake = {s: {'weightedAverageShsOut': 100.0, 'marketCap': 5.0}
+            for s in ('AAA', 'ZZZ', 'ZZY')}
+    vf = lambda s, c: fake[s][c]
+    names = {s: 'Same Issuer NV' for s in fake}
+    group = ['AAA', 'ZZZ', 'ZZY']
+    imap = {'AAA': 'NL0000000001', 'ZZZ': 'NL0000000002', 'ZZY': 'NL0000000002'}
+    assert sorted(group, key=lambda s: co._investability_key(
+        s, vf, None, names, group, {}))[0] == 'AAA', 'precondition: alphabet picks AAA'
+    assert sorted(group, key=lambda s: co._investability_key(
+        s, vf, None, names, group, imap))[0] == 'ZZY', (
+        'ISIN plurality did not lift the two-venue common over the singleton line')
+
+
+def test_isin_ABSTAINS_on_a_two_member_group_with_two_isins():
+    """*** THE HONEST NEGATIVE.  This is the shape of ALL THREE known-wrong groups
+    (CBE.PA/RBT.PA certificat, PREVA.AS/VALUE.AS preference, SMSD.L/SMSN.L preferred
+    GDR): two members, two distinct ISINs, plurality 1-1.  An ISIN carries no
+    security-type field, so it CANNOT say which is the common, and this test pins that
+    the code does not pretend otherwise -- it abstains and the alphabetical tail still
+    picks the NON-COMMON.  Register K-1 stays OPEN. ***"""
+    fake = {s: {'weightedAverageShsOut': 100.0, 'marketCap': 5.0}
+            for s in ('CBE.PA', 'RBT.PA')}
+    vf = lambda s, c: fake[s][c]
+    names = {s: 'Robertet SA' for s in fake}
+    group = ['CBE.PA', 'RBT.PA']
+    imap = {'CBE.PA': 'FR0000045551', 'RBT.PA': 'FR0000039091'}
+    for m in group:
+        assert co._isin_plurality_term(m, group, imap) == 0, (
+            'a 1-1 ISIN split must abstain (return 0), not invent a direction')
+    assert sorted(group, key=lambda s: co._investability_key(
+        s, vf, None, names, group, imap))[0] == 'CBE.PA', (
+        'the certificat no longer wins -- if this fails, some rule started reading '
+        'canonicity out of an ISIN, which is exactly what must not happen silently')
+
+
+def test_isin_never_outranks_a_canonicity_marker():
+    """NEVER WORSE THAN TODAY.  Even a plurality of ISINs on the non-canonical side must
+    not lift a marker-detected line over a clean one -- ISIN sits BELOW canonicity."""
+    fake = {s: {'weightedAverageShsOut': 100.0, 'marketCap': 5.0}
+            for s in ('AEM', '0R2J.L', '0R2K.L')}
+    vf = lambda s, c: fake[s][c]
+    names = {s: 'Agnico Eagle Mines Limited' for s in fake}
+    group = ['AEM', '0R2J.L', '0R2K.L']
+    imap = {'AEM': 'CA0084741085', '0R2J.L': 'GB00B000001', '0R2K.L': 'GB00B000001'}
+    assert sorted(group, key=lambda s: co._investability_key(
+        s, vf, None, names, group, imap))[0] == 'AEM', (
+        'an IOB line won on ISIN plurality; the ISIN term is placed too high')
+
+
+#  ---- THE TWO PROPERTIES THAT MAKE "NO ISIN DATA" NEUTRAL  (reviewer, 2026-08-05) ---- #
+#  The first cut returned the abstain value 0 for an unmapped member while the             #
+#  discriminating branch emitted only values <= -1, so 0 was the WORST value in the         #
+#  term's own range and a member the profile map merely LACKED sorted BELOW a member        #
+#  holding a SINGLETON ISIN.  ISIN DATA AVAILABILITY was deciding survivors.  These two     #
+#  tests pin the properties; each is also a case-exhaustive consequence of the code shape   #
+#  (see the note in `_isin_plurality_term`), so they are regression guards on a proof, not  #
+#  the evidence for it.                                                                     #
+def _tied_group(members):
+    """Members that are IDENTICAL on every term above ISIN (canonicity, shares, marketCap,
+    digit-prefix, punctuation, length), so the ISIN term and then the alphabet decide."""
+    fake = {s: {'weightedAverageShsOut': 100.0, 'marketCap': 5.0} for s in members}
+    return (lambda s, c: fake[s][c]), {s: 'Same Issuer NV' for s in members}
+
+
+def test_isin_absence_ties_with_a_singleton_and_is_never_the_worst_value():
+    """PROPERTY (a), at the value level -- the reviewer's exact call.  'No ISIN for this
+    line' and 'an ISIN only this line holds' both mean ISIN TELLS US NOTHING HERE, so they
+    must be the SAME value; and no member may score above (i.e. sort after) every active
+    value just for being unmapped."""
+    group = ['AAA', 'BBB', 'CCC', 'DDD']
+    imap = {'AAA': 'US1111111111', 'BBB': 'US1111111111',
+            'CCC': 'GB2222222222', 'DDD': None}
+    t = {m: co._isin_plurality_term(m, group, imap) for m in group}
+    assert t == {'AAA': -2, 'BBB': -2, 'CCC': -1, 'DDD': -1}, (
+        'absence must tie with the SINGLETON at -1, not fall out at 0 (the abstain value, '
+        'which is the WORST value in this term\'s range); got %r' % t)
+    assert t['DDD'] <= max(v for v in t.values()), (
+        'the unmapped member is the unique worst value -- availability is deciding the pick')
+    #  ...and at the ordering level: DDD must not be pushed behind the singleton CCC.
+    vf, names = _tied_group(group)
+    assert sorted(group, key=lambda s: co._investability_key(
+        s, vf, None, names, group, imap)) == ['AAA', 'BBB', 'CCC', 'DDD']
+
+
+def test_isin_mixed_availability_cannot_reorder_otherwise_tied_members():
+    """PROPERTY (a), at the ordering level and the way it actually bites.  Two members
+    otherwise tied on every term, one UNMAPPED and one holding a SINGLETON, must order
+    exactly as if both were unmapped -- populating the map for one of them and not the
+    other may not move the survivor."""
+    group = ['AAA', 'BBB', 'YYY', 'ZZZ']          # AAA/BBB are the two-venue common
+    vf, names = _tied_group(group)
+    common = {'AAA': 'US1111111111', 'BBB': 'US1111111111'}
+    variants = {
+        'both unmapped':          {**common, 'YYY': None, 'ZZZ': None},
+        'YYY singleton only':     {**common, 'YYY': 'GB2222222222', 'ZZZ': None},
+        'ZZZ singleton only':     {**common, 'YYY': None, 'ZZZ': 'GB3333333333'},
+        'both singletons':        {**common, 'YYY': 'GB2222222222', 'ZZZ': 'GB3333333333'},
+        'unusable not missing':   {**common, 'YYY': 'nan', 'ZZZ': float('nan')},
+    }
+    orders = {k: sorted(group, key=lambda s: co._investability_key(
+        s, vf, None, names, group, m)) for k, m in variants.items()}
+    assert len(set(map(tuple, orders.values()))) == 1, (
+        'ISIN availability alone reordered an otherwise-tied group: %r' % orders)
+    assert list(orders['both unmapped'])[:2] == ['AAA', 'BBB'], (
+        'precondition: the plurality still lifts the two-venue common -- if this fails the '
+        'invariance above is vacuous because the term stopped discriminating at all')
+
+
+def test_isin_group_wide_abstention_survives_mixed_availability():
+    """PROPERTY (b).  When the term discriminates NOTHING it must change NO ordering -- and
+    that has to hold when only SOME members are mapped, which is exactly where the first cut
+    broke it (the abstain test used to be taken after this line's own ISIN was read, so an
+    unmapped member got 0 while a mapped one got a real value).  The abstain decision is now
+    a function of (isin_map, group) alone, so it cannot differ between members."""
+    group = ['AAA', 'BBB', 'CCC']
+    vf, names = _tied_group(group)
+    #  Every abstain shape, each with mixed availability inside it.
+    for label, imap in (
+            ('one distinct usable ISIN, others unmapped',
+             {'AAA': 'US1111111111', 'BBB': None, 'CCC': None}),
+            ('one distinct usable ISIN shared, one unmapped',
+             {'AAA': 'US1111111111', 'BBB': 'US1111111111', 'CCC': None}),
+            ('no ISIN held by more than one member, one unmapped',
+             {'AAA': 'US1111111111', 'BBB': 'GB2222222222', 'CCC': None}),
+            ('nothing usable at all',
+             {'AAA': 'nan', 'BBB': None, 'CCC': ''})):
+        vals = [co._isin_plurality_term(m, group, imap) for m in group]
+        assert vals == [0, 0, 0], (
+            '%s: abstention must be the literal 0 for EVERY member (auditable as a value, '
+            'not as a cancellation); got %r' % (label, vals))
+        assert sorted(group, key=lambda s: co._investability_key(
+            s, vf, None, names, group, imap)) == sorted(
+                group, key=lambda s: co._investability_key(s, vf, None, names, group, {})), (
+            '%s: the term abstained but the ordering still moved' % label)
+
+
+def test_unusable_isin_values_cannot_group(panel):
+    """None / NaN / '' / short junk must not count as a shared ISIN -- otherwise every
+    unmapped line in a group would look like one big plurality."""
+    group = ['AAA', 'BBB', 'CCC']
+    for bad in (None, float('nan'), '', '  ', 'N/A', 12345):
+        imap = {'AAA': bad, 'BBB': bad, 'CCC': 'US0000000001'}
+        assert co._isin_plurality_term('AAA', group, imap) == 0
+        assert co._isin_plurality_term('CCC', group, imap) == 0, (
+            'a single usable ISIN among junk must abstain, not win on count 1'
+        )
+    del panel
