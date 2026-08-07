@@ -1,0 +1,1073 @@
+Fetching financial data from FMP and calculating relevant metrics.
+
+  0%|          | 0/10466 [00:00<?, ?it/s]
+  0%|          | 1/10466 [00:03<10:52:17,  3.74s/it]
+  0%|          | 2/10466 [00:07<10:20:39,  3.56s/it]
+  0%|          | 3/10466 [00:10<10:28:41,  3.61s/it]
+  0%|          | 4/10466 [00:14<10:32:04,  3.63s/it]
+  0%|          | 5/10466 [00:18<10:28:35,  3.61s/it]
+  0%|          | 6/10466 [00:21<10:26:01,  3.59s/it]
+  0%|          | 7/10466 [00:25<10:24:17,  3.58s/it]
+  0%|          | 8/10466 [00:28<10:23:52,  3.58s/it]
+  0%|          | 9/10466 [00:32<10:22:37,  3.57s/it]
+  0%|          | 10/10466 [00:35<10:22:10,  3.57s/it]
+  0%|          | 11/10466 [00:39<10:24:14,  3.58s/it]
+  0%|          | 12/10466 [00:42<10:19:30,  3.56s/it]
+  0%|          | 13/10466 [00:46<10:21:00,  3.56s/it]
+  0%|          | 14/10466 [00:50<10:25:48,  3.59s/it]
+  0%|          | 15/10466 [00:53<10:12:28,  3.52s/it]
+  0%|          | 16/10466 [00:57<10:18:18,  3.55s/it]
+  0%|          | 17/10466 [01:00<10:08:16,  3.49s/it]
+  0%|          | 18/10466 [01:04<10:06:26,  3.48s/it]
+  0%|          | 19/10466 [01:07<10:18:43,  3.55s/it]
+  0%|          | 20/10466 [01:11<10:07:46,  3.49s/it]
+  0%|          | 21/10466 [01:14<10:11:50,  3.51s/it]
+  0%|          | 22/10466 [01:18<10:15:06,  3.53s/it]
+  0%|          | 23/10466 [01:21<10:10:58,  3.51s/it]
+  0%|          | 24/10466 [01:25<10:11:45,  3.52s/it]
+  0%|          | 25/10466 [01:28<10:08:27,  3.50s/it]
+  0%|          | 26/10466 [01:31<9:59:26,  3.45s/it] 
+  0%|          | 27/10466 [01:35<10:07:54,  3.49s/it]
+  0%|          | 28/10466 [01:39<10:11:48,  3.52s/it]
+  0%|          | 29/10466 [01:42<10:14:53,  3.53s/it]
+  0%|          | 30/10466 [01:46<10:05:27,  3.48s/it]
+  0%|          | 31/10466 [01:49<10:10:57,  3.51s/it]
+  0%|          | 32/10466 [01:53<10:14:00,  3.53s/it]
+  0%|          | 33/10466 [01:56<10:17:42,  3.55s/it]
+  0%|          | 34/10466 [02:00<10:07:35,  3.49s/it]
+  0%|          | 35/10466 [02:03<9:57:39,  3.44s/it] 
+  0%|          | 36/10466 [02:07<10:13:04,  3.53s/it]
+  0%|          | 37/10466 [02:10<10:16:29,  3.55s/it]
+  0%|          | 38/10466 [02:14<10:18:52,  3.56s/it]
+  0%|          | 39/10466 [02:18<10:48:53,  3.73s/it]
+  0%|          | 40/10466 [02:22<10:40:20,  3.69s/it]
+  0%|          | 41/10466 [02:25<10:35:21,  3.66s/it]
+  0%|          | 42/10466 [02:29<10:30:41,  3.63s/it]
+  0%|          | 43/10466 [02:32<10:27:28,  3.61s/it]
+  0%|          | 44/10466 [02:36<10:19:34,  3.57s/it]
+  0%|          | 45/10466 [02:39<10:07:46,  3.50s/it]
+  0%|          | 46/10466 [02:43<10:12:00,  3.52s/it]
+  0%|          | 47/10466 [02:46<10:14:23,  3.54s/it]
+  0%|          | 48/10466 [02:50<10:04:58,  3.48s/it]
+  0%|          | 49/10466 [02:53<10:09:47,  3.51s/it]
+  0%|          | 50/10466 [02:57<10:01:59,  3.47s/it]
+  0%|          | 51/10466 [03:00<10:05:31,  3.49s/it]
+  0%|          | 52/10466 [03:04<10:13:42,  3.54s/it]
+  1%|          | 53/10466 [03:07<10:15:32,  3.55s/it]
+  1%|          | 54/10466 [03:11<10:10:58,  3.52s/it]
+  1%|          | 55/10466 [03:14<10:08:03,  3.50s/it]
+  1%|          | 56/10466 [03:18<10:00:33,  3.46s/it]
+  1%|          | 57/10466 [03:21<10:07:46,  3.50s/it]
+  1%|          | 58/10466 [03:25<10:10:32,  3.52s/it]
+  1%|          | 59/10466 [03:29<10:27:50,  3.62s/it]
+  1%|          | 60/10466 [03:32<10:33:08,  3.65s/it]
+  1%|          | 61/10466 [03:36<10:28:30,  3.62s/it]
+  1%|          | 62/10466 [03:40<10:47:25,  3.73s/it]
+  1%|          | 63/10466 [03:44<10:38:50,  3.68s/it]
+  1%|          | 64/10466 [03:47<10:23:03,  3.59s/it]
+  1%|          | 65/10466 [03:50<10:21:50,  3.59s/it]
+  1%|          | 66/10466 [03:54<10:20:17,  3.58s/it]
+  1%|          | 67/10466 [03:57<10:08:07,  3.51s/it]
+  1%|          | 68/10466 [04:01<10:16:28,  3.56s/it]
+  1%|          | 69/10466 [04:06<11:02:46,  3.82s/it]
+  1%|          | 70/10466 [04:09<10:57:52,  3.80s/it]
+  1%|          | 71/10466 [04:13<10:35:00,  3.67s/it]
+  1%|          | 72/10466 [04:16<10:30:11,  3.64s/it]
+  1%|          | 73/10466 [04:20<10:27:04,  3.62s/it]
+  1%|          | 74/10466 [04:23<10:24:25,  3.61s/it]
+  1%|          | 75/10466 [04:27<10:22:38,  3.60s/it]
+  1%|          | 76/10466 [04:30<10:15:33,  3.55s/it]
+  1%|          | 77/10466 [04:34<10:17:25,  3.57s/it]
+  1%|          | 78/10466 [04:38<10:17:45,  3.57s/it]
+  1%|          | 79/10466 [04:41<10:18:40,  3.57s/it]
+  1%|          | 80/10466 [04:44<10:06:31,  3.50s/it]
+  1%|          | 81/10466 [04:48<10:00:22,  3.47s/it]
+  1%|          | 82/10466 [04:51<9:58:25,  3.46s/it] 
+  1%|          | 83/10466 [04:55<10:13:38,  3.55s/it]
+...
+bstop unique sources: 25
+bstop sample sources: ['NOAH', 'BPCR.L', 'BBDC']
+bstop score stats: min=10.7000, max=12.4688, mean=11.2078
+
+cdxtop shape: (581, 52) (rows, columns)
+cdxtop unique sources: 25
+cdxtop sample sources: ['AAS.L', 'AAS.L', 'AAS.L']
+cdxtop columns (first 10): ['date', 'totalAssets', 'longTermDebt', 'inventory', 'totalStockholdersEquity', 'totalLiabilities', 'totalCurrentAssets', 'totalCurrentLiabilities', 'propertyPlantEquipmentNet', 'otherCurrentAssets']
+cdxtop has all required columns: ['freeCashFlow', 'weightedAverageShsOut', 'marketCap', 'grahamNumber', 'price', 'tangibleBookValuePerShare', 'totalAssets', 'totalLiabilities', 'totalCurrentAssets', 'totalCurrentLiabilities', 'totalStockholdersEquity', 'operatingIncome', 'revenue', 'netIncome', 'netCashProvidedByOperatingActivities', 'longTermDebt', 'currentRatio', 'grossProfitMargin']
+cdxtop NaN percentage in key columns: {'freeCashFlow': np.float64(1.0), 'weightedAverageShsOut': np.float64(0.3), 'marketCap': np.float64(0.0), 'grahamNumber': np.float64(16.5), 'price': np.float64(0.3), 'tangibleBookValuePerShare': np.float64(0.0), 'totalAssets': np.float64(0.0), 'totalLiabilities': np.float64(0.0), 'totalCurrentAssets': np.float64(0.0), 'totalCurrentLiabilities': np.float64(0.0), 'totalStockholdersEquity': np.float64(0.0), 'operatingIncome': np.float64(0.3), 'revenue': np.float64(0.3), 'netIncome': np.float64(0.3), 'netCashProvidedByOperatingActivities': np.float64(1.0), 'longTermDebt': np.float64(0.0), 'currentRatio': np.float64(0.0), 'grossProfitMargin': np.float64(0.0)}
+============================================================
+
+  0%|                                                                                                                                   | 0/25 [00:00<?, ?it/s]
+DIAGNOSTIC: First ticker (NOAH) data:
+  DCF source: individual, status: 200, empty: True, shape: N/A
+  tempcdx (fundamentals) empty: False, shape: (24, 53)
+  tempcdx columns: ['date', 'totalAssets', 'longTermDebt', 'inventory', 'totalStockholdersEquity']...
+  tempcdx sample values (first row):
+    freeCashFlow: 0.0
+    marketCap: 942612431.6664002
+    operatingIncome: 236438000.0
+  Note: Altman-Z and Piotroski calculated from tempcdx fundamentals
+
+DIAGNOSTIC: Sample metric values after calculation for NOAH:
+  RoA: 0.01487366142856107
+  earnYield: 0.13761375635616224
+  grahamNumberToPrice: 3.8557311896004642
+  freeCashFlowYield: -0.0012770584825634868
+  BoScore: 12.46875
+  Altman-Z: 2.1824371994909444
+  Piotroski: 5
+  CycleHeat: -0.03690988038707396
+  Note: Altman-Z and Piotroski are now calculated from fundamentals (no API needed)
+100%|██████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 25/25 [00:17<00:00,  1.51it/s]
+============================================================
+DIAGNOSTIC: postScoreMetric_df statistics before normalizeAndDropNA
+============================================================
+DataFrame shape: (25, 22) (rows, columns)
+Total rows: 25
+Columns: ['source', 'RoA', 'earnYield', 'grahamNumberToPrice', 'bVpRatio', 'revenueGrowth', 'incomeQuality', 'returnOnEquity', 'returnOnCapitalEmployed', 'currentRatio', 'grossProfitMargin', 'freeCashFlowYield', 'freeCashFlowPerShareGrowth', 'DcfToPrice', 'marketCapRevQuants', 'Altman-Z', 'Piotroski', 'tbVpRatio', 'BoScore', 'EPStoEPSmean', 'priceGrowth', 'CycleHeat']
+
+Metric columns (excluding 'source'): 21
+
+NaN statistics per column:
+  RoA: 0 NaN (0.0%)
+  earnYield: 0 NaN (0.0%)
+  grahamNumberToPrice: 0 NaN (0.0%)
+  bVpRatio: 0 NaN (0.0%)
+  revenueGrowth: 0 NaN (0.0%)
+  incomeQuality: 0 NaN (0.0%)
+  returnOnEquity: 0 NaN (0.0%)
+  returnOnCapitalEmployed: 0 NaN (0.0%)
+  currentRatio: 0 NaN (0.0%)
+  grossProfitMargin: 0 NaN (0.0%)
+  freeCashFlowYield: 0 NaN (0.0%)
+  freeCashFlowPerShareGrowth: 3 NaN (12.0%)
+  DcfToPrice: 2 NaN (8.0%)
+  marketCapRevQuants: 0 NaN (0.0%)
+  Altman-Z: 0 NaN (0.0%)
+  Piotroski: 0 NaN (0.0%)
+  tbVpRatio: 0 NaN (0.0%)
+  BoScore: 0 NaN (0.0%)
+  EPStoEPSmean: 0 NaN (0.0%)
+  priceGrowth: 0 NaN (0.0%)
+  CycleHeat: 0 NaN (0.0%)
+
+Overall: 5/525 NaN values (0.95%)
+Rows with ALL metrics NaN: 0/25 (0.00%)
+Rows with at least one valid metric: 25/25 (100.00%)
+
+Column statistics (for non-NaN values):
+  RoA: mean=0.0356, min=-0.0239, max=0.1624, count=25
+  earnYield: mean=0.0476, min=-0.0444, max=0.1698, count=25
+  grahamNumberToPrice: mean=5.0576, min=1.8579, max=8.7239, count=25
+  bVpRatio: mean=inf, min=0.4762, max=inf, count=25
+  revenueGrowth: mean=0.0211, min=-2.4802, max=3.8813, count=25
+  incomeQuality: mean=0.4734, min=-2.3315, max=4.8699, count=25
+  returnOnEquity: mean=0.0375, min=-0.0534, max=0.1651, count=25
+  returnOnCapitalEmployed: mean=0.0357, min=0.0007, max=0.0938, count=25
+  currentRatio: mean=102.5784, min=0.0625, max=913.0915, count=25
+  grossProfitMargin: mean=1.1689, min=0.5706, max=6.8439, count=25
+  freeCashFlowYield: mean=inf, min=-0.0173, max=inf, count=25
+  freeCashFlowPerShareGrowth: mean=0.8727, min=-4.8013, max=24.4198, count=22
+  DcfToPrice: mean=0.2292, min=-0.3150, max=1.6252, count=23
+  marketCapRevQuants: mean=-0.0333, min=-0.5000, max=0.5000, count=25
+  Altman-Z: mean=853.1282, min=0.5963, max=20576.2918, count=25
+  Piotroski: mean=4.7200, min=1.0000, max=8.0000, count=25
+  tbVpRatio: mean=5.7238, min=1.6781, max=32.6414, count=25
+  BoScore: mean=11.2077, min=10.7000, max=12.4688, count=25
+  EPStoEPSmean: mean=-1.8095, min=-29.4993, max=1.8938, count=25
+  priceGrowth: mean=0.0259, min=-0.0670, max=0.1184, count=25
+  CycleHeat: mean=0.5191, min=-1.0627, max=2.5838, count=25
+============================================================
+
+100%|██████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 25/25 [00:17<00:00,  1.41it/s]
+CARVE-OUT side-list 'FinManager': ranking 25 names with per-cohort weights
+Ranking the top 100 stocks, according to BoScore.
+
+============================================================
+DIAGNOSTIC: Input dataframes check (BEFORE calculations)
+============================================================
+bmtop shape: (493, 38) (rows, columns)
+bmtop unique sources: 25
+bmtop sample sources: ['AJB.L', 'AJB.L', 'AJB.L']
+bmtop columns (first 10): ['date', 'uCurrentRatio', 'dCurrentRatio', 'returnOnAssets', 'dReturnOnAssets', 'mDebtEquityRatio', 'dEffectiveTaxRate', 'dReturnOnCapitalEmployed', 'dGrossProfitMargin', 'mGrossProfitMargin']
+bmtop NaN percentage in numeric columns (first 5): {'uCurrentRatio': np.float64(0.0), 'dCurrentRatio': np.float64(0.0), 'returnOnAssets': np.float64(0.0), 'dReturnOnAssets': np.float64(0.0), 'mDebtEquityRatio': np.float64(0.0)}
+
+bstop shape: (25, 3) (rows, columns)
+bstop unique sources: 25
+bstop sample sources: ['FTK.DE', 'POLR.L', 'CLIG.L']
+bstop score stats: min=10.6750, max=13.4313, mean=11.9970
+
+cdxtop shape: (584, 52) (rows, columns)
+cdxtop unique sources: 25
+cdxtop sample sources: ['ABDN.L', 'ABDN.L', 'ABDN.L']
+cdxtop columns (first 10): ['date', 'totalAssets', 'longTermDebt', 'inventory', 'totalStockholdersEquity', 'totalLiabilities', 'totalCurrentAssets', 'totalCurrentLiabilities', 'propertyPlantEquipmentNet', 'otherCurrentAssets']
+cdxtop has all required columns: ['freeCashFlow', 'weightedAverageShsOut', 'marketCap', 'grahamNumber', 'price', 'tangibleBookValuePerShare', 'totalAssets', 'totalLiabilities', 'totalCurrentAssets', 'totalCurrentLiabilities', 'totalStockholdersEquity', 'operatingIncome', 'revenue', 'netIncome', 'netCashProvidedByOperatingActivities', 'longTermDebt', 'currentRatio', 'grossProfitMargin']
+cdxtop NaN percentage in key columns: {'freeCashFlow': np.float64(0.3), 'weightedAverageShsOut': np.float64(1.2), 'marketCap': np.float64(0.2), 'grahamNumber': np.float64(4.1), 'price': np.float64(1.7), 'tangibleBookValuePerShare': np.float64(0.2), 'totalAssets': np.float64(0.0), 'totalLiabilities': np.float64(0.0), 'totalCurrentAssets': np.float64(0.0), 'totalCurrentLiabilities': np.float64(0.0), 'totalStockholdersEquity': np.float64(0.0), 'operatingIncome': np.float64(1.2), 'revenue': np.float64(1.2), 'netIncome': np.float64(1.2), 'netCashProvidedByOperatingActivities': np.float64(0.3), 'longTermDebt': np.float64(0.0), 'currentRatio': np.float64(0.2), 'grossProfitMargin': np.float64(0.2)}
+============================================================
+
+  0%|                                                                                                                                   | 0/25 [00:00<?, ?it/s]
+DIAGNOSTIC: First ticker (FTK.DE) data:
+  DCF source: individual, status: 200, empty: True, shape: N/A
+  tempcdx (fundamentals) empty: False, shape: (22, 53)
+  tempcdx columns: ['date', 'totalAssets', 'longTermDebt', 'inventory', 'totalStockholdersEquity']...
+  tempcdx sample values (first row):
+    freeCashFlow: 1461953000.0
+    marketCap: 4046323160.0
+    operatingIncome: 108800000.0
+  Note: Altman-Z and Piotroski calculated from tempcdx fundamentals
+
+DIAGNOSTIC: Sample metric values after calculation for FTK.DE:
+  RoA: 0.01308924998936109
+  earnYield: 0.03803505926818773
+  grahamNumberToPrice: 2.033093052246945
+  freeCashFlowYield: 0.25345140579912107
+  BoScore: 13.43125
+  Altman-Z: 1.5991838505088871
+  Piotroski: 6
+  CycleHeat: 1.3876070290013063
+  Note: Altman-Z and Piotroski are now calculated from fundamentals (no API needed)
+100%|██████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 25/25 [00:16<00:00,  1.46it/s]
+============================================================
+DIAGNOSTIC: postScoreMetric_df statistics before normalizeAndDropNA
+============================================================
+DataFrame shape: (25, 22) (rows, columns)
+Total rows: 25
+Columns: ['source', 'RoA', 'earnYield', 'grahamNumberToPrice', 'bVpRatio', 'revenueGrowth', 'incomeQuality', 'returnOnEquity', 'returnOnCapitalEmployed', 'currentRatio', 'grossProfitMargin', 'freeCashFlowYield', 'freeCashFlowPerShareGrowth', 'DcfToPrice', 'marketCapRevQuants', 'Altman-Z', 'Piotroski', 'tbVpRatio', 'BoScore', 'EPStoEPSmean', 'priceGrowth', 'CycleHeat']
+
+Metric columns (excluding 'source'): 21
+
+NaN statistics per column:
+  RoA: 0 NaN (0.0%)
+  earnYield: 0 NaN (0.0%)
+  grahamNumberToPrice: 0 NaN (0.0%)
+  bVpRatio: 0 NaN (0.0%)
+  revenueGrowth: 0 NaN (0.0%)
+  incomeQuality: 0 NaN (0.0%)
+  returnOnEquity: 0 NaN (0.0%)
+  returnOnCapitalEmployed: 0 NaN (0.0%)
+  currentRatio: 0 NaN (0.0%)
+  grossProfitMargin: 0 NaN (0.0%)
+  freeCashFlowYield: 0 NaN (0.0%)
+  freeCashFlowPerShareGrowth: 0 NaN (0.0%)
+  DcfToPrice: 6 NaN (24.0%)
+  marketCapRevQuants: 0 NaN (0.0%)
+  Altman-Z: 0 NaN (0.0%)
+  Piotroski: 0 NaN (0.0%)
+  tbVpRatio: 0 NaN (0.0%)
+  BoScore: 0 NaN (0.0%)
+  EPStoEPSmean: 0 NaN (0.0%)
+  priceGrowth: 0 NaN (0.0%)
+  CycleHeat: 0 NaN (0.0%)
+
+Overall: 6/525 NaN values (1.14%)
+Rows with ALL metrics NaN: 0/25 (0.00%)
+Rows with at least one valid metric: 25/25 (100.00%)
+
+Column statistics (for non-NaN values):
+  RoA: mean=0.0653, min=0.0012, max=0.5582, count=25
+  earnYield: mean=0.0421, min=0.0101, max=0.2378, count=25
+  grahamNumberToPrice: mean=2.4800, min=0.8289, max=7.3460, count=25
+  bVpRatio: mean=inf, min=0.0945, max=inf, count=25
+  revenueGrowth: mean=0.2249, min=-0.1414, max=0.8293, count=25
+  incomeQuality: mean=3.6453, min=-0.0410, max=25.6989, count=25
+  returnOnEquity: mean=0.1255, min=0.0118, max=0.7632, count=25
+  returnOnCapitalEmployed: mean=0.0764, min=0.0076, max=0.2888, count=25
+  currentRatio: mean=65.7128, min=0.3537, max=1059.0458, count=25
+  grossProfitMargin: mean=0.7580, min=0.3482, max=0.9995, count=25
+  freeCashFlowYield: mean=inf, min=0.0036, max=inf, count=25
+  freeCashFlowPerShareGrowth: mean=0.3736, min=-18.3287, max=26.5024, count=25
+  DcfToPrice: mean=1.2065, min=0.3665, max=2.6080, count=19
+  marketCapRevQuants: mean=-0.0600, min=-0.5000, max=0.5000, count=25
+  Altman-Z: mean=3.8508, min=-0.0737, max=18.8282, count=25
+  Piotroski: mean=6.0800, min=4.0000, max=9.0000, count=25
+  tbVpRatio: mean=1.2573, min=0.1138, max=4.7946, count=25
+  BoScore: mean=11.9970, min=10.6750, max=13.4313, count=25
+  EPStoEPSmean: mean=inf, min=-2.6073, max=inf, count=25
+  priceGrowth: mean=0.0792, min=-0.0412, max=0.9852, count=25
+  CycleHeat: mean=0.7235, min=-2.1024, max=2.9581, count=25
+============================================================
+
+100%|██████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 25/25 [00:16<00:00,  1.49it/s]
+CARVE-OUT side-list 'BalanceSheetFin': ranking 25 names with per-cohort weights
+Ranking the top 100 stocks, according to BoScore.
+
+============================================================
+DIAGNOSTIC: Input dataframes check (BEFORE calculations)
+============================================================
+bmtop shape: (490, 38) (rows, columns)
+bmtop unique sources: 25
+bmtop sample sources: ['FBP', 'FBP', 'FBP']
+bmtop columns (first 10): ['date', 'uCurrentRatio', 'dCurrentRatio', 'returnOnAssets', 'dReturnOnAssets', 'mDebtEquityRatio', 'dEffectiveTaxRate', 'dReturnOnCapitalEmployed', 'dGrossProfitMargin', 'mGrossProfitMargin']
+bmtop NaN percentage in numeric columns (first 5): {'uCurrentRatio': np.float64(0.0), 'dCurrentRatio': np.float64(0.0), 'returnOnAssets': np.float64(0.0), 'dReturnOnAssets': np.float64(0.0), 'mDebtEquityRatio': np.float64(0.0)}
+
+bstop shape: (25, 3) (rows, columns)
+bstop unique sources: 25
+bstop sample sources: ['MPCK.DE', 'ENVA', 'SEIC']
+bstop score stats: min=12.5562, max=13.4125, mean=12.8095
+
+cdxtop shape: (590, 52) (rows, columns)
+cdxtop unique sources: 25
+cdxtop sample sources: ['ACT', 'ACT', 'ACT']
+cdxtop columns (first 10): ['date', 'totalAssets', 'longTermDebt', 'inventory', 'totalStockholdersEquity', 'totalLiabilities', 'totalCurrentAssets', 'totalCurrentLiabilities', 'propertyPlantEquipmentNet', 'otherCurrentAssets']
+cdxtop has all required columns: ['freeCashFlow', 'weightedAverageShsOut', 'marketCap', 'grahamNumber', 'price', 'tangibleBookValuePerShare', 'totalAssets', 'totalLiabilities', 'totalCurrentAssets', 'totalCurrentLiabilities', 'totalStockholdersEquity', 'operatingIncome', 'revenue', 'netIncome', 'netCashProvidedByOperatingActivities', 'longTermDebt', 'currentRatio', 'grossProfitMargin']
+cdxtop NaN percentage in key columns: {'freeCashFlow': np.float64(1.0), 'weightedAverageShsOut': np.float64(1.0), 'marketCap': np.float64(0.7), 'grahamNumber': np.float64(2.4), 'price': np.float64(1.0), 'tangibleBookValuePerShare': np.float64(0.7), 'totalAssets': np.float64(0.0), 'totalLiabilities': np.float64(0.0), 'totalCurrentAssets': np.float64(0.0), 'totalCurrentLiabilities': np.float64(0.0), 'totalStockholdersEquity': np.float64(0.0), 'operatingIncome': np.float64(1.0), 'revenue': np.float64(1.0), 'netIncome': np.float64(1.0), 'netCashProvidedByOperatingActivities': np.float64(1.0), 'longTermDebt': np.float64(0.0), 'currentRatio': np.float64(0.7), 'grossProfitMargin': np.float64(0.7)}
+============================================================
+
+  0%|                                                                                                                                   | 0/25 [00:00<?, ?it/s]
+DIAGNOSTIC: First ticker (MPCK.DE) data:
+  DCF source: individual, status: 200, empty: False, shape: (1, 4)
+  DCF columns: ['symbol', 'date', 'dcf', 'Stock Price']
+  tempcdx (fundamentals) empty: False, shape: (24, 53)
+  tempcdx columns: ['date', 'totalAssets', 'longTermDebt', 'inventory', 'totalStockholdersEquity']...
+  tempcdx sample values (first row):
+    freeCashFlow: 11273000.0
+    marketCap: 170955147.39999998
+    operatingIncome: 2881000.0
+  Note: Altman-Z and Piotroski calculated from tempcdx fundamentals
+
+DIAGNOSTIC: Sample metric values after calculation for MPCK.DE:
+  RoA: 0.026771942977947702
+  earnYield: 0.024154984259803867
+  grahamNumberToPrice: 4.1845815532896715
+  freeCashFlowYield: 0.03572128274874074
+  BoScore: 13.4125
+  Altman-Z: 6.505592955723834
+  Piotroski: 6
+  CycleHeat: 0.9550871139011673
+  Note: Altman-Z and Piotroski are now calculated from fundamentals (no API needed)
+100%|██████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 25/25 [00:16<00:00,  1.50it/s]
+============================================================
+DIAGNOSTIC: postScoreMetric_df statistics before normalizeAndDropNA
+============================================================
+DataFrame shape: (25, 22) (rows, columns)
+Total rows: 25
+Columns: ['source', 'RoA', 'earnYield', 'grahamNumberToPrice', 'bVpRatio', 'revenueGrowth', 'incomeQuality', 'returnOnEquity', 'returnOnCapitalEmployed', 'currentRatio', 'grossProfitMargin', 'freeCashFlowYield', 'freeCashFlowPerShareGrowth', 'DcfToPrice', 'marketCapRevQuants', 'Altman-Z', 'Piotroski', 'tbVpRatio', 'BoScore', 'EPStoEPSmean', 'priceGrowth', 'CycleHeat']
+
+Metric columns (excluding 'source'): 21
+
+NaN statistics per column:
+  RoA: 0 NaN (0.0%)
+  earnYield: 0 NaN (0.0%)
+  grahamNumberToPrice: 0 NaN (0.0%)
+  bVpRatio: 0 NaN (0.0%)
+  revenueGrowth: 0 NaN (0.0%)
+  incomeQuality: 0 NaN (0.0%)
+  returnOnEquity: 0 NaN (0.0%)
+  returnOnCapitalEmployed: 0 NaN (0.0%)
+  currentRatio: 0 NaN (0.0%)
+  grossProfitMargin: 0 NaN (0.0%)
+  freeCashFlowYield: 0 NaN (0.0%)
+  freeCashFlowPerShareGrowth: 0 NaN (0.0%)
+  DcfToPrice: 9 NaN (36.0%)
+  marketCapRevQuants: 0 NaN (0.0%)
+  Altman-Z: 0 NaN (0.0%)
+  Piotroski: 0 NaN (0.0%)
+  tbVpRatio: 0 NaN (0.0%)
+  BoScore: 0 NaN (0.0%)
+  EPStoEPSmean: 0 NaN (0.0%)
+  priceGrowth: 0 NaN (0.0%)
+  CycleHeat: 0 NaN (0.0%)
+
+Overall: 9/525 NaN values (1.71%)
+Rows with ALL metrics NaN: 0/25 (0.00%)
+Rows with at least one valid metric: 25/25 (100.00%)
+
+Column statistics (for non-NaN values):
+  RoA: mean=0.0496, min=0.0011, max=0.9825, count=25
+  earnYield: mean=0.0418, min=0.0154, max=0.2693, count=25
+  grahamNumberToPrice: mean=2.9892, min=1.0657, max=6.6873, count=25
+  bVpRatio: mean=0.8431, min=0.1501, max=1.8467, count=25
+  revenueGrowth: mean=inf, min=-0.0023, max=inf, count=25
+  incomeQuality: mean=0.6332, min=-32.1888, max=6.2689, count=25
+  returnOnEquity: mean=0.1388, min=0.0182, max=2.3817, count=25
+  returnOnCapitalEmployed: mean=0.0119, min=-0.4592, max=0.1339, count=25
+  currentRatio: mean=22.5631, min=0.1189, max=356.2649, count=25
+  grossProfitMargin: mean=0.6513, min=0.2308, max=0.9594, count=25
+  freeCashFlowYield: mean=0.0635, min=0.0138, max=0.2168, count=25
+  freeCashFlowPerShareGrowth: mean=0.2585, min=-1.4208, max=5.4618, count=25
+  DcfToPrice: mean=1.4945, min=0.6929, max=2.4952, count=16
+  marketCapRevQuants: mean=-0.0200, min=-0.5000, max=0.5000, count=25
+  Altman-Z: mean=1.5978, min=-0.8176, max=12.8255, count=25
+  Piotroski: mean=6.5600, min=4.0000, max=9.0000, count=25
+  tbVpRatio: mean=3.2742, min=0.5111, max=7.9683, count=25
+  BoScore: mean=12.8095, min=12.5562, max=13.4125, count=25
+  EPStoEPSmean: mean=-0.2817, min=-1.3537, max=0.3044, count=25
+  priceGrowth: mean=0.0347, min=-0.0284, max=0.1091, count=25
+  CycleHeat: mean=0.8001, min=-1.6458, max=2.2885, count=25
+============================================================
+
+100%|██████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 25/25 [00:16<00:00,  1.48it/s]
+     source       RoA  earnYield  grahamNumberToPrice  bVpRatio  revenueGrowth  ...  EPStoEPSmean  priceGrowth  CycleHeat  AggScore  rankOfRanks  moatScore
+0      RAVE  0.015260   0.010778            -0.005659 -0.010519      -0.016212  ...      0.011765          0.0   0.059413  0.400690          8.0          5
+1    SYS1.L  0.003548  -0.013723            -0.006778 -0.013005      -0.009388  ...      0.011502          0.0   0.036134  0.348361         16.0          5
+2      IMPP -0.004976   0.103295             0.020639  0.064111       0.024839  ...      0.011061          0.0  -0.017175  0.347428          1.0          5
+3      DLNG -0.015434   0.082500             0.017244  0.065021      -0.017673  ...      0.010525          0.0  -0.019555  0.346709         13.0          6
+4    ALFA.L  0.059075  -0.007191            -0.008314 -0.016614      -0.005922  ...      0.011655         -0.0  -0.011831  0.284180         19.0          9
+5      AUDC -0.018120  -0.024143            -0.007581 -0.007559      -0.025344  ...      0.012763         -0.0   0.144478  0.258003         49.0          4
+6    TSTL.L  0.014138  -0.021312            -0.008858 -0.016478       0.011603  ...      0.011406          0.0  -0.061212  0.242093         23.0          4
+7     ASY.L  0.038086   0.005829            -0.006595 -0.014270      -0.003096  ...      0.011310         -0.0  -0.053738  0.217933         10.0          4
+8      INMD  0.011885  -0.006701            -0.006112 -0.009596      -0.021501  ...      0.013657         -0.0   0.202488  0.215501          9.0          6
+9      GASS -0.012069   0.055157             0.013258  0.054763      -0.017633  ...      0.009859          0.0   0.019902  0.191248         14.0          4
+10   WATR.L -0.005287  -0.012486            -0.006643 -0.009735       0.063624  ...      0.011230          0.0   0.031031  0.175173         25.0          5
+11   BIJ.DE -0.010260   0.000810            -0.001211 -0.000853      -0.012858  ...      0.005679         -0.0   0.007791  0.156646         22.0          3
+12  AJ91.DE  0.015418   0.012843            -0.004062 -0.007706       0.026934  ...      0.010859          0.0   0.042318  0.149927          2.0          2
+13       SD  0.007398   0.022483            -0.000780  0.000679      -0.018758  ...      0.009829          0.0   0.060080  0.145511          5.0          5
+14     EVER -0.023601  -0.041069            -0.007990 -0.013913       0.014827  ...      0.003425          0.0  -0.016111  0.123606         81.0          5
+15    LSC.L  0.012530   0.001183            -0.005503 -0.010346       0.002248  ...      0.008773         -0.0  -0.116386  0.112351         18.0          4
+16    CFX.L  0.001496   0.029042            -0.001727 -0.005091      -0.009647  ...      0.008618         -0.0  -0.090084  0.097747         20.0          3
+17   TWC.TO -0.016751  -0.012659            -0.003356  0.007163      -0.007732  ...      0.011064         -0.0   0.094863  0.087294         34.0          3
+18  STO3.DE -0.002779   0.018080            -0.001690 -0.000629      -0.014318  ...      0.029591         -0.0   0.117118  0.086030          6.0          4
+19    RFX.L  0.009055   0.030754            -0.001785  0.000000       0.032753  ...      0.009974          0.0  -0.167429  0.080665          3.0          5
+20    GMR.L -0.010874  -0.054827            -0.007362 -0.011303       0.056536  ...      0.011669          0.0  -0.025630  0.080606         53.0          4
+21      MOV -0.015516  -0.014154            -0.004978  0.001792      -0.028092  ...      0.014170         -0.0   0.119066  0.078226         28.0          4
+22   PEBB.L -0.018088  -0.043479            -0.004302  0.000649       0.007508  ...      0.011379         -0.0   0.040160  0.077964         45.0          4
+23      VMD -0.013954  -0.024141            -0.008100 -0.010569       0.011086  ...      0.011731          0.0   0.086557  0.076821         41.0          3
+24    JEL.L -0.013219   0.013202             0.001283  0.015793      -0.011745  ...      0.011667         -0.0  -0.016556  0.066529         25.0          3
+25     STNG  0.000279   0.029945             0.000452  0.003263       0.040664  ...     -0.004442          0.0  -0.036960  0.061105         11.0          5
+26   HWX.TO  0.008220  -0.004695            -0.006155 -0.010989       0.020503  ...      0.011714         -0.0   0.053858  0.059868         12.0          5
+27    AEP.L  0.008147   0.054679             0.005036  0.009471       0.005329  ...      0.011286          0.0  -0.014758  0.047560          4.0          3
+28     EXEL  0.003065  -0.019737            -0.008156 -0.012998      -0.006004  ...      0.006469          0.0  -0.057050  0.041211         36.0          4
+29    MPE.L  0.006653   0.017932            -0.002199 -0.002113       0.044429  ...      0.004800         -0.0  -0.102979  0.029795          7.0          2
+30     OPRA -0.008776  -0.010607            -0.004539  0.000696       0.011412  ...      0.010569          0.0   0.058363  0.024832         29.0          6
+31   0QME.L -0.016343  -0.021551            -0.003491 -0.003164      -0.027256  ...     -0.028298         -0.0   0.001828  0.021831         40.0          5
+32     TCMD -0.016259  -0.023979            -0.005388 -0.007010      -0.005629  ...      0.011808          0.0   0.095807  0.019994         48.0          5
+33    CKN.L -0.006260  -0.009401            -0.005278 -0.009428       0.007757  ...      0.005671         -0.0   0.000737  0.017293         32.0          4
+34   0D1X.L -0.001749   0.037364             0.001688  0.005137      -0.007404  ...      0.011418         -0.0   0.053935  0.015887         17.0          2
+35    BMY.L -0.003467   0.000727            -0.004670 -0.005787       0.011839  ...      0.011149          0.0  -0.007427  0.015534         24.0          4
+36   GAMA.L  0.023927  -0.009654            -0.007717 -0.014821       0.017019  ...      0.010725         -0.0  -0.035839  0.013940         27.0          4
+37    SNX.L -0.021162  -0.028646            -0.000993  0.000000      -0.001628  ...      0.011011          0.0   0.033900  0.006703         38.0          2
+38     YELP -0.006376  -0.021294            -0.008064 -0.012665      -0.012444  ...      0.009770         -0.0   0.066223  0.003881         55.0          5
+39     QLYS  0.007281  -0.025238            -0.009765 -0.017946      -0.005951  ...      0.006407         -0.0  -0.038952  0.001023         60.0          4
+40   0DTF.L -0.008473  -0.005356            -0.003892 -0.003828      -0.031274  ...      0.017720         -0.0   0.081798 -0.011028         37.0          5
+41     NEXN -0.022927  -0.030990            -0.005197  0.006803      -0.021358  ...      0.011808         -0.0   0.156199 -0.030371         54.0          4
+42    ANP.L  0.007315  -0.003670            -0.005498 -0.008606      -0.004280  ...      0.010821         -0.0  -0.173114 -0.033896         30.0          4
+43    MER.L -0.018073  -0.008103            -0.001938  0.000000      -0.011510  ...      0.009803         -0.0  -0.003925 -0.047179         63.0          3
+44   0CIJ.L -0.015045  -0.019223            -0.006149 -0.003437      -0.028131  ...      0.011710         -0.0   0.018651 -0.052468         58.0          2
+45      DLB -0.012013  -0.025587            -0.008462 -0.012145      -0.021249  ...      0.010998         -0.0  -0.019301 -0.055996         56.0          4
+46   EIN.DE -0.012825  -0.006570            -0.005159 -0.006253      -0.017629  ...      0.008411         -0.0  -0.036879 -0.060389         43.0          3
+47     FFIV -0.008850  -0.022091            -0.008475 -0.014084      -0.016973  ...      0.001289         -0.0   0.003104 -0.061488         78.0          4
+48     NICE -0.011187  -0.023661            -0.008361 -0.012634      -0.008392  ...      0.008014         -0.0   0.144194 -0.067077         75.0          3
+49     INSW  0.007472   0.032305            -0.000650 -0.000781       0.063275  ...     -0.012826          0.0  -0.097506 -0.071240         21.0          6
+
+[50 rows x 25 columns]
+Writing top 100 stocks to .csv
+  0%|                                                                                                                                  | 0/100 [00:00<?, ?it/s]
+DEBUG: DCF API response for RAVE:
+  Status code: 200
+  Response type: <class 'list'>
+  Response length: 1
+  First element type: <class 'dict'>
+  First element keys: ['symbol', 'date', 'dcf', 'Stock Price']
+ 90%|████████████████████████████████████████████████████████████████████████████████████████████████████████████▉            | 90/100 [05:05<00:33,  3.39s/it]
+Forensic-flag table written to: ForensicFlagsTop100-2026-07-16_fmp_stock_NA1_EU1.csv
+Writing top 20 stocks to an .xlsx file for presentation
+100%|██████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 20/20 [01:46<00:00,  5.32s/it]
+Carve-out side-list written to: SideList_REIT_Top100-2026-07-16_fmp_stock_NA1_EU1.csv
+Carve-out side-list written to: SideList_Mining_Top100-2026-07-16_fmp_stock_NA1_EU1.csv
+Carve-out side-list written to: SideList_InvestmentVehicle_Top100-2026-07-16_fmp_stock_NA1_EU1.csv
+Carve-out side-list written to: SideList_FinManager_Top100-2026-07-16_fmp_stock_NA1_EU1.csv
+Carve-out side-list written to: SideList_BalanceSheetFin_Top100-2026-07-16_fmp_stock_NA1_EU1.csv
+PostRank saved to: postRank_2026-07-16_fmp_stock_NA1_EU1.pickle
+[PICK-LOG] appended 125 rows to C:\Users\stefa\Documents\vinnurymi\ValuationAnalysis_v2_clean\pick_log.csv (as_of=2026-07-16); append-only, no prior row touched.
+
+==============================================================================
+POST-PICK ANALYSIS SUITE  (strictly additive, guarded, post-pick)
+==============================================================================
+WHAT THIS GRADES: the HISTORICAL point-in-time backtest RE-RUN AGAINST
+TONIGHT'S MODEL -- the same fundamentals/scoring the live pick used,
+reproduced as-of the historical buy anchors (buy2021->2024, buy2022->2025 =
+the CLEAN 36-month windows), on REAL adjusted-close prices.
+It does NOT grade tonight's live picks: no forward price exists yet (the
+pick-log accrues those; grading them is the deferred separate piece).
+run as_of=2026-07-16   run_estimation=0
+==============================================================================
+
+[analysis] >>> stage START: price-fetch (bulk-by-date, no-op if present)
+[analysis] [price-fetch] api_key resolved (masked): 9dd6**************************5c
+[analysis] [price-fetch] MAIN grid absent -> bulk-by-date fetch, 7 anchor dates (~7 calls): ['2018-12-31', '2019-12-31', '2020-12-31', '2021-12-31', '2022-12-30', '2023-12-29', '2024-12-31']
+[analysis] [price-fetch] bulk call 1: date=2018-12-31 (anchor 2018-12-31)
+[analysis] [price-fetch]   OK: 45658 rows for 2018-12-31
+[analysis] [price-fetch] bulk call 2: date=2019-12-31 (anchor 2019-12-31)
+[analysis] [price-fetch] bulk call 3: date=2019-12-30 (anchor 2019-12-31)
+[analysis] [price-fetch]   OK: 64297 rows for 2019-12-30
+[analysis] [price-fetch] bulk call 4: date=2020-12-31 (anchor 2020-12-31)
+[analysis] [price-fetch] bulk call 5: date=2020-12-30 (anchor 2020-12-31)
+[analysis] [price-fetch]   OK: 68760 rows for 2020-12-30
+[analysis] [price-fetch] bulk call 6: date=2021-12-31 (anchor 2021-12-31)
+[analysis] [price-fetch] bulk call 7: date=2021-12-30 (anchor 2021-12-31)
+[analysis] [price-fetch]   OK: 77014 rows for 2021-12-30
+[analysis] [price-fetch] bulk call 8: date=2022-12-30 (anchor 2022-12-30)
+[analysis] [price-fetch] bulk call 9: date=2022-12-29 (anchor 2022-12-30)
+[analysis] [price-fetch]   OK: 79443 rows for 2022-12-29
+[analysis] [price-fetch] bulk call 10: date=2023-12-29 (anchor 2023-12-29)
+[analysis] [price-fetch]   OK: 71986 rows for 2023-12-29
+[analysis] [price-fetch] bulk call 11: date=2024-12-31 (anchor 2024-12-31)
+[analysis] [price-fetch] bulk call 12: date=2024-12-30 (anchor 2024-12-31)
+[analysis] [price-fetch]   OK: 76563 rows for 2024-12-30
+[analysis] [price-fetch] MAIN done: 12 calls, 54552 rows -> real_prices.csv
+[analysis] [price-fetch] SUPP 2025 anchor absent -> bulk-by-date fetch 1 date (2025-12-31)
+[analysis] [price-fetch] bulk call 1: date=2025-12-31 (anchor 2025-12-31)
+[analysis] [price-fetch] bulk call 2: date=2025-12-30 (anchor 2025-12-31)
+[analysis] [price-fetch]   OK: 73764 rows for 2025-12-30
+[analysis] [price-fetch] SUPP done: 2 calls, 10095 rows -> real_prices_2025.csv
+[analysis] <<< stage OK: price-fetch (bulk-by-date, no-op if present)  (81.1s)
+
+[analysis] >>> stage START: build-price-source
+[analysis] [price-source] PriceSource built from real_prices.csv + real_prices_2025.csv
+[analysis] <<< stage OK: build-price-source  (0.1s)
+
+[analysis] >>> stage START: model-vs-metric (persistence/variance/correlation/IC)
+[analysis] [model_vs_metric] building metric panel from tonight's cdx_df (in-memory) ...
+
+########################################################################
+# MODEL-vs-METRIC diagnostic  (tonight's model, in-memory)
+#   persistence / variance / correlation / IC(reconstructed price)
+########################################################################
+panel rows: 179729, names: 7854
+
+========================================================================
+1+2. PERSISTENCE (half-life) & TIME-VARIANCE (per-name CV)
+========================================================================
+                    metric median_autocorr half_life_q median_CV  n_names
+                  bVpRatio            0.73         2.2      0.39     7854
+                  Altman-Z            0.71         2.0      0.36     7852
+                 tbVpRatio            0.68         1.8      0.55     7854
+             revenueGrowth            0.59         1.3      1.93     7246
+              currentRatio            0.58         1.3      0.35     7849
+         grossProfitMargin            0.41         0.8      0.24     7554
+   returnOnCapitalEmployed            0.30         0.6      0.87     7853
+       grahamNumberToPrice            0.28         0.5      0.40     5587
+                       RoA            0.22         0.5      1.12     7854
+                 earnYield            0.21         0.4      1.27     7854
+                 CycleHeat            0.21         0.4      3.05     7818
+            returnOnEquity            0.19         0.4      1.46     7854
+              EPStoEPSmean            0.18         0.4      3.32     7854
+         freeCashFlowYield            0.08         0.3      1.56     7807
+freeCashFlowPerShareGrowth           -0.03         NaN      4.37     7556
+             incomeQuality           -0.04         NaN      2.72     7812
+               priceGrowth           -0.07         NaN      4.91     7818
+                 Piotroski           -0.11         NaN      0.34     7854
+
+========================================================================
+3. CROSS-METRIC CORRELATION (Spearman, as-of 2021-12-31) - |corr|>0.5 pairs
+========================================================================
+   +0.86  earnYield ~ grahamNumberToPrice
+   +0.84  EPStoEPSmean ~ CycleHeat
+   +0.82  RoA ~ returnOnCapitalEmployed
+   +0.81  grahamNumberToPrice ~ bVpRatio
+   +0.80  RoA ~ returnOnEquity
+   +0.79  RoA ~ earnYield
+   +0.74  returnOnEquity ~ returnOnCapitalEmployed
+   +0.74  bVpRatio ~ tbVpRatio
+   +0.72  earnYield ~ returnOnEquity
+   +0.68  grahamNumberToPrice ~ tbVpRatio
+   +0.66  earnYield ~ returnOnCapitalEmployed
+   +0.62  currentRatio ~ Altman-Z
+   +0.56  freeCashFlowYield ~ Piotroski
+   +0.55  RoA ~ CycleHeat
+   +0.52  RoA ~ Piotroski
+   +0.52  earnYield ~ CycleHeat
+   +0.52  returnOnCapitalEmployed ~ Piotroski
+   +0.52  returnOnEquity ~ CycleHeat
+   +0.51  earnYield ~ freeCashFlowYield
+
+========================================================================
+4+5. INFORMATION COEFFICIENT vs FORWARD RECONSTRUCTED-PRICE RETURN
+     (DIRECTIONAL - synthetic price, ~0.73 corr to real; CAVEAT)
+========================================================================
+
+  --- 12-month forward horizon (mean IC over ['2018-12-31', '2019-12-31', '2020-12-31', '2021-12-31']) ---
+                    metric mean_IC  n_dates
+                 Piotroski  +0.135        4
+                       RoA  +0.130        4
+   returnOnCapitalEmployed  +0.130        4
+                 earnYield  +0.119        4
+                 CycleHeat  +0.108        4
+         freeCashFlowYield  +0.103        4
+            returnOnEquity  +0.100        4
+                 COMPOSITE  +0.096        4
+              EPStoEPSmean  +0.082        4
+                  Altman-Z  -0.072        4
+              currentRatio  -0.062        4
+       grahamNumberToPrice  +0.056        4
+             incomeQuality  +0.054        4
+                 tbVpRatio  +0.045        4
+                  bVpRatio  +0.043        4
+               priceGrowth  +0.023        4
+         grossProfitMargin  +0.018        4
+             revenueGrowth  -0.011        4
+freeCashFlowPerShareGrowth  +0.009        4
+  COMPOSITE IC=+0.096  vs  best single (Piotroski)=+0.135
+
+  --- 36-month forward horizon (mean IC over ['2018-12-31', '2019-12-31', '2020-12-31', '2021-12-31']) ---
+                    metric mean_IC  n_dates
+                 Piotroski  +0.220        4
+         freeCashFlowYield  +0.215        4
+                 earnYield  +0.210        4
+                 COMPOSITE  +0.202        4
+                  Altman-Z  -0.188        4
+                       RoA  +0.179        4
+   returnOnCapitalEmployed  +0.176        4
+                  bVpRatio  +0.173        4
+            returnOnEquity  +0.143        4
+       grahamNumberToPrice  +0.143        4
+                 tbVpRatio  +0.135        4
+             incomeQuality  +0.103        4
+              currentRatio  -0.094        4
+                 CycleHeat  +0.070        4
+              EPStoEPSmean  +0.067        4
+         grossProfitMargin  +0.066        4
+             revenueGrowth  -0.056        4
+               priceGrowth  -0.019        4
+freeCashFlowPerShareGrowth  +0.015        4
+  COMPOSITE IC=+0.202  vs  best single (Piotroski)=+0.220
+
+[model_vs_metric] DONE (parts 1-5).
+[analysis] <<< stage OK: model-vs-metric (persistence/variance/correlation/IC)  (23.4s)
+
+[analysis] >>> stage START: real-IC + profit-timing decomposition
+[analysis] [real_ic] building panel + loading real prices (in-memory) ...
+
+########################################################################
+# REAL-IC diagnostic  (tonight's model, real adjusted-close returns)
+########################################################################
+real price matrix: 9630 symbols x ['2018-12-31', '2019-12-30', '2020-12-30', '2021-12-30', '2022-12-29', '2023-12-29', '2024-12-30']
+symbols overlapping pipeline universe: 7757
+
+========================================================================
+IC on REAL vs RECONSTRUCTED returns  (24-month horizon; buy 2018/2020/2022)
+========================================================================
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+!!! ANALYSIS STAGE FAILED -- real-IC + profit-timing decomposition  (after 1.3s) !!!
+!!! The pick-path deliverables above are UNAFFECTED (this stage is    !!!
+!!! post-pick and isolated); this readout is missing this run.        !!!
+!!! Cause: TypeError: unsupported operand type(s) for /: 'NoneType' and 'float'
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+Traceback (most recent call last):
+  File "C:\Users\stefa\Documents\vinnurymi\ValuationAnalysis_v2_clean\baseline_tools\pipeline_analysis.py", line 171, in _run_stage
+    out = fn(*args, **kwargs)
+  File "C:\Users\stefa\Documents\vinnurymi\ValuationAnalysis_v2_clean\baseline_tools\pipeline_analysis.py", line 484, in _ric
+    return ric.run_in_pipeline(dmdic, price_source=price_source,
+           ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                               real_prices_csv=_PRICES_CSV, log=log)
+                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\stefa\Documents\vinnurymi\ValuationAnalysis_v2_clean\baseline_tools\real_ic.py", line 143, in run_in_pipeline
+    tbl, _ = ic_table(panel, real, pairs24, "24m")
+             ~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\stefa\Documents\vinnurymi\ValuationAnalysis_v2_clean\baseline_tools\real_ic.py", line 57, in ic_table
+    real_ret = (re / rb - 1).replace([np.inf, -np.inf], np.nan) if rb is not None else None
+                ~~~^~~~
+  File "C:\Users\stefa\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages\pandas\core\ops\common.py", line 76, in new_method
+    return method(self, other)
+  File "C:\Users\stefa\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages\pandas\core\arraylike.py", line 214, in __rtruediv__
+    return self._arith_method(other, roperator.rtruediv)
+           ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\stefa\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages\pandas\core\series.py", line 6154, in _arith_method
+    return base.IndexOpsMixin._arith_method(self, other, op)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "C:\Users\stefa\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages\pandas\core\base.py", line 1391, in _arith_method
+    result = ops.arithmetic_op(lvalues, rvalues, op)
+  File "C:\Users\stefa\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages\pandas\core\ops\array_ops.py", line 283, in arithmetic_op
+    res_values = _na_arithmetic_op(left, right, op)  # type: ignore[arg-type]
+  File "C:\Users\stefa\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages\pandas\core\ops\array_ops.py", line 218, in _na_arithmetic_op
+    result = func(left, right)
+  File "C:\Users\stefa\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages\pandas\core\computation\expressions.py", line 242, in evaluate
+    return _evaluate(op, op_str, a, b)  # type: ignore[misc]
+  File "C:\Users\stefa\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages\pandas\core\computation\expressions.py", line 73, in _evaluate_standard
+    return op(a, b)
+  File "C:\Users\stefa\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages\pandas\core\roperator.py", line 27, in rtruediv
+    return right / left
+           ~~~~~~^~~~~~
+TypeError: unsupported operand type(s) for /: 'NoneType' and 'float'
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+!!! ANALYSIS STAGE FAILED -- real-IC + profit-timing decomposition  (after 1.3s) !!!
+!!! The pick-path deliverables above are UNAFFECTED (this stage is    !!!
+!!! post-pick and isolated); this readout is missing this run.        !!!
+!!! Cause: TypeError: unsupported operand type(s) for /: 'NoneType' and 'float'
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+Traceback (most recent call last):
+  File "C:\Users\stefa\Documents\vinnurymi\ValuationAnalysis_v2_clean\baseline_tools\pipeline_analysis.py", line 171, in _run_stage
+    out = fn(*args, **kwargs)
+  File "C:\Users\stefa\Documents\vinnurymi\ValuationAnalysis_v2_clean\baseline_tools\pipeline_analysis.py", line 484, in _ric
+    return ric.run_in_pipeline(dmdic, price_source=price_source,
+           ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                               real_prices_csv=_PRICES_CSV, log=log)
+                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\stefa\Documents\vinnurymi\ValuationAnalysis_v2_clean\baseline_tools\real_ic.py", line 143, in run_in_pipeline
+    tbl, _ = ic_table(panel, real, pairs24, "24m")
+             ~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\stefa\Documents\vinnurymi\ValuationAnalysis_v2_clean\baseline_tools\real_ic.py", line 57, in ic_table
+    real_ret = (re / rb - 1).replace([np.inf, -np.inf], np.nan) if rb is not None else None
+                ~~~^~~~
+  File "C:\Users\stefa\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages\pandas\core\ops\common.py", line 76, in new_method
+    return method(self, other)
+  File "C:\Users\stefa\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages\pandas\core\arraylike.py", line 214, in __rtruediv__
+    return self._arith_method(other, roperator.rtruediv)
+           ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\stefa\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages\pandas\core\series.py", line 6154, in _arith_method
+    return base.IndexOpsMixin._arith_method(self, other, op)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "C:\Users\stefa\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages\pandas\core\base.py", line 1391, in _arith_method
+    result = ops.arithmetic_op(lvalues, rvalues, op)
+  File "C:\Users\stefa\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages\pandas\core\ops\array_ops.py", line 283, in arithmetic_op
+    res_values = _na_arithmetic_op(left, right, op)  # type: ignore[arg-type]
+  File "C:\Users\stefa\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages\pandas\core\ops\array_ops.py", line 218, in _na_arithmetic_op
+    result = func(left, right)
+  File "C:\Users\stefa\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages\pandas\core\computation\expressions.py", line 242, in evaluate
+    return _evaluate(op, op_str, a, b)  # type: ignore[misc]
+  File "C:\Users\stefa\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages\pandas\core\computation\expressions.py", line 73, in _evaluate_standard
+    return op(a, b)
+  File "C:\Users\stefa\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages\pandas\core\roperator.py", line 27, in rtruediv
+    return right / left
+           ~~~~~~^~~~~~
+TypeError: unsupported operand type(s) for /: 'NoneType' and 'float'
+
+[analysis] >>> stage START: build-PIT-inputs (dead-merge, ONCE)
+[analysis] [pit-inputs] delisted inputs: dead=dead_fundamentals_20260713_104350.pickle registry=delisted_registry.csv
+[analysis] [pit-inputs] dead-merge as-of 2021-12-31 (ONCE; shared across stages) ...
+WARNING [dead_merge M-3]: 2 dead entities absent from the registry -> excluded from the PIT universe (residual survivorship). e.g. ['LILKV_2', 'OXLCM_2']
+[analysis] [pit-inputs] merge: universe=8676 built_dead=6179 gate_fail=1010
+[analysis] <<< stage OK: build-PIT-inputs (dead-merge, ONCE)  (293.5s)
+
+[analysis] >>> stage START: depth x horizon avg-TR grid (DEPLOYED, carve-ON)
+[analysis]     inputs_from_memory: live_sources=7854 bm_all_rows=328455
+[analysis] [buy2018] pit_universe + reproducing PIT ranking as-of 2018-12-31 (weights=default, carve=on) ...
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+!!! CARVE-OUT WARNING -- INDUSTRY MAP MISSING/EMPTY !!!
+!!! FIN-2 (managers) vs FIN-3 (banks/insurers) split DEGRADED to the !!!
+!!! weak name-keyword rule; financial sub-cohorts may be mislabeled. !!!
+!!! General-pool integrity is UNAFFECTED (no miner/REIT leak) so the !!!
+!!! run PROCEEDS. Provide industrydic_fmp_*.pickle in the run CWD.    !!!
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+!!! CARVE-OUT WARNING -- INDUSTRY MAP MISSING/EMPTY !!!
+!!! FIN-2 (managers) vs FIN-3 (banks/insurers) split DEGRADED to the !!!
+!!! weak name-keyword rule; financial sub-cohorts may be mislabeled. !!!
+!!! General-pool integrity is UNAFFECTED (no miner/REIT leak) so the !!!
+!!! run PROCEEDS. Provide industrydic_fmp_*.pickle in the run CWD.    !!!
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+carveOut dedup: 7085 lines -> 6346 issuers (collapsed 739)
+[analysis]     carve: 6346 -> general=4452 (REIT=206 Mining=293 FIN1=45 FIN2=15 FIN3=764 below_floor=571)
+Getting average values
+Calculating scores for each stock symbol in BoMetric_df
+100%|████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 804/804 [00:08<00:00, 91.31it/s]
+[analysis] [buy2018] pit_universe=4452  n_pit_scored=804 (live=46, dead=758)  rank_depth=89
+[analysis] [buy2019] pit_universe + reproducing PIT ranking as-of 2019-12-31 (weights=default, carve=on) ...
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+!!! CARVE-OUT WARNING -- INDUSTRY MAP MISSING/EMPTY !!!
+!!! FIN-2 (managers) vs FIN-3 (banks/insurers) split DEGRADED to the !!!
+!!! weak name-keyword rule; financial sub-cohorts may be mislabeled. !!!
+!!! General-pool integrity is UNAFFECTED (no miner/REIT leak) so the !!!
+!!! run PROCEEDS. Provide industrydic_fmp_*.pickle in the run CWD.    !!!
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+!!! CARVE-OUT WARNING -- INDUSTRY MAP MISSING/EMPTY !!!
+!!! FIN-2 (managers) vs FIN-3 (banks/insurers) split DEGRADED to the !!!
+!!! weak name-keyword rule; financial sub-cohorts may be mislabeled. !!!
+!!! General-pool integrity is UNAFFECTED (no miner/REIT leak) so the !!!
+!!! run PROCEEDS. Provide industrydic_fmp_*.pickle in the run CWD.    !!!
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+carveOut dedup: 7285 lines -> 6523 issuers (collapsed 762)
+[analysis]     carve: 6523 -> general=4593 (REIT=209 Mining=294 FIN1=45 FIN2=15 FIN3=778 below_floor=589)
+Getting average values
+Calculating scores for each stock symbol in BoMetric_df
+100%|████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 869/869 [00:09<00:00, 91.35it/s]
+[analysis] [buy2019] pit_universe=4593  n_pit_scored=869 (live=53, dead=816)  rank_depth=89
+[analysis] [buy2020] pit_universe + reproducing PIT ranking as-of 2020-12-31 (weights=default, carve=on) ...
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+!!! CARVE-OUT WARNING -- INDUSTRY MAP MISSING/EMPTY !!!
+!!! FIN-2 (managers) vs FIN-3 (banks/insurers) split DEGRADED to the !!!
+!!! weak name-keyword rule; financial sub-cohorts may be mislabeled. !!!
+!!! General-pool integrity is UNAFFECTED (no miner/REIT leak) so the !!!
+!!! run PROCEEDS. Provide industrydic_fmp_*.pickle in the run CWD.    !!!
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+!!! CARVE-OUT WARNING -- INDUSTRY MAP MISSING/EMPTY !!!
+!!! FIN-2 (managers) vs FIN-3 (banks/insurers) split DEGRADED to the !!!
+!!! weak name-keyword rule; financial sub-cohorts may be mislabeled. !!!
+!!! General-pool integrity is UNAFFECTED (no miner/REIT leak) so the !!!
+!!! run PROCEEDS. Provide industrydic_fmp_*.pickle in the run CWD.    !!!
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+carveOut dedup: 7661 lines -> 6844 issuers (collapsed 817)
+[analysis]     carve: 6844 -> general=4834 (REIT=212 Mining=296 FIN1=47 FIN2=15 FIN3=811 below_floor=629)
+Getting average values
+Calculating scores for each stock symbol in BoMetric_df
+100%|████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 966/966 [00:10<00:00, 91.53it/s]
+[analysis] [buy2020] pit_universe=4834  n_pit_scored=966 (live=72, dead=894)  rank_depth=85
+[analysis] [buy2021] pit_universe + reproducing PIT ranking as-of 2021-12-31 (weights=default, carve=on) ...
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+!!! CARVE-OUT WARNING -- INDUSTRY MAP MISSING/EMPTY !!!
+!!! FIN-2 (managers) vs FIN-3 (banks/insurers) split DEGRADED to the !!!
+!!! weak name-keyword rule; financial sub-cohorts may be mislabeled. !!!
+!!! General-pool integrity is UNAFFECTED (no miner/REIT leak) so the !!!
+!!! run PROCEEDS. Provide industrydic_fmp_*.pickle in the run CWD.    !!!
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+!!! CARVE-OUT WARNING -- INDUSTRY MAP MISSING/EMPTY !!!
+!!! FIN-2 (managers) vs FIN-3 (banks/insurers) split DEGRADED to the !!!
+!!! weak name-keyword rule; financial sub-cohorts may be mislabeled. !!!
+!!! General-pool integrity is UNAFFECTED (no miner/REIT leak) so the !!!
+!!! run PROCEEDS. Provide industrydic_fmp_*.pickle in the run CWD.    !!!
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+carveOut dedup: 8676 lines -> 7456 issuers (collapsed 1220)
+[analysis]     carve: 7456 -> general=5033 (REIT=216 Mining=298 FIN1=148 FIN2=15 FIN3=1060 below_floor=686)
+Getting average values
+Calculating scores for each stock symbol in BoMetric_df
+100%|██████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 3728/3728 [00:40<00:00, 91.59it/s]
+[analysis] [buy2021] pit_universe=5033  n_pit_scored=3728 (live=2830, dead=898)  rank_depth=87
+[analysis] [buy2022] pit_universe + reproducing PIT ranking as-of 2022-12-30 (weights=default, carve=on) ...
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+!!! CARVE-OUT WARNING -- INDUSTRY MAP MISSING/EMPTY !!!
+!!! FIN-2 (managers) vs FIN-3 (banks/insurers) split DEGRADED to the !!!
+!!! weak name-keyword rule; financial sub-cohorts may be mislabeled. !!!
+!!! General-pool integrity is UNAFFECTED (no miner/REIT leak) so the !!!
+!!! run PROCEEDS. Provide industrydic_fmp_*.pickle in the run CWD.    !!!
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+!!! CARVE-OUT WARNING -- INDUSTRY MAP MISSING/EMPTY !!!
+!!! FIN-2 (managers) vs FIN-3 (banks/insurers) split DEGRADED to the !!!
+!!! weak name-keyword rule; financial sub-cohorts may be mislabeled. !!!
+!!! General-pool integrity is UNAFFECTED (no miner/REIT leak) so the !!!
+!!! run PROCEEDS. Provide industrydic_fmp_*.pickle in the run CWD.    !!!
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+carveOut dedup: 8185 lines -> 7026 issuers (collapsed 1159)
+[analysis]     carve: 7026 -> general=4517 (REIT=217 Mining=297 FIN1=173 FIN2=15 FIN3=1112 below_floor=695)
+Getting average values
+Calculating scores for each stock symbol in BoMetric_df
+100%|██████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 3825/3825 [00:42<00:00, 90.53it/s]
+[analysis] [buy2022] pit_universe=4517  n_pit_scored=3825 (live=2945, dead=880)  rank_depth=84
+[analysis] [buy2023] pit_universe + reproducing PIT ranking as-of 2023-12-29 (weights=default, carve=on) ...
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+!!! CARVE-OUT WARNING -- INDUSTRY MAP MISSING/EMPTY !!!
+!!! FIN-2 (managers) vs FIN-3 (banks/insurers) split DEGRADED to the !!!
+!!! weak name-keyword rule; financial sub-cohorts may be mislabeled. !!!
+!!! General-pool integrity is UNAFFECTED (no miner/REIT leak) so the !!!
+!!! run PROCEEDS. Provide industrydic_fmp_*.pickle in the run CWD.    !!!
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+!!! CARVE-OUT WARNING -- INDUSTRY MAP MISSING/EMPTY !!!
+!!! FIN-2 (managers) vs FIN-3 (banks/insurers) split DEGRADED to the !!!
+!!! weak name-keyword rule; financial sub-cohorts may be mislabeled. !!!
+!!! General-pool integrity is UNAFFECTED (no miner/REIT leak) so the !!!
+!!! run PROCEEDS. Provide industrydic_fmp_*.pickle in the run CWD.    !!!
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+carveOut dedup: 7109 lines -> 6200 issuers (collapsed 909)
+[analysis]     carve: 6200 -> general=4139 (REIT=202 Mining=291 FIN1=71 FIN2=15 FIN3=864 below_floor=618)
+Getting average values
+Calculating scores for each stock symbol in BoMetric_df
+100%|██████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 3635/3635 [00:40<00:00, 89.27it/s]
+[analysis] [buy2023] pit_universe=4139  n_pit_scored=3635 (live=2963, dead=672)  rank_depth=87
+[analysis] [buy2024] pit_universe + reproducing PIT ranking as-of 2024-12-31 (weights=default, carve=on) ...
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+!!! CARVE-OUT WARNING -- INDUSTRY MAP MISSING/EMPTY !!!
+!!! FIN-2 (managers) vs FIN-3 (banks/insurers) split DEGRADED to the !!!
+!!! weak name-keyword rule; financial sub-cohorts may be mislabeled. !!!
+!!! General-pool integrity is UNAFFECTED (no miner/REIT leak) so the !!!
+!!! run PROCEEDS. Provide industrydic_fmp_*.pickle in the run CWD.    !!!
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+!!! CARVE-OUT WARNING -- INDUSTRY MAP MISSING/EMPTY !!!
+!!! FIN-2 (managers) vs FIN-3 (banks/insurers) split DEGRADED to the !!!
+!!! weak name-keyword rule; financial sub-cohorts may be mislabeled. !!!
+!!! General-pool integrity is UNAFFECTED (no miner/REIT leak) so the !!!
+!!! run PROCEEDS. Provide industrydic_fmp_*.pickle in the run CWD.    !!!
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+carveOut dedup: 6233 lines -> 5454 issuers (collapsed 779)
+[analysis]     carve: 5454 -> general=3725 (REIT=191 Mining=270 FIN1=47 FIN2=15 FIN3=699 below_floor=507)
+Getting average values
+Calculating scores for each stock symbol in BoMetric_df
+100%|██████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 3403/3403 [00:38<00:00, 87.97it/s]
+[analysis] [buy2024] pit_universe=3725  n_pit_scored=3403 (live=2962, dead=441)  rank_depth=88
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+!!! ANALYSIS STAGE FAILED -- depth x horizon avg-TR grid (DEPLOYED, carve-ON)  (after 200.8s) !!!
+!!! The pick-path deliverables above are UNAFFECTED (this stage is    !!!
+!!! post-pick and isolated); this readout is missing this run.        !!!
+!!! Cause: RuntimeError: benchmark symbol 'URTH' absent from price source
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+Traceback (most recent call last):
+  File "C:\Users\stefa\Documents\vinnurymi\ValuationAnalysis_v2_clean\baseline_tools\pipeline_analysis.py", line 171, in _run_stage
+    out = fn(*args, **kwargs)
+  File "C:\Users\stefa\Documents\vinnurymi\ValuationAnalysis_v2_clean\baseline_tools\pipeline_analysis.py", line 502, in _grid
+    return dhg.run_in_pipeline(dmdic, merged, registry, price_source, log=log,
+           ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                               carve="on")
+                               ^^^^^^^^^^^
+  File "C:\Users\stefa\Documents\vinnurymi\ValuationAnalysis_v2_clean\baseline_tools\depth_horizon_grid.py", line 193, in run_in_pipeline
+    cells, pooled, pooled_clean = compute_grid(per_anchor, price_source)
+                                  ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\stefa\Documents\vinnurymi\ValuationAnalysis_v2_clean\baseline_tools\depth_horizon_grid.py", line 289, in compute_grid
+    bench = rc.benchmark_return(price_source, buy, ev)
+  File "C:\Users\stefa\Documents\vinnurymi\ValuationAnalysis_v2_clean\baseline_tools\returns_core.py", line 216, in benchmark_return
+    return bl.window_return(price_source.benchmark_series(symbol), buy_date,
+                            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^
+  File "C:\Users\stefa\Documents\vinnurymi\ValuationAnalysis_v2_clean\baseline_tools\returns_core.py", line 127, in benchmark_series
+    raise RuntimeError(f"benchmark symbol {symbol!r} absent from price source")
+RuntimeError: benchmark symbol 'URTH' absent from price source
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+!!! ANALYSIS STAGE FAILED -- depth x horizon avg-TR grid (DEPLOYED, carve-ON)  (after 200.8s) !!!
+!!! The pick-path deliverables above are UNAFFECTED (this stage is    !!!
+!!! post-pick and isolated); this readout is missing this run.        !!!
+!!! Cause: RuntimeError: benchmark symbol 'URTH' absent from price source
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+Traceback (most recent call last):
+  File "C:\Users\stefa\Documents\vinnurymi\ValuationAnalysis_v2_clean\baseline_tools\pipeline_analysis.py", line 171, in _run_stage
+    out = fn(*args, **kwargs)
+  File "C:\Users\stefa\Documents\vinnurymi\ValuationAnalysis_v2_clean\baseline_tools\pipeline_analysis.py", line 502, in _grid
+    return dhg.run_in_pipeline(dmdic, merged, registry, price_source, log=log,
+           ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                               carve="on")
+                               ^^^^^^^^^^^
+  File "C:\Users\stefa\Documents\vinnurymi\ValuationAnalysis_v2_clean\baseline_tools\depth_horizon_grid.py", line 193, in run_in_pipeline
+    cells, pooled, pooled_clean = compute_grid(per_anchor, price_source)
+                                  ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\stefa\Documents\vinnurymi\ValuationAnalysis_v2_clean\baseline_tools\depth_horizon_grid.py", line 289, in compute_grid
+    bench = rc.benchmark_return(price_source, buy, ev)
+  File "C:\Users\stefa\Documents\vinnurymi\ValuationAnalysis_v2_clean\baseline_tools\returns_core.py", line 216, in benchmark_return
+    return bl.window_return(price_source.benchmark_series(symbol), buy_date,
+                            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^
+  File "C:\Users\stefa\Documents\vinnurymi\ValuationAnalysis_v2_clean\baseline_tools\returns_core.py", line 127, in benchmark_series
+    raise RuntimeError(f"benchmark symbol {symbol!r} absent from price source")
+RuntimeError: benchmark symbol 'URTH' absent from price source
+
+[analysis] >>> stage START: beat-rate vs URTH (DEPLOYED filter: deduped, carve-ON)
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+!!! ANALYSIS STAGE FAILED -- beat-rate vs URTH (DEPLOYED filter: deduped, carve-ON)  (after 0.0s) !!!
+!!! The pick-path deliverables above are UNAFFECTED (this stage is    !!!
+!!! post-pick and isolated); this readout is missing this run.        !!!
+!!! Cause: RuntimeError: beat-rate stage skipped: per_anchor/price_source missing
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+Traceback (most recent call last):
+  File "C:\Users\stefa\Documents\vinnurymi\ValuationAnalysis_v2_clean\baseline_tools\pipeline_analysis.py", line 171, in _run_stage
+    out = fn(*args, **kwargs)
+  File "C:\Users\stefa\Documents\vinnurymi\ValuationAnalysis_v2_clean\baseline_tools\pipeline_analysis.py", line 510, in _beat
+    raise RuntimeError("beat-rate stage skipped: per_anchor/price_source missing")
+RuntimeError: beat-rate stage skipped: per_anchor/price_source missing
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+!!! ANALYSIS STAGE FAILED -- beat-rate vs URTH (DEPLOYED filter: deduped, carve-ON)  (after 0.0s) !!!
+!!! The pick-path deliverables above are UNAFFECTED (this stage is    !!!
+!!! post-pick and isolated); this readout is missing this run.        !!!
+!!! Cause: RuntimeError: beat-rate stage skipped: per_anchor/price_source missing
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+Traceback (most recent call last):
+  File "C:\Users\stefa\Documents\vinnurymi\ValuationAnalysis_v2_clean\baseline_tools\pipeline_analysis.py", line 171, in _run_stage
+    out = fn(*args, **kwargs)
+  File "C:\Users\stefa\Documents\vinnurymi\ValuationAnalysis_v2_clean\baseline_tools\pipeline_analysis.py", line 510, in _beat
+    raise RuntimeError("beat-rate stage skipped: per_anchor/price_source missing")
+RuntimeError: beat-rate stage skipped: per_anchor/price_source missing
+
+[analysis] >>> stage START: skill-baseline (oracle/random)
+[analysis] [skill_baseline] window 2021-12-31 -> 2024-12-31: sets + filter top-20 ...
+Getting average values
+Calculating scores for each stock symbol in BoMetric_df
+100%|██████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 6351/6351 [01:13<00:00, 85.88it/s]
+Getting average values
+Calculating scores for each stock symbol in BoMetric_df
+100%|██████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 6351/6351 [01:13<00:00, 85.83it/s]
+[analysis] [skill_baseline] window 2022-12-30 -> 2025-12-31: sets + filter top-20 ...
+Getting average values
+Calculating scores for each stock symbol in BoMetric_df
+100%|██████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 7059/7059 [01:24<00:00, 83.25it/s]
+Getting average values
+Calculating scores for each stock symbol in BoMetric_df
+100%|██████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 7059/7059 [01:24<00:00, 83.13it/s]
+[analysis] [skill_baseline] filter metrics ...
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+!!! ANALYSIS STAGE FAILED -- skill-baseline (oracle/random)  (after 320.0s) !!!
+!!! The pick-path deliverables above are UNAFFECTED (this stage is    !!!
+!!! post-pick and isolated); this readout is missing this run.        !!!
+!!! Cause: RuntimeError: benchmark symbol 'URTH' absent from price source
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+Traceback (most recent call last):
+  File "C:\Users\stefa\Documents\vinnurymi\ValuationAnalysis_v2_clean\baseline_tools\pipeline_analysis.py", line 171, in _run_stage
+    out = fn(*args, **kwargs)
+  File "C:\Users\stefa\Documents\vinnurymi\ValuationAnalysis_v2_clean\baseline_tools\pipeline_analysis.py", line 519, in _skill
+    res = sb.run_skill_baseline(dmdic, merged, registry, price_source,
+                                cadence_months=36, pick_n=20, oracle_ns=(3, 20),
+                                n_draws=1000, seed=0, log=log)
+  File "C:\Users\stefa\Documents\vinnurymi\ValuationAnalysis_v2_clean\baseline_tools\skill_baseline.py", line 441, in run_skill_baseline
+    filt = _filter_metrics(per_window_ctx, price_source, threshold, missing,
+                           contam_return_cap, winsor)
+  File "C:\Users\stefa\Documents\vinnurymi\ValuationAnalysis_v2_clean\baseline_tools\skill_baseline.py", line 266, in _filter_metrics
+    bench = rc.benchmark_return(ps, buy, ev, require_exact=True)
+  File "C:\Users\stefa\Documents\vinnurymi\ValuationAnalysis_v2_clean\baseline_tools\returns_core.py", line 216, in benchmark_return
+    return bl.window_return(price_source.benchmark_series(symbol), buy_date,
+                            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^
+  File "C:\Users\stefa\Documents\vinnurymi\ValuationAnalysis_v2_clean\baseline_tools\returns_core.py", line 127, in benchmark_series
+    raise RuntimeError(f"benchmark symbol {symbol!r} absent from price source")
+RuntimeError: benchmark symbol 'URTH' absent from price source
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+!!! ANALYSIS STAGE FAILED -- skill-baseline (oracle/random)  (after 320.0s) !!!
+!!! The pick-path deliverables above are UNAFFECTED (this stage is    !!!
+!!! post-pick and isolated); this readout is missing this run.        !!!
+!!! Cause: RuntimeError: benchmark symbol 'URTH' absent from price source
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+Traceback (most recent call last):
+  File "C:\Users\stefa\Documents\vinnurymi\ValuationAnalysis_v2_clean\baseline_tools\pipeline_analysis.py", line 171, in _run_stage
+    out = fn(*args, **kwargs)
+  File "C:\Users\stefa\Documents\vinnurymi\ValuationAnalysis_v2_clean\baseline_tools\pipeline_analysis.py", line 519, in _skill
+    res = sb.run_skill_baseline(dmdic, merged, registry, price_source,
+                                cadence_months=36, pick_n=20, oracle_ns=(3, 20),
+                                n_draws=1000, seed=0, log=log)
+  File "C:\Users\stefa\Documents\vinnurymi\ValuationAnalysis_v2_clean\baseline_tools\skill_baseline.py", line 441, in run_skill_baseline
+    filt = _filter_metrics(per_window_ctx, price_source, threshold, missing,
+                           contam_return_cap, winsor)
+  File "C:\Users\stefa\Documents\vinnurymi\ValuationAnalysis_v2_clean\baseline_tools\skill_baseline.py", line 266, in _filter_metrics
+    bench = rc.benchmark_return(ps, buy, ev, require_exact=True)
+  File "C:\Users\stefa\Documents\vinnurymi\ValuationAnalysis_v2_clean\baseline_tools\returns_core.py", line 216, in benchmark_return
+    return bl.window_return(price_source.benchmark_series(symbol), buy_date,
+                            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^
+  File "C:\Users\stefa\Documents\vinnurymi\ValuationAnalysis_v2_clean\baseline_tools\returns_core.py", line 127, in benchmark_series
+    raise RuntimeError(f"benchmark symbol {symbol!r} absent from price source")
+RuntimeError: benchmark symbol 'URTH' absent from price source
+
+[analysis] >>> stage START: estimation sub-block (tuner/sweeps; run_estimation-gated)
+[analysis] [estimation] run_estimation != 1 -> SKIPPED (default). Grading/IC/grid/beat-rate/oracle/random already ran above.
+[analysis] <<< stage OK: estimation sub-block (tuner/sweeps; run_estimation-gated)  (0.0s)
+
+==============================================================================
+POST-PICK ANALYSIS SUITE COMPLETE (each stage guarded; picks unaffected)
+==============================================================================
