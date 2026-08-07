@@ -1125,6 +1125,93 @@ def test_the_floor_is_silent_for_universes_with_no_per_code_expectation():
     assert un.check_resolved_counts('stock_FULL1', {}) == []
 
 
+# --------------------------------------------------------------------------- #
+#  THE FLOOR KNOWS ABOUT SAMPLING (2026-08-07)                                 #
+#                                                                              #
+#  The floor compared a POST-SAMPLE count against a WHOLE-EXCHANGE number, so   #
+#  stock_CUR3K reported 5 of its 8 codes 75-83% SHORT on every run -- all five  #
+#  false.  A guard that cries wolf is a guard the operator learns to skip, and  #
+#  then the next dead code hides in the noise of the guard built to find it.    #
+# --------------------------------------------------------------------------- #
+def _sampled_share(name, code):
+    """What `code` delivers when the sample works exactly as designed."""
+    return int(round(un.expected_resolved_count(name, code)))
+
+
+def test_a_sampled_universe_is_silent_when_every_code_delivers_its_share():
+    """THE FALSE-POSITIVE THIS FIX REMOVES.  NYSE/NASDAQ/LSE at 17% and KSC/KOE at 25%
+    deliver a FRACTION of the venue by design; TSX/PAR/AMS are taken whole."""
+    healthy = {c: _sampled_share('stock_CUR3K', c)
+               for c in un.exchanges('stock_CUR3K')}
+    #  the shares are the sampled ones, not the whole-exchange counts
+    assert healthy['NYSE'] == 386 and healthy['NASDAQ'] == 658 and healthy['LSE'] == 383
+    assert healthy['KSC'] == 214 and healthy['KOE'] == 100
+    assert healthy['TSX'] == 662 and healthy['PAR'] == 577 and healthy['AMS'] == 103
+    assert un.check_resolved_counts('stock_CUR3K', healthy) == []
+
+    #  and the PRE-FIX comparison would have screamed on all five sampled codes
+    prefix_short = sorted(
+        c for c in un.exchanges('stock_CUR3K')
+        if 1.0 - (healthy[c] / float(un._VERIFIED_COUNTS[c]))
+        > un.RESOLVED_SHORTFALL_WARN_ABOVE)
+    assert prefix_short == ['KOE', 'KSC', 'LSE', 'NASDAQ', 'NYSE']
+
+
+def test_a_dead_SAMPLED_code_still_screams():
+    """The entire value of the guard.  Scaling the expectation moves the THRESHOLD; it
+    must not blunt the dead-code signal -- 0 names is 100% short of a sampled expectation
+    exactly as it is 100% short of a verified one."""
+    healthy = {c: _sampled_share('stock_CUR3K', c)
+               for c in un.exchanges('stock_CUR3K')}
+    for dead_code in ('KOE', 'NYSE', 'LSE', 'PAR'):
+        dead = dict(healthy, **{dead_code: 0})
+        problems = un.check_resolved_counts('stock_CUR3K', dead)
+        assert [p[0] for p in problems] == [dead_code], (
+            '%s died and the floor did not catch it' % dead_code)
+        assert problems[0][2] == 0
+        assert problems[0][3] == 1.0, 'a dead code is 100% short of its expectation'
+        #  reported against the SAMPLED expectation, which is what the message now says
+        assert problems[0][1] == _sampled_share('stock_CUR3K', dead_code)
+
+    #  a code merely THINNED past the cut is caught too (not just the zero case)
+    thinned = dict(healthy, NASDAQ=int(healthy['NASDAQ'] * 0.5))
+    assert [p[0] for p in un.check_resolved_counts('stock_CUR3K', thinned)] == ['NASDAQ']
+
+
+def test_sampling_changes_nothing_for_a_universe_with_no_sample_dict():
+    """BIT-IDENTICAL, asserted rather than assumed: every universe except stock_CUR3K has
+    no `sample` dict, so its rate is 1.0 and the arithmetic must be the pre-fix one."""
+    for name in un.names():
+        if un.sample_rates(name):
+            assert name == 'stock_CUR3K', (
+                'a new sampled universe appeared -- re-check this test still covers the '
+                'unsampled path: %s' % name)
+            continue
+        for c in (un.exchanges(name) or ()):
+            assert un.expected_resolved_count(name, c) == float(
+                un._VERIFIED_COUNTS.get(c, 0))
+
+    #  and the returned tuples match the PRE-FIX formula exactly, recomputed here
+    for name in un.names():
+        if un.sample_rates(name):
+            continue
+        codes = un.exchanges(name)
+        if not codes:
+            continue
+        resolved = {c: int(un._VERIFIED_COUNTS.get(c, 0) * 0.9) for c in codes}
+        resolved[codes[0]] = 0                       # one genuinely dead code
+        prefix = []
+        for c in codes:
+            v = un._VERIFIED_COUNTS.get(c, 0)
+            if v <= 0:
+                continue
+            r = int(resolved.get(c, 0))
+            sf = 1.0 - (r / float(v))
+            if sf > un.RESOLVED_SHORTFALL_WARN_ABOVE:
+                prefix.append((c, v, r, sf))
+        assert un.check_resolved_counts(name, resolved) == prefix, name
+
+
 def test_configdic_carries_the_universe_definition_stamp():
     """The filter NAME alone is no longer sufficient provenance, because four names now
     denote a different membership than they did before 2026-08-02."""

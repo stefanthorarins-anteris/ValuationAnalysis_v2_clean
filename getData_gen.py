@@ -280,19 +280,39 @@ def get_tickers(ds, baseurl, api_key, manual_elim=None, tfilt='stock_NA1',sfilt=
         if 'exchangeShortName' in getattr(df, 'columns', []):
             _by_code = df['exchangeShortName'].value_counts().to_dict()
             _codes = un.exchanges(tfilt)
+            _rates = un.sample_rates(tfilt)
             if _codes:
+                # DENOMINATOR IS THE SAMPLE-ADJUSTED EXPECTATION, not the whole-exchange
+                # verified count -- on stock_CUR3K the latter reads as '386/2270' for a
+                # NYSE sampled at 17%, i.e. alarming and correct at the same time. The
+                # raw verified count stays visible in the parenthetical so the reader can
+                # still see what the venue holds. See universes.expected_resolved_count.
+                def _codeline(c):
+                    _n = int(_by_code.get(c, 0))
+                    _e = int(round(un.expected_resolved_count(tfilt, c)))
+                    _r8 = _rates.get(c)
+                    if _r8 is None or _r8 >= un.CURATED3K_SAMPLE_DENOMINATOR:
+                        return '%s %d/%d' % (c, _n, _e)
+                    return ('%s %d/%d (sampled %.0f%% of %d)'
+                            % (c, _n, _e, 100.0 * _r8 / un.CURATED3K_SAMPLE_DENOMINATOR,
+                               un._VERIFIED_COUNTS.get(c, 0)))
                 print('  per-exchange resolved: %s'
-                      % ', '.join('%s %d/%d' % (c, int(_by_code.get(c, 0)),
-                                                un._VERIFIED_COUNTS.get(c, 0))
-                                  for c in _codes), flush=True)
+                      % ', '.join(_codeline(c) for c in _codes), flush=True)
             for _c, _v, _r, _sf in un.check_resolved_counts(tfilt, _by_code):
+                _rate = _rates.get(_c)
+                _basis = (
+                    'verified %d' % _v
+                    if _rate is None or _rate >= un.CURATED3K_SAMPLE_DENOMINATOR else
+                    'sampled expectation of %d (%.0f%% of a verified %d)'
+                    % (_v, 100.0 * _rate / un.CURATED3K_SAMPLE_DENOMINATOR,
+                       un._VERIFIED_COUNTS.get(_c, 0)))
                 print('!!! UNIVERSE %s: exchange code %r returned %d names against a '
-                      'verified %d -- %.0f%% SHORT (natural attrition from the instrument '
+                      '%s -- %.0f%% SHORT (natural attrition from the instrument '
                       'filter and delisted prune is at most ~%.0f%%). Either the code was '
                       'renamed by FMP or its venue shrank; a code that matches NOTHING is '
                       'the EURONEXT/OSE defect. Re-verify against the live exchange list '
                       'before spending a fetch.'
-                      % (tfilt, _c, _r, _v, 100 * _sf,
+                      % (tfilt, _c, _r, _basis, 100 * _sf,
                          100 * un.RESOLVED_WORST_NATURAL_SHORTFALL), flush=True)
 
         # GENERATE-IF-MISSING (self-heal the carve-out's sector + industry maps).
