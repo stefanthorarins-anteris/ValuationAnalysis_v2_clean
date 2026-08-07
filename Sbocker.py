@@ -70,8 +70,21 @@ def transfer_outputs_to_drive(transfer_dir, configdic, verbose=True):
     # the end-of-run path and the incremental per-phase path share ONE denylist.
     denylist_patterns = tu.DENYLIST_PATTERNS
 
-    # ALLOWLIST: explicit patterns to copy
+    # ALLOWLIST: explicit patterns to copy.
+    #
+    # DELIVERABLES *AND* EVIDENCE (widened 2026-08-07 -- this is the common cause).
+    # This list was built around what the analyst READS (the ranked deliverables) and
+    # never around what would let anyone CHECK them.  The consequence, measured on the
+    # 2026-08-07 CUR3K run: a run that behaves correctly and a run that silently drops
+    # 3% of its universe produce BYTE-IDENTICAL transferred artifact sets.  Four
+    # separate silent failures that run (82 names dropped with no fail bucket, an
+    # unwritten CurrencyFloorFlips, an eight-month-old sector map, an unbuilt profile
+    # map) were all invisible for the SAME reason: their evidence never left the
+    # machine.  Everything inside the pickle reconciled exactly; everything outside it
+    # was simply absent.  So the rule for this list is now: if it is the ONLY record of
+    # a decision the pipeline made about the universe, it ships.
     allowlist_patterns = [
+        # --- deliverables (what the analyst reads) ---
         'Bometric_dic-*.pickle',
         'Boresults_dic-*.pickle',
         'postRank_*.pickle',
@@ -80,19 +93,48 @@ def transfer_outputs_to_drive(transfer_dir, configdic, verbose=True):
         'ForensicFlagsTop*.csv',
         'real_prices.csv',
         'SideList_*.csv',
+        'MarketCapBand_*.csv',
         'RawMetricsTop100*.csv',
-        'CohortMetricStats*.csv'
+        'CohortMetricStats*.csv',
+        # --- evidence (what makes the deliverables checkable) ---
+        # Each of these is the SOLE on-disk record of a decision that removed,
+        # re-priced or re-classified members of the universe.  Without them a
+        # reconciliation gap can only be found by re-running the pipeline.
+        'CurrencyFloorFlips_*.csv',
+        'ExcludedShareClasses_*.csv',
+        'MissingDataFillReport_*.csv',
+        'ReportingFrequencyConflicts_*.csv',
+        'RunProvenance-*.json',
+        'pick_log*.csv',
     ]
 
-    # Always include run_logs and price_data directories
+    # Directory artifacts.
+    # `logs/` is the console tee written by run_logger.start_run_logging on EVERY run
+    # (run_logger.py:101-107).  It holds the DQ removal banner, the floor banner, the
+    # per-exchange counts and every `WARNING:` emitted by every warn-and-continue
+    # `except` in the pipeline -- i.e. the only place a swallowed failure is recorded.
+    # It was written correctly on every run and shipped on none of them.  It is
+    # .gitignore'd (line 39), so Drive is the ONLY channel it can travel by.
+    # `output/` holds the per-decision detail CSVs (e.g. removed_data_quality_*.csv,
+    # which names the 82 dropped sources and the reason for each).
+    #
+    # `run_logs/` is DELIBERATELY NOT unconditional.  Its only writer is
+    # delisted_ingest.py (run_logging.RunLogger is constructed nowhere else), so on a
+    # normal run the directory is empty and listing it would make the new end-of-run
+    # reconciliation report a MISSING artifact on 100% of runs -- alarm fatigue, which
+    # would defeat the entire point of the reconciliation.  It is added below, next to
+    # delisted_out, only when the run that writes it actually ran.
     allowlist_dirs = [
-        'run_logs',
+        'logs',
+        'output',
         'baseline_tools/price_data'
     ]
 
-    # If -ingest_delisted ran, also include delisted outputs
+    # If -ingest_delisted ran, also include delisted outputs AND run_logs/ -- that
+    # ingestion is the only thing that writes run_logs/ (see note above).
     if configdic.get('ingest_delisted'):
         allowlist_dirs.append('delisted_out')
+        allowlist_dirs.append('run_logs')
 
     # Check if transfer_dir path exists; if parent exists, try to create it
     transfer_path = Path(transfer_dir)
@@ -210,11 +252,99 @@ def transfer_outputs_to_drive(transfer_dir, configdic, verbose=True):
     result['files_list'] = copied_files
     result['message'] = f"Transferred {len(copied_files)} items ({total_size:.2f} MB) to {transfer_dir}"
 
+    # ---- POST-TRANSFER RECONCILIATION ---------------------------------------
+    # Every copy failure here is warn-and-continue by design (transfer_utils
+    # contract 2), which for a long time also made it INVISIBLE: on 2026-08-07 the
+    # run_logs/ group reached the Drive with nothing in it and the console looked
+    # identical to a clean transfer.  Re-derive what each listed artifact group
+    # should have put at the destination and check what actually IS there, so the
+    # tail of a run states whether the transfer was COMPLETE.  The groups are built
+    # from the SAME allowlists the copy loops walked, so the two cannot drift.
+    # Directory groups pass their dirpat as the dest subdir because this function
+    # copies to `transfer_path / dirpat` (not to the basename).
+    recon_groups = [(pat, glob.glob(pat)) for pat in allowlist_patterns]
+    recon_groups += [(d + '/', [d], d) for d in allowlist_dirs]
+    reconciliation = tu.reconcile_transfer(transfer_dir, recon_groups, verbose=verbose)
+    result['reconciliation'] = reconciliation
+    result['complete'] = reconciliation.get('complete', False)
+    result['message'] += f" -- {reconciliation.get('summary', 'not reconciled')}"
+
     if verbose:
         print(f"[TRANSFER] Success: {len(copied_files)} items, {total_size:.2f} MB total")
         print(f"[TRANSFER] Destination: {transfer_dir}")
 
     return result
+
+def print_universe_reconciliation(datandmetricdic, getfunddic, verbose=True):
+    """END-OF-FETCH RECONCILIATION: does the universe add up?
+
+        resolved == panel_sources + fetch_failures + filter_removals + residual
+
+    Every name that entered the run must leave it through exactly one door.  When
+    the residual is non-zero, names disappeared without any channel recording it --
+    which is precisely what happened on 2026-08-07 (3140 resolved, 445 failed, 2613
+    in the panel, 82 unexplained, nothing said so).  This makes that self-detecting.
+
+    Reports; never raises and never aborts.  A multi-hour fetch must not die on a
+    bookkeeping check -- but it must not hide one either.  Returns the residual, or
+    None if the inputs could not be resolved.
+    """
+    try:
+        tdf = datandmetricdic.get('Tickers_df')
+        resolved = int(len(tdf)) if tdf is not None else None
+
+        failed_raw = (getfunddic or {}).get('tickersfailed') or []
+        n_failed = len(set(failed_raw))
+
+        cdx = datandmetricdic.get('cdx_df')
+        n_panel = None
+        if cdx is not None and len(cdx) > 0:
+            src_col = next((c for c in ('source', 'symbol', 'ticker', 'source_id')
+                            if c in cdx.columns), None)
+            n_panel = int(cdx[src_col].nunique()) if src_col else int(len(cdx))
+
+        n_removed = datandmetricdic.get('n_dq_removed_sources')
+
+        if resolved is None or n_panel is None:
+            if verbose:
+                print('[reconcile] SKIPPED -- universe/panel not both available '
+                      f'(resolved={resolved}, panel={n_panel})', flush=True)
+            return None
+
+        accounted = n_panel + n_failed + (n_removed or 0)
+        residual = resolved - accounted
+
+        datandmetricdic['reconcile_resolved'] = resolved
+        datandmetricdic['reconcile_panel_sources'] = n_panel
+        datandmetricdic['reconcile_fetch_failures'] = n_failed
+        datandmetricdic['reconcile_filter_removals'] = n_removed
+        datandmetricdic['reconcile_residual'] = residual
+
+        if verbose:
+            print(f'[reconcile] universe {resolved} = panel {n_panel} + fetch-failed '
+                  f'{n_failed} + filter-removed {n_removed} + residual {residual}',
+                  flush=True)
+            if residual != 0:
+                bar = '!' * 78
+                print('\n' + bar)
+                print('!!! UNIVERSE DOES NOT RECONCILE -- %d name(s) UNACCOUNTED FOR' % residual)
+                print('!!!   resolved into the run : %d' % resolved)
+                print('!!!   in the scored panel   : %d' % n_panel)
+                print('!!!   failed the fetch      : %d' % n_failed)
+                print('!!!   removed by filters    : %s' % n_removed)
+                print('!!!   RESIDUAL              : %d  <-- no channel recorded these' % residual)
+                print('!!! A non-zero residual means names left the universe without any')
+                print('!!! artifact naming them or the reason.  Do NOT read the ranked')
+                print('!!! output as covering the stated universe until this is explained.')
+                print('!!! Check output/removed_*.csv and the logs/ tee for swallowed')
+                print('!!! WARNINGs before trusting this run.')
+                print(bar + '\n', flush=True)
+        return residual
+    except Exception as e:
+        if verbose:
+            print(f'[reconcile] WARNING: reconciliation check failed safely: {e}', flush=True)
+        return None
+
 
 def print_transfer_launch_status(configdic, verbose=True):
     """LOUD launch-time banner (printed BEFORE the long fetch begins) stating
@@ -488,6 +618,17 @@ def main():
 
             # Apply data quality filter to freshly fetched data
             datandmetricdic = dq.apply_data_quality_filter(datandmetricdic, verbose=True, save_log=True)
+
+            # UNIVERSE RECONCILIATION (2026-08-07).  Every name that entered must be
+            # accounted for by exactly one of: it is in the panel, it failed the fetch,
+            # or a filter removed it.  On the 2026-08-07 CUR3K run 3140 resolved, 445
+            # failed and 2613 landed in the panel -- an 82-name residual that NOTHING
+            # reported, because the only filter that could explain it had just
+            # overwritten its own record (data_quality.py, now fixed).  Printing this
+            # identity every run is what makes that whole class of silent drop
+            # self-detecting: a residual of zero is a one-line confirmation, and a
+            # non-zero residual is a banner naming the exact shortfall.
+            print_universe_reconciliation(datandmetricdic, getfunddic, verbose=True)
 
             # bm_ave AFTER the data-quality filter (audit H-1 fix, 2026-07-19).
             # getAves2 used to run on getfunddic['BoMetric_df'] BEFORE the filter, so the

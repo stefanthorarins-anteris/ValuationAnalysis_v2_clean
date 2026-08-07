@@ -57,6 +57,16 @@ keeps the pooled median, which costs nothing because a weightless criterion cont
 to the score either way.  Giving an inert criterion a grounded bar would be inventing an
 economic claim nobody needs.
 
+REPORTING A BREACH IS NOT PROPOSING A RE-SET  (2026-08-07)
+----------------------------------------------------------
+The failsafe band emits two different kinds of statement and they carry DIFFERENT EVIDENCE
+BARS.  `breach` says "on the cells in front of me, this bar's pass rate is outside
+[25%, 75%]" -- true or false at any sample size, so it is always computed and always
+reported.  `proposed_constant` says "the bar is wrong and here is a better number" -- a
+claim about the world, which needs a representative universe, a persistent breach and the
+production seam.  `advisory` gates the SECOND ONLY.  See MIN_FULL_UNIVERSE_SOURCES for the
+defect that made this explicit.
+
 TO CHANGE A BAR: edit `value` in ONE place here.  Nothing else mirrors these numbers.
 """
 
@@ -227,10 +237,41 @@ def mean_bar(mcol, pooled_median):
 BAND_LOW = 0.25
 BAND_HIGH = 0.75
 
-#  A bar is only judged on a run that actually saw the universe.  A TEST/curated run emits
-#  the report with `advisory=1` and can never register a breach -- its pass rates are a
-#  property of the sample it was given, which is precisely the thing constants exist to
-#  stop mattering.
+#  --------------------------------------------------------------------------------------
+#  `advisory` GATES THE ACTION, NEVER THE VERDICT  (CEO framing, fixed 2026-08-07)
+#  --------------------------------------------------------------------------------------
+#  REPORTING A BREACH AND PROPOSING A RE-SET ARE DIFFERENT ACTS WITH DIFFERENT EVIDENCE BARS.
+#  Conflating them is what this fixes:
+#
+#    * `breach` is a statement ABOUT THE PANEL IN HAND -- "this bar's realised pass rate on
+#      these cells is outside [25%, 75%]".  That is true or false at ANY n, and a small
+#      universe does not make it less true.  So `breach` is now COMPUTED AND REPORTED ALWAYS.
+#    * A RE-SET PROPOSAL is a claim about THE WORLD -- "the bar is wrong and here is a better
+#      number" -- and that DOES need a representative universe.  `advisory` gates it, together
+#      with `streak_participant` and `BREACH_RUNS_TO_PROPOSE`.
+#
+#  THE DEFECT THIS REPLACES, recorded because it is the class this repo keeps finding: `breach`
+#  used to be FORCED TO 0 whenever `advisory` was 1.  On the 2026-08-07 run (2,613 kept sources)
+#  the CSV therefore reported `breach=0` on all seven bars and that was read upward as "all seven
+#  bars held" -- a test no run under 5,000 sources could fail.  A column whose name says
+#  "breached" and whose value says "not measured" is a number meaning something other than its
+#  label.
+#
+#  WHY NOT THE TWO OBVIOUS FIXES.  Disabling the floor for the test run destroys the guard rail
+#  (a thin sample could then move a bar).  Growing the test universe past 5,000 KEPT sources
+#  costs roughly 6,000 resolved and ~8 hours against the ~4 today, which defeats the purpose of
+#  a fast-iteration universe.  Separating verdict from action costs nothing and gives the honest
+#  answer at any n.
+#
+#  AND IT IS NOT HYPOTHETICAL.  Per-venue pass rates on `mGrossProfitMargin` today: US 49.7%,
+#  LSE 48.5%, TSX 37.8%, Paris 34.6%, KOSPI 23.3% -- already under BAND_LOW on one venue.  A
+#  full global run will breach that bar ON COMPOSITION, and the verdict has to be trustworthy
+#  before then.
+#
+#  A run below this floor is still not judged: it emits `advisory=1`, `breach_streak=0` and
+#  never a `proposed_constant`.  Its pass rates remain a property of the sample it was given --
+#  which is precisely the thing constants exist to stop mattering.  THE INVARIANT IS UNCHANGED:
+#  A SMALL OR UNREPRESENTATIVE UNIVERSE CANNOT MOVE A BAR.
 MIN_FULL_UNIVERSE_SOURCES = 5000
 
 #  A breach must PERSIST before it proposes anything: one bad fetch, one truncated pull,
@@ -278,6 +319,10 @@ def calibrate(bm_df, mean_dict_signs, window_rows=8, prior_streaks=None,
     this repo keeps finding).
     `prior_streaks` maps criterion -> the previous full-universe run's breach streak.
 
+    `breach` IS COMPUTED AT ANY `n_sources`, INCLUDING AN ADVISORY RUN.  It is a true statement
+    about the panel in hand and the report exists to carry it.  `advisory` gates the CONSEQUENCE
+    only -- streak, and therefore proposal.  See MIN_FULL_UNIVERSE_SOURCES.
+
     `streak_participant` -- WHETHER THIS REPORT MAY ADVANCE OR SEED THE HYSTERESIS LEDGER.
     Only the PRODUCTION scoring seam (`postBo.postBoWrapper`) is a participant; every
     research/offline caller is not.  A non-participant still computes and records `breach`
@@ -290,7 +335,12 @@ def calibrate(bm_df, mean_dict_signs, window_rows=8, prior_streaks=None,
         n_sources = win['source'].nunique() if 'source' in win.columns else 0
     advisory = int(n_sources < MIN_FULL_UNIVERSE_SOURCES)
     participant = int(bool(streak_participant))
-    prior_streaks = (prior_streaks or {}) if participant else {}
+    #  MAY THIS REPORT TOUCH THE HYSTERESIS LEDGER AT ALL -- the ONE gate on the ACTION side,
+    #  named once so the streak and the proposal cannot drift apart.  An advisory run is
+    #  excluded from reading `prior_streaks` too: chaining a streak off a full run and then
+    #  proposing on a thin one would move a bar on a sample.
+    ledger = bool(participant) and not advisory
+    prior_streaks = (prior_streaks or {}) if ledger else {}
 
     rows = []
     for mcol, spec in BARS.items():
@@ -312,11 +362,14 @@ def calibrate(bm_df, mean_dict_signs, window_rows=8, prior_streaks=None,
         n_pass = int(((float(sign) * (obs - bar)) > 0).sum())
         rate = (n_pass / n_obs) if n_obs else None
 
-        breached = int(rate is not None and not advisory
-                       and (rate < BAND_LOW or rate > BAND_HIGH))
-        streak = ((prior_streaks.get(mcol, 0) + 1) if breached else 0) if participant else 0
+        #  THE VERDICT -- true at any n, never suppressed.  `advisory` is NOT a term here.
+        breached = int(rate is not None and (rate < BAND_LOW or rate > BAND_HIGH))
+        #  THE CONSEQUENCE -- gated.  A non-ledger run is pinned at 0 rather than advancing OR
+        #  resetting; `_prior_streaks` skips such reports on read, so a standing streak from a
+        #  full run survives an advisory run in between.
+        streak = ((prior_streaks.get(mcol, 0) + 1) if breached else 0) if ledger else 0
         proposal = None
-        if participant and streak >= BREACH_RUNS_TO_PROPOSE and n_obs:
+        if ledger and streak >= BREACH_RUNS_TO_PROPOSE and n_obs:
             proposal = _round_proposal(spec, float(obs.median()))
 
         rows.append({'criterion': mcol, 'constant': bar, 'n_observed': n_obs,
@@ -329,8 +382,11 @@ def calibrate(bm_df, mean_dict_signs, window_rows=8, prior_streaks=None,
 def _prior_streaks(directory='.', exclude_basename=None):
     """Breach streaks from the most recent NON-ADVISORY calibration report on disk.
 
-    Advisory reports are skipped rather than treated as a clean run: a TEST universe must
-    neither trigger a breach nor RESET one that a full run recorded.
+    Advisory reports are skipped rather than treated as a clean run, and THAT IS THE MECHANISM
+    that lets an advisory run report a breach honestly without touching the ledger: such a
+    report carries `breach_streak = 0`, but because it is skipped here that 0 can neither
+    advance a streak nor RESET one a full run recorded.  A TEST universe is invisible to the
+    hysteresis, in both directions.
 
     `exclude_basename` SKIPS THE FILE THIS RUN IS ABOUT TO WRITE, and it is not a nicety.
     `postBoWrapper` is the production seam but it is ALSO re-entered by the offline research
@@ -415,8 +471,13 @@ def emit_calibration(bm_df, mean_dict_signs, universe='unknown', window_rows=8,
         if verbose:
             print('  mean-bar calibration written to: %s' % fn, flush=True)
             if int(cal['advisory'].max() or 0):
-                print('  MEAN-BAR CALIBRATION IS ADVISORY ONLY -- fewer than %d sources, so '
-                      'this is not a full-universe run and NO breach can be registered.'
+                #  ADVISORY IS ABOUT THE PROPOSAL, NOT THE VERDICT (2026-08-07).  Breaches
+                #  below are REAL and are reported; what this run cannot do is advance a
+                #  streak or propose a new constant.
+                print('  MEAN-BAR CALIBRATION IS ADVISORY -- fewer than %d sources, so this is '
+                      'not a full-universe run. Any BREACH below is still a TRUE statement '
+                      'about this panel and is reported as such; what an advisory run cannot '
+                      'do is advance a breach streak or propose a re-set.'
                       % MIN_FULL_UNIVERSE_SOURCES, flush=True)
             for r in cal[cal['breach'] == 1].itertuples():
                 #  WARNING AND NOTHING ELSE.  The bar is not touched.
@@ -425,8 +486,10 @@ def emit_calibration(bm_df, mean_dict_signs, universe='unknown', window_rows=8,
                       'CHANGED -- %s'
                       % (r.criterion, r.pass_rate, BAND_LOW, BAND_HIGH, r.constant,
                          r.n_observed, r.breach_streak, BREACH_RUNS_TO_PROPOSE,
-                         ('proposed re-set %.6g, for a HUMAN to accept or reject'
-                          % r.proposed_constant) if r.proposed_constant is not None
+                         ('ADVISORY RUN: the breach is reported but cannot advance the streak '
+                          'or propose a re-set') if int(r.advisory)
+                         else ('proposed re-set %.6g, for a HUMAN to accept or reject'
+                               % r.proposed_constant) if r.proposed_constant is not None
                          else 'no proposal until the breach persists'), flush=True)
         return cal
     except Exception as _e:

@@ -385,8 +385,16 @@ def postBoWrapper(dmdic, as_of=None):
 
     # --- STAGE-1 RED-FLAG VETO (CEO, 2026-08-05) -- FLAG DEFAULT OFF -----------
     # Ejects a name that persistently fails ANY of five solvency / earnings-reality flags,
-    # BEFORE the head(100) and head(25) cuts, on ALL SIX POOLS.  The mechanism, the five flags,
-    # the `<=1 of 8` fail definition and why it is not `psbrfilter` are in `stage1_veto`.
+    # BEFORE the head(100) and head(25) cuts, on THE GENERAL POOL ONLY (CEO, 2026-08-07 --
+    # two of the five flags are structurally undefined on the carve-out cohorts; the measured
+    # per-cohort rates and the overruled all-pools argument are in `stage1_veto`).  The
+    # mechanism, the five flags, the `<=1 of 8` fail definition and why it is not `psbrfilter`
+    # are in `stage1_veto` too.
+    # THE COHORT CALLS BELOW ARE STILL MADE, and deliberately: `stage1_veto.VETO_POOLS` -- not
+    # this caller -- decides scope, and each cohort call returns its frame UNCHANGED plus a
+    # report carrying `applies=False` and the reason.  Dropping the calls would leave the
+    # cohorts absent from `veto_reports`, which reads as "the veto did not run at all" rather
+    # than "the veto is out of scope here", and would put the scope decision in two places.
     # WITH THE FLAG OFF THIS IS A NO-OP and the pipeline is bit-identical -- `apply_veto` returns
     # its input frame unchanged, so the `try` below cannot alter a shipped run today.
     # GUARDED like the carve-out, and for the same reason: the veto must never be able to destroy

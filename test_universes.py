@@ -12,6 +12,7 @@ intersected, `type == 'stock'`, counted by `exchangeShortName`); the counts in
 
 import os
 import re
+from datetime import datetime, timedelta
 
 import numpy as np
 import pandas as pd
@@ -687,15 +688,87 @@ def test_a_full_universe_still_builds_the_maps(tmp_path, monkeypatch):
     assert called.get('yes') is True
 
 
-def test_both_maps_present_is_still_an_idempotent_no_op(tmp_path, monkeypatch):
+def test_ALL_FOUR_maps_present_and_fresh_is_an_idempotent_no_op(tmp_path, monkeypatch):
+    """The idempotent skip is correct -- but it must be gated on ALL FOUR artifacts
+    `buildSectorIndustryMaps` writes, not the two it happened to write first.
+
+    THIS TEST USED TO ASSERT THE BUG (fixed 2026-08-07).  It seeded only sectorsdic
+    + industrydic and demanded `False`, which is exactly the condition under which
+    isindic/volavgdic can never be created -- so the test PROTECTED the defect that
+    shipped `isin_map_n: 0` / `volavg_map_n: 0` and sent 19 issuer groups to the
+    alphabetical tiebreak.  It now seeds all four, DATED TODAY so the freshness
+    trigger does not fire, and the skip is asserted on that state.
+    """
     monkeypatch.chdir(tmp_path)
+    today = datetime.now().strftime('%Y-%m-%d')
     pd.to_pickle({'Technology': ['A']}, 'sectorsdic_fmp.pickle')
-    pd.to_pickle({'A': 'Software'}, 'industrydic_fmp_2020-01-01.pickle')
+    pd.to_pickle({'A': 'Software'}, f'industrydic_fmp_{today}.pickle')
+    pd.to_pickle({'A': 'US0000000001'}, f'isindic_fmp_{today}.pickle')
+    pd.to_pickle({'A': {'volAvg': 1000, 'asof': today}}, f'volavgdic_fmp_{today}.pickle')
     monkeypatch.setattr(fas, 'buildSectorIndustryMaps',
-                        lambda *a, **k: pytest.fail('must not rebuild when both present'))
+                        lambda *a, **k: pytest.fail('must not rebuild when all four present'))
     assert fas.ensure_sector_industry_maps(['A'], 'https://x/', 'KEY') is False
     assert fas.ensure_sector_industry_maps(['A'], 'https://x/', 'KEY',
                                            universe_is_subset=True) is False
+
+
+def test_a_MISSING_isin_or_volavg_map_does_NOT_count_as_cached(tmp_path, monkeypatch):
+    """THE REGRESSION GUARD FOR THE ACTUAL DEFECT.  With sectorsdic + industrydic
+    present but isindic/volavgdic absent -- the exact state of the machine that
+    produced the 2026-08-07 CUR3K run -- the gate must NOT report 'cached'.  It must
+    reach the build (here: the subset refusal, which is the non-API branch)."""
+    monkeypatch.chdir(tmp_path)
+    today = datetime.now().strftime('%Y-%m-%d')
+    pd.to_pickle({'Technology': ['A']}, 'sectorsdic_fmp.pickle')
+    pd.to_pickle({'A': 'Software'}, f'industrydic_fmp_{today}.pickle')
+
+    built = {'n': 0}
+
+    def _fake_build(*a, **k):
+        built['n'] += 1
+        return {}, {}
+
+    monkeypatch.setattr(fas, 'buildSectorIndustryMaps', _fake_build)
+    fas.ensure_sector_industry_maps(['A'], 'https://x/', 'KEY')
+    assert built['n'] == 1, (
+        'sectorsdic+industrydic present must NOT short-circuit the gate while '
+        'isindic/volavgdic are missing -- that is the bug that made the ISIN and '
+        'volAvg dedup tiebreaks permanently unavailable')
+
+
+def test_a_STALE_sector_map_does_NOT_count_as_cached(tmp_path, monkeypatch):
+    """Presence is not freshness.  The shipped run carved against a 2025-12-10 map,
+    240 days old, and nothing said so."""
+    monkeypatch.chdir(tmp_path)
+    old = (datetime.now() - timedelta(days=fas.MAP_STALE_DAYS + 30)).strftime('%Y-%m-%d')
+    pd.to_pickle({'Technology': ['A']}, 'sectorsdic_fmp.pickle')
+    for stem in ('industrydic', 'isindic', 'volavgdic'):
+        pd.to_pickle({'A': 'x'}, f'{stem}_fmp_{old}.pickle')
+
+    built = {'n': 0}
+    monkeypatch.setattr(fas, 'buildSectorIndustryMaps',
+                        lambda *a, **k: (built.__setitem__('n', built['n'] + 1), ({}, {}))[1])
+    fas.ensure_sector_industry_maps(['A'], 'https://x/', 'KEY')
+    assert built['n'] == 1, 'a map older than MAP_STALE_DAYS must warrant a rebuild'
+
+
+def test_LOW_sector_coverage_does_NOT_count_as_cached(tmp_path, monkeypatch):
+    """The 2026-08-07 map covered 84.2% of the universe (41.1% on KOSDAQ) and was
+    still treated as a healthy cache.  Coverage below the floor must trigger."""
+    monkeypatch.chdir(tmp_path)
+    today = datetime.now().strftime('%Y-%m-%d')
+    pd.to_pickle({'Technology': ['A']}, 'sectorsdic_fmp.pickle')
+    for stem in ('industrydic', 'isindic', 'volavgdic'):
+        pd.to_pickle({'A': 'x'}, f'{stem}_fmp_{today}.pickle')
+
+    built = {'n': 0}
+    monkeypatch.setattr(fas, 'buildSectorIndustryMaps',
+                        lambda *a, **k: (built.__setitem__('n', built['n'] + 1), ({}, {}))[1])
+    # 1 of 5 symbols mapped = 20% coverage, far below the floor.
+    fas.ensure_sector_industry_maps(['A', 'B', 'C', 'D', 'E'], 'https://x/', 'KEY')
+    assert built['n'] == 1, (
+        'sector coverage below MIN_SECTOR_COVERAGE_PCT must warrant a rebuild -- '
+        'an existing map that covers a fraction of the universe is not a cache hit')
 
 
 # --------------------------------------------------------------------------- #

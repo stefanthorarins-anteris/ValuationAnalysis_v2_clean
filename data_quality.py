@@ -548,8 +548,61 @@ def apply_data_quality_filter(dmdic, verbose=True, save_log=True):
     
     # Update dictionary
     dmdic['cdx_df'] = clean_cdx
-    dmdic['removed_data_quality'] = removed_cdx
-    
+    #
+    # ACCUMULATE, NEVER ASSIGN (fixed 2026-08-07).
+    #
+    # This filter runs TWICE in a single pipeline run (Sbocker.py:490 and :554).
+    # Pass 1 does the real work and records what it removed.  Pass 2 is correctly
+    # IDEMPOTENT -- there is nothing left to remove -- so it returned an EMPTY frame,
+    # and this line then OVERWROTE pass 1's record with it.  The shipped pickle
+    # therefore asserted "data quality removed nothing" on the exact run where it had
+    # removed 82 sources, which is why 3140 - 445 != 2613 could not be reconciled from
+    # the artifact at all.  The idempotency was right; destroying the evidence of the
+    # first pass was the bug.  Concatenating makes the record survive any number of
+    # passes, and a second pass that genuinely removes nothing simply adds nothing.
+    _prior_removed = dmdic.get('removed_data_quality')
+    if _prior_removed is not None and len(_prior_removed) > 0:
+        if removed_cdx is not None and len(removed_cdx) > 0:
+            dmdic['removed_data_quality'] = pd.concat(
+                [_prior_removed, removed_cdx], ignore_index=True)
+        else:
+            dmdic['removed_data_quality'] = _prior_removed
+    else:
+        dmdic['removed_data_quality'] = removed_cdx
+
+    # Scalar counters stamped at the SAME site as the frame, so the reconciliation
+    # 3140 - 445 - n_dq_removed_sources == 2613 can be checked straight off the
+    # pickle without re-deriving anything.  `_dq_source_col` is resolved defensively:
+    # the removed frame carries the source identifier under whichever column this
+    # pipeline version uses, and a counter that raises would be worse than one that
+    # reports None.
+    try:
+        _rem = dmdic.get('removed_data_quality')
+        if _rem is not None and len(_rem) > 0:
+            _src_col = next((c for c in ('source', 'symbol', 'ticker', 'source_id')
+                             if c in _rem.columns), None)
+            dmdic['n_dq_removed_rows'] = int(len(_rem))
+            if _src_col:
+                _srcs = sorted(set(_rem[_src_col].dropna().tolist()))
+                dmdic['n_dq_removed_sources'] = len(_srcs)
+                dmdic['dq_removed_source_list'] = _srcs
+            else:
+                dmdic['n_dq_removed_sources'] = None
+                dmdic['dq_removed_source_list'] = []
+        else:
+            dmdic['n_dq_removed_rows'] = 0
+            dmdic['n_dq_removed_sources'] = 0
+            dmdic['dq_removed_source_list'] = []
+        if verbose:
+            print(f"[data_quality] cumulative removals this run: "
+                  f"{dmdic.get('n_dq_removed_sources')} source(s), "
+                  f"{dmdic.get('n_dq_removed_rows')} row(s) "
+                  f"(accumulated across all filter passes)")
+    except Exception as _e:
+        if verbose:
+            print(f"[data_quality] WARNING: removal counters not stamped: {_e}")
+
+
     # Also filter BoMetric_df -- by SOURCE *and* by ROW (audit H-1 fix, 2026-07-19).
     #
     # Only the source-level filter existed, so a ticker whose corrupt-era rows were

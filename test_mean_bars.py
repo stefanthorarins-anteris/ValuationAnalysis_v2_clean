@@ -241,15 +241,75 @@ def test_a_streak_is_BROKEN_by_a_clean_run():
     assert row['breach'] == 0 and row['breach_streak'] == 0
 
 
-def test_a_TEST_universe_is_advisory_and_can_never_trigger():
-    """*** THE GUARD RAIL. ***  A curated/TEST run's pass rates are a property of the sample it
-    was handed -- the very thing constants exist to stop mattering."""
+def test_a_TEST_universe_REPORTS_the_breach_but_can_never_move_a_bar():
+    """*** THE GUARD RAIL, AND THE VERDICT/ACTION SPLIT (2026-08-07). ***
+
+    The defect: `breach` used to be FORCED TO 0 whenever `advisory` was 1, so the 2,613-source
+    run reported `breach=0` on all seven bars and that was read upward as "all seven bars held"
+    -- a test no run under 5,000 sources could fail.  The verdict is now always truthful; only
+    the CONSEQUENCE (streak, proposal) is gated.  Both halves are pinned here, because either
+    one alone is the bug: a truthful breach that could move a bar, or a guard rail that lies.
+    """
     bar = mb.BARS['mBookToPrice']['value']
     cal = mb.calibrate(_panel('mBookToPrice', [bar - 0.1] * 20), _signs(), window_rows=20,
                        n_sources=10)
     row = cal[cal['criterion'] == 'mBookToPrice'].iloc[0]
-    assert row['advisory'] == 1 and row['breach'] == 0 and row['breach_streak'] == 0, (
-        'a TEST universe registered a breach -- a thin sample can now move a bar')
+    assert row['advisory'] == 1
+    assert row['pass_rate'] == 0.0 and row['breach'] == 1, (
+        'an advisory run suppressed a REAL breach -- `breach` is a statement about the panel '
+        'in hand and is true at any n; suppressing it makes the column mean something other '
+        'than its label')
+    assert row['breach_streak'] == 0 and row['proposed_constant'] is None, (
+        'a TEST universe reached the hysteresis ledger -- a thin sample can now move a bar')
+
+
+def test_an_advisory_run_can_neither_ADVANCE_nor_RESET_a_standing_streak():
+    """*** THE INVARIANT THE SPLIT MUST NOT BREAK. ***  Reporting the breach truthfully must not
+    give a thin universe a route into the ledger in EITHER direction -- not one more step toward
+    a proposal, and not a wipe of a streak a full run recorded."""
+    bar = mb.BARS['mBookToPrice']['value']
+    #  breaching panel, advisory, with a streak of 1 already standing from a full run
+    cal = mb.calibrate(_panel('mBookToPrice', [bar - 0.1] * 20), _signs(), window_rows=20,
+                       n_sources=10, prior_streaks={'mBookToPrice': 1},
+                       streak_participant=True)
+    row = cal[cal['criterion'] == 'mBookToPrice'].iloc[0]
+    assert row['breach'] == 1 and row['breach_streak'] == 0 and row['proposed_constant'] is None, (
+        'an advisory run chained a standing streak to 2 and proposed a re-set off a thin panel')
+    #  ...and the RESET direction: a CLEAN advisory run must not wipe the standing streak
+    #  either.  `_prior_streaks` skips advisory reports on read, so this row's 0 is inert.
+    clean = mb.calibrate(_panel('mBookToPrice', [bar + 0.1] * 10 + [bar - 0.1] * 10), _signs(),
+                         window_rows=20, n_sources=10, prior_streaks={'mBookToPrice': 1},
+                         streak_participant=True)
+    assert int(clean[clean['criterion'] == 'mBookToPrice'].iloc[0]['advisory']) == 1
+
+
+def test_an_advisory_report_on_disk_is_invisible_to_the_hysteresis(tmp_path):
+    """The end-to-end of the reset half: an advisory report now WRITES `breach=1, streak=0`, so
+    the only thing keeping it from resetting a full run's streak is `_prior_streaks` skipping
+    advisory files.  Pinned end-to-end rather than by inspection, because the split made this
+    file's contents look like a clean run for the first time."""
+    bar = mb.BARS['mBookToPrice']['value']
+    panel = _panel('mBookToPrice', [bar - 0.1] * 20)
+    signs = _signs()
+    orig = mb.MIN_FULL_UNIVERSE_SOURCES
+    try:
+        mb.MIN_FULL_UNIVERSE_SOURCES = 0        # this panel counts as full-universe
+        full = mb.emit_calibration(panel, signs, universe='fmp_stock_NA1_EU1', window_rows=20,
+                                   directory=str(tmp_path), verbose=False,
+                                   streak_participant=True)
+        mb.MIN_FULL_UNIVERSE_SOURCES = 10 ** 9  # ...and now everything is advisory
+        adv = mb.emit_calibration(panel, signs, universe='TESTUNIVERSE', window_rows=20,
+                                  directory=str(tmp_path), verbose=False,
+                                  streak_participant=True)
+    finally:
+        mb.MIN_FULL_UNIVERSE_SOURCES = orig
+    assert int(full[full['criterion'] == 'mBookToPrice'].iloc[0]['breach_streak']) == 1
+    a = adv[adv['criterion'] == 'mBookToPrice'].iloc[0]
+    assert a['advisory'] == 1 and a['breach'] == 1 and a['breach_streak'] == 0
+    #  the standing streak of 1 must still be what the NEXT full run reads
+    assert mb._prior_streaks(str(tmp_path)).get('mBookToPrice') == 1, (
+        'the advisory report reset the standing streak -- a TEST run just erased a full run\'s '
+        'evidence')
 
 
 def test_the_yield_proposal_is_rounded_on_the_ANNUAL_rate():

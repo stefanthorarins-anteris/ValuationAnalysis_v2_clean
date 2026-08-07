@@ -105,14 +105,50 @@ Set it by assigning the module attribute (`import stage1_veto as sv; sv.ENABLED 
 passing `enabled=True` to `apply_veto` -- an explicit argument always wins over the module
 default, so a research script never has to mutate global state.
 
-WHERE IT RUNS
--------------
-BEFORE the `head(100)` cut, on ALL SIX POOLS (the general pool and the five carve-out cohorts).
-It GATES the pool and the survivors are then ranked, which is the only placement that makes it
-a veto: applied after the cut it would merely shorten a shortlist, and applied to the general
-pool alone it would say a red flag matters less in a cohort.  A red flag is a red flag.  Per-pool
-ejection counts are LOGGED, because a veto that silently removed a third of a cohort would be
-indistinguishable from one that removed nobody.
+WHERE IT RUNS -- THE GENERAL POOL ONLY  (CEO, 2026-08-07; supersedes the all-six-pools rule)
+--------------------------------------------------------------------------------------------
+BEFORE the `head(100)` cut, on the GENERAL POOL ONLY.  It GATES the pool and the survivors are
+then ranked -- placement before the cut is what makes it a veto rather than a shortlist trim.
+`VETO_POOLS` names the pools it may run on; on any other pool `apply_veto` is a NO-OP that
+returns its input unchanged and reports `applies=False` with the reason.  Per-pool reports are
+still emitted for every pool and ejection counts are LOGGED, because a veto that silently
+removed a third of a cohort would be indistinguishable from one that removed nobody -- and
+"out of scope here" must be distinguishable from "found nothing".
+
+THE PREVIOUS RULE, AND WHY IT WAS OVERRULED -- KEPT, NOT DELETED.  This module used to run on
+all six pools and defended it in these words: *"applied to the general pool alone it would say
+a red flag matters less in a cohort.  A red flag is a red flag."*  That principle is CORRECT IN
+INTENT -- a disqualification must not be softened because a name sits in a cohort -- and it was
+WRONG ABOUT WHAT THE FLAGS MEASURE in cohorts where two of them are STRUCTURALLY UNDEFINED.
+`uCurrentRatio > 1` and `netDebtToEBITDA` (rule) presuppose a working-capital balance sheet and
+serviceable-from-EBITDA leverage.  A REIT carries mortgage debt at 5-8x EBITDA BY DESIGN and
+holds essentially no current assets; a bank's balance sheet is its business, not its financing.
+On those cohorts the flags are not a strict reading of a red flag, THEY ARE THE WRONG QUESTION --
+so the old argument never applied, because there was no red flag to be strict about.
+
+MEASURED, on the 2026-08-07 run with the veto evaluated OFFLINE against the saved pickle:
+
+    pool                in    ejected      %
+    general           1545        902   58.4
+    REIT                49         47   95.9   <-- the tell
+    BalanceSheetFin    121         87   71.9
+    Mining             204        105   51.5
+    FinManager          42         19   45.2
+    InvestmentVehicle   19         11   57.9
+
+95.9% of REITs is not the veto finding bad REITs; it is the veto reporting that REITs are REITs.
+It is ALSO NOT A THRESHOLD PROBLEM -- no level of `netDebtToEBITDA` makes that flag a solvency
+reading on a mortgage vehicle -- so do not "fix" it by loosening a bar per cohort.
+
+OPEN ISSUE, so the next reader does not re-derive this: the carve-out cohorts are now UNVETOED
+on solvency entirely.  The right resolution is a per-cohort red-flag set stated on fields that
+MEAN something there (e.g. interest coverage and FFO-based leverage for REITs, capital adequacy
+for banks), not a re-tuned copy of this one.  Until that exists, cohorts are gated by the
+weighted Stage-1 score alone -- which is the pre-veto status quo, not a regression.
+
+ON THE GENERAL POOL THE CHANGE IS SMALL: the veto moves only 5 of the top 100 (95% overlap) --
+ejecting UHS, PEY.TO, SBH, 215200.KQ, TCL-A.TO and promoting 000270.KS, ATH.TO, DRW3.DE,
+HCO.PA, LEGH.  A defensible cleanup, not a rewrite of the deliverable.
 
 WHAT IT IS NOT -- `psbrfilter`
 ------------------------------
@@ -127,6 +163,17 @@ import pandas as pd
 
 #  --- THE FLAG.  DEFAULT OFF.  See the module docstring. --------------------------------
 ENABLED = False
+
+#  --- WHICH POOLS IT MAY RUN ON (CEO, 2026-08-07) ---------------------------------------
+#  THE GENERAL POOL ALONE.  Two of the five flags (`uCurrentRatio`, `netDebtToEBITDA`) are
+#  STRUCTURALLY UNDEFINED on the leveraged-vehicle and bank cohorts, so applying them there
+#  asks the wrong question rather than asking a strict one -- see the module docstring for
+#  the measured per-cohort ejection rates (REIT 95.9%) that overruled the old all-pools rule.
+#  A SET, not a boolean, so adding a cohort later is a one-line decision WITH the flag set it
+#  is claiming to be defined on; and so `apply_veto` can report `applies=False` by name rather
+#  than the caller silently not calling it -- "out of scope" and "found nothing" must not look
+#  the same in the report.
+VETO_POOLS = ('general',)
 
 #  --- THE THREE PARAMETERS, EACH A STATED DECISION --------------------------------------
 #  Rows of the newest-first per-source window a flag is evaluated over.  8 is Stage-1's own
@@ -283,7 +330,8 @@ def _evaluate(bm_df):
     return out, abstained
 
 
-def apply_veto(scores_df, bm_df, pool_label='general', enabled=None, verbose=True):
+def apply_veto(scores_df, bm_df, pool_label='general', enabled=None, verbose=True,
+               pools=None):
     """`scores_df` with vetoed sources removed.  Returns (kept, report).
 
     `scores_df` is a Stage-1 score frame carrying a `source` column (`BoScore_df` or a carve-out
@@ -292,10 +340,21 @@ def apply_veto(scores_df, bm_df, pool_label='general', enabled=None, verbose=Tru
     OFF BY DEFAULT AND BIT-IDENTICAL WHEN OFF: with `enabled` falsy the input frame is returned
     UNCHANGED (the same object, not a copy) and `report['enabled']` is False.  An explicit
     `enabled=` argument overrides the module flag so a research script never mutates globals.
+
+    GENERAL POOL ONLY: when `pool_label` is not in `VETO_POOLS` the input frame is likewise
+    returned UNCHANGED, with `report['applies'] = False` and `report['not_applicable_reason']`
+    stating why.  The report is still emitted, so a cohort the veto DECLINED TO GATE is
+    distinguishable from one it gated and found clean.  `pools=` overrides `VETO_POOLS` for an
+    offline A/B (the per-cohort ejection rates in the docstring were measured that way) without
+    mutating module state, exactly as `enabled=` does.
     """
     if enabled is None:
         enabled = ENABLED
-    report = {'pool': pool_label, 'enabled': bool(enabled), 'n_in': len(scores_df),
+    if pools is None:
+        pools = VETO_POOLS
+    applies = pool_label in pools
+    report = {'pool': pool_label, 'enabled': bool(enabled), 'applies': bool(applies),
+              'not_applicable_reason': None, 'n_in': len(scores_df),
               'n_ejected': 0, 'n_out': len(scores_df), 'by_flag': {}, 'ejected': [],
               #  ABSTENTIONS, PER FLAG (C-15) -- `{flag: number of sources in THIS pool that
               #  abstained on it}`.  Per FLAG and not per SOURCE deliberately: the dominant
@@ -305,6 +364,21 @@ def apply_veto(scores_df, bm_df, pool_label='general', enabled=None, verbose=Tru
               #  "found clean" and "never evaluated" are different facts.
               'n_short_window': {}, 'short_window': {}}
     if not enabled:
+        return scores_df, report
+    if not applies:
+        #  NOT A SILENT SKIP.  The reason travels in the report and (when verbose) in the log,
+        #  because the failure mode here is a reader seeing `n_ejected = 0` on a cohort and
+        #  concluding the cohort is clean.
+        report['not_applicable_reason'] = (
+            'pool %r is not in VETO_POOLS %s: `uCurrentRatio` and `netDebtToEBITDA` are '
+            'structurally undefined on the carve-out cohorts (a REIT carries mortgage debt at '
+            '5-8x EBITDA by design and holds no current assets), so the veto asks the wrong '
+            'question there rather than a strict one. Measured: 95.9%% of REITs ejected. This '
+            'cohort is NOT vetoed and is NOT thereby certified clean.'
+            % (pool_label, list(pools)))
+        if verbose:
+            print('STAGE-1 VETO [%s]: NOT APPLIED -- %s'
+                  % (pool_label, report['not_applicable_reason']), flush=True)
         return scores_df, report
 
     bad, abstained = _evaluate(bm_df)

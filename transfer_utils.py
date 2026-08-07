@@ -21,6 +21,17 @@ SAFETY CONTRACT (all four are load-bearing)
      Google-Drive copy hiccuped -- every failure is a warn-and-continue.
   3. Idempotent: re-copying / overwriting an already-copied artifact is fine.
   4. transfer_dir falsy -> strict no-op (existing behaviour byte-identical).
+
+NON-FATAL IS NOT SILENT (added 2026-08-07)
+------------------------------------------
+Contract 2 above is right -- but for a long time it was implemented as *silent*:
+a listed artifact that produced nothing looked, from the console, exactly like a
+listed artifact that transferred perfectly.  The 2026-08-07 CUR3K run copied every
+artifact EXCEPT run_logs/ and nobody could tell from the run output.  `reconcile_
+transfer` closes that: after the copy, it re-derives what SHOULD be at the
+destination and checks what actually IS, then prints a per-group verdict loudly.
+Warn-and-continue still holds -- the run does not die -- but the operator reading
+the tail of a run can now tell whether the transfer was COMPLETE.
 """
 import os
 import shutil
@@ -116,6 +127,131 @@ def probe_transfer_target(transfer_dir):
     except Exception as e:
         info['detail'] = f'probe error: {e}'
         return info
+
+
+def expected_dest_names(sources, subdir=None):
+    """Given local source paths, return the destination-RELATIVE paths the copy
+    should have produced.  Files land at <transfer>/<basename>; a named directory
+    lands at <transfer>/<dirname>/<relpath>, so a directory's expectation is its
+    FILES (an empty dir expects nothing -- which is exactly how a never-written
+    artifact reports as EMPTY rather than as a healthy copy).
+
+    <subdir> overrides the destination sub-path for directory sources.  It exists
+    because the two copiers DISAGREE on where a directory lands: Sbocker's
+    end-of-run path uses `transfer/<dirpat>` (keeping 'baseline_tools/price_data'
+    nested) while copy_artifacts_to_transfer_dir uses `transfer/<basename>`.  The
+    caller states which convention applies rather than this helper guessing."""
+    out = []
+    for src in sources or []:
+        try:
+            src = str(src)
+            if os.path.isdir(src):
+                base = os.path.basename(src.rstrip('/\\'))
+                for root, _dirs, files in os.walk(src):
+                    for fn in files:
+                        if is_denied(fn):
+                            continue
+                        rel = os.path.relpath(os.path.join(root, fn), src)
+                        out.append(os.path.join(subdir or base, rel))
+            elif os.path.isfile(src):
+                if not is_denied(os.path.basename(src)):
+                    out.append(os.path.basename(src))
+        except Exception:
+            # A source we cannot even inspect contributes no expectation; the group
+            # will read as EMPTY, which is the honest (and loud) outcome.
+            continue
+    return out
+
+
+def reconcile_transfer(transfer_dir, groups, verbose=True):
+    """Post-transfer reconciliation: for every artifact GROUP the run claims to
+    transfer, did anything actually land at the destination?
+
+    WHY: warn-and-continue (contract 2) means no copy failure is fatal -- but for a
+    long time it also meant no copy failure was VISIBLE.  A group that produced
+    nothing locally, a group whose copy raised and was swallowed, and a group that
+    transferred perfectly all printed the same thing: effectively nothing.  This
+    function makes the difference impossible to miss from the tail of a run.
+
+    Parameters
+    ----------
+    transfer_dir : str
+    groups : ordered list of (group_name, [local source paths]) or
+             (group_name, [local source paths], dest_subdir) -- the SAME allowlist
+             the copy loop walked, so the two can never disagree.
+
+    Returns {'complete': bool, 'groups_total', 'groups_complete', 'missing': [...],
+             'incomplete': [...], 'detail': {group: (landed, expected)}, 'summary': str}
+
+    NEVER raises.  Verifies against the DESTINATION (not against a copy-loop
+    counter), so a swallowed exception cannot report itself as a success.
+    """
+    res = {'complete': True, 'groups_total': 0, 'groups_complete': 0,
+           'missing': [], 'incomplete': [], 'detail': {}, 'summary': ''}
+    try:
+        transfer_path = Path(transfer_dir) if transfer_dir else None
+        if transfer_path is None or not transfer_path.exists():
+            res['complete'] = False
+            res['summary'] = 'transfer target unavailable -- nothing could be reconciled'
+            if verbose:
+                print(f"[TRANSFER] RECONCILE: target unavailable ({transfer_dir})")
+            return res
+
+        for entry in groups:
+            name, sources = entry[0], entry[1]
+            subdir = entry[2] if len(entry) > 2 else None
+            res['groups_total'] += 1
+            expected = expected_dest_names(sources, subdir=subdir)
+            landed = 0
+            for rel in expected:
+                try:
+                    dest = transfer_path / rel
+                    if dest.exists() and dest.stat().st_size > 0:
+                        landed += 1
+                except Exception:
+                    pass
+            res['detail'][name] = (landed, len(expected))
+            if len(expected) == 0:
+                # Nothing was produced locally -> nothing could transfer.  This is
+                # the run_logs case: the copy "succeeded" over an empty dir.
+                res['missing'].append(name)
+                res['complete'] = False
+            elif landed < len(expected):
+                res['incomplete'].append(name)
+                res['complete'] = False
+            else:
+                res['groups_complete'] += 1
+
+        res['summary'] = (f"transferred {res['groups_complete']}/{res['groups_total']} "
+                          f"artifact groups")
+        if res['missing']:
+            res['summary'] += f"; NOTHING PRODUCED: {', '.join(res['missing'])}"
+        if res['incomplete']:
+            res['summary'] += f"; PARTIAL: {', '.join(res['incomplete'])}"
+
+        if verbose:
+            print("\n" + "-" * 70)
+            print(f"[TRANSFER] RECONCILIATION: {res['summary']}")
+            for name, (landed, exp) in res['detail'].items():
+                mark = 'OK     ' if (exp and landed == exp) else ('EMPTY  ' if not exp else 'PARTIAL')
+                print(f"[TRANSFER]   {mark} {name}: {landed}/{exp} files at destination")
+            if not res['complete']:
+                print("!" * 70)
+                print("!!! TRANSFER INCOMPLETE -- one or more listed artifacts did NOT reach the Drive.")
+                if res['missing']:
+                    print(f"!!! NOTHING PRODUCED LOCALLY (so nothing to copy): {', '.join(res['missing'])}")
+                    print("!!!   -> the WRITER for these did not run.  Fixing the copier will not help.")
+                if res['incomplete']:
+                    print(f"!!! PARTIALLY COPIED (copy failed and was swallowed): {', '.join(res['incomplete'])}")
+                    print("!!!   -> re-copy these MANUALLY before relying on the Drive snapshot.")
+                print("!" * 70)
+            print("-" * 70 + "\n")
+    except Exception as e:
+        res['complete'] = False
+        res['summary'] = f'reconciliation error: {e}'
+        if verbose:
+            print(f"[TRANSFER] WARNING: reconciliation failed safely: {e}")
+    return res
 
 
 def _ensure_transfer_dir(transfer_dir, verbose=True):

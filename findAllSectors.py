@@ -308,6 +308,134 @@ def _merge_industry_dics(previous, new):
     return merged, kept
 
 
+# Age (days) past which a profile-derived map is called STALE in the run banner.
+# Not a hard gate: exceeding it warns LOUDLY, it never blocks or auto-spends calls.
+# 60d is a judgement call, sized so a map that missed a whole quarter's worth of
+# listings/reclassifications cannot pass unremarked; tune from operator experience.
+MAP_STALE_DAYS = 60
+
+# Sector-map coverage (% of the ACTIVE universe carrying a sector) below which a
+# rebuild is warranted.  The 2026-08-07 run carved at 84.2% overall / 41.1% on
+# KOSDAQ and shipped 32 of its top-100 as sector 'Unknown', so the floor sits
+# above that by design.  A rebuild is ~1 batched profile call per 100 symbols --
+# ~26 calls on a 2.6k universe, ~100 on a full one -- i.e. sub-1% of a fetch that
+# already costs ~16,300 calls.  Cheap enough that refreshing beats carving blind.
+MIN_SECTOR_COVERAGE_PCT = 95.0
+
+
+def _map_age_days(path):
+    """Age of a map pickle in days.  Prefers the DATE IN THE FILENAME (the build
+    date, which survives a git checkout) and falls back to mtime for the undated
+    sectorsdic.  Returns None if the age cannot be determined."""
+    try:
+        stem = os.path.basename(path)
+        for tok in stem.replace('.pickle', '').split('_'):
+            try:
+                return (datetime.now() - datetime.strptime(tok, '%Y-%m-%d')).days
+            except ValueError:
+                continue
+        return int((datetime.now() - datetime.fromtimestamp(os.path.getmtime(path))).days)
+    except Exception:
+        return None
+
+
+def sector_map_coverage(symbols, sector_pickle='sectorsdic_fmp.pickle'):
+    """What FRACTION of the active universe does the cached sector map actually
+    cover?  Returns (n_mapped, n_total, pct) -- pct is None when it cannot be
+    computed.
+
+    EXISTENCE IS NOT COVERAGE (2026-08-07).  The gate below used to ask only
+    'does the pickle exist'.  A map built 2025-12-10 exists perfectly well and
+    covered 84.2% of the 2026-08-07 universe -- 41.1% on KOSDAQ, 78.8% on LSE,
+    413 of 2,613 names unmapped, 32 of the shipped top-100 carrying
+    sectorPickle='Unknown' while the sectorAPI field beside it was 100%
+    populated.  That number is one line to print and it is the single number
+    that would have caught this eight months earlier, so it is printed on EVERY
+    run whether or not it triggers anything."""
+    try:
+        sectordic = pd.read_pickle(sector_pickle)
+        mapped = set()
+        for syms in sectordic.values():
+            mapped.update(syms)
+        total = list(dict.fromkeys(list(symbols)))
+        if not total:
+            return 0, 0, None
+        n_mapped = sum(1 for s in total if s in mapped)
+        return n_mapped, len(total), 100.0 * n_mapped / len(total)
+    except Exception:
+        return None, None, None
+
+
+def warn_if_maps_stale(stale_days=MAP_STALE_DAYS, verbose=True):
+    """RUN-START PRECONDITION CHECK on the four profile-derived maps.
+
+    WHY THIS EXISTS (2026-08-07): the pipeline consumed a sector map built
+    2025-12-10 -- eight months old -- and said NOTHING.  The consequences were
+    real and invisible: 43.6% sector coverage on KOSDAQ, 77% on LSE, and 32 of
+    the shipped top-100 carrying sectorPickle='Unknown'.  A cached map is a
+    legitimate optimisation; a cached map of unknown age silently deciding the
+    carve is not.  Presence was already checked -- AGE was not checked at all.
+
+    Reports, never blocks: this makes no API call, changes no behaviour, and
+    cannot fail a run.  It only makes the state of the maps impossible to miss
+    from the top of a run.  Returns {name: {'present','path','age_days','stale'}}.
+    """
+    specs = [('sectorsdic', 'sectorsdic_fmp.pickle'),
+             ('industrydic', 'industrydic_fmp_*.pickle'),
+             ('isindic', 'isindic_fmp_*.pickle'),
+             ('volavgdic', 'volavgdic_fmp_*.pickle')]
+    status = {}
+    try:
+        for name, pat in specs:
+            path = None
+            if '*' in pat:
+                cands = sorted(glob.glob(pat))
+                path = cands[-1] if cands else None
+            elif os.path.exists(pat):
+                path = pat
+            age = _map_age_days(path) if path else None
+            status[name] = {'present': path is not None, 'path': path,
+                            'age_days': age,
+                            'stale': bool(age is not None and age > stale_days)}
+
+        absent = [n for n, s in status.items() if not s['present']]
+        stale = [n for n, s in status.items() if s['stale']]
+        if verbose and (absent or stale):
+            bar = '!' * 78
+            print('\n' + bar)
+            print('!!! PROFILE-DERIVED MAPS: NOT FRESH -- read this before trusting the carve')
+            for name, s in status.items():
+                if not s['present']:
+                    print('!!!   %-12s MISSING' % name)
+                else:
+                    age_txt = ('age unknown' if s['age_days'] is None
+                               else '%d days old' % s['age_days'])
+                    print('!!!   %-12s %s  (%s)%s'
+                          % (name, s['path'], age_txt, '  <-- STALE' if s['stale'] else ''))
+            if absent:
+                print('!!! CONSEQUENCE of a MISSING map: the dedup tiebreak it feeds is')
+                print('!!!   STRUCTURALLY SILENT -- issuer groups fall through to the')
+                print('!!!   ALPHABETICAL last resort, which prefers a thin dual-class "A"')
+                print('!!!   line over its liquid "B" and a preferred over its common.')
+            if stale:
+                print('!!! CONSEQUENCE of a STALE sector map: names listed since the build')
+                print('!!!   carry sector "Unknown", so the carve-out cannot route them and')
+                print('!!!   REIT/Mining/financial cohorts leak into the general pool.')
+                print('!!!   volAvg is TIME-VARYING -- a stale reading is the worst case.')
+            print('!!! FIX: rebuild once from a FULL exchange-defined universe (e.g.')
+            print('!!!      -tickerfilter stock_NA1_EU1), or call')
+            print('!!!      findAllSectors.findAllSectorsViaProfile(baseurl, api_key).')
+            print(bar + '\n', flush=True)
+        elif verbose:
+            ages = ', '.join('%s=%sd' % (n, s['age_days']) for n, s in status.items())
+            print('[maps] all four profile-derived maps present and fresh (%s)' % ages,
+                  flush=True)
+    except Exception as e:
+        if verbose:
+            print('[maps] WARNING: staleness check failed safely: %s' % e, flush=True)
+    return status
+
+
 def ensure_sector_industry_maps(symbols, baseurl, api_key, batch_size=100, pace=None,
                                 universe_is_subset=False, universe_name=None):
     """GENERATE-IF-MISSING hook for the ingestion layer.
@@ -345,11 +473,69 @@ def ensure_sector_industry_maps(symbols, baseurl, api_key, batch_size=100, pace=
     operator builds the maps once from a full universe (any exchange-defined
     `-tickerfilter`, or `findAllSectorsViaProfile`) and every later run reuses them.
 
-    Returns True iff a build ran and wrote the maps; False otherwise."""
+    Returns True iff a build ran and wrote the maps; False otherwise.
+
+    THE GATE MUST COVER EVERY ARTIFACT THE WRITER PRODUCES (fixed 2026-08-07).
+    `buildSectorIndustryMaps` writes FOUR artifacts from ONE profile payload --
+    sectorsdic, industrydic, isindic and volavgdic -- but this gate used to
+    short-circuit on the presence of only the first TWO.  isindic/volavgdic were
+    added to the writer later and the gate was never widened, so on any machine
+    that already held the two older pickles the two newer ones could NEVER be
+    born: the build was skipped as 'cached', silently, forever.  That is exactly
+    the 2026-08-07 CUR3K run's `isin_map_n: 0` / `volavg_map_n: 0` -- with both
+    dedup tiebreaks structurally absent, 19 issuer groups fell through to the
+    alphabetical last resort, which systematically prefers a thin dual-class 'A'
+    line over its liquid 'B' (TCL-A.TO reached the shipped top-100) and a
+    preferred over its common (BMNP).  A presence gate must be derived from what
+    the writer WRITES, never from a subset of it frozen at some past revision."""
     sector_present = os.path.exists('sectorsdic_fmp.pickle')
     industry_present = bool(glob.glob('industrydic_fmp_*.pickle'))
-    if sector_present and industry_present:
-        return False  # idempotent skip -- reuse cached pickles, no rebuild
+    isin_present = bool(glob.glob('isindic_fmp_*.pickle'))
+    volavg_present = bool(glob.glob('volavgdic_fmp_*.pickle'))
+    missing_desc = ('%s%s%s%s' % (
+        '' if sector_present else 'sectorsdic_fmp.pickle ',
+        '' if industry_present else 'industrydic_fmp_*.pickle ',
+        '' if isin_present else 'isindic_fmp_*.pickle ',
+        '' if volavg_present else 'volavgdic_fmp_*.pickle ')).strip() or '<none>'
+
+    # COVERAGE IS PRINTED ON EVERY RUN, unconditionally, before any branch decides
+    # anything.  A branch that fires on 100% of runs and says nothing is how this
+    # defect survived eight months; this one line is the number that catches it.
+    n_mapped, n_total, cov_pct = sector_map_coverage(symbols)
+    if cov_pct is None:
+        print('[maps] sector-map coverage: UNKNOWN (map unreadable or universe empty)',
+              flush=True)
+    else:
+        print('[maps] sector-map coverage: %.1f%% of the active universe '
+              '(%d of %d symbols mapped; %d would carry sector "Unknown")'
+              % (cov_pct, n_mapped, n_total, n_total - n_mapped), flush=True)
+
+    map_status = warn_if_maps_stale()
+    any_stale = any(s['stale'] for s in map_status.values())
+    low_coverage = cov_pct is not None and cov_pct < MIN_SECTOR_COVERAGE_PCT
+    all_present = sector_present and industry_present and isin_present and volavg_present
+
+    if all_present and not any_stale and not low_coverage:
+        # Idempotent skip -- reuse cached pickles, no rebuild, no API calls.
+        # SAY SO.  This branch used to `return False` in total silence.
+        print('[maps] all four profile-derived maps present, fresh and above the '
+              '%.0f%% coverage floor -- reusing cached pickles (no rebuild, no API '
+              'calls).' % MIN_SECTOR_COVERAGE_PCT, flush=True)
+        return False
+
+    # Otherwise a build is WARRANTED.  State which trigger fired, so the API spend
+    # that follows is never unexplained.
+    triggers = []
+    if not all_present:
+        triggers.append('missing artifact(s): %s' % missing_desc)
+    if any_stale:
+        triggers.append('stale map(s): %s (> %d days)'
+                        % (', '.join(n for n, s in map_status.items() if s['stale']),
+                           MAP_STALE_DAYS))
+    if low_coverage:
+        triggers.append('sector coverage %.1f%% < %.0f%% floor'
+                        % (cov_pct, MIN_SECTOR_COVERAGE_PCT))
+    print('[maps] REBUILD WARRANTED -- %s' % '; '.join(triggers), flush=True)
 
     if universe_is_subset:
         bar = '!' * 78
@@ -357,9 +543,7 @@ def ensure_sector_industry_maps(symbols, baseurl, api_key, batch_size=100, pace=
         print('!!! SECTOR/INDUSTRY MAP BUILD SKIPPED -- the active universe is a SUBSET')
         print('!!!   universe : %s  (%d symbols)' % (universe_name or '<unnamed>',
                                                      len(list(symbols))))
-        print('!!!   missing  : %s%s'
-              % ('sectorsdic_fmp.pickle ' if not sector_present else '',
-                 'industrydic_fmp_*.pickle' if not industry_present else ''))
+        print('!!!   missing  : %s' % missing_desc)
         print('!!! These maps are SHARED and universe-independent. Building them from a')
         print('!!! curated subset would leave a map covering ~1% of a later full run --')
         print('!!! non-empty, so it would slip past carveOut\'s empty-map abort while')

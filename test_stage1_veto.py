@@ -1,8 +1,8 @@
 """Targeted tests for the Stage-1 red-flag veto (stage1_veto, CEO 2026-08-05).
 
-WHAT IS PINNED HERE, and nothing else: the flag's DEFAULT-OFF no-op, the `<=1 of 8` fail
-definition at both boundaries, `k >= 1` ejection, the per-pool report, and the refusal to run on
-a panel that lacks a flag column.  No pass rate and no panel measurement -- the veto has never
+WHAT IS PINNED HERE, and nothing else: the flag's DEFAULT-OFF no-op, the GENERAL-POOL-ONLY scope
+(CEO 2026-08-07), the `<=1 of 8` fail definition at both boundaries, `k >= 1` ejection, the
+per-pool report, and the refusal to run on a panel that lacks a flag column.  No pass rate and no panel measurement -- the veto has never
 been run on real data (it cannot be: no saved pickle carries `uInterestCoverage`), and a test
 that asserted a rate would be asserting a number nobody has measured.
 """
@@ -179,12 +179,17 @@ def test_the_per_source_row_floor_is_DERIVED_and_bites_at_the_same_boundary():
 
 def test_abstention_is_reported_per_pool_not_panel_wide():
     """The report is per pool, so its abstentions must be too -- otherwise every one of the
-    six pools repeats the whole panel's short-window names and the counts mean nothing."""
+    six pools repeats the whole panel's short-window names and the counts mean nothing.
+
+    BOTH ARMS RUN ON `general` (2026-08-07): the veto is now general-pool-only, so an arm run
+    under a cohort label would pass VACUOUSLY on the out-of-scope no-op and prove nothing about
+    the pool-membership restriction this test exists for.  The two arms differ in the SCORE
+    FRAME's membership, which is the actual variable."""
     src = {'A': {}, 'B': {}}
     panel = pd.concat([_short_panel({'A': {}}, 2), _panel({'B': {}})], ignore_index=True)
-    _kept, rep = sv.apply_veto(_scores({'B': {}}), panel, pool_label='REIT', enabled=True)
+    _kept, rep = sv.apply_veto(_scores({'B': {}}), panel, pool_label='general', enabled=True)
     assert rep['short_window'] == {} and rep['n_short_window'] == {}, (
-        'pool REIT does not contain A, so A\'s abstention must not appear in its report'
+        'this pool does not contain A, so A\'s abstention must not appear in its report'
     )
     _kept, rep = sv.apply_veto(_scores(src), panel, pool_label='general', enabled=True)
     assert rep['short_window'] == {'A': {c: 2 for c in sv.FLAGS}}
@@ -237,6 +242,52 @@ def test_every_flag_has_an_explicit_evidence_ruling():
 
 def test_report_is_per_pool_and_counts_pre_veto_input():
     src = {'BAD': {'uCurrentRatio': 0.5}, 'GOOD': {}}
-    _kept, rep = sv.apply_veto(_scores(src), _panel(src), pool_label='REIT', enabled=True)
-    assert rep['pool'] == 'REIT'
+    _kept, rep = sv.apply_veto(_scores(src), _panel(src), pool_label='general', enabled=True)
+    assert rep['pool'] == 'general'
     assert rep['n_in'] == 2, 'n_in must be the PRE-veto count, or a pool looks like it ejected 0'
+
+
+#  ---- GENERAL POOL ONLY  (CEO, 2026-08-07) -------------------------------------------- #
+def test_the_veto_runs_on_the_GENERAL_POOL_ALONE():
+    """*** THE SCOPE RULING. ***  `uCurrentRatio > 1` and `netDebtToEBITDA` are STRUCTURALLY
+    UNDEFINED on the leveraged-vehicle and bank cohorts -- a REIT carries mortgage debt at 5-8x
+    EBITDA by design and holds no current assets -- so the veto asks the WRONG QUESTION there
+    rather than a strict one.  Measured on the 2026-08-07 run: REIT 47 of 49 ejected (95.9%),
+    BalanceSheetFin 71.9%, against 58.4% on the general pool.  NOT a threshold problem: no level
+    makes a leverage bar a solvency reading on a mortgage vehicle."""
+    assert tuple(sv.VETO_POOLS) == ('general',)
+    src = {'BAD': {'uCurrentRatio': 0.5}, 'GOOD': {}}
+    scores = _scores(src)
+    for cohort in ('REIT', 'BalanceSheetFin', 'Mining', 'FinManager', 'InvestmentVehicle'):
+        kept, rep = sv.apply_veto(scores, _panel(src), pool_label=cohort, enabled=True)
+        assert kept is scores, (
+            '%s was vetoed. Out of scope must be a BIT-IDENTICAL no-op -- the same object, not '
+            'a filtered copy' % cohort)
+        assert rep['applies'] is False and rep['n_ejected'] == 0
+        assert rep['enabled'] is True, (
+            'the flag was ON; `applies` and `enabled` are different facts and collapsing them '
+            'would hide that the veto ran this run and DECLINED this pool')
+        assert rep['not_applicable_reason'], (
+            'a cohort with n_ejected == 0 and no reason reads as "the veto found it clean". '
+            'The reason is what stops that')
+    #  ...and the general pool is unaffected by the scoping.
+    kept, rep = sv.apply_veto(scores, _panel(src), pool_label='general', enabled=True)
+    assert list(kept['source']) == ['GOOD'] and rep['applies'] is True
+
+
+def test_scope_is_reported_even_when_the_flag_is_OFF():
+    """`applies` must be present on every report shape, or a reader has to know which of two
+    keys to look for depending on a flag they cannot see from the CSV."""
+    src = {'BAD': {'uCurrentRatio': 0.5}}
+    _kept, rep = sv.apply_veto(_scores(src), _panel(src), pool_label='REIT')
+    assert rep['enabled'] is False and rep['applies'] is False
+
+
+def test_the_pools_override_lets_an_offline_AB_measure_a_cohort_without_mutating_globals():
+    """How the per-cohort ejection rates in the module docstring were measured, and the same
+    polarity as `enabled=`: research never mutates module state."""
+    src = {'BAD': {'uCurrentRatio': 0.5}, 'GOOD': {}}
+    kept, rep = sv.apply_veto(_scores(src), _panel(src), pool_label='REIT', enabled=True,
+                              pools=('general', 'REIT'))
+    assert list(kept['source']) == ['GOOD'] and rep['applies'] is True
+    assert tuple(sv.VETO_POOLS) == ('general',), 'the override mutated module state'
