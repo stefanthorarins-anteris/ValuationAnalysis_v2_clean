@@ -582,6 +582,90 @@ def regressMetricsOnROR(rankdic):
     print("coefreg:", tuple(zip(regressors, coef.tolist()[0])))
     return None
 
+def _veto_provenance(resdic):
+    """The `stage1_veto` block of the run-provenance sidecar.  NEVER raises, ALWAYS returns.
+
+    THE DEFECT THIS CLOSES (CEO, 2026-08-07).  The veto is now ON by default for the general
+    pool, and it ejects 58.4% of that pool.  Nothing in the artifacts said whether it ran: two
+    runs -- one vetoed, one not -- produced deliverables that were INDISTINGUISHABLE on the one
+    axis that changed the pool, so a reader had no way to know which regime produced a top-100.
+    Turning the flag on is exactly what makes that unacceptable: while the default was OFF, the
+    flip itself was the visible event; with the default ON, the ARTIFACT has to carry it.
+
+    READ FROM THE RUN'S OWN REPORTS (`resdic['stage1_veto']`, one per pool, produced by
+    `apply_veto` while the pool was being gated), NOT from `stage1_veto.ENABLED` at write time.
+    Reading the module constant here would stamp what the code says NOW rather than what THIS
+    RUN did -- and on a `-loadboresults` run, where the scoring happened in a different process
+    (possibly with a different constant), that stamp would be a fabrication.  The parameters
+    (`WINDOW_ROWS` etc.) ARE read from the module, because they are not carried in the report;
+    they are labelled as such and are only meaningful alongside `status`.
+
+    THREE STATUSES, DELIBERATELY DISTINCT -- the whole point is that these must not collapse:
+      `applied` / `off`  the layer ran and reported; `by_pool` says what it did to each pool.
+      `did_not_run`      the guarded block in `postBoWrapper` caught an exception, so the pools
+                         are UN-VETOED. `n_ejected = 0` everywhere would say the same thing as a
+                         clean pool, so it is spelled out instead.
+      `unknown`          no report on `resdic` at all -- an older pickle re-emitted through
+                         `-loadboresults`, i.e. the veto state of that run is NOT establishable.
+                         An honest `unknown` beats a plausible default (see the universe stamp's
+                         `unknown-not-stamped`, same rule).
+    """
+    out = {}
+    try:
+        import stage1_veto as sv
+        out['params'] = {'window_rows': sv.WINDOW_ROWS,
+                         'fail_max_passes': sv.FAIL_MAX_PASSES,
+                         'eject_min_flags': sv.EJECT_MIN_FLAGS,
+                         'flags': sorted(sv.FLAGS),
+                         'params_read_from': 'stage1_veto module at write time, NOT from the run'}
+    except Exception as _e:
+        out['params'] = {'error': f'{type(_e).__name__}: {_e}'}
+
+    reports = resdic.get('stage1_veto')
+    if reports is None:
+        out.update(status='unknown', enabled=None, pools=None, by_pool=None,
+                   note=('this run carried NO veto report (pre-veto code, or a resdic loaded '
+                         'from an older pickle): whether a Stage-1 veto shaped these '
+                         'deliverables is NOT establishable from this run'))
+        return out
+    if not reports:
+        out.update(status='did_not_run', enabled=None, pools=None, by_pool={},
+                   note=('the guarded veto block RAISED: no pool was gated and every pool is '
+                         'UN-VETOED this run. See the WARNING in logs/. This is NOT the same '
+                         'as a veto that ran and ejected nobody'))
+        return out
+    try:
+        _gen = reports.get('general') or next(iter(reports.values()))
+        enabled = bool(_gen.get('enabled'))
+        #  Per pool: the four counts and the by-flag ejection breakdown the report already
+        #  computed, so this costs nothing to carry.  `applies` is kept per pool because
+        #  "out of scope here" and "gated and found clean" are different facts and both
+        #  show up as `n_ejected = 0`.  The per-source `ejected` / `short_window` lists are
+        #  NOT copied -- they live in the postRank pickle (also transferred), and the
+        #  sidecar is meant to stay readable.
+        by_pool = {}
+        for lab, r in sorted(reports.items()):
+            by_pool[lab] = {'applies': bool(r.get('applies')),
+                            'n_in': r.get('n_in'), 'n_ejected': r.get('n_ejected'),
+                            'n_out': r.get('n_out'),
+                            'ejected_by_flag': r.get('by_flag') or {},
+                            'abstained_by_flag': r.get('n_short_window') or {}}
+            if not r.get('applies'):
+                by_pool[lab]['not_applicable_reason'] = r.get('not_applicable_reason')
+        out.update(status='applied' if enabled else 'off', enabled=enabled,
+                   pools=sorted(l for l, r in reports.items() if r.get('applies')),
+                   pools_reported=sorted(reports), by_pool=by_pool)
+        if not enabled:
+            out['note'] = ('the veto was OFF this run: every pool was returned UNCHANGED and '
+                           'these deliverables are un-vetoed')
+    except Exception as _e:
+        #  The key is still emitted, carrying the failure -- dropping it would read as
+        #  "no veto", which is the one thing this block exists to prevent.
+        out.update(status='unknown', enabled=None, pools=None, by_pool=None,
+                   note=f'veto report present but unreadable ({type(_e).__name__}: {_e})')
+    return out
+
+
 def writeResWrapper(resdic):
     ntopagg = resdic['ntopagg']
     ntopxlsx = resdic['ntopxlsx']
@@ -805,6 +889,13 @@ def writeResWrapper(resdic):
             _prov['universe_symbols'] = list(resdic['universe_symbols'])
         _prov.update({'run_date': fidag, 'datasource': datasource,
                       'tickerfilter_flag': tickerfilter,
+                      #  WHICH VETO REGIME PRODUCED THESE FILES (CEO, 2026-08-07).  The
+                      #  universe keys above say WHICH NAMES WENT IN; this says which of them
+                      #  a gate then removed -- 58.4% of the general pool with the veto on.
+                      #  Without it, a vetoed and an un-vetoed run are indistinguishable on
+                      #  the one axis that changed the pool.  Never raises (see
+                      #  `_veto_provenance`), so it cannot cost the universe stamp.
+                      'stage1_veto': _veto_provenance(resdic),
                       'deliverables': list(deliverables)})
         if not _prov.get('universe_fingerprint'):
             _prov['universe_fingerprint'] = 'unknown-not-stamped'
@@ -814,9 +905,11 @@ def writeResWrapper(resdic):
         with open(fname_prov, 'w') as _f:
             _json.dump(_prov, _f, indent=1, default=str)
         deliverables = deliverables + [fname_prov]
+        _vp = _prov.get('stage1_veto') or {}
         print(f'Universe provenance sidecar written to: {fname_prov} '
               f"(universe={_prov.get('universe')} "
-              f"fingerprint={_prov.get('universe_fingerprint')})", flush=True)
+              f"fingerprint={_prov.get('universe_fingerprint')} "
+              f"stage1_veto={_vp.get('status')} pools={_vp.get('pools')})", flush=True)
     except Exception as _e:
         print(f'WARNING: universe-provenance sidecar skipped '
               f'({type(_e).__name__}: {_e}); deliverables unaffected.', flush=True)

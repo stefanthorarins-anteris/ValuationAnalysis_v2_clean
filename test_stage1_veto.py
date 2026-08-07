@@ -38,14 +38,27 @@ def _scores(sources):
     return pd.DataFrame({'source': list(sources), 'score': range(len(sources), 0, -1)})
 
 
-def test_flag_defaults_off_and_off_is_a_bit_identical_no_op():
-    """DEFAULT OFF IS NON-NEGOTIABLE -- with the flag off nothing may change."""
-    assert sv.ENABLED is False, (
-        'stage1_veto.ENABLED must ship False. The veto must never enter the gate silently; '
-        'turning it on is a visible one-line event.')
+def test_the_flag_ships_ON_for_the_general_pool_only():
+    """*** THE FLIP (CEO, 2026-08-07). ***  The layer is ON by default, scoped to the general
+    pool: 58.4% of that pool ejected, 5 of the top 100 moved.  Pinned as a PAIR -- `ENABLED`
+    alone would let a later edit widen `VETO_POOLS` and ship a cohort-wide veto by accident,
+    which is the combination the measured REIT rate (95.9%) rules out.
+
+    The old default-OFF assertion lived here and pinned the *visibility* rule -- "nothing ships
+    into the gate silently".  That rule is NOT dropped, it MOVED: it is now
+    `test_the_provenance_sidecar_records_the_veto_regime` (test_universes), because with the
+    default ON only the ARTIFACT can say which regime produced a top-100."""
+    assert sv.ENABLED is True
+    assert tuple(sv.VETO_POOLS) == ('general',)
+
+
+def test_off_is_still_a_bit_identical_no_op():
+    """The off path is no longer the default, so it is no longer exercised by accident -- which
+    is exactly why it keeps a test.  `enabled=False` must return THE SAME OBJECT: an A/B arm and
+    the fallback both depend on off meaning bit-identical, not merely equal."""
     src = {'BAD': {'uCurrentRatio': 0.5}, 'GOOD': {}}
     scores = _scores(src)
-    kept, rep = sv.apply_veto(scores, _panel(src))
+    kept, rep = sv.apply_veto(scores, _panel(src), enabled=False)
     assert kept is scores, 'with the flag off the input frame must be returned UNCHANGED'
     assert rep['enabled'] is False and rep['n_ejected'] == 0
 
@@ -275,11 +288,27 @@ def test_the_veto_runs_on_the_GENERAL_POOL_ALONE():
     assert list(kept['source']) == ['GOOD'] and rep['applies'] is True
 
 
+def test_the_cohorts_are_a_no_op_ON_THE_LIVE_CALL_with_no_enabled_argument():
+    """THE ONE THE FLIP PUTS AT RISK.  Every other scope test passes `enabled=True` explicitly;
+    `postBo` does NOT -- it calls `apply_veto(cs, bmdf, pool_label=lab)` and takes the module
+    default, which is now ON.  The CEO's 2026-08-07 ruling was SCOPE, not a softer application,
+    so the five cohorts must still take the object-identity no-op path on that exact call shape
+    and their side-lists must be byte-identical to a veto-off run."""
+    src = {'BAD': {'uCurrentRatio': 0.5}, 'GOOD': {}}
+    scores = _scores(src)
+    for cohort in ('REIT', 'BalanceSheetFin', 'Mining', 'FinManager', 'InvestmentVehicle'):
+        kept, rep = sv.apply_veto(scores, _panel(src), pool_label=cohort)
+        assert kept is scores, (
+            '%s was gated on the LIVE call shape. With ENABLED=True the module default reaches '
+            'the cohorts, and only VETO_POOLS stops it -- the same object must come back' % cohort)
+        assert rep['enabled'] is True and rep['applies'] is False and rep['n_ejected'] == 0
+
+
 def test_scope_is_reported_even_when_the_flag_is_OFF():
     """`applies` must be present on every report shape, or a reader has to know which of two
     keys to look for depending on a flag they cannot see from the CSV."""
     src = {'BAD': {'uCurrentRatio': 0.5}}
-    _kept, rep = sv.apply_veto(_scores(src), _panel(src), pool_label='REIT')
+    _kept, rep = sv.apply_veto(_scores(src), _panel(src), pool_label='REIT', enabled=False)
     assert rep['enabled'] is False and rep['applies'] is False
 
 

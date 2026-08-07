@@ -1431,6 +1431,81 @@ def test_the_provenance_sidecar_is_written_and_names_every_deliverable(tmp_path,
     assert prov['deliverables'], 'the sidecar must name the files it describes'
 
 
+def test_the_provenance_sidecar_records_the_veto_regime(tmp_path, monkeypatch):
+    """*** THE VISIBILITY RULE, AFTER THE FLIP (CEO, 2026-08-07). ***  The Stage-1 veto now
+    ships ON for the general pool and ejects 58.4% of it.  While its default was OFF, turning it
+    on WAS the visible event; with the default ON, only the artifact can say which regime
+    produced a top-100 -- and without this stamp a vetoed and an un-vetoed run are
+    INDISTINGUISHABLE on the one axis that changed the pool.  This test is where the old
+    `assert sv.ENABLED is False` guarantee went.
+
+    Also pins the distinction the counts alone cannot carry: a cohort the veto DECLINED to gate
+    (`applies=False`) versus one it gated and found clean.  Both show `n_ejected == 0`."""
+    import json
+    import postBo as pb
+    monkeypatch.chdir(tmp_path)
+    resdic = {
+        'ntopagg': 2, 'ntopxlsx': 2,
+        'postRank': pd.DataFrame({'source': ['A', 'B'], 'AggScore': [1.0, 0.5]}),
+        'cdx_df': pd.DataFrame({'source': ['A', 'B'], 'date': pd.Timestamp('2025-01-01')}),
+        'SLmeanMscore': pd.DataFrame(), 'SLmeanCscore': pd.DataFrame(),
+        'baseurl': 'http://x/', 'api_key': 'k',
+        'tickerfilter': 'stock_TEST1', 'datasource': 'fmp',
+        'universe': 'stock_TEST1',
+        'universe_fingerprint': un.definition_fingerprint('stock_TEST1'),
+        'stage1_veto': {
+            'general': {'pool': 'general', 'enabled': True, 'applies': True,
+                        'not_applicable_reason': None, 'n_in': 1545, 'n_ejected': 902,
+                        'n_out': 643, 'by_flag': {'uCurrentRatio': 300},
+                        'ejected': ['UHS'], 'n_short_window': {'uInterestCoverage': 400},
+                        'short_window': {'UHS': {'uInterestCoverage': 2}}},
+            'REIT': {'pool': 'REIT', 'enabled': True, 'applies': False,
+                     'not_applicable_reason': 'structurally undefined on this cohort',
+                     'n_in': 49, 'n_ejected': 0, 'n_out': 49, 'by_flag': {},
+                     'ejected': [], 'n_short_window': {}, 'short_window': {}},
+        },
+    }
+    monkeypatch.setattr(pb, 'writeBoAggToCSV', lambda *a, **k: None)
+    monkeypatch.setattr(pb.ff, 'buildForensicFlagTable', lambda *a, **k: pd.DataFrame())
+    monkeypatch.setattr(pb.ff, 'writeForensicFlagsCSV', lambda *a, **k: None)
+    monkeypatch.setattr(pb, 'createPresentation', lambda *a, **k: None, raising=False)
+    try:
+        pb.writeResWrapper(resdic)
+    except Exception:
+        pass                     # later stages need far more of the pipeline; irrelevant
+    hits = sorted(tmp_path.glob('RunProvenance-*_fmp_stock_TEST1.json'))
+    assert hits, 'no provenance sidecar was written'
+    prov = json.load(open(hits[0]))
+    v = prov['stage1_veto']
+    assert v['status'] == 'applied' and v['enabled'] is True
+    assert v['pools'] == ['general'], 'the sidecar must name the pools the veto actually gated'
+    assert v['by_pool']['general']['n_in'] == 1545
+    assert v['by_pool']['general']['n_ejected'] == 902
+    assert v['by_pool']['general']['ejected_by_flag'] == {'uCurrentRatio': 300}
+    assert v['by_pool']['REIT']['applies'] is False
+    assert v['by_pool']['REIT']['not_applicable_reason'], (
+        'a cohort with n_ejected == 0 and no reason reads as "the veto found it clean"')
+    assert v['params']['window_rows'] == 8 and v['params']['eject_min_flags'] == 1
+    #  Not carried: the per-source lists live in the postRank pickle (also transferred).
+    assert 'ejected' not in v['by_pool']['general']
+
+
+def test_the_veto_stamp_tells_did_not_run_apart_from_ejected_nobody():
+    """THREE STATUSES THAT MUST NOT COLLAPSE.  `did_not_run` (the guarded block raised, so the
+    pools are UN-VETOED) and `unknown` (an older resdic that carries no report at all) would
+    both otherwise be readable as "the veto ran and found nothing" -- the exact confusion the
+    stamp exists to stop.  Neither may raise: the key must survive to say it does not know."""
+    import postBo as pb
+    assert pb._veto_provenance({'stage1_veto': {}})['status'] == 'did_not_run'
+    assert pb._veto_provenance({})['status'] == 'unknown'
+    off = pb._veto_provenance({'stage1_veto': {
+        'general': {'enabled': False, 'applies': True, 'n_in': 5, 'n_ejected': 0, 'n_out': 5}}})
+    assert off['status'] == 'off' and off['enabled'] is False
+    #  A malformed report is reported as unknown, never dropped -- a missing key reads as
+    #  "no veto", which is a claim this run cannot make.
+    assert pb._veto_provenance({'stage1_veto': {'general': 'not a dict'}})['status'] == 'unknown'
+
+
 def test_the_sidecar_is_gitignored_because_it_names_universe_members():
     here = os.path.dirname(os.path.abspath(un.__file__))
     gi = open(os.path.join(here, '.gitignore'), encoding='utf-8').read()

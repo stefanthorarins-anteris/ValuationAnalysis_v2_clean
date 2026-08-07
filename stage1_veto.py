@@ -94,16 +94,29 @@ flag and all for one benign reason.  A veto that silently declined to evaluate a
 would otherwise be indistinguishable from one that found it clean.  See
 design/stage1-veto-decisions.md.
 
-BEHIND A FLAG, DEFAULT OFF -- NON-NEGOTIABLE
---------------------------------------------
-`ENABLED = False`.  With the flag off `apply_veto` is a NO-OP that returns its input unchanged,
-so current pipeline behaviour is BIT-IDENTICAL.  Two reasons, both the CEO's:
-  * it can be A/B'd OFFLINE from saved pickles without touching a shipped run, and
-  * nothing ships into the gate silently.  Turning it on is a visible, single-line event.
+BEHIND A FLAG -- NOW ON, AND WHAT CARRIES THE VISIBILITY INSTEAD  (CEO, 2026-08-07)
+-----------------------------------------------------------------------------------
+`ENABLED = True`.  The CEO turned the layer ON deliberately on 2026-08-07, for the GENERAL POOL
+ONLY (`VETO_POOLS`), on the evidence measured below: it ejects 58.4% of the general pool but
+moves only 5 of the top 100.  Register C-9 (the veto had never been evaluated on real data)
+closes on that measurement.
 
-Set it by assigning the module attribute (`import stage1_veto as sv; sv.ENABLED = True`) or by
-passing `enabled=True` to `apply_veto` -- an explicit argument always wins over the module
-default, so a research script never has to mutate global state.
+THE DEFAULT USED TO BE `False`, and the reason it was is worth keeping because the flip does NOT
+delete the requirement, it MOVES it.  Default-OFF bought two things: an OFFLINE A/B from saved
+pickles without touching a shipped run -- still true, `enabled=`/`pools=` override per call and
+never mutate module state -- and, the real one, that *nothing ships into the gate silently*: with
+the default OFF, turning it on was a visible single-line event.  DEFAULT-ON GIVES THAT UP, so
+the visibility is now carried by the ARTIFACT rather than by the default: `postBo` stamps
+`stage1_veto` into `RunProvenance-<date>_<ds>_<filter>.json` -- enabled, pools, the three
+parameters and the per-pool in/ejected/out counts -- from the RUN'S OWN reports, not from this
+module's constants.  A run therefore states which veto regime produced its top-100, which is the
+property that actually mattered; a silent flip is now detectable from the deliverables alone,
+which it never was under default-OFF.  IF YOU EVER MOVE THIS FLAG AGAIN, CHECK THAT STAMP STILL
+FIRES -- it, not the default, is what stops two runs with different pools looking identical.
+
+Override per call by passing `enabled=` to `apply_veto` (an explicit argument always wins over
+the module default, so a research script never has to mutate global state), or by assigning the
+module attribute (`import stage1_veto as sv; sv.ENABLED = False`).
 
 WHERE IT RUNS -- THE GENERAL POOL ONLY  (CEO, 2026-08-07; supersedes the all-six-pools rule)
 --------------------------------------------------------------------------------------------
@@ -161,8 +174,10 @@ not a revival of it and must not be merged with it.
 import numpy as np
 import pandas as pd
 
-#  --- THE FLAG.  DEFAULT OFF.  See the module docstring. --------------------------------
-ENABLED = False
+#  --- THE FLAG.  ON since 2026-08-07 (CEO), general pool only.  See the module docstring for
+#  what replaced default-OFF as the "nothing ships into the gate silently" guarantee: the
+#  `stage1_veto` block in RunProvenance-*.json, written from the run's own per-pool reports.
+ENABLED = True
 
 #  --- WHICH POOLS IT MAY RUN ON (CEO, 2026-08-07) ---------------------------------------
 #  THE GENERAL POOL ALONE.  Two of the five flags (`uCurrentRatio`, `netDebtToEBITDA`) are
@@ -337,9 +352,10 @@ def apply_veto(scores_df, bm_df, pool_label='general', enabled=None, verbose=Tru
     `scores_df` is a Stage-1 score frame carrying a `source` column (`BoScore_df` or a carve-out
     cohort's slice of it); `bm_df` is the panel those scores were computed from.
 
-    OFF BY DEFAULT AND BIT-IDENTICAL WHEN OFF: with `enabled` falsy the input frame is returned
-    UNCHANGED (the same object, not a copy) and `report['enabled']` is False.  An explicit
-    `enabled=` argument overrides the module flag so a research script never mutates globals.
+    BIT-IDENTICAL WHEN OFF: with `enabled` falsy the input frame is returned UNCHANGED (the same
+    object, not a copy) and `report['enabled']` is False.  The module default is ON since
+    2026-08-07 (CEO); an explicit `enabled=` argument overrides it so a research script never
+    mutates globals.
 
     GENERAL POOL ONLY: when `pool_label` is not in `VETO_POOLS` the input frame is likewise
     returned UNCHANGED, with `report['applies'] = False` and `report['not_applicable_reason']`
