@@ -1,10 +1,19 @@
 """Targeted tests for the Stage-1 red-flag veto (stage1_veto, CEO 2026-08-05).
 
-WHAT IS PINNED HERE, and nothing else: the flag's DEFAULT-OFF no-op, the GENERAL-POOL-ONLY scope
-(CEO 2026-08-07), the `<=1 of 8` fail definition at both boundaries, `k >= 1` ejection, the
-per-pool report, and the refusal to run on a panel that lacks a flag column.  No pass rate and no panel measurement -- the veto has never
-been run on real data (it cannot be: no saved pickle carries `uInterestCoverage`), and a test
-that asserted a rate would be asserting a number nobody has measured.
+WHAT IS PINNED HERE, and nothing else: the flag's ON default, the FIVE-POOL scope with each
+cohort's FLAG SET (CEO 2026-08-07, second ruling), the `<=1 of 8` fail definition at both
+boundaries, `k >= 1` ejection, the per-pool report, the per-flag evidence floor, and the way a
+panel that lacks a cohort's column degrades.  No pass rate and no panel measurement -- a test
+that asserted a rate would be asserting a number nobody has re-measured since the flag sets.
+
+*** THE SCOPE ASSERTIONS ARE PINS, AND THEY WERE RE-AUTHORED, NOT DELETED (2026-08-07). ***
+Seven tests here asserted the PREVIOUS contract -- `VETO_POOLS == ('general',)`, the cohorts as
+no-ops, a missing column RAISING -- and they failed the moment the CEO widened the scope.  That
+is those tests doing their job: they exist so scope cannot widen without a visible decision.
+They now pin the NEW contract, in the SAME shape and with the SAME purpose.  Each replacement was
+verified to FAIL against the pre-widening module (`git show HEAD:stage1_veto.py`), because a pin
+that passes under both contracts is not a pin -- and two tests in this repo have already been
+caught pinning the defect they covered.
 """
 
 import numpy as np
@@ -13,15 +22,29 @@ import pytest
 
 import stage1_veto as sv
 
+#  THE FIVE COHORT LABELS the carve-out emits, and the ONE that is out of scope.  Named once so a
+#  pool added to `VETO_POOLS` without a decision here shows up as a failure rather than as a
+#  cohort nobody remembered to test.
+_IN_SCOPE = ('general', 'REIT', 'Mining', 'FinManager', 'BalanceSheetFin')
+_OUT_OF_SCOPE = ('InvestmentVehicle',)
+
 
 def _panel(sources):
     """A minimal BoMetric-shaped panel.  `sources` = {ticker: {column: [8 newest-first values]}}.
 
     Any flag column not given is filled with a healthy passing value, so each test only states
     the flag it is about.
+
+    CARRIES THE FOUR COHORT COLUMNS TOO (2026-08-07).  No saved panel does yet -- they are built
+    from `ebitda` / `cashAndCashEquivalents`, captured only from the 2026-08-05 fetch change on --
+    so a cohort test run on a five-column panel would pass VACUOUSLY down the `missing_columns`
+    no-op and prove nothing about the flag set it claims to test.  The degradation ITSELF is
+    pinned separately, on a panel with the column explicitly dropped.
     """
     healthy = {'returnOnAssets': 0.05, 'CFOlessEarnings': 10.0, 'uCurrentRatio': 2.0,
-               'netDebtToEBITDA': 0.75, 'uInterestCoverage': 5.0}
+               'netDebtToEBITDA': 0.75, 'uInterestCoverage': 5.0,
+               'reitEbitdaInterestCoverage': 3.0, 'producerEbitdaPositive': 100.0,
+               'cashRunwayOneYear': 250.0, 'equityPositive': 500.0}
     rows = []
     for src, cols in sources.items():
         for i in range(sv.WINDOW_ROWS):
@@ -38,18 +61,50 @@ def _scores(sources):
     return pd.DataFrame({'source': list(sources), 'score': range(len(sources), 0, -1)})
 
 
-def test_the_flag_ships_ON_for_the_general_pool_only():
-    """*** THE FLIP (CEO, 2026-08-07). ***  The layer is ON by default, scoped to the general
-    pool: 58.4% of that pool ejected, 5 of the top 100 moved.  Pinned as a PAIR -- `ENABLED`
-    alone would let a later edit widen `VETO_POOLS` and ship a cohort-wide veto by accident,
-    which is the combination the measured REIT rate (95.9%) rules out.
+def test_the_flag_ships_ON_and_the_scope_is_pinned_as_POOL_PLUS_FLAG_SET_PAIRS():
+    """*** THE SCOPE PIN, RE-AUTHORED FOR THE FIVE-POOL CONTRACT (CEO, 2026-08-07). ***
 
-    The old default-OFF assertion lived here and pinned the *visibility* rule -- "nothing ships
-    into the gate silently".  That rule is NOT dropped, it MOVED: it is now
-    `test_the_provenance_sidecar_records_the_veto_regime` (test_universes), because with the
-    default ON only the ARTIFACT can say which regime produced a top-100."""
+    This test used to assert `VETO_POOLS == ('general',)` and it FAILED when the CEO widened the
+    scope -- which is the test working, not breaking.  What it must keep doing is stop the scope
+    widening SILENTLY, and after the flag sets a pool name alone no longer says what the veto
+    does there: the same label with a different flag set is a different gate.  So the pin is now
+    the PAIR, pool by pool, exhaustively.
+
+    THE PAIRING IS THE POINT.  Asserting `VETO_POOLS` alone would let someone add
+    `uCurrentRatio` back to REIT -- the flag measured at 97.0% ejected on that cohort -- without
+    a single test moving.  Asserting the flag sets alone would let a pool be added to
+    `VETO_POOLS` and gated by `pool_flags`'s general-set default.  Both directions are closed
+    here, and the last assertion closes the third: a pool no longer in either list.
+    """
     assert sv.ENABLED is True
-    assert tuple(sv.VETO_POOLS) == ('general',)
+    assert tuple(sv.VETO_POOLS) == ('general', 'REIT', 'Mining', 'FinManager',
+                                    'BalanceSheetFin')
+    #  Each cohort's set is the flags claimed DEFINED on its balance sheet -- every one a unity
+    #  or a sign test, no cohort-specific threshold anywhere.
+    assert {p: sorted(sv.pool_flags(p)) for p in sv.VETO_POOLS} == {
+        'general': ['CFOlessEarnings', 'netDebtToEBITDA', 'returnOnAssets',
+                    'uCurrentRatio', 'uInterestCoverage'],
+        #  Gone: uCurrentRatio + netDebtToEBITDA (structurally undefined on a mortgage vehicle)
+        #  AND returnOnAssets + CFOlessEarnings (depreciation of appreciating buildings /
+        #  unrealised revaluation gains inside net income).  What replaces them is the one
+        #  solvency question a rent-collector answers.
+        'REIT': ['reitEbitdaInterestCoverage'],
+        'Mining': ['CFOlessEarnings', 'cashRunwayOneYear', 'equityPositive',
+                   'producerEbitdaPositive', 'returnOnAssets', 'uInterestCoverage'],
+        'FinManager': ['CFOlessEarnings', 'returnOnAssets', 'uInterestCoverage'],
+        #  ONE flag: a bank that cannot earn on its own asset base fails at the only thing its
+        #  asset base is for.  `ebitda / interestExpense` is deliberately NOT copied from REIT --
+        #  it fails 40 of 125 here (RBC, TD, Scotiabank, BMO, ...) because interest expense is a
+        #  bank's COST OF GOODS, not its debt service.
+        'BalanceSheetFin': ['returnOnAssets'],
+    }
+    #  `general` must be the SAME OBJECT as `FLAGS`, not a copy, so the general pool cannot drift
+    #  from the five-flag set the module docstring describes.
+    assert sv.POOL_FLAGS['general'] is sv.FLAGS
+    #  And the six carve-out cohorts are exhaustively accounted for: in scope, or ruled out BY
+    #  NAME with a reason.  A seventh pool appearing in neither list fails here.
+    assert set(_IN_SCOPE) | set(_OUT_OF_SCOPE) == set(sv.VETO_POOLS) | set(
+        sv.NOT_APPLICABLE_REASONS)
 
 
 def test_off_is_still_a_bit_identical_no_op():
@@ -128,11 +183,58 @@ def test_netDebtToEBITDA_flag_reads_the_verdict_column_not_a_ratio():
                               enabled=True)[0]['source']) == []
 
 
-def test_missing_flag_column_raises_rather_than_vetoing_on_a_subset():
+def test_a_missing_flag_column_DECLINES_THE_POOL_rather_than_raising():
+    """*** RE-AUTHORED (2026-08-07).  This test used to assert `pytest.raises(KeyError)`. ***
+
+    RAISING WAS RIGHT WHEN EVERY FLAG COLUMN EXISTED ON EVERY PANEL, and it stopped the veto
+    running on a SUBSET of its flags -- a weaker gate shipping under the same name.  The cohort
+    flag sets broke that premise: they name columns (`reitEbitdaInterestCoverage`,
+    `producerEbitdaPositive`, `cashRunwayOneYear`, `equityPositive`) that only a fetch made after
+    the 2026-08-05 capture change can build, so on today's panel REIT and Mining CANNOT be
+    evaluated.  `postBo` wraps the veto in ONE guard, so a raise there would have taken every
+    pool down together -- one stale column would have produced an entirely UN-VETOED run.
+
+    THE SUBSTANTIVE HALF IS UNCHANGED AND IS STILL WHAT THIS TEST IS FOR: the veto still never
+    gates on a subset of its flags.  It declines the POOL instead, loudly, and the decline must
+    not be readable as a clean cohort -- which is the failure mode `n_ejected == 0` invites.
+    """
+    for pool, dropped in (('general', 'uInterestCoverage'),
+                          ('REIT', 'reitEbitdaInterestCoverage')):
+        src = {'BAD': {'uCurrentRatio': 0.5, 'reitEbitdaInterestCoverage': 0.5}, 'GOOD': {}}
+        scores = _scores(src)
+        panel = _panel(src).drop(columns=[dropped])
+        kept, rep = sv.apply_veto(scores, panel, pool_label=pool, enabled=True)
+        assert kept is scores, (
+            '%s must be a BIT-IDENTICAL no-op when the panel cannot carry its gate -- the same '
+            'object, not a filtered copy' % pool)
+        assert rep['applies'] is False and rep['enabled'] is True, (
+            'the flag was ON and the pool IS in scope; collapsing `applies` into `enabled` would '
+            'hide that the veto ran this run and could not evaluate this pool')
+        assert rep['missing_columns'] == [dropped], (
+            'the MISSING COLUMN must be named. "we chose not to gate this cohort" and "this '
+            'panel cannot carry the gate" are different facts and only one is fixed by '
+            're-fetching -- a bare `applies=False` cannot tell them apart')
+        assert rep['n_ejected'] == 0 and rep['by_flag'] == {}
+        #  ...and the report must SAY it is not a clean bill of health.
+        assert 'NOT thereby certified clean' in rep['not_applicable_reason']
+        assert 'RE-FETCH' in rep['not_applicable_reason']
+
+
+def test_an_out_of_scope_pool_and_a_stale_panel_are_DIFFERENT_reports():
+    """The two `applies=False` channels must stay distinguishable, or "we declined this cohort"
+    and "re-fetch and this cohort works" collapse into one unreadable state.  `missing_columns`
+    is the discriminator and it is EMPTY on the out-of-scope path."""
     src = {'X': {}}
-    panel = _panel(src).drop(columns=['uInterestCoverage'])
-    with pytest.raises(KeyError, match='missing'):
-        sv.apply_veto(_scores(src), panel, enabled=True)
+    _kept, out_of_scope = sv.apply_veto(_scores(src), _panel(src),
+                                        pool_label='InvestmentVehicle', enabled=True)
+    _kept, stale = sv.apply_veto(_scores(src),
+                                 _panel(src).drop(columns=['reitEbitdaInterestCoverage']),
+                                 pool_label='REIT', enabled=True)
+    assert out_of_scope['applies'] is False and stale['applies'] is False
+    assert out_of_scope['missing_columns'] == [], (
+        'an out-of-scope pool has no missing column -- re-fetching would not put it in scope')
+    assert stale['missing_columns'] == ['reitEbitdaInterestCoverage']
+    assert out_of_scope['not_applicable_reason'] != stale['not_applicable_reason']
 
 
 #  ---- A SHORT WINDOW MUST NEVER EJECT  (reviewer, 2026-08-05) ------------------------- #
@@ -246,11 +348,46 @@ def test_the_benign_field_needs_a_FULL_window_of_admissible_rows_to_fail():
     assert list(sv.apply_veto(_scores(src), _panel(src), enabled=True)[0]['source']) == []
 
 
-def test_every_flag_has_an_explicit_evidence_ruling():
-    """A flag added without a ruling would KeyError at evaluation time; caught here instead,
-    and it forces the ruling to be a decision rather than a default."""
-    assert set(sv.FIELD_EVIDENCE) == set(sv.FLAGS)
+def test_every_flag_IN_EVERY_POOL_has_an_explicit_evidence_ruling():
+    """*** RE-AUTHORED (2026-08-07).  This used to be `set(FIELD_EVIDENCE) == set(FLAGS)`. ***
+
+    That was the whole flag universe when `FLAGS` was the whole flag universe.  With per-cohort
+    sets the ruled set must cover EVERY pool's flags -- a cohort column added with no ruling
+    would KeyError deep inside `_evaluate`, which `postBo`'s single guard turns into an entirely
+    un-vetoed run: a missing RULING would present as a missing VETO.
+
+    BOTH DIRECTIONS.  An UNRULED flag is the defect; an ORPHAN ruling is a ruling for a field
+    nothing evaluates, which is how a stale rationale outlives the flag it described.
+    """
+    used = {c for f in sv.POOL_FLAGS.values() for c in f}
+    assert used >= set(sv.FLAGS), 'the general set must be part of the used universe'
+    assert set(sv.FIELD_EVIDENCE) == used, (
+        'FIELD_EVIDENCE and the union of POOL_FLAGS have drifted: %s' %
+        sorted(set(sv.FIELD_EVIDENCE) ^ used))
     assert set(sv.FIELD_EVIDENCE.values()) <= {'counts', 'not_evidence'}
+    #  The two BENIGN rulings, pinned by name.  Both are the same measured defect in two fields
+    #  (a refusal read as an adverse verdict), and re-ruling either to `counts` would eject a
+    #  population for a property that is not a red flag -- debt-free names, and pre-production
+    #  explorers.  The other seven are `counts` and must stay so.
+    assert {k for k, v in sv.FIELD_EVIDENCE.items() if v == 'not_evidence'} == {
+        'uInterestCoverage', 'reitEbitdaInterestCoverage', 'producerEbitdaPositive'}
+
+
+def test_the_evidence_ruling_check_fires_AT_IMPORT_and_names_the_unruled_flag():
+    """*** THE GUARD ITSELF, not just its current result. ***  The assertion above says today's
+    dicts agree; this says the MODULE REFUSES TO LOAD if they ever stop agreeing.  That
+    distinction is the whole value of an import-time check -- it is what stops an unruled flag
+    reaching a 12-hour fetch.
+
+    Exercised by loading the module's own source with ONE unruled flag injected into `FLAGS`
+    (which `POOL_FLAGS['general']` IS), rather than by trusting the code to be there.
+    """
+    src = open(sv.__file__, encoding='utf-8', errors='replace').read()
+    injected = src.replace("FLAGS = {\n",
+                           "FLAGS = {\n    'aFlagNobodyRuledOn': lambda s: s > 0,\n", 1)
+    assert injected != src, 'the FLAGS literal moved -- this test is no longer injecting anything'
+    with pytest.raises(KeyError, match='aFlagNobodyRuledOn'):
+        exec(compile(injected, sv.__file__, 'exec'), {'__name__': 'stage1_veto_injected'})
 
 
 def test_report_is_per_pool_and_counts_pre_veto_input():
@@ -260,18 +397,53 @@ def test_report_is_per_pool_and_counts_pre_veto_input():
     assert rep['n_in'] == 2, 'n_in must be the PRE-veto count, or a pool looks like it ejected 0'
 
 
-#  ---- GENERAL POOL ONLY  (CEO, 2026-08-07) -------------------------------------------- #
-def test_the_veto_runs_on_the_GENERAL_POOL_ALONE():
-    """*** THE SCOPE RULING. ***  `uCurrentRatio > 1` and `netDebtToEBITDA` are STRUCTURALLY
-    UNDEFINED on the leveraged-vehicle and bank cohorts -- a REIT carries mortgage debt at 5-8x
-    EBITDA by design and holds no current assets -- so the veto asks the WRONG QUESTION there
-    rather than a strict one.  Measured on the 2026-08-07 run: REIT 47 of 49 ejected (95.9%),
-    BalanceSheetFin 71.9%, against 58.4% on the general pool.  NOT a threshold problem: no level
-    makes a leverage bar a solvency reading on a mortgage vehicle."""
-    assert tuple(sv.VETO_POOLS) == ('general',)
+#  ---- FIVE POOLS, EACH ON ITS OWN FLAG SET  (CEO, 2026-08-07, second ruling) ----------- #
+def test_the_veto_GATES_the_five_pools_and_InvestmentVehicle_ALONE_is_out_of_scope():
+    """*** RE-AUTHORED (2026-08-07).  This used to assert every cohort was a no-op. ***
+
+    The previous ruling scoped the veto to `general` because `uCurrentRatio > 1` and
+    `netDebtToEBITDA` are STRUCTURALLY UNDEFINED on leveraged-vehicle and bank cohorts (REIT
+    ejected 95.9%).  It was right about the DEFECT and wrong about the REMEDY: the flags were the
+    problem, not the idea of vetoing a cohort.  Removing those two ALONE took REIT from 97.0% to
+    23.9% and FinManager from 44.2% to 3.8%.
+
+    So the assertion inverts -- the cohorts GATE now -- and the property it protects does not: a
+    pool the veto declines must never be readable as a pool it found clean.  That is what the
+    `InvestmentVehicle` arm is for, and it is the only cohort still on it.
+    """
+    #  Each cohort is ejected by a flag from ITS OWN set, which is what proves the per-pool
+    #  lookup ran rather than the general set being applied five times.
+    for cohort, bad_col in (('general', 'uCurrentRatio'),
+                            ('REIT', 'reitEbitdaInterestCoverage'),
+                            ('Mining', 'cashRunwayOneYear'),
+                            ('FinManager', 'uInterestCoverage'),
+                            ('BalanceSheetFin', 'returnOnAssets')):
+        src = {'BAD': {bad_col: -0.5}, 'GOOD': {}}
+        kept, rep = sv.apply_veto(_scores(src), _panel(src), pool_label=cohort, enabled=True)
+        assert rep['applies'] is True and rep['missing_columns'] == []
+        assert list(kept['source']) == ['GOOD'], (
+            '%s must gate on %s -- it is in that pool\'s ruled flag set' % (cohort, bad_col))
+        assert rep['by_flag'] == {bad_col: 1}
+
+    #  ...and a flag that is NOT in a cohort's set must not gate it.  This is the subtractive
+    #  half of the fix, and without it the test above passes on a veto that runs the general set
+    #  everywhere.
+    for cohort, dropped_col in (('REIT', 'uCurrentRatio'),
+                                ('REIT', 'returnOnAssets'),
+                                ('BalanceSheetFin', 'netDebtToEBITDA'),
+                                ('FinManager', 'uCurrentRatio'),
+                                ('Mining', 'netDebtToEBITDA')):
+        src = {'X': {dropped_col: -0.5}}
+        kept, rep = sv.apply_veto(_scores(src), _panel(src), pool_label=cohort, enabled=True)
+        assert list(kept['source']) == ['X'], (
+            '%s was ejected from %s by %s, which is NOT in that cohort\'s ruled flag set -- the '
+            'general set is being applied to a cohort' % ('X', cohort, dropped_col))
+
+    #  THE ONE POOL STILL OUT OF SCOPE.  Not for the structurally-undefined reason: n = 15 and
+    #  nothing in it fails the statutory asset-coverage test, so there is no ejection to make.
     src = {'BAD': {'uCurrentRatio': 0.5}, 'GOOD': {}}
     scores = _scores(src)
-    for cohort in ('REIT', 'BalanceSheetFin', 'Mining', 'FinManager', 'InvestmentVehicle'):
+    for cohort in _OUT_OF_SCOPE:
         kept, rep = sv.apply_veto(scores, _panel(src), pool_label=cohort, enabled=True)
         assert kept is scores, (
             '%s was vetoed. Out of scope must be a BIT-IDENTICAL no-op -- the same object, not '
@@ -280,43 +452,261 @@ def test_the_veto_runs_on_the_GENERAL_POOL_ALONE():
         assert rep['enabled'] is True, (
             'the flag was ON; `applies` and `enabled` are different facts and collapsing them '
             'would hide that the veto ran this run and DECLINED this pool')
-        assert rep['not_applicable_reason'], (
+        assert 'NOT thereby certified clean' in (rep['not_applicable_reason'] or ''), (
             'a cohort with n_ejected == 0 and no reason reads as "the veto found it clean". '
             'The reason is what stops that')
-    #  ...and the general pool is unaffected by the scoping.
-    kept, rep = sv.apply_veto(scores, _panel(src), pool_label='general', enabled=True)
-    assert list(kept['source']) == ['GOOD'] and rep['applies'] is True
+        assert 'ASC 946' in rep['not_applicable_reason'], (
+            'the reason must be THIS pool\'s, not a borrowed REIT/bank rationale -- that '
+            'substitution is the failure the per-pool split exists to stop')
 
 
-def test_the_cohorts_are_a_no_op_ON_THE_LIVE_CALL_with_no_enabled_argument():
-    """THE ONE THE FLIP PUTS AT RISK.  Every other scope test passes `enabled=True` explicitly;
-    `postBo` does NOT -- it calls `apply_veto(cs, bmdf, pool_label=lab)` and takes the module
-    default, which is now ON.  The CEO's 2026-08-07 ruling was SCOPE, not a softer application,
-    so the five cohorts must still take the object-identity no-op path on that exact call shape
-    and their side-lists must be byte-identical to a veto-off run."""
-    src = {'BAD': {'uCurrentRatio': 0.5}, 'GOOD': {}}
+def test_InvestmentVehicle_is_a_no_op_ON_THE_LIVE_CALL_with_no_enabled_argument():
+    """*** RE-AUTHORED (2026-08-07).  This used to run all five cohorts down the no-op path. ***
+
+    THE CALL SHAPE IS THE POINT AND IT IS UNCHANGED.  Every other scope test passes
+    `enabled=True` explicitly; `postBo` does NOT -- it calls `apply_veto(cs, bmdf,
+    pool_label=lab)` and takes the module default.  So the module default is the only thing
+    standing between a cohort and the gate on the LIVE path, and this test runs that exact shape.
+
+    What changed is which cohorts must come back untouched: `InvestmentVehicle` alone.  The other
+    four are asserted here to GATE on the same bare call, because a scope widening that somehow
+    only took effect when `enabled=` was passed explicitly would be a live/offline divergence.
+    """
+    src = {'BAD': {'uCurrentRatio': 0.5, 'reitEbitdaInterestCoverage': 0.5}, 'GOOD': {}}
     scores = _scores(src)
-    for cohort in ('REIT', 'BalanceSheetFin', 'Mining', 'FinManager', 'InvestmentVehicle'):
+    for cohort in _OUT_OF_SCOPE:
         kept, rep = sv.apply_veto(scores, _panel(src), pool_label=cohort)
         assert kept is scores, (
             '%s was gated on the LIVE call shape. With ENABLED=True the module default reaches '
-            'the cohorts, and only VETO_POOLS stops it -- the same object must come back' % cohort)
+            'every pool, and only VETO_POOLS stops it -- the same object must come back' % cohort)
         assert rep['enabled'] is True and rep['applies'] is False and rep['n_ejected'] == 0
+    for cohort in _IN_SCOPE:
+        kept, rep = sv.apply_veto(scores, _panel(src), pool_label=cohort)
+        assert rep['enabled'] is True and rep['applies'] is True, (
+            '%s did not gate on the bare live call -- the scope must not depend on an explicit '
+            '`enabled=` argument' % cohort)
+        assert kept is not scores
 
 
 def test_scope_is_reported_even_when_the_flag_is_OFF():
     """`applies` must be present on every report shape, or a reader has to know which of two
-    keys to look for depending on a flag they cannot see from the CSV."""
+    keys to look for depending on a flag they cannot see from the CSV.
+
+    RE-AUTHORED ONLY IN ITS ARMS (2026-08-07): `REIT` is now IN scope, so it no longer
+    demonstrates the out-of-scope shape.  BOTH shapes are now pinned -- an in-scope pool with the
+    flag off (`enabled=False`, `applies=True`) and an out-of-scope one (both False) -- because
+    the two fields being INDEPENDENT is the property, and one arm cannot show that.
+    """
     src = {'BAD': {'uCurrentRatio': 0.5}}
     _kept, rep = sv.apply_veto(_scores(src), _panel(src), pool_label='REIT', enabled=False)
+    assert rep['enabled'] is False and rep['applies'] is True, (
+        'REIT is in scope; with the flag OFF that must read as "would have applied, did not run"')
+    _kept, rep = sv.apply_veto(_scores(src), _panel(src), pool_label='InvestmentVehicle',
+                               enabled=False)
     assert rep['enabled'] is False and rep['applies'] is False
 
 
 def test_the_pools_override_lets_an_offline_AB_measure_a_cohort_without_mutating_globals():
     """How the per-cohort ejection rates in the module docstring were measured, and the same
-    polarity as `enabled=`: research never mutates module state."""
+    polarity as `enabled=`: research never mutates module state.
+
+    RE-AUTHORED (2026-08-07) TO USE THE POOL THAT IS STILL OUT OF SCOPE.  With `REIT` now in
+    `VETO_POOLS` the old arm proved nothing -- the override would have been a no-op and the test
+    would have passed without exercising it.  `InvestmentVehicle` is the only cohort that can
+    still show an override putting a pool IN scope.
+    """
     src = {'BAD': {'uCurrentRatio': 0.5}, 'GOOD': {}}
-    kept, rep = sv.apply_veto(_scores(src), _panel(src), pool_label='REIT', enabled=True,
-                              pools=('general', 'REIT'))
+    kept, rep = sv.apply_veto(_scores(src), _panel(src), pool_label='InvestmentVehicle',
+                              enabled=True, pools=('general', 'InvestmentVehicle'))
     assert list(kept['source']) == ['GOOD'] and rep['applies'] is True
-    assert tuple(sv.VETO_POOLS) == ('general',), 'the override mutated module state'
+    assert tuple(sv.VETO_POOLS) == ('general', 'REIT', 'Mining', 'FinManager',
+                                    'BalanceSheetFin'), 'the override mutated module state'
+
+
+def test_an_UNLISTED_pool_defaults_to_the_FULL_general_set_never_an_empty_one():
+    """*** THE `pool_flags` DEFAULT, CONFIRMED AS A PIN (CEO review question, 2026-08-07). ***
+
+    An unlisted pool must never be able to look CLEAN by accident.  `{}` would be the tidier
+    default and it is the wrong one: `_evaluate` over an empty flag set fails nobody, so the pool
+    would report `n_ejected = 0` with `applies=True` and no missing columns -- indistinguishable
+    from a cohort the veto gated on five flags and found healthy.  The general set is the
+    conservative default: a pool with no ruling is gated by SOMETHING, and if the general flags
+    are the wrong question there, the ejections are loud enough to be noticed and the pool
+    belongs OUT of `VETO_POOLS` rather than in it with no flags.
+
+    The pool STILL has to be in `VETO_POOLS` to be gated at all -- this default decides what
+    happens to a pool someone put in scope and forgot to rule on, which is the realistic mistake.
+    """
+    assert sv.pool_flags('APoolNobodyRuledOn') is sv.FLAGS, (
+        'an unruled pool must fall back to the FULL general set. An empty dict ejects nobody and '
+        'reports a clean cohort -- silence that reads as a pass')
+    src = {'BAD': {'uCurrentRatio': 0.5}, 'GOOD': {}}
+    kept, rep = sv.apply_veto(_scores(src), _panel(src), pool_label='APoolNobodyRuledOn',
+                              enabled=True, pools=('APoolNobodyRuledOn',))
+    assert list(kept['source']) == ['GOOD'] and rep['n_ejected'] == 1, (
+        'an unruled pool that was put in scope was gated by an empty flag set and came back '
+        'clean')
+
+
+#  ---- THE VETO COLUMN CHANNEL: COMPUTED, CARRIED, NEVER SCORED  (CEO, 2026-08-07) ------ #
+def test_a_veto_column_can_NEVER_become_a_scoring_criterion():
+    """*** THE PROPERTY THE SEPARATE CHANNEL EXISTS FOR. ***
+
+    The four cohort columns were nearly declared in `BoMetric_special_dict`, which is where a
+    formula-based Stage-1 column belongs.  Every entry there carries a `Tier` and a `Sign` and
+    `calcScore.simpleScore_fromDict` hands it to `calcByTier` -- so that would have added FOUR
+    WEIGHTED CRITERIA TO EVERY POOL'S STAGE-1 SCORE, the general pool included.  A veto is not a
+    scoring change and nobody ruled for one.
+
+    Pinned three ways, because one is not enough: the KEY SETS are disjoint (against the PREFIXED
+    column names the base/mean/unity/diff forms actually emit), no veto entry carries a Tier or a
+    Sign, and the veto dict is NOT in `getDicts`'s return tuple -- which is what every scoring
+    caller unpacks.
+    """
+    import createDicts as cdic
+
+    veto = set(cdic.getVetoDict())
+    assert veto == {'reitEbitdaInterestCoverage', 'producerEbitdaPositive',
+                    'cashRunwayOneYear', 'equityPositive'}
+    (_pre, calc, base, mean, diff, unity, special) = cdic.getDicts()
+    scored = set(special)
+    for key, spec in calc.items():
+        for o in spec['Operation']:
+            scored.add(key if o == 'n' else o + key[0].upper() + key[1:])
+    assert veto & scored == set(), (
+        'veto column(s) %s are also Stage-1 scoring criteria -- they would be weighted into '
+        "every pool's score" % sorted(veto & scored))
+    for k, spec in cdic.getVetoDict().items():
+        assert 'Tier' not in spec and 'Sign' not in spec, (
+            '%s declares a Tier/Sign. Veto columns are never scored, so that is either dead '
+            'weight or an attempt to score one' % k)
+    for d in (base, mean, diff, unity, special):
+        assert set(d) & veto == set()
+    #  The dict is not reachable through the tuple every scoring caller unpacks, so there is no
+    #  unpack site at which it could be mistaken for `BoMetric_special_dict`.
+    assert all(cdic.BoMetric_veto_dict is not d for d in cdic.getDicts()), (
+        "the veto dict is inside getDicts()'s tuple")
+
+
+def test_the_panel_SCHEMA_carries_every_veto_column():
+    """`stage1_veto.missing_columns` reads the panel's SCHEMA to decide whether a cohort can be
+    gated at all, so a column computed at fetch time but absent from `initBoMetric_fromDict`'s
+    column list would make every cohort permanently un-vetoable -- and it would report as a
+    stale panel, i.e. as something a re-fetch fixes, forever."""
+    import utils
+    import createDicts as cdic
+
+    cols = list(utils.initBoMetric_fromDict()['BoMetric_df'].columns)
+    assert set(cdic.getVetoDict()) <= set(cols)
+    assert cols[-1] == 'source', 'the veto columns must be appended BEFORE `source`'
+    #  Every flag any pool evaluates must be a real panel column, or that pool is dead on arrival.
+    used = {c for f in sv.POOL_FLAGS.values() for c in f}
+    assert used <= set(cols), 'flag(s) with no panel column: %s' % sorted(used - set(cols))
+
+
+def test_each_veto_columns_ADMISSIBILITY_GATE_lives_in_the_column():
+    """*** SIGN-SAFETY, AND WHY THE GATE IS NOT IN `stage1_veto`. ***
+
+    This project fixed eight criteria where a threshold written for a positive quantity was
+    AUTO-SATISFIED once the quantity went negative.  The defence is that an inadmissible row
+    arrives at the veto as NaN, so no flag condition can invert -- which requires the gate to run
+    where the column is BUILT, not where it is tested.
+
+    Exercised on the arithmetic, per column: the refused row must be NaN, and the admitted row
+    must carry the quantity the flag's bar is stated on.
+    """
+    import calcMetrics as cm
+    import createDicts as cdic
+
+    #  row 0 admissible, row 1 inadmissible for whichever column is under test.
+    raw = pd.DataFrame({
+        'ebitda':                               [100.0, -5.0],
+        'interestExpense':                      [50.0, 0.0],    # 0 == debt-free -> refused
+        'revenue':                              [1000.0, 0.0],  # 0 == pre-production -> refused
+        'cashAndCashEquivalents':               [400.0, 400.0],
+        'netCashProvidedByOperatingActivities': [-50.0, -200.0],
+        'totalStockholdersEquity':              [500.0, -1.0],
+    })
+    got = {}
+    for key, spec in cdic.getVetoDict().items():
+        got[key] = list(cm.calc_veto(raw, key, rpy=4, guard=spec.get('Guard'))[key])
+
+    #  ebitda / interestExpense; the ONE ratio, so the ONE column that could invert.  The
+    #  debt-free row is REFUSED rather than reading as "cannot cover its interest".
+    assert got['reitEbitdaInterestCoverage'][0] == 2.0
+    assert np.isnan(got['reitEbitdaInterestCoverage'][1]), (
+        'a name with no interest expense produced a coverage NUMBER -- this is the measured '
+        'defect that ejected 1,668 sources for having no debt, in a new field')
+    #  EBITDA itself, tested `> 0`.  The pre-revenue explorer is REFUSED even though its EBITDA
+    #  is negative -- the gate must fire BEFORE the sign is read, or the whole exploration half
+    #  of the Mining cohort is ejected for being explorers.
+    assert got['producerEbitdaPositive'][0] == 100.0
+    assert np.isnan(got['producerEbitdaPositive'][1]), (
+        'a zero-revenue explorer was handed a negative EBITDA verdict rather than being refused')
+    #  cash + CFO x rpy.  A sum: no denominator, nothing to invert, no guard.
+    assert got['cashRunwayOneYear'] == [400 - 50 * 4, 400 - 200 * 4]
+    #  ...and `rpy` is what makes the horizon TWELVE MONTHS for a semi-annual filer too, rather
+    #  than twelve for one filer and six for another.  This is the statutory IAS 1.25 /
+    #  ASC 205-40 going-concern horizon, so the frequency correction is part of the bar.
+    semi = list(cm.calc_veto(raw, 'cashRunwayOneYear', rpy=2)['cashRunwayOneYear'])
+    assert semi == [400 - 50 * 2, 400 - 200 * 2], (
+        'the runway was not frequency-corrected -- a semi-annual filer would be assessed over '
+        'SIX months against a twelve-month statutory bar')
+    #  A level, always admissible -- `totalStockholdersEquity` is never absent and a degenerate
+    #  one is adverse on any reading.
+    assert got['equityPositive'] == [500.0, -1.0]
+    assert cdic.getVetoDict()['equityPositive'].get('Guard') is None
+    assert cdic.getVetoDict()['cashRunwayOneYear'].get('Guard') is None
+
+
+def test_an_unknown_veto_key_RAISES_rather_than_becoming_an_all_NaN_column():
+    """The `calc_special` failure mode, in the veto channel and worse.  An unrecognised key used
+    to fall through every branch and return an EMPTY frame, which the caller wrote into the panel
+    as an all-NaN column.  For a SCORING column that is pool-neutral; for a VETO column it is
+    worse -- an all-NaN column does not present as MISSING (so `missing_columns` stays empty and
+    the pool reports `applies=True`), it presents as a cohort that ABSTAINED on everything, i.e.
+    as a veto that ran and found nothing."""
+    import calcMetrics as cm
+
+    with pytest.raises(KeyError, match='calc_veto'):
+        cm.calc_veto(pd.DataFrame({'ebitda': [1.0]}), 'notAVetoColumn')
+
+
+def test_an_absent_RAW_INPUT_omits_the_veto_column_rather_than_emitting_an_all_NaN_one():
+    """*** THE QUIET FAILURE THIS CHANNEL MUST NOT HAVE. ***
+
+    `ebitda` and `cashAndCashEquivalents` are capture-only additions from 2026-08-05, so the
+    OFFLINE rebuild paths (`baseline_tools/panel_upgrade`, `dead_merge`) can legitimately be
+    handed a saved `cdx_df` that predates them.
+
+    AN ALL-NaN COLUMN WOULD BE THE WORST AVAILABLE ANSWER, and it is the one a naive
+    `pd.to_numeric(df['ebitda'])` gives.  The column would be PRESENT, so
+    `stage1_veto.missing_columns` finds nothing missing, the pool reports `applies = True`, every
+    flag abstains for want of evidence, and the cohort comes back with ZERO EJECTIONS -- a veto
+    that COULD NOT RUN, presenting as one that ran and found the cohort clean.  Omitting the
+    column instead routes it to `_STALE_PANEL_NOT_APPLICABLE`, which declines that pool by name
+    and says RE-FETCH.
+
+    Asserted end to end, because the property is a JOINT one: the builder must drop the column
+    AND the veto must read that absence as a decline.
+    """
+    import calcMetrics as cm
+
+    assert cm.veto_missing_inputs(pd.DataFrame({'ebitda': [1.0]}),
+                                  'reitEbitdaInterestCoverage') == ['interestExpense']
+    assert cm.veto_missing_inputs(pd.DataFrame({'totalStockholdersEquity': [1.0]}),
+                                  'equityPositive') == []
+    #  ...and the downstream half: a panel WITHOUT the column declines the pool, a panel WITH it
+    #  all-NaN would NOT -- which is exactly why the builder must not emit the latter.
+    src = {'X': {}}
+    _kept, absent = sv.apply_veto(_scores(src),
+                                  _panel(src).drop(columns=['reitEbitdaInterestCoverage']),
+                                  pool_label='REIT', enabled=True)
+    _kept, all_nan = sv.apply_veto(_scores(src),
+                                   _panel(src).assign(reitEbitdaInterestCoverage=np.nan),
+                                   pool_label='REIT', enabled=True)
+    assert absent['applies'] is False and absent['missing_columns'] == [
+        'reitEbitdaInterestCoverage']
+    assert all_nan['applies'] is True and all_nan['n_ejected'] == 0, (
+        'this is the SILENT state the builder must never produce: the pool ran, ejected nobody, '
+        'and reported no missing column')

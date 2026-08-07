@@ -203,6 +203,16 @@ def initBoMetric_fromDict():
     for key1 in BoMetric_special_dict:
         BMdfcollist.append(key1)
 
+    #  THE VETO CHANNEL (CEO, 2026-08-07).  Columns computed and CARRIED on the panel for
+    #  `stage1_veto.POOL_FLAGS`, and NEVER scored: they come from `cdic.getVetoDict()`, which is
+    #  NOT part of `getDicts`'s tuple, so `calcScore.simpleScore_fromDict` -- which iterates the
+    #  five scoring dicts above -- cannot reach them.  They are appended LAST and before
+    #  `source`, so no existing column's position moves.
+    #  Declared here rather than left to the fetch: the schema is what tells
+    #  `stage1_veto.missing_columns` whether a panel can carry a cohort's gate at all.
+    for key2 in cdic.getVetoDict():
+        BMdfcollist.append(key2)
+
     for key in preReq_dict:
         cdxcollist.extend(preReq_dict[key])
 

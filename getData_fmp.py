@@ -563,6 +563,33 @@ def build_bometric_rows(tempfund, tempMetric_df, rpy, n=1, dicts=None):
                              guard=BoMetric_special_dict[key1].get('Guard'))
         tempMetric_df[key1] = tf
 
+    #  THE VETO CHANNEL (CEO, 2026-08-07) -- computed and carried, NEVER scored.
+    #  READ FROM `cdic.getVetoDict()` AND NOT FROM `dicts`, deliberately.  `dicts` is the packed
+    #  SCORING 5-tuple the offline callers (dead_merge, panel_upgrade, nan_policy_report, the
+    #  sign-convention tests) hand in; threading the veto dict through it would (a) change that
+    #  tuple's arity at four call sites and (b) put the veto dict one unpack slot away from
+    #  `BoMetric_special_dict`, which is exactly the confusion this channel exists to prevent.
+    #  Reading it here means EVERY path that builds a panel builds the same veto columns, so a
+    #  panel's schema never depends on which caller made it.
+    #  Same `Guard` registry as the scoring criteria: the admissibility gate lives in the COLUMN,
+    #  so an inadmissible row reaches `stage1_veto` as NaN and no flag condition can invert.
+    for key2, _vspec in cdic.getVetoDict().items():
+        #  AN ABSENT RAW INPUT OMITS THE COLUMN; IT DOES NOT PRODUCE AN ALL-NaN ONE.
+        #  `ebitda` / `cashAndCashEquivalents` are capture-only additions from 2026-08-05, so the
+        #  OFFLINE rebuild paths (panel_upgrade, dead_merge) can legitimately be handed a saved
+        #  `cdx_df` that predates them.  Emitting NaN there would make the column PRESENT, so
+        #  `stage1_veto.missing_columns` would find nothing missing, the cohort would report
+        #  `applies=True`, every flag would abstain and the pool would come back with ZERO
+        #  EJECTIONS -- a veto that could not run, presenting as one that found the cohort clean.
+        #  Dropping it instead trips `_STALE_PANEL_NOT_APPLICABLE`, which declines that pool by
+        #  name and says RE-FETCH.  See `calcMetrics._VETO_INPUTS`.
+        if cm.veto_missing_inputs(tempfund, key2):
+            if key2 in tempMetric_df.columns:
+                tempMetric_df = tempMetric_df.drop(columns=[key2])
+            continue
+        tempMetric_df[key2] = cm.calc_veto(tempfund, key2, rpy=rpy,
+                                           guard=_vspec.get('Guard'))
+
     # Drop the OLDEST rows whose YoY/diff windows have no counterpart:
     # `rpy` of them, not a fixed 4 (a semi-annual filer would otherwise
     # lose two full years of history).  Row-based site NOT on the audit's

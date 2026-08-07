@@ -761,6 +761,107 @@ def getDicts():
 
     return preReq_dict, BoMetric_Calc_dict , BoMetric_base_dict, BoMetric_mean_dict, BoMetric_diff_dict, BoMetric_unity_dict,BoMetric_special_dict
 
+#  =========================================================================== #
+#  THE VETO CHANNEL -- COLUMNS THAT ARE COMPUTED AND CARRIED BUT NEVER SCORED   #
+#  (CEO, 2026-08-07)                                                           #
+#  =========================================================================== #
+#  `stage1_veto.POOL_FLAGS` gives each carve-out cohort the red flags that MEAN something on its
+#  balance sheet.  Three of the four columns those cohort flag sets need did not exist on any
+#  panel; this dict is what builds them.
+#
+#  IT IS A SEPARATE DICT AND NOT FOUR MORE ENTRIES IN `BoMetric_special_dict`, AND THAT IS THE
+#  WHOLE POINT.  Every entry in the five SCORING dicts (base / mean / diff / unity / special)
+#  carries a `Tier` and a `Sign`, and `calcScore.simpleScore_fromDict` iterates those five dicts
+#  and hands each entry to `calcByTier` -- so a veto column declared there would have silently
+#  added FOUR WEIGHTED STAGE-1 CRITERIA TO EVERY POOL, the general pool included.  That is a far
+#  larger change than a veto, and it is not the one that was ruled for.  Entries here carry NO
+#  `Tier` and NO `Sign` BY CONSTRUCTION: there is nothing for a scorer to read even if one
+#  reached them, and `getDicts`'s return tuple -- the thing every scoring caller unpacks -- does
+#  not contain this dict at all.  `_assert_veto_never_scored` below turns that into a checked
+#  invariant instead of a comment.
+#
+#  THE ADMISSIBILITY GATE LIVES IN THE COLUMN, NOT IN `stage1_veto`.  Each entry's `Guard` names
+#  a `calcMetrics.STAGE1_DOMAIN_GUARDS` predicate, exactly as the scoring dicts do, so an
+#  inadmissible row reaches the veto as NaN and NO CONDITION IN `stage1_veto` CAN INVERT.  This
+#  is the same discipline the eight sign-inverting criteria of 2026-08-04/05 were fixed with; do
+#  not restate a domain inside a flag lambda.
+#
+#  NOT ON ANY EXISTING PANEL.  `ebitda` and `cashAndCashEquivalents` are CAPTURE-ONLY additions
+#  from 2026-08-05 (see preReq_dict), so these columns exist only from a fetch made after that
+#  change.  On an older panel `apply_veto` declines the affected POOL with `missing_columns` set
+#  rather than raising.  NOTHING HERE IS BACKTESTABLE -- do not measure these on a saved pickle.
+BoMetric_veto_dict = {
+    #  REIT.  `ebitda / interestExpense`, tested `> 1` -- does the rent cover the interest bill.
+    #  GUARDED `interestExpense > 0`: FMP reports 0 for a name with no interest expense, and
+    #  without the guard the ratio would be +/-inf -> NaN and read as "cannot cover its
+    #  interest" on a name with no interest to cover -- the measured
+    #  `uInterestCoverage`-on-a-debt-free-name defect (1,668 sources, 21.5% of the universe).
+    #  Its `FIELD_EVIDENCE` ruling is `not_evidence` (BENIGN) for that reason.  18 of 67 abstain.
+    'reitEbitdaInterestCoverage': {'Guard': 'interest_expense_positive'},
+    #  MINING.  The column holds EBITDA; the veto tests `> 0`.  GUARDED `revenue > 0`, so a
+    #  PRE-PRODUCTION explorer is refused rather than read as a producer failing to earn on its
+    #  ore.  `not_evidence` (BENIGN); 43 of 218 abstain, and they are precisely the names
+    #  `cashRunwayOneYear` then judges.  11 of 218 fail.
+    'producerEbitdaPositive':     {'Guard': 'revenue_positive'},
+    #  MINING.  `cash + CFO x rpy`, tested `> 0`.  THE HORIZON IS STATUTORY, not chosen: IAS 1.25
+    #  / ASC 205-40 require a going-concern assessment over at least TWELVE MONTHS, and `rpy` is
+    #  what makes it twelve months for a semi-annual filer too.  NO GUARD: both operands measured
+    #  0.00% NaN, so there is no benign refusal channel -- `counts`.  7 of 218 fail, all
+    #  pre-revenue explorers.
+    'cashRunwayOneYear':          {},
+    #  MINING.  `totalStockholdersEquity`, tested `> 0`.  NO GUARD -- always admissible; the
+    #  field is never absent and a degenerate one is adverse on any reading (`counts`, same shape
+    #  as `returnOnAssets`).  4 of 218 fail.
+    'equityPositive':             {},
+}
+
+
+def getVetoDict():
+    """The VETO channel's column declarations -- see `BoMetric_veto_dict`.
+
+    A SEPARATE ACCESSOR rather than an eighth element of `getDicts`'s tuple, deliberately.  Every
+    caller that unpacks `getDicts` is a SCORING caller, and the invariant this channel exists to
+    hold is that a veto column can never be reached as a scoring criterion.  Keeping it out of
+    that tuple entirely makes the invariant structural: there is no unpack site at which the
+    veto dict could be mistaken for `BoMetric_special_dict`.
+    """
+    return {k: dict(v) for k, v in BoMetric_veto_dict.items()}
+
+
+def _assert_veto_never_scored():
+    """A VETO COLUMN MUST NOT BE A SCORING CRITERION.  Checked at import, so it cannot reach a
+    fetch, and checked against the COLUMN NAMES the scoring dicts actually produce -- not against
+    their keys -- because the base/mean/unity/diff forms prefix theirs (`mBookToPrice`,
+    `uCurrentRatio`, `dReturnOnAssets`) and a collision would be with the PREFIXED name.
+
+    Two ways this could go wrong and both are covered: a veto key added to a scoring dict (it
+    would then carry a Tier and be weighted into every pool's Stage-1 score), and a veto entry
+    that carries a `Tier`/`Sign` in the hope of being scored somewhere.
+    """
+    (_preReq, calc, base, mean, diff, unity, special) = getDicts()
+    scored = set(special)
+    for key, spec in calc.items():
+        for o in spec['Operation']:
+            scored.add(key if o == 'n' else o + key[0].upper() + key[1:])
+    clash = sorted(scored & set(BoMetric_veto_dict))
+    if clash:
+        raise AssertionError(
+            'createDicts: %d veto column(s) are ALSO Stage-1 scoring criteria: %s. A veto column '
+            'is computed and carried but NEVER scored; a name in both channels would be silently '
+            'weighted into every pool\'s Stage-1 score by calcScore.calcByTier, which is a much '
+            'larger change than a veto and is not what was ruled for.' % (len(clash), clash))
+    graded = sorted(k for k, v in BoMetric_veto_dict.items()
+                    if 'Tier' in v or 'Sign' in v)
+    if graded:
+        raise AssertionError(
+            'createDicts: veto entrie(s) %s declare a Tier/Sign. Veto columns are not scored, so '
+            'a Tier or a Sign on one is either dead weight or an attempt to score it -- neither '
+            'is allowed. Move it to a scoring dict deliberately, or drop the key.' % graded)
+
+
+_assert_veto_never_scored()
+
+
 def getBaseMeanDiffUnitySpecialDicts():
     preReq_dict, BoMetric_Calc_dict, BoMetric_base_dict, BoMetric_mean_dict, BoMetric_diff_dict, BoMetric_unity_dict, BoMetric_special_dict = getDicts()
 

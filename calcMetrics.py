@@ -74,6 +74,18 @@ STAGE1_DOMAIN_GUARDS = {
     # branch, which passes it on an explicit operand condition.  Refusing never rewards.
     'interest_expense_positive':
         lambda df: pd.to_numeric(df['interestExpense'], errors='coerce') > 0,
+    # `producerEbitdaPositive` (VETO column, 2026-08-07) asks whether a PRODUCING miner earns
+    # anything at the EBITDA line.  With zero revenue there is nothing to earn it on: the name is
+    # a PRE-PRODUCTION explorer and the cost-curve question this column asks does not exist yet,
+    # so the row is REFUSED rather than read as a producer failing.  Counting a refusal as a
+    # non-pass here would eject the exploration half of the Mining cohort FOR BEING EXPLORERS --
+    # the `interest_expense_positive`-on-a-debt-free-name defect (measured: 1,668 sources, 21.5%
+    # of the universe) in a new field.  Those names are judged by `cashRunwayOneYear` instead.
+    # `> 0` and not `>= 0`: zero revenue IS the pre-production case, which is what is refused.
+    # NOT A DENOMINATOR GUARD -- `producerEbitdaPositive` is a level, not a ratio -- so it cannot
+    # be inverting a sign; it states the population the column is defined on.
+    'revenue_positive':
+        lambda df: pd.to_numeric(df['revenue'], errors='coerce') > 0,
     #  NO PEG ENTRY, DELIBERATELY -- see the `PEG` note in createDicts.BoMetric_special_dict and
     #  `peg_local` below.  PEG's domain is INTRINSIC TO ITS FORMULA (without a positive trailing
     #  EPS there is no P/E for a growth rate to be compared against, so the value does not exist
@@ -838,6 +850,157 @@ def calc_special(df,metstr,n,rpy=rp.DEFAULT_ROWS_PER_YEAR,guard=None):
         #  into 0 -> -1 -> a FAIL (defect D10, a separate open item -- do not fold a second
         #  change into this one).
         res[metstr] = ce2cr - 1
+
+    if guard is not None:
+        res[metstr] = apply_domain_guard(df, res[metstr].tolist(), guard)
+
+    return res
+
+
+# =========================================================================== #
+#  THE VETO COLUMNS -- COMPUTED, CARRIED, NEVER SCORED  (CEO, 2026-08-07)      #
+# =========================================================================== #
+#  These four exist for `stage1_veto.POOL_FLAGS` and for nothing else.  They are NOT Stage-1
+#  criteria: they are declared in `createDicts.BoMetric_veto_dict`, which carries NO `Tier` and
+#  NO `Sign`, and `calcScore.simpleScore_fromDict` iterates the FIVE SCORING dicts by name and
+#  never sees it.  `createDicts` asserts the two key sets are DISJOINT at import.
+#
+#  WHY A SEPARATE CHANNEL AT ALL, since a column is a column.  Putting them in
+#  `BoMetric_special_dict` -- the obvious home, since they are formulas rather than Upper/Lower
+#  ratios -- would have added FOUR WEIGHTED CRITERIA TO EVERY POOL'S STAGE-1 SCORE, general
+#  included, because every entry in that dict carries a Tier and a Sign and `calcByTier` scores
+#  it.  That is a much larger change than a veto and nobody ruled for it.  The separation is
+#  what makes "a veto column cannot become a scoring criterion by accident" a structural
+#  property rather than a convention.
+#
+#  EACH COLUMN CARRIES THE QUANTITY WHOSE SIGN (or unity comparison) IS THE VERDICT, not a
+#  boolean.  `producerEbitdaPositive` and `equityPositive` are named for the TEST the veto
+#  applies (`> 0`), and hold the level it is applied to -- the same shape as `uCurrentRatio`
+#  holding the ratio for a `> 1` bar.  A boolean column would put NaN and bool in one column,
+#  make the dtype `object`, and hide a refusal behind a falsy value.
+#
+#  SIGN-SAFETY.  Exactly ONE of the four is a ratio (`reitEbitdaInterestCoverage`), and its
+#  denominator is restricted to `> 0` by the `interest_expense_positive` guard DECLARED in
+#  createDicts and applied here -- so it cannot invert the way the eight criteria fixed in the
+#  2026-08-04/05 sign passes did.  The other three are levels or a sum: there is no denominator
+#  to change sign.  A row the guard refuses arrives at `stage1_veto` as NaN, so the ADMISSIBILITY
+#  DECISION LIVES IN THE COLUMN and no condition in `stage1_veto` can invert it.
+#
+#  NOT ON ANY EXISTING PANEL, AND THAT IS NOT FIXABLE OFFLINE.  `ebitda` and
+#  `cashAndCashEquivalents` were captured from the 2026-08-05 preReq change onward, so these
+#  columns can only be built by a fetch from that change on.  `stage1_veto.apply_veto` degrades
+#  the affected POOL to `applies=False` with `missing_columns` set rather than raising -- see
+#  `_STALE_PANEL_NOT_APPLICABLE`.  NOTHING HERE IS BACKTESTABLE.
+_VETO_KEYS = ('reitEbitdaInterestCoverage', 'producerEbitdaPositive',
+              'cashRunwayOneYear', 'equityPositive')
+
+#  THE RAW STATEMENT LINES EACH VETO COLUMN NEEDS, so a caller can ask BEFORE computing.
+#  `ebitda` and `cashAndCashEquivalents` are CAPTURE-ONLY additions from 2026-08-05, so the
+#  OFFLINE rebuild paths (baseline_tools/panel_upgrade, dead_merge) can be handed a saved
+#  `cdx_df` that predates them -- and the live fetch path can too, if preReq_dict is ever pared.
+#
+#  THE ABSENT-INPUT ANSWER IS TO OMIT THE COLUMN, NOT TO EMIT AN ALL-NaN ONE, and the difference
+#  is the whole reason this registry exists.  An all-NaN column is PRESENT, so
+#  `stage1_veto.missing_columns` finds nothing missing, the pool reports `applies = True`, every
+#  flag abstains for want of evidence and the cohort comes back with ZERO EJECTIONS -- a veto
+#  that could not run, presenting as a veto that ran and found the cohort clean.  That is the one
+#  outcome this layer is built to make impossible.  An ABSENT column instead trips
+#  `_STALE_PANEL_NOT_APPLICABLE`, which declines that pool BY NAME, says which column is missing
+#  and says RE-FETCH.  Loud and true beats quiet and wrong.
+_VETO_INPUTS = {
+    'reitEbitdaInterestCoverage': ('ebitda', 'interestExpense'),
+    'producerEbitdaPositive':     ('ebitda', 'revenue'),
+    'cashRunwayOneYear':          ('cashAndCashEquivalents',
+                                   'netCashProvidedByOperatingActivities'),
+    'equityPositive':             ('totalStockholdersEquity',),
+}
+
+
+def veto_missing_inputs(df, metstr):
+    """The raw columns `metstr` needs that `df` does not carry, in declaration order.
+
+    Includes the column named by the metric's `Guard`, because a guard whose own input is absent
+    cannot refuse anything: `apply_domain_guard` would see an all-False (or raising) mask and the
+    admissibility decision -- the thing that makes this column sign-safe -- would silently not
+    happen.  A gate that cannot run is not a gate.
+    """
+    return [c for c in _VETO_INPUTS[metstr] if c not in df.columns]
+
+
+def calc_veto(df, metstr, rpy=rp.DEFAULT_ROWS_PER_YEAR, guard=None):
+    """One VETO column for ONE source's raw cdx-schema frame.  Same shape as `calc_special`.
+
+    `guard`: optional STAGE1_DOMAIN_GUARDS name, declared in `createDicts.BoMetric_veto_dict`
+    and applied to the FINISHED column -- these are formulas, so they never pass through
+    `build_bometric_rows`'s ratio loop where a declared `Guard` is otherwise applied.
+
+    An unknown key RAISES rather than returning an empty frame, for the reason `calc_special`
+    does: the caller assigns the result straight into `BoMetric_df[key]`, so a key with no
+    branch would become an ALL-NaN column -- and an all-NaN veto column does not present as a
+    missing column, it presents as a cohort that abstains on everything, i.e. as a veto that
+    ran and found nothing.  Fail loudly, naming the key.
+    """
+    if metstr not in _VETO_KEYS:
+        raise KeyError(
+            "calcMetrics.calc_veto has no formula for %r (known: %r). An unknown key would "
+            "become an all-NaN column, which a veto reads as 'abstained on everything' rather "
+            "than as 'missing' -- add the branch, or remove the key from "
+            "createDicts.BoMetric_veto_dict." % (metstr, list(_VETO_KEYS)))
+    res = pd.DataFrame()
+    if metstr == 'reitEbitdaInterestCoverage':
+        #  Does the rent cover the interest bill -- the ONE solvency question a rent-collecting
+        #  leveraged vehicle answers.  Tested `> 1` (the column IS the coverage ratio, so the
+        #  unity bar is the bar, not a chosen level).
+        #  THE VENDOR'S OWN `ebitda`, not the `operatingIncome + D&A` proxy: the proxy exists
+        #  because FMP would not give us EBITDA, and from the 2026-08-05 capture it does.  Using
+        #  the proxy here would restate a quantity we now hold -- this repo's worst bug class.
+        #  BOTH LEGS ARE THE SAME PERIOD'S FLOW, so the ratio is frequency-invariant and takes NO
+        #  `rp.stage1_flow_factor`: a semi-annual filer's 6-month EBITDA is divided by its
+        #  6-month interest bill, and the unity bar means the same thing for both filers.
+        #  ADMISSIBILITY: `interestExpense > 0` (declared `Guard`), which is what makes this
+        #  sign-safe; a REIT with no interest expense arrives as NaN and ABSTAINS
+        #  (`FIELD_EVIDENCE['reitEbitdaInterestCoverage'] == 'not_evidence'`) rather than being
+        #  read as unable to cover interest it does not owe.  A NaN `ebitda` propagates to NaN
+        #  through the division, so the "ebitda notna" half of the gate needs no separate
+        #  statement -- and must not get one, or the domain is stated twice.
+        res[metstr] = (pd.to_numeric(df['ebitda'], errors='coerce')
+                       / pd.to_numeric(df['interestExpense'], errors='coerce'))
+    elif metstr == 'producerEbitdaPositive':
+        #  Does a PRODUCING miner earn anything at the EBITDA line.  The column holds EBITDA
+        #  itself and the veto tests `> 0`; the name states the test, not the contents.
+        #  A LEVEL, NOT A RATIO, so it is frequency-invariant in the only sense that matters to a
+        #  SIGN test: a 6-month EBITDA has the same sign as the 12-month one it is half of.  No
+        #  flow factor, deliberately -- scaling a quantity by a positive constant cannot change
+        #  the answer to `> 0`, so applying one would be arithmetic with no meaning.
+        #  ADMISSIBILITY: `revenue > 0` (declared `Guard`) -- a pre-revenue explorer is refused
+        #  and ABSTAINS; `cashRunwayOneYear` is the flag that judges exactly those names.
+        res[metstr] = pd.to_numeric(df['ebitda'], errors='coerce')
+    elif metstr == 'cashRunwayOneYear':
+        #  Can the company fund TWELVE MONTHS at its current burn: `cash + CFO x rpy > 0`.
+        #  THE HORIZON IS DERIVED, NOT CHOSEN, and that is what makes this the one column here
+        #  with a bar rather than a sign test: IAS 1.25 and ASC 205-40 both require management to
+        #  assess going concern over AT LEAST TWELVE MONTHS, so twelve months is the STATUTORY
+        #  horizon and this column inherits it.  No percentile, no tuned level.
+        #  `rpy` IS WHAT MAKES IT TWELVE MONTHS FOR EVERY FILER.  CFO is ONE PERIOD's flow, so
+        #  `CFO x rpy` annualises it: x4 for a quarterly filer, x2 for a semi-annual one.  Without
+        #  it the column would mean twelve months for one filer and SIX for another, which is
+        #  precisely the frequency defect this pipeline keeps finding.  `rpy` is the ONE
+        #  classification stamped by `fillPreReqdf` and is passed in, never re-derived here.
+        #  NOT `rp.stage1_flow_factor`: that decides scaling for declared RATIO keys; this is an
+        #  annualisation INSIDE a formula, stated once, beside the arithmetic.
+        #  A SUM, so there is no denominator and no sign to invert.  Both operands measured 0.00%
+        #  NaN on the panel, so a NaN here is never routine -- hence
+        #  `FIELD_EVIDENCE['cashRunwayOneYear'] == 'counts'`: there is no benign channel into a
+        #  refusal, and no `Guard` is declared.
+        res[metstr] = (pd.to_numeric(df['cashAndCashEquivalents'], errors='coerce')
+                       + pd.to_numeric(df['netCashProvidedByOperatingActivities'],
+                                       errors='coerce') * float(rpy))
+    elif metstr == 'equityPositive':
+        #  Is book equity positive at all.  A STOCK, so no `rpy` and no flow factor; a level, so
+        #  no denominator and nothing to invert.  ALWAYS ADMISSIBLE -- no `Guard` -- because
+        #  `totalStockholdersEquity` is never absent and a degenerate one is adverse on any
+        #  reading, which is the same shape as `returnOnAssets`'s ruling.
+        res[metstr] = pd.to_numeric(df['totalStockholdersEquity'], errors='coerce')
 
     if guard is not None:
         res[metstr] = apply_domain_guard(df, res[metstr].tolist(), guard)
