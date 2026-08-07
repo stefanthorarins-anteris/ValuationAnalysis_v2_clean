@@ -1388,13 +1388,60 @@ RESOLVED_SHORTFALL_WARN_ABOVE = 0.40
 RESOLVED_WORST_NATURAL_SHORTFALL = 0.135      # NYSE, measured 2026-08-02
 
 
+def expected_resolved_count(name, code):
+    """What `code` should deliver for universe `name` -- the VERIFIED count SCALED BY THE
+    UNIVERSE'S SAMPLE RATE.  Float, because the rounded figure is for display only.
+
+    THE FLOOR HAD NO KNOWLEDGE OF SAMPLING AND SO CRIED WOLF (fixed 2026-08-07).
+    `stock_CUR3K` is the first universe with a `sample` dict: it takes TSX/PAR/AMS whole
+    but samples NYSE/NASDAQ/LSE at 170/1000 and KSC/KOE at 250/1000.  Comparing a
+    POST-SAMPLE count against a WHOLE-EXCHANGE number made five of its eight codes report
+    75-83% SHORT on EVERY run -- all five false.  That is not merely noisy: this floor
+    exists to catch the EURONEXT/OSE defect (a renamed code matching nothing, hidden for
+    the life of the project because the universe still resolved to thousands of names),
+    and a guard that fires five times a run is one the operator learns to skip -- so the
+    next dead code hides inside the noise of the guard built to find it.
+
+    A code with no entry in the universe's `sample` dict has rate 1.0, so every universe
+    without a `sample` dict gets EXACTLY the verified count and arithmetic identical to
+    the pre-fix behaviour.  (Absence means "no sampling", never "sample at zero" -- see
+    `sample_rates`.)
+
+    IT IS A FLOOR, NOT A CENTRE, and a sampled code should land ABOVE it.  Per-issuer
+    upward closure (`most_permissive_rate`) keeps a group whose lines straddle a take-all
+    venue even when its bucket misses the threshold, and no per-code factor can express
+    "kept for a reason that lives on a different code" -- the same gap documented in
+    `expected_count`.  Replayed for stock_CUR3K, NYSE resolves ~445 against this formula's
+    386; the per-code REPLAYED figures are in CURATED3K_SIZING.  Under-stating is the safe
+    direction for a shortfall guard: over-delivery never warns, and the 40% cut is measured
+    against a number the run can only beat.
+    """
+    v = _VERIFIED_COUNTS.get(code, 0)
+    if v <= 0:
+        return 0.0
+    r = sample_rates(name).get(code)
+    if r is None or r >= CURATED3K_SAMPLE_DENOMINATOR:
+        return float(v)
+    return v * (float(r) / CURATED3K_SAMPLE_DENOMINATOR)
+
+
 def check_resolved_counts(name, resolved_by_code):
-    """Compare a run's per-exchange resolved counts against the verified counts.
+    """Compare a run's per-exchange resolved counts against the SAMPLE-ADJUSTED
+    expectation (`expected_resolved_count`), NOT against the raw verified count.
 
     `resolved_by_code` : {exchangeShortName: n} from the resolved universe.
-    Returns a list of (code, verified, resolved, shortfall_fraction) for codes that
-    came back more than RESOLVED_SHORTFALL_WARN_ABOVE below their verified count --
-    empty list means every code delivered roughly what it should.
+    Returns a list of (code, expected, resolved, shortfall_fraction) for codes that came
+    back more than RESOLVED_SHORTFALL_WARN_ABOVE below their expectation -- empty list
+    means every code delivered roughly what it should.
+
+    `expected` is the SAMPLED expectation, rounded for reporting.  For a universe with no
+    `sample` dict it IS the verified count, so both the tuple and the arithmetic are
+    unchanged from before 2026-08-07.
+
+    A DEAD SAMPLED CODE STILL SCREAMS -- that is the whole point of the guard and it
+    survives the fix intact: a code returning 0 is 100% short of its SAMPLED expectation
+    just as it was 100% short of its verified count.  Scaling the expectation moves the
+    threshold, never the dead-code signal.
 
     Returns [] for a universe that is not exchange-defined (an explicit ticker list has
     its own absent-member report; the FULL universe has no per-code expectation).
@@ -1404,13 +1451,18 @@ def check_resolved_counts(name, resolved_by_code):
         return []
     out = []
     for c in codes:
-        v = _VERIFIED_COUNTS.get(c, 0)
-        if v <= 0:
+        exp = expected_resolved_count(name, c)
+        #  Below one expected name a dead code and an unlucky sample are
+        #  INDISTINGUISHABLE, so warning there would be the false-positive this fix
+        #  removes.  Also covers verified == 0 (a code absent from _VERIFIED_COUNTS --
+        #  see the Asia note at the top of the module) and a rate of 0.  No current
+        #  universe comes near it: the smallest sampled expectation is KOE at ~100.
+        if exp < 1.0:
             continue
         r = int(resolved_by_code.get(c, 0))
-        shortfall = 1.0 - (r / float(v))
+        shortfall = 1.0 - (r / exp)
         if shortfall > RESOLVED_SHORTFALL_WARN_ABOVE:
-            out.append((c, v, r, shortfall))
+            out.append((c, int(round(exp)), r, shortfall))
     return out
 
 
