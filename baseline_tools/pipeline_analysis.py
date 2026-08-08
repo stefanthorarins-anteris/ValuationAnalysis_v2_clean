@@ -433,12 +433,70 @@ def _per_band_beat_rate(per_anchor, price_source, merged, horizon_m, threshold):
     _cols = getattr(_tdf, "columns", [])
     band_names = (dict(zip(_tdf["symbol"], _tdf["name"]))
                   if _tdf is not None and "symbol" in _cols and "name" in _cols else {})
-    band_pending = (merged_cdx is None) or (not co.currency_data_present(merged_cdx))
+
+    # ---- POINT-IN-TIME FX (CEO, 2026-08-08) ---------------------------------------
+    # The market cap here is already PIT (latest row <= buy).  The RATE was not: it was
+    # whatever FX the process happened to hold, i.e. TODAY's spot applied to a 2021
+    # market cap, which is a look-ahead-flavoured error -- a 2021 SEK name was banded by
+    # a 2026 SEK/USD rate.  `fx_rates.load_pit_rates` reads the dated daily closes pulled
+    # from v3/historical-price-full (1 call per currency per range, built OUT OF BAND by
+    # `python fx_rates.py --historical --from ... --to ...`), and the conversion path then
+    # converts EACH ROW AT ITS OWN DATE'S RATE.
+    #
+    # NOT A HARD REQUIREMENT, and the fallback is stated rather than silent: with no
+    # historical file on disk this keeps the existing spot basis, because refusing would
+    # turn every name unknown-mcap and quietly collapse the whole per-band read into
+    # "everything is General" -- a worse failure than a labelled approximation in an
+    # OFFLINE diagnostic.  Which basis was used is printed with the header, so a band
+    # number can never be read without knowing how its FX was resolved.
+    # The FX basis must NAME ITSELF ACCURATELY (F-4, reviewer 2026-08-08).  The fallback
+    # string used to read "SPOT unset -- today's rate applied to a historical market cap"
+    # on every run, which was actively misleading twice over: `baseline_tools/` never
+    # installs a feed, so `unset` is the ONLY branch that executes here -- and `unset`
+    # means the UNDATED FX_TO_USD CONSTANTS, not today's rate. A reader was being told the
+    # wrong thing about the only path that runs. Each state now says what it actually is.
+    # A PARTIAL PULL ALSO MUST NOT COLLAPSE SILENTLY: a table holding 3 of 38 currencies
+    # loads without complaint and reads as point-in-time while making 35 unknown.
+    fx_pit, fx_basis = None, None
+    try:
+        import fx_rates as fxr
+        fx_pit = fxr.load_pit_rates()
+        if fx_pit is not None:
+            _cov_n, _cov_tot, _cov_f = fx_pit.coverage()
+            _lo, _hi = fx_pit.span()
+            fx_basis = ("POINT-IN-TIME (dated closes, %d/%d supported currencies, %.0f%%, "
+                        "%s..%s)" % (_cov_n, _cov_tot, 100.0 * _cov_f,
+                                     _lo.date() if _lo is not None else '?',
+                                     _hi.date() if _hi is not None else '?'))
+            if _cov_f < 1.0:
+                _missing = sorted(set(fxr.supported_currencies()) - set(fx_pit.currencies))
+                print("#   !!! PARTIAL PIT FX TABLE: %d of %d currencies missing -- names"
+                      % (len(_missing), _cov_tot))
+                print("#   !!! reporting in them have NO USD cap here and route to")
+                print("#   !!! General. Re-run `python fx_rates.py --historical`.")
+                print("#   !!! MISSING: %s" % ', '.join(_missing[:25]))
+    except Exception as _fe:
+        print("#   (PIT FX unavailable: %s: %s)" % (type(_fe).__name__, _fe))
+    if fx_basis is None:
+        _state = co.fx_source_state()
+        _what = {
+            'unset': ("the UNDATED carveOut.FX_TO_USD CONSTANTS (no feed installed; this "
+                      "is the normal state for baseline_tools/, which never installs one)"),
+            'live': "this process's LIVE SPOT rates, applied to historical market caps",
+            'failed': ("NOTHING -- the FX feed failed, so every name is unknown-currency "
+                       "and every band read below is empty/General"),
+        }.get(_state, _state)
+        fx_basis = ("NOT point-in-time [%s] -- %s. Run `python fx_rates.py --historical` "
+                    "to remove the look-ahead." % (_state, _what))
+
+    band_pending = (merged_cdx is None) or (
+        not co.currency_data_present(merged_cdx, fx=fx_pit))
     DIRECTIONAL_MAX_USD = 150e6   # a band whose TOP is <= $150M is directional-only
 
     print("\n" + "#" * 72)
     print("# PER-BAND BEAT-RATE  --  general ranking GROUPED by USD market cap")
     print("#   General -> top-20 ; Mid/Small/Micro -> top-5 ; PIT mcap as-of buy")
+    print("#   FX basis: %s" % fx_basis)
     if band_pending:
         print("#   !!! CURRENCY DATA PENDING (reportedCurrency not yet in this data):   !!!")
         print("#   !!! bands NOT meaningful -> every name reads as General; sub-bands    !!!")
@@ -461,7 +519,8 @@ def _per_band_beat_rate(per_anchor, price_source, merged, horizon_m, threshold):
             deduped, _drp = co.dedup_ranked(ranking, merged_cdx, band_names)
         else:
             deduped = list(ranking)
-        pit_mcu = co.marketcap_usd_by_source(merged_cdx, as_of=buy) if merged_cdx is not None else {}
+        pit_mcu = (co.marketcap_usd_by_source(merged_cdx, as_of=buy, fx=fx_pit)
+                   if merged_cdx is not None else {})
         band_seq = {lab: [] for lab, *_ in co.MCAP_BANDS}
         for s in deduped:
             lab = co.band_for_marketcap_usd(pit_mcu.get(s))

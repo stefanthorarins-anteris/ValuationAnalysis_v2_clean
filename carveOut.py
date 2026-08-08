@@ -249,15 +249,56 @@ MCAP_BANDS = [
     ("Micro_lt_50M",    0.0,  50e6,         5),
 ]
 
-# --- approximate FX -> USD (coarse buckets; banding only needs the RIGHT band) ---
+# --- FX -> USD : the SANITY BAND, no longer the rate SOURCE (2026-08-08) ------------
 # cdx_df['marketCap'] is stored in each company's REPORTING currency, MIXED across the
 # universe (verified: DORO.ST in SEK ~962M ~= $92M USD; FRES.L reports USD), so banding
 # on the raw field would misband every non-USD name. We convert to USD via the captured
-# reportedCurrency + this table. Rates are approximate mid-2020s spot; the cutoffs
-# (50/150/300M) are coarse so exact FX is unnecessary. Unknown currency -> None -> the
-# name's USD market cap is unknown -> routed to General, NEVER misbanded, NEVER dropped.
-# TODO: wire a live/dated FX source (an FMP forex endpoint or a stored dated rate file)
-# to replace this hardcoded snapshot. Do NOT build a bespoke FX-fetch subsystem for it.
+# reportedCurrency.
+#
+# ###################################################################################
+# ## WHICH CURRENCY DRIVES THIS CONVERSION -- READ BEFORE TOUCHING ANYTHING HERE.   ##
+# ## THERE ARE **TWO** CURRENCIES IN THIS CODEBASE AND THEY ARE NOT THE SAME FIELD: ##
+# ##                                                                               ##
+# ##   reportedCurrency  the STATEMENT currency (income statement / balance sheet). ##
+# ##                     `marketCap` is denominated in THIS one.  Proven panel-wide:##
+# ##                     FMP's own `pbRatio` equals marketCap / totalStockholders-  ##
+# ##                     Equity to a median of 1.0000 across 20 currencies,         ##
+# ##                     including 7,001 KRW rows.                                  ##
+# ##   profile `currency` the TRADING currency of a LISTING LINE, captured into the ##
+# ##                     volavgdic entry by findAllSectors.py (as of 90b0d5f).      ##
+# ##                     It differs for EVERY ADR and cross-listing -- SHEL.L quotes##
+# ##                     in pence and reports USD.                                  ##
+# ##                                                                               ##
+# ## WIRING THE PROFILE `currency` AS THE CONVERTER FOR `marketCap` WOULD REINTRODUCE##
+# ## THE EXACT UNIT MISMATCH THAT HALTED THE LIQUIDITY FLOOR.  Do not change which  ##
+# ## currency field drives this conversion.  The not-wired note on the trading side ##
+# ## lives in findAllSectors.py, which is NOT where an FX author looks -- hence this##
+# ## copy, here, next to the table.                                                 ##
+# ###################################################################################
+#
+# THESE CONSTANTS ARE NO LONGER A RATE SOURCE IN PRODUCTION.  They were a hardcoded,
+# UNDATED snapshot: measured 2026-08-08 the median absolute drift against live rates was
+# ~7% and 13 currencies were past 10% (TRY -30.1% ... CHF +10.5%), which recomputed on the
+# 2026-08-07 CUR3K panel gets 11 universe-membership decisions wrong at the $25M floor
+# (7 EUR names wrongly DELETED, 4 wrongly kept) and puts 32 names in the wrong band.
+#
+# They now serve TWO purposes and only two:
+#   1. THE SUPPORTED SET -- a currency with no entry here is not convertible.
+#   2. THE SANITY BAND -- every LIVE rate must land within +-fx_rates.FX_SANITY_BAND of
+#      its constant or it is REFUSED and treated as absent.  That is the one new failure
+#      mode a live feed has and a constant does not: a vendor-side unit flip or an
+#      inverted quote.  It is a UNITS check, not an accuracy check -- TRY already sits
+#      ~30% from its constant on real data, so a tighter band would reject good rates.
+#
+# The live table is installed by fx_rates.install_for_run (one v3/quotes/forex call at
+# run start) via set_live_fx_rates below.  See fx_rates.py for the whole contract,
+# including why a missing/stale rate routes into the unknown-currency path rather than
+# falling back to these numbers.
+#
+# 'PEN' and 'MAD' were ADDED 2026-08-08 (quotable, clean, free once the feed exists);
+# their constants are seeded from that day's live quote, so they are anchors, not history.
+# 'ARS' is DELIBERATELY ABSENT -- see fx_rates.ABSTAIN_CURRENCIES for the reasoning
+# (the rate is fine; our ARS statement data is broken by three orders of magnitude).
 FX_TO_USD = {
     'USD': 1.0, 'EUR': 1.08, 'GBP': 1.27, 'GBp': 0.0127, 'GBX': 0.0127,
     'CHF': 1.12, 'JPY': 0.0067, 'SEK': 0.095, 'NOK': 0.093, 'DKK': 0.145,
@@ -266,8 +307,90 @@ FX_TO_USD = {
     'ZAR': 0.054, 'BRL': 0.185, 'MXN': 0.055, 'PLN': 0.25, 'ILS': 0.27,
     'AED': 0.272, 'SAR': 0.267, 'THB': 0.028, 'IDR': 0.000063, 'TRY': 0.030,
     'RUB': 0.011, 'CZK': 0.043, 'HUF': 0.0028, 'PHP': 0.017, 'MYR': 0.22,
-    'ISK': 0.0072,
+    'ISK': 0.0072, 'PEN': 0.29656, 'MAD': 0.10738,
 }
+
+#  THE ANCHORS AGE, AND ONE OF THEM IS ALREADY CLOSE (flagged 2026-08-08).
+#  The band is measured against a FIXED constant, so a currency in a sustained trend walks
+#  toward the edge and is eventually REFUSED while being perfectly correct.  Measured on
+#  the 2026-08-08 live quote, TRY sits at 0.6975x its constant -- the closest of the 38 --
+#  so roughly another 28% of depreciation would start silently dropping every TRY reporter
+#  out of the floor and the bands.  That must not be DISCOVERED as a name disappearing, so
+#  fx_rates warns when a rate gets within FX_BAND_EDGE_WARN of the edge.  The remedy is a
+#  one-line dated re-seed of the constant below, not a wider band.
+
+
+# --- the run's FX SOURCE STATE ------------------------------------------------------
+# THREE states, because two would force a choice between breaking every offline tool and
+# letting production fall back to the undated constants:
+#
+#   'unset'   no feed was ever attempted -> FX_TO_USD is used, exactly today's behaviour.
+#             This is the OFFLINE state: the test suite, baseline_tools/, any hand-run
+#             script.  Production never sits here -- Sbocker.main always installs.
+#   'live'    a feed resolved.  ONLY the live table answers; a currency absent from it
+#             (missing pair / stale quote / refused by the sanity band) resolves to None,
+#             i.e. UNKNOWN CURRENCY, never to its constant.
+#   'failed'  a feed was attempted and produced nothing usable.  EVERY currency resolves
+#             to None, and a materialized `marketCap_usd` column is refused as well (it
+#             was computed with whatever FX was live when the panel was fetched, so
+#             honouring it would re-admit exactly the stale number this change removes).
+#
+# The point of the 'failed' state is the CEO's load-bearing requirement: ON FX FAILURE THE
+# FLOOR DOES NOT RUN ON THE OLD CONSTANTS.  It runs on nothing, loudly -- which is the
+# already-built unresolvable-reportedCurrency path (see partition_universe's floor block).
+_FX_STATE = 'unset'
+_LIVE_FX = {}
+_LIVE_FX_META = {}
+
+
+def set_live_fx_rates(mapping, meta=None):
+    """Install the run's live {currency: usd_per_unit} table.  An EMPTY mapping is a
+    FAILURE, not an install -- it is routed to mark_fx_unavailable so the two can never
+    be confused by a caller passing {}."""
+    global _FX_STATE, _LIVE_FX, _LIVE_FX_META
+    if not mapping:
+        return mark_fx_unavailable('empty rate table', meta=meta)
+    _LIVE_FX = dict(mapping)
+    _LIVE_FX_META = dict(meta or {})
+    _FX_STATE = 'live'
+    return _FX_STATE
+
+
+def mark_fx_unavailable(reason, meta=None):
+    """Record that the feed was ATTEMPTED and failed.  Distinct from 'unset': it makes
+    every currency unknown instead of quietly reverting to the hardcoded snapshot."""
+    global _FX_STATE, _LIVE_FX, _LIVE_FX_META
+    _LIVE_FX = {}
+    _LIVE_FX_META = dict(meta or {})
+    _LIVE_FX_META.setdefault('failure_reason', reason)
+    _FX_STATE = 'failed'
+    return _FX_STATE
+
+
+def clear_live_fx_rates():
+    """Back to 'unset' (offline/constants).  For tests and offline tools ONLY."""
+    global _FX_STATE, _LIVE_FX, _LIVE_FX_META
+    _FX_STATE, _LIVE_FX, _LIVE_FX_META = 'unset', {}, {}
+    return _FX_STATE
+
+
+def fx_source_state():
+    """'unset' | 'live' | 'failed' -- see the block above."""
+    return _FX_STATE
+
+
+def live_fx_meta():
+    """The provenance dict fx_rates.install_for_run produced, for RunProvenance.
+
+    Read from MODULE STATE rather than from resdic on purpose: resdic is rebuilt from a
+    LOADED pickle on the -loadbometric / -loadboresults paths, and a loaded pickle can
+    carry a PREVIOUS run's fx_rates_as_of.  Module state always describes THIS process."""
+    return dict(_LIVE_FX_META)
+
+
+def live_fx_table():
+    """A copy of the installed table (empty when unset/failed)."""
+    return dict(_LIVE_FX)
 
 
 # --- COARSE exchange-suffix -> reporting-currency fallback --------------------------
@@ -328,11 +451,32 @@ SUFFIX_TO_CURRENCY = {
 }
 
 
-def _fx_to_usd(currency):
-    """USD-per-unit for a reportedCurrency code, or None if missing / unknown code."""
+def _fx_to_usd(currency, fx=None):
+    """USD-per-unit for a reportedCurrency code, or None if missing / unknown / not
+    resolvable from the run's FX source.
+
+    None is the LOAD-BEARING return value: it is what makes the name unknown-mcap, which
+    the $25M floor KEEPS and the bands SKIP.  A stale or refused live rate returns None
+    for exactly that reason -- it must be indistinguishable from a currency we never knew,
+    because it is the same kind of wrong number.
+
+    `fx` overrides the module state with an explicit {currency: rate} table (used by the
+    offline PIT path and by tests); it does NOT fall back to the constants."""
     if not isinstance(currency, str):
         return None
-    return FX_TO_USD.get(currency.strip())
+    code = currency.strip()
+    if fx is not None:
+        r = fx.get(code)
+        return None if r is None else float(r)
+    if _FX_STATE == 'unset':
+        return FX_TO_USD.get(code)
+    r = _LIVE_FX.get(code)          # 'live' -> the live table; 'failed' -> {} -> None
+    return None if r is None else float(r)
+
+
+def _is_pit_table(fx):
+    """True for a dated (point-in-time) FX table -- anything exposing `rate_for`."""
+    return fx is not None and hasattr(fx, 'rate_for')
 
 
 # LSE International Order Book / grey-market DEPOSITARY lines: zero-prefixed .L tickers
@@ -358,10 +502,25 @@ def _suffix_fx_to_usd(symbol):
     cur = SUFFIX_TO_CURRENCY.get(symbol.rsplit('.', 1)[1].strip())
     if cur is None:
         return 1.0
-    return FX_TO_USD.get(cur, 1.0)
+    #  Routed through _fx_to_usd so an OFFLINE tool that opted into the suffix guess AND
+    #  installed a live feed converts with the live rate rather than the sanity constant.
+    #  An unresolvable rate still means 1.0 here = today's raw behaviour, which is this
+    #  helper's whole contract (only a KNOWN suffix may move a name).
+    #
+    #  EXCEPT UNDER A DEAD FEED (F-5, reviewer 2026-08-08).  With _FX_STATE == 'failed'
+    #  every currency resolves to None, so a KNOWN suffix would fall to 1.0 and be read as
+    #  raw-as-USD -- DORO.ST would go from ~$9.5M to ~$100M, a wrong number wearing a right
+    #  label, in the one state where we have explicitly decided not to guess. Return None
+    #  instead (-> NaN -> unknown) so the dead-feed decision is not silently reversed by
+    #  the fallback. Offline-only and unreachable from the pipeline today (no caller passes
+    #  allow_suffix_fallback=True), guarded now rather than left for whoever wires it next.
+    if _FX_STATE == 'failed':
+        return None
+    r = _fx_to_usd(cur)
+    return 1.0 if r is None else r
 
 
-def marketcap_usd_series(cdx_df, allow_suffix_fallback=False):
+def marketcap_usd_series(cdx_df, allow_suffix_fallback=False, fx=None):
     """Row-aligned USD market cap for cdx_df: marketCap * FX(reportedCurrency).
 
     THE single currency-conversion path -- shared by partition_by_marketcap, the
@@ -387,16 +546,39 @@ def marketcap_usd_series(cdx_df, allow_suffix_fallback=False):
     senior-dev joint call, CEO-delegated -- see partition_universe's floor block).
     The flag survives for OFFLINE TOOLING that must produce a number for every row and is
     explicit about the guess (baseline_tools/run_corrected_current.py); production must not
-    use it."""
+    use it.
+
+    fx (2026-08-08): the FX source to convert with.
+      * None                     -> the run's installed source (see fx_source_state()).
+      * {currency: rate}         -> that flat table, no fallback to the constants.
+      * an object with rate_for(currency, date) -> POINT-IN-TIME conversion, each row
+        converted at ITS OWN date's rate (fx_rates.PitFxTable).  This is what removes the
+        look-ahead flavour from grading a 2021 market cap with today's spot; it requires a
+        `date` column and resolves to NaN where the dated series does not reach."""
     cols = getattr(cdx_df, 'columns', [])
     if cdx_df is None or 'marketCap' not in cols:
         return pd.Series(np.nan, index=getattr(cdx_df, 'index', None))
     mc = pd.to_numeric(cdx_df['marketCap'], errors='coerce')
     out = None
     if 'reportedCurrency' in cols:
-        rate = cdx_df['reportedCurrency'].map(_fx_to_usd).astype('float64')
+        if _is_pit_table(fx):
+            #  PIT: the rate is a function of (currency, row date), so it cannot be a
+            #  column map.  A row with no usable date resolves to None -> NaN -> unknown.
+            dts = (pd.to_datetime(cdx_df['date'], errors='coerce') if 'date' in cols
+                   else pd.Series(pd.NaT, index=cdx_df.index))
+            rate = pd.Series(
+                [fx.rate_for(c, d) for c, d in zip(cdx_df['reportedCurrency'], dts)],
+                index=cdx_df.index, dtype='float64')
+        else:
+            rate = cdx_df['reportedCurrency'].map(
+                lambda c: _fx_to_usd(c, fx=fx)).astype('float64')
         out = mc * rate
-    elif 'marketCap_usd' in cols:        # materialized at ingest (belt-and-suspenders)
+    elif 'marketCap_usd' in cols and _FX_STATE != 'failed':
+        #  Materialized at ingest (belt-and-suspenders).  REFUSED when the feed was
+        #  attempted and failed: that column was computed with whatever FX was live when
+        #  the panel was fetched, and honouring it on a run whose own FX is dead would
+        #  re-admit the stale number by the back door -- i.e. exactly the "floor runs on
+        #  old constants" outcome this design forbids.
         out = pd.to_numeric(cdx_df['marketCap_usd'], errors='coerce')
     else:
         out = pd.Series(np.nan, index=cdx_df.index)
@@ -406,24 +588,45 @@ def marketcap_usd_series(cdx_df, allow_suffix_fallback=False):
     return out
 
 
-def currency_data_present(cdx_df):
+def currency_data_present(cdx_df, fx=None):
     """True only when currency data is actually USABLE -- i.e. reportedCurrency resolves
     to a known FX rate for at least one row, or a materialized marketCap_usd carries at
     least one finite value. Column PRESENCE alone is NOT enough: an all-NaN column (e.g.
     reportedCurrency coerced to NaN by a numeric-cast, or an empty materialization) would
     otherwise masquerade as 'present' and suppress the pending banners while every name
     silently routes to General. This is the backstop that keeps 'nothing wrong ships'
-    true even if the ingest string-preservation regresses (CEO 2026-07-17)."""
+    true even if the ingest string-preservation regresses (CEO 2026-07-17).
+
+    IT MUST MIRROR marketcap_usd_series EXACTLY (tightened 2026-08-08).  The two used to
+    disagree in one reachable case: this function fell through to `marketCap_usd` when
+    `reportedCurrency` was PRESENT but resolved nothing, while the series only consults
+    `marketCap_usd` when the reportedCurrency COLUMN IS ABSENT.  That divergence was
+    harmless while FX was a constant table (reportedCurrency always resolved), and becomes
+    live the moment a rate can fail: a post-fetch panel + a dead FX feed would have
+    reported "currency present" (via the stale materialized column) while every name
+    converted to NaN -- i.e. the floor would have printed "applied, 0 excluded" instead of
+    the NOT-ENFORCED banner.  So: when the column exists, the column decides.
+
+    AND IT MUST REQUIRE `marketCap` TOO (F-3, reviewer 2026-08-08).  The mirror was still
+    partial: `marketcap_usd_series` returns an all-NaN series the moment `marketCap` is
+    absent, but this function never looked at that column -- so a frame carrying
+    `reportedCurrency` and no `marketCap` reported "currency present" against a series
+    that could not produce a single number.  Same shape as the divergence above, one
+    column over."""
     cols = getattr(cdx_df, 'columns', [])
     if cdx_df is None:
         return False
+    if 'marketCap' not in cols:
+        return False
     if 'reportedCurrency' in cols:
         try:
-            if cdx_df['reportedCurrency'].map(_fx_to_usd).notna().any():
-                return True
+            if _is_pit_table(fx):
+                return bool(len(marketcap_usd_series(cdx_df, fx=fx).dropna()))
+            return bool(cdx_df['reportedCurrency'].map(
+                lambda c: _fx_to_usd(c, fx=fx)).notna().any())
         except Exception:
-            pass
-    if 'marketCap_usd' in cols:
+            return False
+    if 'marketCap_usd' in cols and _FX_STATE != 'failed':
         try:
             if pd.to_numeric(cdx_df['marketCap_usd'], errors='coerce').notna().any():
                 return True
@@ -432,14 +635,48 @@ def currency_data_present(cdx_df):
     return False
 
 
-def marketcap_usd_by_source(cdx_df, as_of=None, allow_suffix_fallback=False):
+def currency_coverage(cdx_df, fx=None):
+    """(n_covered, n_sources, fraction) -- how much of the PANEL gets a USD market cap.
+
+    THE BOOLEAN IS NOT ENOUGH (F-2, reviewer 2026-08-08).  `currency_data_present` answers
+    "did ANY name resolve", which is what the floor needs to decide whether to run at all.
+    It says nothing about HOW MUCH of the universe the floor then covers -- and with, say,
+    only {USD, KRW} resolving, the run installs 'live', this returns True, no banner fires
+    and `floor_enforced: True` is stamped while barely half the names have a USD cap (EUR
+    alone is 23.8% of the universe). Nothing is wrongly deleted, but a `floor_enforced`
+    label on a half-floored universe is the label-means-something-else defect this project
+    keeps producing. Callers report the FRACTION, and it ships in the artifact.
+
+    Counts SOURCES, not rows: the floor is a per-name decision.
+
+    Built on `marketcap_usd_series` DIRECTLY rather than on `marketcap_usd_by_source`,
+    which hard-requires a `date` column and raises without one. This function is called
+    from the floor block on the critical path of a ~12-hour run and from the provenance
+    sidecar; neither may be the thing that crashes it, and a diagnostic that needs a column
+    its subject may not carry is not a diagnostic."""
+    cols = getattr(cdx_df, 'columns', [])
+    if cdx_df is None or 'source' not in cols or not len(cdx_df):
+        return 0, 0, 0.0
+    n_total = int(cdx_df['source'].nunique())
+    if not n_total:
+        return 0, 0, 0.0
+    usd = marketcap_usd_series(cdx_df, fx=fx)
+    n_cov = int(cdx_df.loc[usd.notna(), 'source'].nunique())
+    return n_cov, n_total, (n_cov / float(n_total))
+
+
+def marketcap_usd_by_source(cdx_df, as_of=None, allow_suffix_fallback=False, fx=None):
     """source -> latest USD market cap (latest non-NaN row). If `as_of` is given,
     restrict to date <= as_of, i.e. the POINT-IN-TIME market cap as-of that date.
     Returns {} when the frame is unusable. Used by partition_by_marketcap (latest,
     fallback OFF) and by the PIT beat-rate grading (as_of=buy).
 
     allow_suffix_fallback is forwarded to marketcap_usd_series -- pass True only from
-    the universe floor / size-tilt callers that must produce a number for every name."""
+    the universe floor / size-tilt callers that must produce a number for every name.
+
+    fx is forwarded too.  Passing a dated (PIT) table together with `as_of` is the
+    correct point-in-time read: the market cap is the last one reported on or before
+    `as_of`, converted at the rate that was live ON ITS OWN DATE -- not today's."""
     cols = getattr(cdx_df, 'columns', [])
     if cdx_df is None or 'source' not in cols or 'marketCap' not in cols:
         return {}
@@ -452,7 +689,7 @@ def marketcap_usd_by_source(cdx_df, as_of=None, allow_suffix_fallback=False):
     if as_of is not None:
         df = df[df['date'] <= pd.Timestamp(as_of)]
     df['_mcap_usd'] = marketcap_usd_series(
-        df, allow_suffix_fallback=allow_suffix_fallback).values
+        df, allow_suffix_fallback=allow_suffix_fallback, fx=fx).values
     df = df.dropna(subset=['_mcap_usd']).sort_values(['source', 'date'])
     if df.empty:
         return {}
@@ -2398,6 +2635,47 @@ def partition_universe(BoScore_df, cdx_df, tickers_df,
               "guess) -- %d excluded, %d kept with an unknown/unresolvable currency "
               "(%d of those have a RAW market cap below the floor)"
               % (n_below, n_unknown_mcap, n_kept_unknown_raw_below), flush=True)
+        # --- PARTIAL COVERAGE IS NOT "ENFORCED" (F-2, reviewer 2026-08-08) -------------
+        # `currency_data_present` is a BOOLEAN: it says the floor ran, not how much of the
+        # universe it reached. A feed covering only a couple of currencies still lands
+        # here, and downstream stamps `floor_enforced: True` over a universe where most
+        # names were never floored at all. State the FRACTION every time, and banner it
+        # when it is low -- the run proceeds (a partial floor is not a wrong floor, and
+        # every unfloored name is KEPT), but the label must not outrun the fact.
+        try:
+            import fx_rates as _fxr
+            _min_cov = _fxr.FX_MIN_PANEL_COVERAGE
+        except Exception:
+            _min_cov = 0.90
+        try:
+            _cov_n, _cov_tot, _cov_frac = currency_coverage(cdx_df)
+        except Exception as _cove:
+            # A COVERAGE READOUT MUST NOT COST THE RUN. Report the miss, don't fake a
+            # number: a silent 100% here would be worse than the defect it reports on.
+            print("carveOut floor: WARNING -- coverage not computed (%s: %s); the floor "
+                  "itself is UNAFFECTED, but this run carries no coverage figure."
+                  % (type(_cove).__name__, _cove), flush=True)
+            _cov_n, _cov_tot, _cov_frac = 0, 0, 1.0
+        print("carveOut floor: COVERAGE -- %d of %d source(s) (%.1f%%) have a USD market "
+              "cap, so the floor was applied to that fraction of the universe."
+              % (_cov_n, _cov_tot, 100.0 * _cov_frac), flush=True)
+        if _cov_tot and _cov_frac < _min_cov:
+            _cbang = "!" * 78
+            _cbanner = "\n".join([
+                "", _cbang,
+                "!!! $%.0fM FLOOR ONLY PARTIALLY APPLIED -- %.1f%% COVERAGE !!!"
+                % (mcap_floor / 1e6, 100.0 * _cov_frac),
+                "!!!   %d of %d name(s) have NO resolvable USD market cap, so the floor"
+                % (_cov_tot - _cov_n, _cov_tot),
+                "!!!   never applied to them. They are KEPT and UNBANDED -- nothing is",
+                "!!!   wrongly deleted -- but this universe is NOT floor-filtered end to",
+                "!!!   end, and any 'floor_enforced' label on it means 'the floor ran',",
+                "!!!   NOT 'every name passed it'. Usual cause: an FX feed that installed",
+                "!!!   LIVE while resolving only part of the supported currency set --",
+                "!!!   check the fx_rates block of RunProvenance and output/FxRates_*.csv.",
+                _cbang, ""])
+            print(_cbanner, file=sys.stderr, flush=True)
+            print(_cbanner, flush=True)
     # The floor moves names IN and OUT of the universe, so NAME THEM -- two integers is
     # not "loud, never silent" for a universe change of this size. Same dated-CSV treatment
     # the share-class filter gets. THREE populations, because the CEO's condition for being

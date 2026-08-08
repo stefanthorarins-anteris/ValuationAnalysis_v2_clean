@@ -582,6 +582,58 @@ def regressMetricsOnROR(rankdic):
     print("coefreg:", tuple(zip(regressors, coef.tolist()[0])))
     return None
 
+def _fx_provenance(resdic=None):
+    """The `fx_rates` block of the run-provenance sidecar.  NEVER raises, ALWAYS returns.
+
+    Mirrors `_veto_provenance` below in shape and in purpose: it records WHICH FX BASIS
+    produced this run's USD market caps, so a run whose FX feed was healthy and a run whose
+    FX feed was dead cannot ship indistinguishable artifacts.  `state` is the important
+    field -- 'live' means dated rates from v3/quotes/forex, 'failed' means every currency
+    was unknown and the $25M floor did not run, and 'unset' means no feed was ever
+    attempted and the UNDATED FX_TO_USD constants were used (offline tooling; production
+    should never emit this)."""
+    try:
+        import carveOut as _co
+        meta = _co.live_fx_meta() or {}
+        out = {'state': _co.fx_source_state()}
+        out.update(meta)
+        if out['state'] == 'unset':
+            out['warning'] = ('no live FX feed was installed: USD market caps were derived '
+                              'from the UNDATED carveOut.FX_TO_USD constants')
+        elif out['state'] == 'failed':
+            out['warning'] = ('the FX feed produced no usable rate: NO reportedCurrency '
+                              'resolved, so the $25M universe floor did NOT run and the '
+                              'market-cap bands were skipped')
+        #  PANEL COVERAGE IN THE SHIPPED ARTIFACT (F-2, reviewer 2026-08-08).  The
+        #  supported-set coverage above describes the FEED; this describes what the feed
+        #  actually reached on THIS universe, which is the number that qualifies any
+        #  `floor_enforced` label. `resdic` is the right source here (unlike the FX stamp
+        #  itself) because it is the panel this run scored. Best-effort: a coverage read
+        #  must never cost the sidecar.
+        try:
+            _cdx = (resdic or {}).get('cdx_df')
+            if _cdx is not None and len(_cdx):
+                _n, _tot, _frac = _co.currency_coverage(_cdx)
+                out['panel_coverage'] = round(_frac, 4)
+                out['panel_sources_with_usd_mcap'] = _n
+                out['panel_sources'] = _tot
+                import fx_rates as _fxr
+                out['panel_coverage_ok'] = bool(_frac >= _fxr.FX_MIN_PANEL_COVERAGE)
+                if not out['panel_coverage_ok']:
+                    out['coverage_warning'] = (
+                        'the $25M floor reached only %.1f%% of this universe (%d of %d '
+                        'names have a resolvable USD market cap). The rest were KEPT and '
+                        'UNBANDED -- nothing was wrongly deleted, but this run is NOT '
+                        'floor-filtered end to end and must not be labelled as if it '
+                        'were.' % (100.0 * _frac, _n, _tot))
+        except Exception as _ce:
+            out['panel_coverage'] = None
+            out['panel_coverage_error'] = '%s: %s' % (type(_ce).__name__, _ce)
+        return out
+    except Exception as _e:
+        return {'state': 'unknown', 'error': '%s: %s' % (type(_e).__name__, _e)}
+
+
 def _veto_provenance(resdic):
     """The `stage1_veto` block of the run-provenance sidecar.  NEVER raises, ALWAYS returns.
 
@@ -896,6 +948,19 @@ def writeResWrapper(resdic):
                       #  the one axis that changed the pool.  Never raises (see
                       #  `_veto_provenance`), so it cannot cost the universe stamp.
                       'stage1_veto': _veto_provenance(resdic),
+                      #  WHICH FX PRODUCED THESE USD NUMBERS (2026-08-08).  A stale-FX run
+                      #  and a clean-FX run must NEVER produce identical artifacts -- that
+                      #  is the 2026-08-07 post-mortem rule (the allowlist note in
+                      #  Sbocker.transfer_outputs_to_drive), and FX is
+                      #  now a live input that can differ run to run or fail outright.
+                      #  `fx_rates_as_of` + the dated output/FxRates_*.csv are what make
+                      #  the two distinguishable on the receiving machine.
+                      #
+                      #  READ FROM MODULE STATE, NEVER FROM resdic: on the -loadbometric /
+                      #  -loadboresults paths resdic is rebuilt from a SAVED pickle, which
+                      #  can carry a PREVIOUS run's FX stamp. carveOut's state always
+                      #  describes the process that is writing this file.
+                      'fx_rates': _fx_provenance(resdic),
                       'deliverables': list(deliverables)})
         if not _prov.get('universe_fingerprint'):
             _prov['universe_fingerprint'] = 'unknown-not-stamped'

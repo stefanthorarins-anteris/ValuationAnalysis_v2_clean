@@ -232,10 +232,63 @@ def filter_invalid_data(cdx_df, price_col='price', mcap_col='marketCap',
     
     df = cdx_df.copy()
     df['date'] = pd.to_datetime(df['date'])
-    
+
     # Sort by source and date for sequential checking
     df = df.sort_values(['source', 'date']).reset_index(drop=True)
-    
+
+    # =========================================================================
+    # PASS 0: VENDOR-CONTAMINATION QUARANTINE  (vendor_contamination.py)
+    # =========================================================================
+    # NAMED, DATED, EVIDENCED windows where FMP serves ANOTHER ISSUER'S statements under
+    # this ticker.  The founding case is `058820.KQ` (CMG Pharmaceutical, KOSDAQ) carrying
+    # CHIPOTLE's income statement and balance sheet for 2020-03-31 -> 2022-09-30, labelled
+    # KRW and matching CMG to the dollar, then SNAPPING to genuine KRW at 2022-12-31.
+    #
+    # WHY IT IS *HERE* AND NOT IN A FILTER OF ITS OWN.  It is a DATA-SIDE rule and it must
+    # survive the next full fetch -- FMP still serves the bad rows today, so a re-fetch
+    # re-ingests them verbatim.  Putting it in this function means it inherits, for free,
+    # every property the removal machinery already has: the rows land in the transparency
+    # CSV with a reason string, they propagate to BoMetric_df by (source, date) through
+    # the row-level filter below, and the whole thing is idempotent across this function's
+    # two invocations per run because the rows are simply gone the second time.
+    #
+    # IT RUNS FIRST, BEFORE THE ARITHMETIC CHECKS, ON PURPOSE.  The contaminated rows would
+    # otherwise be the ADJACENT PRECEDING ROW for the market-cap step check, i.e. corrupt
+    # data acting as the baseline that decides whether real data looks like a break.
+    # Removing a leading window also leaves a contiguous DATE SUFFIX, which is exactly the
+    # shape PASS 3 already guarantees, so nothing downstream sees a new adjacency.
+    #
+    # NOT CAUGHT BY ANY EXISTING CHECK, and could not be: `marketCap` runs CONTINUOUS in
+    # real KRW straight through the window, so every market-cap-based sanity rule in this
+    # module passes, and the 13x scale break at the boundary is an order of magnitude below
+    # _MCAP_BREAK_RATIO (and is in the wrong field anyway).
+    quarantine_records = []
+    try:
+        import vendor_contamination as vc
+        q_mask, quarantine_records = vc.quarantine_records(
+            df, price_col=price_col, mcap_col=mcap_col)
+        if q_mask.any():
+            _q_src = sorted(set(df.loc[q_mask, 'source']))
+            df = df[~q_mask].reset_index(drop=True)
+            if verbose:
+                print("VENDOR-CONTAMINATION QUARANTINE: removed %d row(s) across %d "
+                      "source(s): %s" % (len(quarantine_records), len(_q_src),
+                                         ', '.join(_q_src)))
+                for _r in vc.QUARANTINE_RULES:
+                    if _r.source in _q_src:
+                        print("  %s" % _r.label())
+    except Exception as _qe:
+        # LOUD, never silent, never fatal: this sits on the critical path of a ~12-hour
+        # run, and the same trade-off is already made for the primary-presence eject below.
+        print("!" * 78, flush=True)
+        print("!!! VENDOR-CONTAMINATION QUARANTINE DID NOT RUN (%s: %s)."
+              % (type(_qe).__name__, _qe), flush=True)
+        print("!!! Known-contaminated vendor rows (another issuer's statements served\n"
+              "!!! under this ticker) are STILL IN THIS PANEL. The backtest reads the\n"
+              "!!! affected window. DO NOT treat this output as quarantined.", flush=True)
+        print("!" * 78, flush=True)
+        quarantine_records = []
+
     # =========================================================================
     # PASS 1: Identify all corrupt data points
     # =========================================================================
@@ -299,13 +352,19 @@ def filter_invalid_data(cdx_df, price_col='price', mcap_col='marketCap',
     # =========================================================================
     # PASS 3: Remove all data at or before the most recent corruption date
     # =========================================================================
-    removal_records = []
+    # SEEDED WITH PASS 0, not re-initialised.  The quarantine's rows must reach the same
+    # `removed_df` every other removal reaches -- that frame is what drives the
+    # transparency CSV, the (source, date) propagation into BoMetric_df, and the
+    # `n_dq_removed_*` counters the universe reconciliation balances against.  Dropping
+    # them here would delete the rows while asserting nothing had been removed, which is
+    # precisely the accumulate-never-assign defect fixed on 2026-08-07 further down.
+    removal_records = list(quarantine_records)
     rows_to_remove = set()
-    
+
     for idx, row in df.iterrows():
         source = row.get('source', 'unknown')
         date = row.get('date', None)
-        
+
         if source in most_recent_corruption:
             corruption_date = most_recent_corruption[source]
             
@@ -425,7 +484,10 @@ def filter_invalid_data(cdx_df, price_col='price', mcap_col='marketCap',
     # Summary
     # =========================================================================
     if verbose:
-        n_total = len(df)
+        # n_total counts the frame AS IT ARRIVED (pass 0 has already dropped its rows from
+        # `df`), so the removed-percentage stays honest rather than quietly excluding the
+        # quarantine from its own denominator.
+        n_total = len(df) + len(quarantine_records)
         n_removed = len(removal_records)
         n_kept = len(filtered_df)
         

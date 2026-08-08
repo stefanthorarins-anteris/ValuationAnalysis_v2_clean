@@ -540,6 +540,40 @@ def main():
     # Drive or bad path is caught at launch, not discovered 12h later.
     print_transfer_launch_status(configdic, verbose=True)
 
+    # ---- LIVE FX (ONE v3/quotes/forex call), BEFORE the ~12h fetch ----------
+    # `carveOut.FX_TO_USD` was an UNDATED hardcoded snapshot: ~7% median drift, 13
+    # currencies past 10%, and on the 2026-08-07 CUR3K panel ELEVEN wrong universe-
+    # membership decisions at the $25M floor plus 32 names in the wrong band.  One call
+    # (~0.006% of a run's ~16,300) replaces it with dated rates that are validated PER
+    # RATE -- the endpoint serves 125 dead pairs out of 1,550 behind HTTP 200, so a
+    # response-level check would be worthless.
+    #
+    # AT LAUNCH, NOT AT USE, deliberately: a broken FX feed is then visible before the
+    # 12 hours are spent rather than after, and a launch-time quote is at most ~12h old
+    # when the conversions run -- an order of magnitude inside the 7-day staleness bar.
+    #
+    # A FAILURE HERE DOES NOT FALL BACK TO THE CONSTANTS AND DOES NOT STOP THE RUN.  It
+    # leaves every reportedCurrency unresolvable, which is the already-built degradation:
+    # the floor KEEPS every name and prints its NOT-ENFORCED banner, the bands are
+    # skipped, the size tilt scores NEUTRAL.  See fx_rates.py and carveOut's FX source
+    # state for why a stale rate is treated as the same kind of wrong number as a
+    # missing currency.
+    try:
+        import fx_rates as fxr
+        fxr.install_for_run(configdic.get('baseurl'), configdic.get('api_key'),
+                            verbose=True)
+    except Exception:
+        import traceback as _tb
+        import carveOut as _co_fx
+        _co_fx.mark_fx_unavailable('fx_rates.install_for_run raised at launch')
+        _tb.print_exc(file=sys.stderr)
+        print('\n' + '!' * 78 + '\n'
+              '!!! FX INSTALL FAILED AT LAUNCH -- run PROCEEDS with NO usable FX.       !!!\n'
+              '!!! Every reportedCurrency is UNKNOWN: the $25M floor is NOT enforced,   !!!\n'
+              '!!! the market-cap bands are skipped, and the size tilt is NEUTRAL.      !!!\n'
+              '!!! It does NOT fall back to the old hardcoded constants -- deliberate.  !!!\n'
+              + '!' * 78 + '\n', flush=True)
+
     try:
         # Point-in-time as-of date D (default None = today / live; reproduces current
         # behaviour bit-for-bit).  Threaded into the universe build and the scorer.
@@ -645,6 +679,37 @@ def main():
                      len(Tickers_df),
                      configdic.get('universe_definition_changed', 'n/a')),
                   flush=True)
+
+            # ---- VENDOR-CONTAMINATION DETECTOR (post-fetch, ZERO API calls) ----
+            # Hash every (date, revenue, totalAssets) triple in the freshly fetched panel,
+            # find sources sharing >= 3 of them, and flag the pairs whose company names do
+            # NOT match.  This is the check that found `058820.KQ` serving CHIPOTLE's
+            # statements under a KOSDAQ ticker -- and FMP still serves those rows today, so
+            # this has to run on every fetch, not once.
+            #
+            # RUNS ON THE RAW PANEL, BEFORE the quality filter: the filter's job is to
+            # remove rows, and a detector that only ever sees post-filter data cannot
+            # report what the filter already took out -- which is the population most
+            # worth knowing about.  Its output is a REPORT, never an action: legitimate
+            # cross-listings and renames are indistinguishable from contamination to a
+            # machine (Corteva/EIDP, NOW/DNOW, MicroStrategy/Strategy), so a human
+            # promotes a finding into vendor_contamination.QUARANTINE_RULES.
+            # Fully guarded -- a detector must never cost a 12-hour fetch.
+            try:
+                import vendor_contamination as _vc
+                _vc_names = {}
+                try:
+                    _vc_names = dict(zip(Tickers_df['symbol'], Tickers_df['name']))
+                except Exception:
+                    pass
+                _vc.run_detector_stage(datandmetricdic.get('cdx_df'), names=_vc_names,
+                                       verbose=True)
+            except Exception:
+                import traceback as _tb
+                _tb.print_exc(file=sys.stderr)
+                print('WARNING: vendor-contamination detector did not run; the fetch and '
+                      'every deliverable are UNAFFECTED, but this run has no record of '
+                      'the shared-fundamentals check.', flush=True)
 
             # Apply data quality filter to freshly fetched data
             datandmetricdic = dq.apply_data_quality_filter(datandmetricdic, verbose=True, save_log=True)
