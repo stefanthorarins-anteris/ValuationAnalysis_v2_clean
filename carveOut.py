@@ -1195,6 +1195,56 @@ def _name_vocabulary_tag(name):
 _VOLAVG_DECIDING_RATIO = 10.0
 
 
+def _volavg_comparable_values(group, volavg_map):
+    """`{member: volAvg}` if the WHOLE group can be compared on volume honestly, else
+    `None` meaning ABSTAIN.  Extracted 2026-08-08 so the two volume terms cannot drift.
+
+    THE ABSTENTION RULE LIVES HERE, IN ONE PLACE, because there are now TWO terms that
+    consume it -- `_volavg_liquidity_term` (the confident order-of-magnitude term) and
+    `_volavg_raw_liquidity_term` (the weak last-resort term below ISIN).  Duplicating the
+    guard would let a later edit relax it for one term and not the other, and the guard is
+    the entire correctness argument for both.  Pure extraction: the conditions and their
+    order are byte-for-byte what `_volavg_liquidity_term` applied before, so the decade
+    term's behaviour is unchanged.
+
+    Two conditions, each preventing a specific way of deciding on something other than
+    liquidity (the third condition -- "never read `sym`" -- is a property of this
+    function's SIGNATURE: it cannot see the member under test, so the abstain/discriminate
+    choice provably cannot differ between two members of one group):
+
+      1. EVERY member must have a usable reading.  Otherwise a mapped member would sort
+         above an unmapped one and the survivor would be decided by DATA AVAILABILITY --
+         the exact defect the reviewer caught in the first ISIN cut.  Note that this is a
+         GROUP-level abstention and it has to be: a sort key is a total preorder, so there
+         is no scalar value that means "no opinion about THIS member only" -- wherever an
+         unreadable member is placed, that placement IS a decision about it.  Abstaining
+         the group is the only realisation of "must not win on absence, must not be
+         demoted for absence" that a single ordering term admits.
+      2. EVERY member's reading must carry the SAME as-of date.  The map merges
+         never-overwrite, so a symbol this run did not fetch keeps a stale reading;
+         comparing it against a fresh one compares two market regimes and looks identical
+         to a liquidity difference.  An UNDATED map (the pre-2026-08-06 shape) has None
+         for every entry, which is self-consistently "all the same unknown date" -- so it
+         is allowed, and the staleness caveat rides on the FILENAME as it did before.
+    """
+    if not volavg_map or len(group) < 2:
+        return None
+    vals, dates = {}, set()
+    for m in group:
+        v, asof = volavg_map.get(m, (None, None))
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            return None                   # (1) a member with no usable reading -> abstain
+        if not math.isfinite(f) or f <= 0:
+            return None
+        vals[m] = f
+        dates.add(asof)
+    if len(dates) > 1:
+        return None                       # (2) mixed as-of dates -> refuse the comparison
+    return vals
+
+
 def _volavg_liquidity_term(sym, group, volavg_map):
     """The ordering signal average volume DOES support: which line of an issuer is the
     LIQUID one, coarsened to ORDERS OF MAGNITUDE.  Lower (more negative) sorts first.
@@ -1275,35 +1325,14 @@ def _volavg_liquidity_term(sym, group, volavg_map):
     inside one order of magnitude, this term abstains there and the next term decides --
     no worse than today, but not fixed either.
 
-    ABSTAIN UNLESS THE GROUP IS COMPARABLE.  Three conditions, and each one prevents a
-    specific way of deciding on something other than liquidity:
-      1. EVERY member must have a usable reading.  Otherwise a mapped member would sort
-         above an unmapped one and the survivor would be decided by DATA AVAILABILITY --
-         the exact defect the reviewer caught in the first ISIN cut.
-      2. EVERY member's reading must carry the SAME as-of date.  The map merges
-         never-overwrite, so a symbol this run did not fetch keeps a stale reading;
-         comparing it against a fresh one compares two market regimes and looks identical
-         to a liquidity difference.  An UNDATED map (the pre-2026-08-06 shape) has None
-         for every entry, which is self-consistently "all the same unknown date" -- so it
-         is allowed, and the staleness caveat rides on the FILENAME as it did before.
-      3. The decision to speak reads ONLY `group` and `volavg_map`, NEVER `sym` -- so the
-         abstain/discriminate choice cannot differ between two members of one group.
+    ABSTAIN UNLESS THE GROUP IS COMPARABLE.  The conditions moved to
+    `_volavg_comparable_values` on 2026-08-08 (unchanged) so this term and the weak raw
+    term below ISIN share ONE guard: every member needs a usable reading, every reading
+    needs the same as-of date, and the decision to speak never reads `sym`.
     """
-    if not volavg_map or len(group) < 2:
+    vals = _volavg_comparable_values(group, volavg_map)
+    if vals is None:
         return 0
-    vals, dates = {}, set()
-    for m in group:
-        v, asof = volavg_map.get(m, (None, None))
-        try:
-            f = float(v)
-        except (TypeError, ValueError):
-            return 0                      # (1) a member with no usable reading -> abstain
-        if not math.isfinite(f) or f <= 0:
-            return 0
-        vals[m] = f
-        dates.add(asof)
-    if len(dates) > 1:
-        return 0                          # (2) mixed as-of dates -> refuse the comparison
     top = max(vals.values())
     #  A RATIO against the group's own maximum, so there is no absolute edge and a near-tie
     #  ties. 0 = within an order of magnitude of the most liquid line (sorts first),
@@ -1316,12 +1345,126 @@ def _volavg_liquidity_term(sym, group, volavg_map):
     return 0 if top / mine < _VOLAVG_DECIDING_RATIO else 1
 
 
+def _volavg_raw_liquidity_term(sym, group, volavg_map):
+    """RAW average volume, descending (more liquid sorts first), as the LAST tiebreak
+    before the alphabet.  Returns `-volAvg`; 0 for every member when the group abstains.
+    ADDED 2026-08-08, CEO ruling.
+
+    WHY A SECOND, WEAKER VOLUME TERM.  `_volavg_liquidity_term` above only speaks on an
+    ORDER-OF-MAGNITUDE gap and ties everything inside it; the groups it ties then fall
+    past ISIN plurality to the RAW ALPHABET.  On the 2026-08-08 run that was still 7
+    groups -- and alphabetical order correlates with NOTHING.  The trade this term makes
+    is deliberate and is the CEO's:
+
+        a SLIGHTLY UNSTABLE BUT INFORMATIVE tiebreak beats a PERFECTLY STABLE ARBITRARY
+        one.
+
+    The decade rule was chosen for run-to-run stability -- volAvg is re-read every fetch,
+    so a 3% wobble can flip a survivor when raw values decide.  That cost is real and is
+    ACCEPTED here, because the thing being traded away is not accuracy, it is alphabetical
+    order: the fallback this displaces is `'CBE' < 'RBT'`, which carries no information
+    about which line is the common at all.  And in the K-1 shape it is plausibly WORSE than
+    a coin, because a derived line's ticker is often a mangled variant that sorts before
+    its common ('CBE'/'RBT', 'PREVA'/'VALUE', 'SMSD'/'SMSN' -- three for three).
+
+    *** THE OBJECTION, RECORDED RATHER THAN DISMISSED. ***  A near-tie in volume genuinely
+    IS weak evidence about which line is the common, and a wrong-but-confident tiebreak can
+    be worse than an admittedly-arbitrary one because it LOOKS principled in the artifact.
+    That objection is about READING the result, not about the ordering -- the ordering is
+    better-than-chance either way -- so it is answered by REPORTING, and it is, three times:
+      * this term has its OWN name in `_KEY_TERM_NAMES` (`volavg_raw`), so `decided_by`
+        never lets a 1.4x margin masquerade as the confident decade term;
+      * the dedup report carries the RAW volumes and their as-of dates for the dropped and
+        the surviving line, so a reader sees the MARGIN and can judge its weight; and
+      * that report is WRITTEN TO DISK as `output/DedupSurvivorReport_<date>.csv` and ships
+        in the transfer, and `partition_universe` prints `n_decided_volavg_raw` beside
+        `n_decided_alphabetical`.
+    *** THE THIRD BULLET IS LOAD-BEARING AND WAS MISSING UNTIL 2026-08-08 (reviewer F1). ***
+    The first two were true of a frame that lived only in memory: no caller read it, no CSV
+    carried it, no transfer pattern matched it. An answer to "the artifact shows the margin"
+    is worthless while there is no artifact -- so if a future edit stops writing that CSV,
+    this term's justification lapses with it. A group decided on a 1.03x volume difference
+    must be visible AS a 1.03x difference, or the false confidence is real.
+
+    POSITION: term 8 -- BELOW the decade term, BELOW ISIN plurality, and IMMEDIATELY ABOVE
+    the alphabetical last resort.  So it reaches EXACTLY the groups that today fall to raw
+    alphabet and nothing else: every canonicity marker, share count, market cap, the
+    symbol-shape tail, the decade term and ISIN all still outrank it byte-unchanged.
+
+    SAME ABSTENTION GUARD AS THE DECADE TERM, deliberately, and it matters MORE here.  The
+    guard is `_volavg_comparable_values`, shared:
+      * a member with NO reading abstains the WHOLE GROUP, so an absent/zero/null reading
+        can neither win nor be demoted -- absence is never read as a volume of zero;
+      * DISAGREEING as-of dates abstain the group.  The decade term refuses that
+        comparison because a stale reading against a fresh one compares two market
+        regimes; a RAW comparison is strictly more exposed to it, since it acts on
+        differences far smaller than the drift a stale reading can accumulate.
+    When the guard abstains, every member gets a literal 0 -- a constant, which cannot
+    move a sort -- and the group falls to the alphabet exactly as it does today.
+
+    NO-MAP IS BIT-IDENTICAL.  `_volavg_comparable_values` returns None on an empty map, so
+    with no volavgdic pickle this term is a constant 0 for the whole group.  Every pickle
+    written before 2026-08-08 is in that state.
+
+    *** THE ABSTAIN SENTINEL IS IN-BAND, AND WHAT KEEPS THAT SAFE IS THE GROUP-WIDE GUARD.
+    READ THIS BEFORE CHANGING EITHER. ***  Every speaking value is `-volAvg`, i.e. strictly
+    NEGATIVE, so the abstain value 0 is not an out-of-band marker -- it is the WORST
+    (least-liquid) value in the term's own range.  That is harmless today for exactly one
+    reason: `_volavg_comparable_values` abstains the WHOLE GROUP at once, so when 0 appears
+    it appears for every member, and a constant cannot move a sort.  The decade term above
+    shares the sentinel but is immune by construction (its range is {0, 1} and 0 is its
+    BEST value, so an abstaining member sorts first, not last).
+    THE COUPLING: if anyone ever makes abstention PER-MEMBER here -- e.g. "skip the members
+    with no reading and compare the rest", which reads like a harmless robustness tweak --
+    then an absent, null or zero reading silently becomes "least liquid" and LOSES its
+    group, and the survivor is decided by DATA AVAILABILITY.  That is the precise defect the
+    reviewer caught in the first ISIN cut, and the group-wide guard is the only thing
+    preventing it.  An out-of-band sentinel is not available cheaply (the term must be
+    order-comparable against real `-volAvg` values, and any finite constant is in-band
+    somewhere), so the guard IS the mitigation -- do not weaken it, and do not treat a
+    per-member abstention as an equivalent refactor.
+    """
+    vals = _volavg_comparable_values(group, volavg_map)
+    if vals is None:
+        return 0
+    mine = vals.get(sym)
+    if mine is None:
+        return 0                          # `sym` outside `group` -- no opinion about it
+    #  NEGATED so that MORE liquid sorts FIRST, matching -shares / -marketCap above.  The
+    #  values are only ever compared WITHIN one group (the sort is per-group), so a raw
+    #  magnitude is meaningful here in exactly the way it is for those two terms.
+    return -mine
+
+
 #  The literal `volAvg_asof` markers used when there is no DATE to state, so an empty cell
 #  never has to be interpreted.  Exported as names because the tests and any reader that
 #  filters on them must not re-spell the strings.
 VOLAVG_STATUS_NOT_CAPTURED = 'not-captured'      # symbol absent from the map (or no map)
 VOLAVG_STATUS_NO_READING = 'no-reading'          # in the map, but null / 0 / non-finite
 VOLAVG_STATUS_UNDATED = 'undated-capture'        # a real value from the pre-dating pickle
+
+
+def _volavg_reading(sym, vmap):
+    """`(value_or_NaN, asof_date_or_STATUS_MARKER)` for ONE symbol -- the single
+    implementation of the three-way absence semantics, extracted 2026-08-08.
+
+    Two readers now need identical absence semantics: `volavg_report_frame` (the per-name
+    review column) and the DEDUP REPORT (the raw volumes beside each dropped/surviving
+    line).  If they were written twice they could drift, and the whole value of the dedup
+    columns is that `no-reading` (an abstention trigger) stays distinguishable from a real
+    zero and from `not-captured`.  Same three markers, same order of tests, as before.
+    """
+    vmap = vmap or {}
+    if sym not in vmap:
+        return float('nan'), VOLAVG_STATUS_NOT_CAPTURED
+    v, asof = vmap.get(sym, (None, None))
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        f = float('nan')
+    if not math.isfinite(f) or f <= 0:
+        return float('nan'), VOLAVG_STATUS_NO_READING
+    return f, (asof if asof else VOLAVG_STATUS_UNDATED)
 
 
 def volavg_report_frame(symbols, volavg_map=None):
@@ -1334,9 +1477,12 @@ def volavg_report_frame(symbols, volavg_map=None):
     Same shape as the loss-distribution decision -- show the number, let his own judgement
     use it -- because any floor the house could pick would silently drop names on a bar
     nobody can justify.  So this function is a pure lookup: it returns values and never
-    filters, sorts, or scores.  Its ONLY other reader in the pipeline is
-    `_volavg_liquidity_term`, which is the dedup survivor tiebreak and is UNTOUCHED by this;
-    nothing here feeds it.
+    filters, sorts, or scores.  Its other readers in the pipeline are the TWO dedup survivor
+    tiebreaks -- `_volavg_liquidity_term` (the order-of-magnitude term) and, from
+    2026-08-08, `_volavg_raw_liquidity_term` (the weak raw term below ISIN) -- both of which
+    are UNTOUCHED by this; nothing here feeds either of them.  What IS shared, deliberately,
+    is `_volavg_reading`: this frame and the dedup report's `*_volAvg` columns resolve
+    absence through one function so the three markers cannot drift apart between artifacts.
 
     ABSENCE IS NOT ZERO, AND THE THREE KINDS OF ABSENCE ARE DISTINGUISHED.  Every existing
     pickle predates the volAvg capture, so "no number" is the NORMAL state and must not read
@@ -1360,21 +1506,9 @@ def volavg_report_frame(symbols, volavg_map=None):
     vmap = _volavg_map_cached() if volavg_map is None else volavg_map
     vals, dates = [], []
     for sym in symbols:
-        v, asof = (vmap or {}).get(sym, (None, VOLAVG_STATUS_NOT_CAPTURED))
-        if sym not in (vmap or {}):
-            vals.append(np.nan)
-            dates.append(VOLAVG_STATUS_NOT_CAPTURED)
-            continue
-        try:
-            f = float(v)
-        except (TypeError, ValueError):
-            f = float('nan')
-        if not math.isfinite(f) or f <= 0:
-            vals.append(np.nan)
-            dates.append(VOLAVG_STATUS_NO_READING)
-        else:
-            vals.append(f)
-            dates.append(asof if asof else VOLAVG_STATUS_UNDATED)
+        f, asof = _volavg_reading(sym, vmap)
+        vals.append(f)
+        dates.append(asof)
     return pd.DataFrame({'volAvg_report': vals, 'volAvg_asof': dates})
 
 
@@ -1436,11 +1570,15 @@ def _investability_key(sym, val_fn, sector_map=None, names=None, group=(), isin_
          identity inference that can point the wrong way. See the note on that function.
       6. ISIN plurality within the group (`_isin_plurality_term`) -- ADDED 2026-08-05,
          see below.
-      7. alphabetical -- the last resort, unchanged.
+      7. RAW volAvg, descending (`_volavg_raw_liquidity_term`) -- ADDED 2026-08-08 by CEO
+         ruling, as a weak tiebreak BELOW everything above and ABOVE the alphabet only.
+         Term 5 ties everything inside one order of magnitude; those groups used to land on
+         the raw alphabet, which correlates with nothing. Same abstention guard as term 5.
+      8. alphabetical -- the last resort, unchanged.
 
-    Both term 5 and term 6 return a CONSTANT 0 for the whole group when their map is
+    Terms 5, 6 and 7 all return a CONSTANT 0 for the whole group when their map is
     absent, and a constant cannot move a sort -- so every pre-2026-08-05 artifact and every
-    existing pickle resolves through this key bit-identically, and the 5/6 ORDER is
+    existing pickle resolves through this key bit-identically, and the 5/6/7 ORDER is
     unobservable on any of them.
 
     WHY NOT SHARE COUNT FIRST, WHICH IS WHAT THE BRIEF ASSUMED. Because it was measured
@@ -1533,8 +1671,10 @@ def _investability_key(sym, val_fn, sector_map=None, names=None, group=(), isin_
     isin_t = _isin_plurality_term(sym, group, imap)
     vmap = _volavg_map_cached() if volavg_map is None else volavg_map
     vol_t = _volavg_liquidity_term(sym, group, vmap)
+    volraw_t = _volavg_raw_liquidity_term(sym, group, vmap)
     #  vol_t BEFORE isin_t -- CEO ruling 2026-08-06; see the term list above.
-    return (noncanon, -sh, -mc, digitpfx, punct, len(sym), vol_t, isin_t, sym)
+    #  volraw_t AFTER isin_t and immediately before `sym` -- CEO ruling 2026-08-08.
+    return (noncanon, -sh, -mc, digitpfx, punct, len(sym), vol_t, isin_t, volraw_t, sym)
 
 
 #  THE SURVIVOR-KEY TERM NAMES, IN KEY ORDER.  One name per element of the tuple
@@ -1543,9 +1683,15 @@ def _investability_key(sym, val_fn, sector_map=None, names=None, group=(), isin_
 #  to the key itself: adding a term without adding its name here is a bug the assertion in
 #  `_deciding_term` turns into an exception rather than a silently mislabelled column.
 _KEY_TERM_NAMES = ('canonicity', 'shares', 'marketCap', 'digit_prefix', 'punctuation',
-                   'symbol_length', 'volavg', 'isin_plurality', 'alphabetical')
+                   'symbol_length', 'volavg', 'isin_plurality', 'volavg_raw',
+                   'alphabetical')
 _VOL_TERM_IX = _KEY_TERM_NAMES.index('volavg')
 _ISIN_TERM_IX = _KEY_TERM_NAMES.index('isin_plurality')
+#  `volavg_raw` is NAMED SEPARATELY from `volavg` on purpose, not merged into it: the two
+#  terms carry very different evidential weight (a >=10x liquidity gap vs possibly a 1.03x
+#  one), and `decided_by` is the column an operator uses to judge whether to trust a pick.
+#  Collapsing them would let the weak term borrow the confident one's name.
+_VOLRAW_TERM_IX = _KEY_TERM_NAMES.index('volavg_raw')
 
 
 def _same_key_term(a, b):
@@ -1852,6 +1998,29 @@ def dedup_to_issuers(BoScore_df, cdx_df, sector_map, names):
       dropped_isin_t   this dropped line's ISIN-plurality term value
       survivor_isin_t  the survivor's ISIN-plurality term value
 
+    THE RAW VOLUMES, ADDED 2026-08-08 (CEO).  The five columns above are TERM values, not
+    readings, so when a group fell to the alphabet the artifact could not say WHETHER
+    volume was close, absent or stale -- three states that demand three different responses
+    and that a column of zeros renders identical.  That gap was hit for real: the 7 groups
+    still reaching the alphabet on the 2026-08-08 run could not be diagnosed from the run's
+    own output.  Four more OBSERVATIONAL columns close it, and they are what makes the weak
+    `volavg_raw` tiebreak honest -- a pick made on a 1.03x margin is visible AS a 1.03x
+    margin:
+
+      dropped_volAvg        this dropped line's RAW average volume (NaN if none)
+      dropped_volAvg_asof   its as-of date, or WHICH KIND of absence
+      survivor_volAvg       the survivor's RAW average volume (NaN if none)
+      survivor_volAvg_asof  the survivor's as-of date, or which kind of absence
+
+    Same three-way absence semantics as the per-name CSV columns, from the SAME function
+    (`_volavg_reading`), so they cannot drift: `not-captured` (absent from the map, or no
+    map) / `no-reading` (present but null/0/non-finite -- an ABSTENTION TRIGGER, not a
+    liquidity reading of zero) / `undated-capture` (a real value from the pre-dating pickle
+    shape).  Two DIFFERENT as-of dates on one group is the date-disagreement abstention
+    (condition 2) made visible -- that is the state that looks like a liquidity difference
+    and is not one.  The raw term value is not emitted separately because it is exactly
+    `-dropped_volAvg`; the reading IS the term.
+
     HOW TO READ ABSTAIN vs SPOKE-AND-LOST, which is the whole point. There is one row per
     DROPPED member and none for the survivor, so the survivor's value is repeated on every
     row of its group -- together those give EVERY member of the group, which is what the
@@ -1919,9 +2088,14 @@ def dedup_to_issuers(BoScore_df, cdx_df, sector_map, names):
             if len(set(secs)) > 1:
                 conflicts.append((surv, dict(Counter(secs)), prop))
             sector_override[surv] = prop
+        #  Read ONCE per group, not once per emitted cell. `_volavg_reading` is pure, so
+        #  this cannot change a value; it stops the survivor's reading being recomputed for
+        #  every dropped row of its group (and each member's being computed twice).
+        surv_v, surv_asof = _volavg_reading(surv, vmap)
         for m in members:
             member_to_survivor[m] = surv
             if m != surv:
+                m_v, m_asof = _volavg_reading(m, vmap)
                 rows.append((m, surv, names.get(m, ''), sector_map.get(m, ''), prop,
                              '|'.join(sorted(members)),
                              _non_canonical_tag(m, names.get(m, ''), members),
@@ -1933,18 +2107,39 @@ def dedup_to_issuers(BoScore_df, cdx_df, sector_map, names):
                              _vol_col(keys[m][_VOL_TERM_IX]),
                              _vol_col(keys[surv][_VOL_TERM_IX]),
                              _isin_col(keys[m][_ISIN_TERM_IX]),
-                             _isin_col(keys[surv][_ISIN_TERM_IX])))
+                             _isin_col(keys[surv][_ISIN_TERM_IX]),
+                             #  The RAW readings behind those term values, so a reader can
+                             #  see the MARGIN and whether it was close / absent / stale.
+                             m_v, m_asof, surv_v, surv_asof))
     report = pd.DataFrame(rows, columns=['dropped', 'survivor', 'name',
                                          'orig_sector', 'propagated_sector', 'issuer_group',
                                          'non_canonical_tag', 'dropped_price',
                                          'dropped_shares', 'dropped_marketCap',
                                          'decided_by', 'dropped_vol_t', 'survivor_vol_t',
-                                         'dropped_isin_t', 'survivor_isin_t'])
+                                         'dropped_isin_t', 'survivor_isin_t',
+                                         'dropped_volAvg', 'dropped_volAvg_asof',
+                                         'survivor_volAvg', 'survivor_volAvg_asof'])
+    #  WHICH TERM ACTUALLY DECIDED, AS COUNTS (added 2026-08-08, reviewer F4).  The
+    #  `decided_by` column already carries this per row, but only inside a frame nobody was
+    #  reading -- so the ONE question the weak raw tiebreak has to answer about itself ("how
+    #  many groups did it take, and how many still fell to the raw alphabet?") could not be
+    #  answered from a run at all.  It is a per-DROPPED-ROW count, not per group: a 3-member
+    #  group contributes two rows, which is the right denominator for "how often did this
+    #  term have to break a tie".  `n_decided_volavg_raw` is broken out by name because it
+    #  is the number that closes the open question, and `n_decided_alphabetical` beside it
+    #  is what the raw term is supposed to be driving DOWN.
+    _decided = Counter(report['decided_by']) if len(report) else Counter()
     diagnostics = {'n_lines_in': len(syms), 'n_issuers_out': len(comps),
                    'n_collapsed': len(syms) - len(comps),
                    #  The state behind the blanked term columns, as a NUMBER: 0 = no map on
                    #  disk, so `*_vol_t` / `*_isin_t` are NaN and neither term participated.
                    'volavg_map_n': len(vmap), 'isin_map_n': len(imap),
+                   'decided_by_counts': {t: int(_decided.get(t, 0))
+                                         for t in _KEY_TERM_NAMES},
+                   'n_decided_volavg': int(_decided.get('volavg', 0)),
+                   'n_decided_volavg_raw': int(_decided.get('volavg_raw', 0)),
+                   'n_decided_isin_plurality': int(_decided.get('isin_plurality', 0)),
+                   'n_decided_alphabetical': int(_decided.get('alphabetical', 0)),
                    'sector_conflicts': conflicts, 'report': report}
     return {'survivors': survivors, 'member_to_survivor': member_to_survivor,
             'sector_override': sector_override, 'diagnostics': diagnostics}
@@ -2079,6 +2274,41 @@ def partition_universe(BoScore_df, cdx_df, tickers_df,
         print("carveOut dedup: %d lines -> %d issuers (collapsed %d)"
               % (dedup_diag['n_lines_in'], dedup_diag['n_issuers_out'],
                  dedup_diag['n_collapsed']), flush=True)
+        #  *** THE SURVIVOR REPORT LEAVES MEMORY (2026-08-08, reviewer F1). ***
+        #  Until now this frame existed ONLY at
+        #  partition_universe(...)['diagnostics']['dedup']['report'] -- no caller read it,
+        #  no CSV carried it, and no transfer pattern matched it. So the map that decides
+        #  WHICH TICKER SURVIVES could decide a group on a 1.03x volume margin and NOTHING
+        #  anywhere said so. That is not a documentation gap: the raw-volume tiebreak's
+        #  entire answer to "a weak signal LOOKS principled in the artifact" is that the
+        #  artifact shows the margin, and there was no artifact. The same diff that widened
+        #  the transfer manifest to close evidence gaps had missed the record of what those
+        #  maps decided, which is the exact failure mode 84abd40 exists to prevent.
+        #  It goes in `output/`, which Sbocker's allowlist_dirs already ships WHOLE, so the
+        #  evidence travels without adding a pattern that could silently stop matching.
+        try:
+            _dd_rep = dedup_diag.get('report')
+            if _dd_rep is not None and len(_dd_rep):
+                os.makedirs('output', exist_ok=True)
+                _dd_fn = os.path.join(
+                    'output', 'DedupSurvivorReport_%s.csv'
+                    % pd.Timestamp.today().strftime('%Y-%m-%d'))
+                _dd_rep.to_csv(_dd_fn, index=False)
+                print('  dedup survivor report written to: %s' % _dd_fn, flush=True)
+        except Exception as _e:
+            print('  WARNING: could not write dedup survivor report (%s)' % _e, flush=True)
+        #  WHICH TERM DECIDED, as a line an operator reads without opening the CSV. The two
+        #  that matter are the weak tiebreak (what it took) and the alphabet (what is left).
+        print("carveOut dedup: decided by -- %s"
+              % ', '.join('%s=%d' % (t, n)
+                          for t, n in dedup_diag['decided_by_counts'].items() if n),
+              flush=True)
+        if dedup_diag['n_decided_volavg_raw']:
+            print("  NOTE: %d dropped line(s) were decided by the WEAK raw-volume tiebreak "
+                  "(volavg_raw) -- a near-tie in volume is weak evidence; the margin is in "
+                  "the *_volAvg columns of the CSV above. %d still fell to the raw alphabet."
+                  % (dedup_diag['n_decided_volavg_raw'],
+                     dedup_diag['n_decided_alphabetical']), flush=True)
 
     fund = _latest_fundamentals(cdx_df)
 

@@ -24,6 +24,8 @@ import os
 
 import numpy as np
 import pandas as pd
+import zlib
+
 import pytest
 
 import carveOut as co
@@ -1187,10 +1189,20 @@ def test_volavg_does_NOT_speak_across_a_POWER_OF_TEN_boundary():
         assert terms == [0, 0], (
             'volAvg spoke across the 10,000 boundary (%r): a 2%% volume difference decided '
             'a survivor. terms=%r' % (vmap, terms))
-        #  And the whole ordering must be the pre-volAvg one, i.e. genuinely unchanged.
-        assert sorted(group, key=lambda s: co._investability_key(
-            s, vf, None, names, group, {}, vmap)) == sorted(
-                group, key=lambda s: _pre_volavg_key(s, vf, names, group, {}))
+        #  *** THE ORDERING ASSERTION CHANGED 2026-08-08, and the change is deliberate. ***
+        #  It used to require the whole ordering to equal the PRE-volAvg one.  That is no
+        #  longer the contract: a 2% difference now DOES decide this group, via the weak raw
+        #  term the CEO added below ISIN, because the alternative fallback was the raw
+        #  alphabet.  What must NOT happen -- and what this test exists for -- is the
+        #  DECADE term claiming it: a 2% margin must never be reported with the confident
+        #  term's authority.  So the surviving invariant is about ATTRIBUTION.
+        keys = {s: co._investability_key(s, vf, None, names, group, {}, vmap)
+                for s in group}
+        order = sorted(group, key=keys.__getitem__)
+        assert co._deciding_term(keys[order[0]], keys[order[1]]) == 'volavg_raw', (
+            'a 2%% volume difference was attributed to a term other than volavg_raw '
+            '(%r) -- the power-of-ten edge is back in the DECADE term'
+            % co._deciding_term(keys[order[0]], keys[order[1]]))
 
 
 def test_volavg_decides_at_exactly_TEN_TIMES_and_not_below_it():
@@ -1225,42 +1237,82 @@ def test_volavg_term_is_SCALE_INVARIANT_which_is_what_kills_the_absolute_EDGE():
         assert got == want, 'scaling by %s changed the term: %r != %r' % (k, got, want)
 
 
+#  Each case is (label, vmap, EXPECTED SURVIVOR, EXPECTED decided_by).
+#
+#  *** THE LAST TWO FIELDS WERE ADDED 2026-08-08 AND THEY ARE THE POINT (reviewer F2). ***
+#  The first rewrite of the test below relaxed its assertion to
+#  `decided in ('volavg_raw', 'alphabetical')` because 2 of these 9 cases legitimately
+#  changed behaviour when the raw term landed.  That relaxation ACCEPTED THE VERY LEAK THE
+#  GUARD EXISTS TO PREVENT: a mutation that SKIPS a NaN / non-numeric reading instead of
+#  abstaining the group -- so the survivor is decided by DATA AVAILABILITY -- passed the
+#  whole suite green.  The two triggers that expose it (`a non-numeric reading`, `a NaN
+#  reading`) live ONLY here, in no other test.  So the expectation is now pinned PER CASE
+#  and BY NAME: seven of the nine must still be decided by the raw ALPHABET with the
+#  alphabetically-first line surviving, and only the two genuine ratio-abstentions may
+#  reach `volavg_raw`.  Hardcoded, never derived from the guard -- a test that recomputes
+#  its expectation from the code under test cannot detect that code changing.
 VOLAVG_ABSTAIN_CASES = (
-    ('empty map', {}),
+    ('empty map', {}, 'CBE.PA', 'alphabetical'),
     ('one member unmapped -- a survivor must never be decided by DATA AVAILABILITY',
-     {'CBE.PA': (1.2e3, '2026-08-06')}),
-    ('a None reading', {'CBE.PA': (None, '2026-08-06'), 'RBT.PA': (4.5e4, '2026-08-06')}),
+     {'CBE.PA': (1.2e3, '2026-08-06')}, 'CBE.PA', 'alphabetical'),
+    ('a None reading', {'CBE.PA': (None, '2026-08-06'), 'RBT.PA': (4.5e4, '2026-08-06')},
+     'CBE.PA', 'alphabetical'),
     ('a zero reading -- log10(0) is undefined and "no volume" is not "least volume"',
-     {'CBE.PA': (0.0, '2026-08-06'), 'RBT.PA': (4.5e4, '2026-08-06')}),
+     {'CBE.PA': (0.0, '2026-08-06'), 'RBT.PA': (4.5e4, '2026-08-06')},
+     'CBE.PA', 'alphabetical'),
     ('a non-numeric reading',
-     {'CBE.PA': ('n/a', '2026-08-06'), 'RBT.PA': (4.5e4, '2026-08-06')}),
+     {'CBE.PA': ('n/a', '2026-08-06'), 'RBT.PA': (4.5e4, '2026-08-06')},
+     'CBE.PA', 'alphabetical'),
     ('a NaN reading',
-     {'CBE.PA': (float('nan'), '2026-08-06'), 'RBT.PA': (4.5e4, '2026-08-06')}),
+     {'CBE.PA': (float('nan'), '2026-08-06'), 'RBT.PA': (4.5e4, '2026-08-06')},
+     'CBE.PA', 'alphabetical'),
     ('MIXED as-of dates -- merge-never-overwrite carries a STALE reading forward, and '
      'comparing it against a fresh one compares two market regimes',
-     {'CBE.PA': (1.2e3, '2026-02-01'), 'RBT.PA': (4.5e4, '2026-08-06')}),
-    ('both within ONE ORDER OF MAGNITUDE (2.25x) -- a near-tie in volume is not evidence '
-     'about which line is the common, so it must fall through to the alphabetical tail',
-     {'CBE.PA': (2.0e4, '2026-08-06'), 'RBT.PA': (4.5e4, '2026-08-06')}),
-    ('a 2% difference STRADDLING A POWER OF TEN -- the defect the reviewer caught: the '
-     'bucketed first cut let this decide a survivor with full force',
-     {'CBE.PA': (1.01e4, '2026-08-06'), 'RBT.PA': (9.9e3, '2026-08-06')}),
+     {'CBE.PA': (1.2e3, '2026-02-01'), 'RBT.PA': (4.5e4, '2026-08-06')},
+     'CBE.PA', 'alphabetical'),
+    #  --- the only two of the nine the raw term may reach: the guard PASSES (every member
+    #  has a usable reading on one date) and only the DECADE term abstains, on the ratio.
+    ('both within ONE ORDER OF MAGNITUDE (2.25x) -- the DECADE term has no opinion, but '
+     'from 2026-08-08 the weak raw term takes it for the more liquid line',
+     {'CBE.PA': (2.0e4, '2026-08-06'), 'RBT.PA': (4.5e4, '2026-08-06')},
+     'RBT.PA', 'volavg_raw'),
+    ('a 2% difference STRADDLING A POWER OF TEN -- the DECADE term must stay silent (the '
+     'bucketed first cut let this decide with full force); the raw term may take it, but '
+     'only under its own name',
+     {'CBE.PA': (1.01e4, '2026-08-06'), 'RBT.PA': (9.9e3, '2026-08-06')},
+     'CBE.PA', 'volavg_raw'),
 )
 
 
-@pytest.mark.parametrize('label,vmap', VOLAVG_ABSTAIN_CASES,
+@pytest.mark.parametrize('label,vmap,exp_surv,exp_decided', VOLAVG_ABSTAIN_CASES,
                          ids=[c[0][:40] for c in VOLAVG_ABSTAIN_CASES])
-def test_volavg_abstains_and_abstention_is_the_LITERAL_zero(label, vmap):
-    """Abstention must be the literal 0 for EVERY member -- auditable as a value, not as a
-    cancellation -- and the ordering must be the one the pre-volAvg key produces."""
+def test_volavg_abstains_and_abstention_is_the_LITERAL_zero(
+        label, vmap, exp_surv, exp_decided):
+    """The DECADE term must abstain on all nine, as the LITERAL 0 for every member --
+    auditable as a value, not as a cancellation -- and the survivor and the deciding term
+    must be EXACTLY the pinned ones.
+
+    The strong per-case expectation is what makes this a guard rather than a smoke test:
+    seven of the nine are cases where `_volavg_comparable_values` refuses the whole group,
+    and every one of those must still fall to the raw ALPHABET with `CBE.PA` surviving.  If
+    a change ever lets an unusable reading be SKIPPED rather than abstain the group, the
+    mapped line wins on data availability and `RBT.PA` survives -- which these assertions
+    catch and a membership test over ('volavg_raw', 'alphabetical') does not."""
     group, vf, names = _k1_shaped_group()
     vals = [co._volavg_liquidity_term(s, group, vmap) for s in group]
     assert vals == [0, 0], (
         '%s: expected literal-0 abstention for every member, got %r' % (label, vals))
-    assert sorted(group, key=lambda s: co._investability_key(
-        s, vf, None, names, group, {}, vmap)) == sorted(
-            group, key=lambda s: _pre_volavg_key(s, vf, names, group, {})), (
-        '%s: the term abstained but the ordering still moved' % label)
+    keys = {s: co._investability_key(s, vf, None, names, group, {}, vmap) for s in group}
+    order = sorted(group, key=keys.__getitem__)
+    assert order[0] == exp_surv, (
+        '%s: survivor is %r, expected %r -- if the expected survivor was the '
+        'alphabetically-first line, an unusable reading has stopped abstaining the group '
+        'and the pick is now decided by DATA AVAILABILITY' % (label, order[0], exp_surv))
+    decided = co._deciding_term(keys[order[0]], keys[order[1]])
+    assert decided == exp_decided, (
+        '%s: decided_by is %r, expected %r' % (label, decided, exp_decided))
+    assert decided != 'volavg', (
+        '%s: the decade term abstained but was reported as the deciding term' % label)
 
 
 def test_volavg_abstain_decision_never_reads_the_symbol_under_test():
@@ -1268,7 +1320,7 @@ def test_volavg_abstain_decision_never_reads_the_symbol_under_test():
     function of (volavg_map, group) alone, so it cannot differ between two members of one
     group -- which is what made the first ISIN cut decide on data availability."""
     group, _vf, _names = _k1_shaped_group()
-    for _label, vmap in VOLAVG_ABSTAIN_CASES:
+    for _label, vmap, _exp_surv, _exp_decided in VOLAVG_ABSTAIN_CASES:
         terms = {s: co._volavg_liquidity_term(s, group, vmap) for s in group}
         assert len(set(terms.values())) == 1, (
             'members of one group disagreed about whether to abstain: %r' % terms)
@@ -1438,16 +1490,36 @@ def test_ABSTAIN_and_SPOKE_AND_LOST_are_DISTINGUISHABLE_in_the_frame():
 
     row = _run({'CBE.PA': (4.0e4, '2026-08-06'),
                 'RBT.PA': (4.5e4, '2026-08-06')})['diagnostics']['report'].iloc[0]
-    assert row['survivor'] == 'CBE.PA', 'inside one decade the certificat still wins'
+    #  *** CHANGED 2026-08-08. ***  Inside one decade the DECADE term still abstains --
+    #  which is what the vol_t columns must show -- but the group no longer falls to the
+    #  alphabet: the weak `volavg_raw` term now takes it, and takes it for the COMMON
+    #  (4.5e4 > 4.0e4).  This fixture used to be the standing demonstration that the
+    #  certificat wins a known-wrong group; it is now the demonstration that it does not.
+    assert row['survivor'] == 'RBT.PA', (
+        'the raw volume tiebreak did not reach an in-decade K-1 group -- the certificat '
+        'still wins, which is the defect it was added to fix')
     assert (row['survivor_vol_t'], row['dropped_vol_t']) == (0, 0), \
         'ABSTAIN must read as 0 for EVERY member -- that is what separates it from a loss'
-    assert row['decided_by'] == 'alphabetical'
+    assert row['decided_by'] == 'volavg_raw'
+    #  ... and the RAW readings are on the row, which is what makes the margin judgeable.
+    assert row['survivor_volAvg'] == 4.5e4 and row['dropped_volAvg'] == 4.0e4
+    assert row['survivor_volAvg_asof'] == row['dropped_volAvg_asof'] == '2026-08-06'
 
     row = _run({'CBE.PA': (1.2e3, '2026-02-01'),
                 'RBT.PA': (4.5e4, '2026-08-06')})['diagnostics']['report'].iloc[0]
     assert (row['survivor_vol_t'], row['dropped_vol_t']) == (0, 0), \
         'a REFUSED comparison is an abstention and must read as one'
+    #  The date-disagreement abstention SURVIVES into the raw term (CEO requirement), so
+    #  this group still falls to the alphabet -- unlike the in-decade case above.
     assert row['decided_by'] == 'alphabetical'
+    #  And the report now SHOWS why: two different as-of dates on one group is exactly the
+    #  state that looks like a liquidity difference and is not one.  Before these columns
+    #  this row was indistinguishable from a genuine near-tie.
+    #  The SURVIVOR is CBE.PA (it won on the alphabet), and CBE.PA is the STALE line -- so
+    #  the group was decided alphabetically while carrying a Feb reading against an Aug one.
+    #  That is precisely the case the old report could not express.
+    assert row['survivor_volAvg_asof'] == '2026-02-01'
+    assert row['dropped_volAvg_asof'] == '2026-08-06'
 
 
 def test_a_MISSING_reading_on_ONE_member_reads_as_ABSTAIN_not_as_a_LOSS():
@@ -1477,8 +1549,312 @@ def test_the_deciding_term_does_not_invent_a_decision_out_of_NaN():
     """`val_fn` can serve NaN for an unmeasured share count, and NaN != NaN -- so a naive
     comparison would name `shares` as the deciding term for two lines that are both merely
     unmeasured.  A fabricated decision in the one column added so nobody has to guess."""
-    k = (0, float('nan'), float('nan'), 0, 0, 4, 0, 0, 'AAAA')
+    #  TEN elements as of 2026-08-08 (the raw-volume tiebreak sits between isin_plurality
+    #  and alphabetical).  `_deciding_term` asserts the arity, so a stale literal here fails
+    #  loudly rather than silently mislabelling the column.
+    k = (0, float('nan'), float('nan'), 0, 0, 4, 0, 0, 0, 'AAAA')
     other = k[:-1] + ('ZZZZ',)
     assert co._deciding_term(k, other) == 'alphabetical'
     assert co._same_key_term(float('nan'), float('nan'))
     assert not co._same_key_term(float('nan'), 1.0)
+
+
+# =========================================================================== #
+#  RAW volAvg AS THE LAST TIEBREAK BEFORE THE ALPHABET (CEO ruling 2026-08-08)  #
+#                                                                               #
+#  The decade term above only speaks on a >=10x gap; the groups it ties fell to   #
+#  the RAW ALPHABET, which correlates with nothing.  This block pins the same     #
+#  three properties: (1) NO DATA -> BIT-IDENTICAL, (2) what it buys, (3) every    #
+#  condition under which it must ABSTAIN -- plus (4) that it cannot outrank ANY   #
+#  term above it, which is the entire safety argument for a WEAK signal.          #
+# =========================================================================== #
+
+def _pre_volraw_key(sym, val_fn, names=None, group=(), isin_map=None, volavg_map=None):
+    """The survivor key EXACTLY as it stood after the decade term + ISIN and BEFORE the raw
+    volume term.  Duplicated rather than derived, same reason as `_pre_volavg_key`."""
+    nm = (names or {}).get(sym, '') if names else ''
+    noncanon = 1 if co._non_canonical_tag(sym, nm, group) else 0
+    sh = val_fn(sym, 'weightedAverageShsOut')
+    sh = sh if sh is not None else -1.0
+    mc = val_fn(sym, 'marketCap')
+    mc = mc if mc is not None else -1.0
+    digitpfx = 1 if sym[:1].isdigit() else 0
+    punct = sum(ch in '-.' for ch in sym)
+    imap = {} if isin_map is None else isin_map
+    vmap = {} if volavg_map is None else volavg_map
+    return (noncanon, -sh, -mc, digitpfx, punct, len(sym),
+            co._volavg_liquidity_term(sym, group, vmap),
+            co._isin_plurality_term(sym, group, imap), sym)
+
+
+def test_volraw_absent_is_bit_identical(panel):
+    """*** THE PROPERTY THE BRIEF ASKED TO BE ASSERTED. ***  Every pickle written before
+    2026-08-08 has no volavgdic map, so with NO MAP the whole ORDERING -- not just the
+    winner, because a term that reorders the LOSERS still changes the audit trail -- must be
+    what the pre-2026-08-08 key produced.
+
+    *** SCOPE CORRECTED 2026-08-08 (reviewer F3).  THIS COVERS THE ABSENT-MAP PATH ONLY. ***
+    The first cut also iterated over "the map the process would actually load", which read
+    like coverage of the POPULATED case and was not: the baseline was computed with an empty
+    map in both iterations, so on a machine with no pickle the second pass merely re-asserted
+    that an empty map changes nothing, and on the run machine (where the 2026-08-08 build
+    left 3,127 entries) it would FAIL -- 111 of 1,282 groups reorder, which is the feature
+    working, not a defect.  Bit-identity is a claim about the ABSENT map and nothing else.
+    The populated map is covered by `test_volraw_under_a_POPULATED_map_...` below."""
+    val, names = panel['val'], panel['names']
+    n_groups = 0
+    for m in panel['comps'].values():
+        if len(m) < 2:
+            continue
+        n_groups += 1
+        old = sorted(m, key=lambda s: _pre_volraw_key(s, val, names, m, {}, {}))
+        new = sorted(m, key=lambda s: co._investability_key(
+            s, val, None, names, m, {}, {}))
+        assert new == old, (
+            'the raw volume term changed the ordering of %s with an ABSENT map; the '
+            'no-map path is NOT bit-identical' % (m,))
+    assert n_groups > 100, 'panel produced too few multi-line groups to be evidence'
+
+
+def _synthetic_volavg_map(symbols, asof='2026-08-08'):
+    """A POPULATED volAvg map over real panel symbols, deterministic and dense.
+
+    Deliberately synthetic rather than the on-disk map: no volavgdic pickle exists on a dev
+    machine, so a test that depends on one is vacuous exactly where it matters.  Values are
+    spread over ~3 decades so that some groups clear the 10x decade gap and others sit inside
+    it -- i.e. both the confident term and the weak raw term get exercised -- and EVERY entry
+    carries ONE as-of date so the guard passes and the terms actually speak.
+    *** USES crc32, NOT `hash()`. ***  Python randomises `hash()` on str per process
+    (PYTHONHASHSEED), so a map built from it would give a DIFFERENT assignment on every run
+    -- which for a test whose assertions depend on how many groups the term reaches means
+    intermittent failures that reproduce on nobody's machine.  crc32 is stable across
+    processes and versions.
+    """
+    out = {}
+    for sym in sorted(symbols):
+        h = zlib.crc32(sym.encode('utf-8'))
+        out[sym] = (float(1000 * (1 + (h % 997))), asof)
+    return out
+
+
+def test_volraw_under_a_POPULATED_map_cannot_outrank_ANY_term_above_it(panel):
+    """*** THE COVERAGE THAT WAS MISSING (reviewer F3), AND THE STATE THE PIPELINE IS
+    ACTUALLY IN. ***  Since the 2026-08-08 build the maps are populated, so every assertion
+    that only ever ran against an empty map was testing a configuration the run no longer
+    has.  This exercises the raw term against a DENSE map over real panel groups.
+
+    THE INVARIANT, and it is the whole safety argument for a weak signal: the raw term sits
+    at position 8, so it may only break ties that terms 1-7 left.  Concretely -- for every
+    PAIR of members whose keys already differ on terms 1-7, their relative order must be
+    IDENTICAL with and without the map.  Only pairs tied on all of 1-7 may move.  That is
+    strictly stronger than checking the winner, because it also pins the loser ordering the
+    audit trail reads."""
+    val, names = panel['val'], panel['names']
+    all_syms = {s for m in panel['comps'].values() for s in m}
+    vmap = _synthetic_volavg_map(all_syms)
+    n_groups = n_reordered = n_pairs_pinned = 0
+    for m in panel['comps'].values():
+        if len(m) < 2:
+            continue
+        n_groups += 1
+        pre = {s: _pre_volraw_key(s, val, names, m, {}, vmap) for s in m}
+        post = {s: co._investability_key(s, val, None, names, m, {}, vmap) for s in m}
+        if sorted(m, key=pre.__getitem__) != sorted(m, key=post.__getitem__):
+            n_reordered += 1
+        for a in m:
+            for b in m:
+                if a >= b:
+                    continue
+                #  Terms 1-7 = everything in the pre-raw key except its trailing symbol.
+                if pre[a][:-1] == pre[b][:-1]:
+                    continue                      # tied above -- the raw term MAY decide
+                n_pairs_pinned += 1
+                assert (pre[a] < pre[b]) == (post[a] < post[b]), (
+                    'the raw volume term reversed %r vs %r, which terms 1-7 had already '
+                    'separated -- it is outranking a term above it' % (a, b))
+    assert n_groups > 100, 'panel produced too few multi-line groups to be evidence'
+    assert n_pairs_pinned > 100, (
+        'no pair was actually separated by terms 1-7, so this test asserted nothing')
+    assert n_reordered > 0, (
+        'a DENSE volAvg map reordered ZERO groups -- the raw term is not reachable on this '
+        'panel, so this test is vacuous and the populated case is still uncovered')
+
+
+def test_volraw_under_a_POPULATED_map_only_ever_takes_groups_from_the_ALPHABET(panel):
+    """The other half of F3's missing coverage, stated as the promise the CEO was given:
+    the volume terms reach EXACTLY the groups that would otherwise fall to raw alphabet.  So
+    for every group, the deciding term with the map populated must either be UNCHANGED from
+    the no-map run, or be one of the two VOLUME terms where the no-map run said
+    `alphabetical` -- never a term above, and never a group that some real marker had
+    already decided.
+
+    BOTH volume terms are legitimate takers here and the test counts them separately: a
+    dense map over three decades leaves some groups more than 10x apart (the confident
+    `volavg` term takes those) and others inside one decade (`volavg_raw` takes those).
+    Requiring `volavg_raw` alone was wrong and this test caught it -- FPAR-D.ST/FPAR-A.ST
+    clears the decade gap under the synthetic map."""
+    val, names = panel['val'], panel['names']
+    all_syms = {s for m in panel['comps'].values() for s in m}
+    vmap = _synthetic_volavg_map(all_syms)
+    n_taken = 0
+    taken_by = {}
+    for m in panel['comps'].values():
+        if len(m) < 2:
+            continue
+        bare = {s: co._investability_key(s, val, None, names, m, {}, {}) for s in m}
+        full = {s: co._investability_key(s, val, None, names, m, {}, vmap) for s in m}
+        b_ord = sorted(m, key=bare.__getitem__)
+        f_ord = sorted(m, key=full.__getitem__)
+        b_dec = co._deciding_term(bare[b_ord[0]], bare[b_ord[1]])
+        f_dec = co._deciding_term(full[f_ord[0]], full[f_ord[1]])
+        if f_dec == b_dec:
+            continue
+        assert b_dec == 'alphabetical', (
+            'group %r was decided by %r without the map and by %r with it -- a volume term '
+            'took a group that a real marker had already decided' % (m, b_dec, f_dec))
+        assert f_dec in ('volavg', 'volavg_raw'), (
+            'group %r changed deciding term to %r, which is neither volume tiebreak'
+            % (m, f_dec))
+        taken_by[f_dec] = taken_by.get(f_dec, 0) + 1
+        n_taken += 1
+    assert n_taken > 0, 'no volume term took an alphabetical group -- test is vacuous'
+    assert taken_by.get('volavg_raw', 0) > 0, (
+        'the WEAK RAW term took no group at all (%r) -- this test would then be covering '
+        'only the decade term, which is exactly the gap F3 reported' % taken_by)
+
+
+def test_volraw_decides_a_group_the_DECADE_term_ties():
+    """WHAT THE TERM BUYS.  A K-1-shaped group inside one order of magnitude: the decade
+    term abstains (so this is exactly a group that fell to the alphabet), and the raw term
+    must now hand it to the MORE LIQUID line even though it sorts LAST alphabetically."""
+    group, vf, names = _k1_shaped_group()
+    vmap = {'CBE.PA': (3.0e4, '2026-08-08'), 'RBT.PA': (4.5e4, '2026-08-08')}
+    assert {co._volavg_liquidity_term(s, group, vmap) for s in group} == {0}, \
+        'the fixture must have the DECADE term abstaining, or it proves nothing'
+    assert sorted(group, key=lambda s: co._investability_key(
+        s, vf, None, names, group, {}, vmap))[0] == 'RBT.PA'
+
+
+def test_volraw_cannot_outrank_ISIN_or_ANY_term_above_it():
+    """POSITION IS THE SAFETY ARGUMENT FOR A WEAK SIGNAL.  Same fixture the ISIN/volAvg
+    order test uses, with volumes moved INSIDE one order of magnitude so the decade term
+    abstains: ISIN must still decide, exactly as it did before 2026-08-08, and the raw term
+    must not steal the group."""
+    group, vf, names, imap, _ = _isin_vs_volavg_fixture()
+    #  AAA is the most liquid, so if the raw term outranked ISIN the winner would be AAA.
+    vmap = {'AAA': (1.2e4, '2026-08-08'), 'ZZY': (1.1e4, '2026-08-08'),
+            'ZZZ': (1.0e4, '2026-08-08')}
+    assert {co._volavg_liquidity_term(s, group, vmap) for s in group} == {0}
+    winner = sorted(group, key=lambda s: co._investability_key(
+        s, vf, None, names, group, imap, vmap))[0]
+    assert winner in ('ZZY', 'ZZZ'), (
+        'the raw volume term outranked ISIN plurality (winner %r) -- it was placed ABOVE '
+        'term 6 instead of below it' % winner)
+
+
+def test_volraw_cannot_outrank_a_canonicity_marker():
+    """A million times the volume on the NON-COMMON must still lose to a canonicity marker,
+    or the measured 0.47% canonicity-first failure rate has regressed."""
+    group = ['SMSD.L', 'SMSN.L']
+    fake = {s: {'weightedAverageShsOut': 100.0, 'marketCap': 5.0} for s in group}
+    vf = lambda s, c: fake[s][c]
+    names = {'SMSD.L': 'Samsung Electronics Co., Ltd. Pfd Registered Shs Non-Voting',
+             'SMSN.L': 'Samsung Electronics Co., Ltd.'}
+    #  Inside one order of magnitude, so ONLY the raw term can be speaking.
+    vmap = {'SMSD.L': (9.0e4, '2026-08-08'), 'SMSN.L': (1.0e4, '2026-08-08')}
+    assert {co._volavg_liquidity_term(s, group, vmap) for s in group} == {0}
+    assert sorted(group, key=lambda s: co._investability_key(
+        s, vf, None, names, group, {}, vmap))[0] == 'SMSN.L'
+
+
+@pytest.mark.parametrize('label,vmap', [
+    ('a member missing from the map',
+     {'CBE.PA': (3.0e4, '2026-08-08')}),
+    ('a member with a NULL reading',
+     {'CBE.PA': (3.0e4, '2026-08-08'), 'RBT.PA': (None, '2026-08-08')}),
+    ('a member with a ZERO reading',
+     {'CBE.PA': (3.0e4, '2026-08-08'), 'RBT.PA': (0.0, '2026-08-08')}),
+    ('DISAGREEING as-of dates',
+     {'CBE.PA': (3.0e4, '2026-08-08'), 'RBT.PA': (4.5e4, '2026-02-01')}),
+])
+def test_volraw_abstains_and_abstention_is_the_LITERAL_zero(label, vmap):
+    """*** THE CEO'S TWO EXPLICIT REQUIREMENTS, ASSERTED. ***
+    (a) an absent / zero / null reading must neither WIN nor be DEMOTED -- so the whole
+        group abstains and the survivor is whatever the alphabet gave it, unchanged;
+    (b) the date-disagreement abstention SURVIVES into the raw term, where it matters more:
+        a raw comparison acts on differences far smaller than the drift a stale reading
+        accumulates.
+    Abstention must be the LITERAL 0 for every member, not merely a tie that cancels, so the
+    report can read it as a value."""
+    group, vf, names = _k1_shaped_group()
+    assert {co._volavg_raw_liquidity_term(s, group, vmap) for s in group} == {0}, \
+        'the raw term did not abstain on: %s' % label
+    #  ... and therefore the group falls to the alphabet, exactly as it does today.
+    assert sorted(group, key=lambda s: co._investability_key(
+        s, vf, None, names, group, {}, vmap))[0] == 'CBE.PA'
+
+
+def test_volraw_absence_is_never_read_as_a_volume_of_ZERO():
+    """The sharpest form of (a): if absence were treated as 0 the unmapped member would be
+    DEMOTED and the mapped one would win on DATA AVAILABILITY alone.  Map ONLY the
+    alphabetically-LAST line and assert it does NOT win."""
+    group, vf, names = _k1_shaped_group()
+    vmap = {'RBT.PA': (4.5e4, '2026-08-08')}
+    assert co._volavg_raw_liquidity_term('RBT.PA', group, vmap) == 0
+    assert sorted(group, key=lambda s: co._investability_key(
+        s, vf, None, names, group, {}, vmap))[0] == 'CBE.PA', (
+        'a mapped member beat an unmapped one -- the survivor was decided by DATA '
+        'AVAILABILITY, which is the defect the shared abstention guard exists to prevent')
+
+
+def test_volraw_has_its_OWN_name_in_decided_by():
+    """The answer to the "wrong-but-confident tiebreak LOOKS principled" objection: a pick
+    made on a 1.03x margin must NOT be reported under the confident decade term's name."""
+    assert 'volavg_raw' in co._KEY_TERM_NAMES
+    assert (co._KEY_TERM_NAMES.index('volavg_raw')
+            > co._KEY_TERM_NAMES.index('isin_plurality'))
+    assert (co._KEY_TERM_NAMES.index('volavg_raw')
+            < co._KEY_TERM_NAMES.index('alphabetical'))
+    group, vf, names = _k1_shaped_group()
+    vmap = {'CBE.PA': (4.37e4, '2026-08-08'), 'RBT.PA': (4.5e4, '2026-08-08')}   # 1.03x
+    keys = {s: co._investability_key(s, vf, None, names, group, {}, vmap) for s in group}
+    assert co._deciding_term(keys['RBT.PA'], keys['CBE.PA']) == 'volavg_raw'
+
+
+def test_the_shared_abstention_guard_is_ONE_function_for_BOTH_terms():
+    """The extraction is the reason the two terms cannot drift apart.  Every case the guard
+    rejects must abstain BOTH terms, together."""
+    group = ['AAA', 'BBB']
+    for vmap in ({}, {'AAA': (1e5, 'd')}, {'AAA': (1e5, 'd'), 'BBB': (0, 'd')},
+                 {'AAA': (1e5, 'd1'), 'BBB': (1e2, 'd2')}):
+        assert co._volavg_comparable_values(group, vmap) is None
+        assert {co._volavg_liquidity_term(s, group, vmap) for s in group} == {0}
+        assert {co._volavg_raw_liquidity_term(s, group, vmap) for s in group} == {0}
+
+
+# --------------------------------------------------------------------------- #
+#  THE RAW VOLUMES ON THE DEDUP REPORT (CEO 2026-08-08)                        #
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.parametrize('vmap,exp_val,exp_asof', [
+    ({}, None, co.VOLAVG_STATUS_NOT_CAPTURED),
+    ({'X': (None, '2026-08-08')}, None, co.VOLAVG_STATUS_NO_READING),
+    ({'X': (0.0, '2026-08-08')}, None, co.VOLAVG_STATUS_NO_READING),
+    ({'X': (1234.0, None)}, 1234.0, co.VOLAVG_STATUS_UNDATED),
+    ({'X': (1234.0, '2026-08-08')}, 1234.0, '2026-08-08'),
+])
+def test_the_three_kinds_of_absence_stay_DISTINGUISHABLE_from_a_real_zero(
+        vmap, exp_val, exp_asof):
+    """`not-captured` / `no-reading` / `undated-capture` must not collapse into each other
+    or into a genuine reading -- the report columns and the per-name CSV columns share ONE
+    implementation (`_volavg_reading`) so they cannot drift."""
+    import math as _m
+    v, a = co._volavg_reading('X', vmap)
+    assert a == exp_asof
+    if exp_val is None:
+        assert _m.isnan(v)
+    else:
+        assert v == exp_val
+    #  ... and the per-name CSV frame agrees, because it is the same function.
+    fr = co.volavg_report_frame(['X'], volavg_map=vmap)
+    assert fr['volAvg_asof'].iloc[0] == exp_asof

@@ -106,6 +106,26 @@ def transfer_outputs_to_drive(transfer_dir, configdic, verbose=True):
         'ReportingFrequencyConflicts_*.csv',
         'RunProvenance-*.json',
         'pick_log*.csv',
+        # --- the profile maps (added 2026-08-08) ---
+        # THE SAME EVIDENCE GAP 84abd40 CLOSED EVERYWHERE ELSE, missed here because these
+        # are INPUTS rather than run outputs -- but they are inputs that DECIDE WHICH
+        # TICKER SURVIVES, and they are rebuilt by the run itself, so nothing else on the
+        # transfer side records their contents.  The 2026-08-08 run is the first on which
+        # this bites: volavgdic went 0 -> 3,127 entries, the volume term decided 12 dedup
+        # groups, and the map that made those 12 decisions never left the run machine, so
+        # the picks could not be checked against the readings behind them.  `sectorsdic`
+        # is the same class of object (it gates the cohort split and an eight-month-old
+        # copy of it was one of the four silent failures above) and `industrydic` feeds
+        # the concentration split.  Checked, not assumed: none of the four was matched by
+        # any pattern in this list, and none is caught by the denylist.
+        #
+        # `sectorsdic_fmp.pickle` is UNDATED in its filename -- the only one of the four
+        # that is -- so on the receiving side it is distinguishable only by mtime; the
+        # copy is shutil.copy2, which preserves it.
+        'volavgdic_fmp_*.pickle',
+        'isindic_fmp_*.pickle',
+        'sectorsdic_fmp.pickle',
+        'industrydic_fmp_*.pickle',
     ]
 
     # Directory artifacts.
@@ -117,6 +137,16 @@ def transfer_outputs_to_drive(transfer_dir, configdic, verbose=True):
     # .gitignore'd (line 39), so Drive is the ONLY channel it can travel by.
     # `output/` holds the per-decision detail CSVs (e.g. removed_data_quality_*.csv,
     # which names the 82 dropped sources and the reason for each).
+    #
+    # `output/` ALSO carries `DedupSurvivorReport_*.csv` from 2026-08-08 -- the per-dropped
+    # -line record of WHICH TICKER SURVIVED each issuer group, which term decided it, and
+    # the raw volAvg readings and as-of dates behind that decision. It is deliberately
+    # written INTO `output/` rather than given its own top-level pattern here: this
+    # directory already ships whole, so the evidence cannot be lost to a pattern that stops
+    # matching after a filename change. It is the sole on-disk record of the survivor pick,
+    # which is exactly the "if it is the ONLY record of a decision the pipeline made about
+    # the universe, it ships" rule above -- and it was missing while this very list was
+    # being widened to close evidence gaps.
     #
     # `run_logs/` is DELIBERATELY NOT unconditional.  Its only writer is
     # delisted_ingest.py (run_logging.RunLogger is constructed nowhere else), so on a

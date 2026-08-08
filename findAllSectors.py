@@ -141,6 +141,9 @@ def buildSectorIndustryMaps(symbols, baseurl, api_key, batch_size=100, pace=None
             f'profile, key {_mask_key(api_key)}) -- refusing to persist a partial map')
 
     sectordic, industrydic, isindic, volavgdic = {}, {}, {}, {}
+    #  Profile price + trading currency: capture-only, folded into the volAvg entry below
+    #  so a traded VALUE always carries ONE as-of date. See the long note at the capture.
+    pricedic, currencydic = {}, {}
     for prof in profiles:
         sym = prof.get('symbol') if isinstance(prof, dict) else None
         if not sym:
@@ -184,6 +187,50 @@ def buildSectorIndustryMaps(symbols, baseurl, api_key, batch_size=100, pace=None
         #  The FILENAME still dates the run; it cannot date the ENTRIES, which is the distinction
         #  that mattered.  `carveOut._load_volavg_map` reads the old bare-value shape too.
         volavgdic[sym] = prof.get('volAvg')
+        #  ---- profile PRICE and CURRENCY: CAPTURE ONLY, NOT WIRED (2026-08-08) ----------
+        #  Same argument, third time: both are ALREADY IN this response and were being
+        #  discarded on the line above, so capturing them costs ZERO extra API calls, and a
+        #  fetch is the only chance we ever get to gain a column.
+        #
+        #  WHY THEY ARE NEEDED, AND WHY volAvg ALONE IS NOT ENOUGH.  A liquidity floor has
+        #  to be denominated in TRADED VALUE, not share count -- ALNTG.PA trades 20,289
+        #  shares/day at 0.84, so no share-count floor below 20,000 reaches it, while
+        #  DPAM.PA trades 13 shares/day at 855 and is NOT the thinnest name by value.  Value
+        #  needs a price, and *** THE PANEL'S OWN `price` CANNOT SUPPLY IT. ***  cdx_df's
+        #  price is DERIVED as marketCap / weightedAverageShsOut (getData_fmp), i.e. it is
+        #  per ORDINARY SHARE and denominated in the STATEMENT currency (reportedCurrency),
+        #  whereas `volAvg` counts the units traded ON THIS LINE in the TRADING currency.
+        #  The two do not multiply:
+        #    * SHEL.L is QUOTED IN PENCE but REPORTS IN USD -- the derived price and the
+        #      traded price are two different numbers in two different currencies;
+        #    * SMSN.L and SKHY are out by their GDR ratio, BZ by its ADR ratio, because one
+        #      traded unit is not one ordinary share;
+        #    * 27 of 100 names on the 2026-08-08 top-100 differ by MORE THAN 2x on that
+        #      basis.
+        #  And the error CONCENTRATES ON THE EXACT POPULATION A FLOOR TARGETS: depositary
+        #  and cross-listed lines are both the thinnest names and the ones whose traded unit
+        #  differs from the ordinary share.  A floor built on the derived price would
+        #  therefore exclude and retain names on numbers off by up to two orders of
+        #  magnitude, silently, and a wrong exclusion leaves NO TRACE -- the name is never
+        #  fetched, never scored, and no output says it was dropped.
+        #
+        #  INFERRING THE TRADING CURRENCY FROM THE TICKER SUFFIX IS NOT A WORKAROUND, IT IS
+        #  THE DEFECT.  carveOut.SUFFIX_TO_CURRENCY maps .L -> GBP, which for SHEL.L (a USD
+        #  reporter quoted in pence) is wrong by ~100x.  `currency` below is the profile's
+        #  own statement of the trading currency and is the only honest source for it.
+        #
+        #  NOT WIRED.  No consumer reads these yet, deliberately: they are absent from every
+        #  existing artifact, so nothing built on them can be tested until a fetch has run
+        #  with this capture in place -- the same capture-now-wire-later discipline `isin`
+        #  and `volAvg` were given, and for the same reason.  `carveOut._load_volavg_map`
+        #  normalises each entry to (volAvg, asof) and IGNORES any other key, so these two
+        #  ride along in the same pickle without changing a single consumer today.  They
+        #  share the volAvg entry rather than getting pickles of their own because a traded
+        #  VALUE is only meaningful when its three inputs carry ONE as-of date; splitting
+        #  them across artifacts would reintroduce exactly the stale-vs-fresh comparison the
+        #  per-entry date was added to prevent.
+        pricedic[sym] = prof.get('price')
+        currencydic[sym] = prof.get('currency')
         sec = prof.get('sector')
         sectordic.setdefault(sec, []).append(sym)
 
@@ -226,7 +273,17 @@ def buildSectorIndustryMaps(symbols, baseurl, api_key, batch_size=100, pace=None
     #  reading against a stale one instead of doing it silently.  The FILENAME dates the RUN and
     #  never could date the ENTRIES; that was the gap.
     _prev_volavg = _newest_dated_pickle('volavgdic_fmp_*.pickle')
-    volavg_dated = {s: {'volAvg': v, 'asof': fidag} for s, v in volavgdic.items()}
+    #  `price` and `currency` ride in the SAME entry (2026-08-08, capture-only).  They are
+    #  the two fields a TRADED-VALUE liquidity floor needs and that the panel cannot supply
+    #  -- cdx_df's price is derived (marketCap / weightedAverageShsOut) and denominated in
+    #  the STATEMENT currency, which is not the currency or the unit `volAvg` is counted in.
+    #  Sharing the entry is what guarantees all three inputs carry ONE as-of date; separate
+    #  artifacts would reintroduce the stale-vs-fresh comparison the date was added to stop.
+    #  `carveOut._load_volavg_map` normalises to (volAvg, asof) and ignores the extra keys,
+    #  so every consumer today is byte-unaffected.
+    volavg_dated = {s: {'volAvg': v, 'asof': fidag,
+                        'price': pricedic.get(s), 'currency': currencydic.get(s)}
+                    for s, v in volavgdic.items()}
     merged_volavg, n_kept_v = _merge_industry_dics(
         _read_pickle_or_none(_prev_volavg) if _prev_volavg else None, volavg_dated)
     pd.to_pickle(merged_volavg, f'volavgdic_fmp_{fidag}.pickle')
@@ -237,6 +294,15 @@ def buildSectorIndustryMaps(symbols, baseurl, api_key, batch_size=100, pace=None
           f'dates is skipped by the dedup liquidity term rather than compared). WIRED into '
           f'carveOut._investability_key (register K-1); register J-1 (a liquidity SCREEN) is '
           f'still NOT wired.')
+    print(f'[sector/industry build] profile PRICE captured for '
+          f'{sum(1 for v in pricedic.values() if v is not None)} and trading CURRENCY for '
+          f'{sum(1 for v in currencydic.values() if v)} of {len(volavgdic)} symbols, folded '
+          f'into volavgdic_fmp_{fidag}.pickle under the SAME asof. CAPTURE ONLY -- NOTHING '
+          f'reads them yet. They exist because a traded-VALUE liquidity floor (register J-1) '
+          f'cannot be built from the panel: cdx_df price is DERIVED (marketCap/shares) in the '
+          f'STATEMENT currency, while volAvg counts traded units in the TRADING currency -- '
+          f'27 of 100 top-100 names differ by >2x (SHEL.L quotes in PENCE and reports USD; '
+          f'SMSN.L/SKHY/BZ differ by their GDR/ADR ratio). The floor waits for these fields.')
     print(f'[sector/industry build] ISIN captured for {sum(1 for v in isindic.values() if v)} '
           f'of {len(isindic)} symbols -> isindic_fmp_{fidag}.pickle (kept {n_kept_x} '
           f'pre-existing entr(ies)). CAPTURE ONLY -- register K-1 is NOT wired.')
