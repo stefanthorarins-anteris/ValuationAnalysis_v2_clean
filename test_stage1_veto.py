@@ -718,3 +718,158 @@ def test_an_absent_RAW_INPUT_omits_the_veto_column_rather_than_emitting_an_all_N
     assert all_nan['applies'] is True and all_nan['n_ejected'] == 0, (
         'this is the SILENT state the builder must never produce: the pool ran, ejected nobody, '
         'and reported no missing column')
+
+
+# --------------------------------------------------------------------------- #
+#  THE DESIGNED FLAGS *ARE* BACKTESTABLE, AND THIS IS THE BACKTEST (2026-08-09) #
+#                                                                              #
+#  POOL_FLAGS used to carry "NOT BACKTESTABLE ... NO SAVED PANEL CARRIES THEM   #
+#  ... the 22-of-218 prediction CANNOT be verified offline".  It conflated the  #
+#  DERIVED columns (genuinely absent from every saved BoMetric_df) with the RAW #
+#  INPUTS (all six present on the 2026-08-07 CUR3K panel's cdx_df).  A missing   #
+#  derived column is a REBUILD, not a re-fetch.  The claim survived because      #
+#  nobody tried it.                                                              #
+# --------------------------------------------------------------------------- #
+_CUR3K_PANEL = ('panels_2026-08-07/Bometric_dic-fmp_stock_CUR3K_all_2026-08-07_'
+                'len2613_manelim0_fails445.pickle')
+
+#  MEASURED 2026-08-09 by the rebuild below.  Hardcoded, NOT recomputed from the code under
+#  test: a test that derives its expectation from the thing it is testing cannot detect that
+#  thing changing.
+_EXPECTED = {
+    'Mining': {'sector': 'Basic Materials', 'n_sources': 277, 'n_failed': 30,
+               'per_flag': {'producerEbitdaPositive': 14, 'cashRunwayOneYear': 11,
+                            'equityPositive': 6},
+               'n_sources_with_abstention': 63},
+    'REIT':   {'sector': 'Real Estate', 'n_sources': 76, 'n_failed': 3,
+               'per_flag': {'reitEbitdaInterestCoverage': 3},
+               'n_sources_with_abstention': 21},
+}
+
+
+def _load_cur3k():
+    """The panel and the sector map, or an explicit SKIP naming what is missing.
+
+    Both are .gitignore'd, so they exist on the machine the measurement was taken on and
+    not necessarily elsewhere.  An EXPLICIT skip, never a bare `return` -- register C4: a
+    bail-out that reports PASS having asserted nothing is how a gate stops being one.
+    """
+    import os
+    here = os.path.dirname(os.path.abspath(__file__))
+    panel, sectors = os.path.join(here, _CUR3K_PANEL), os.path.join(
+        here, 'sectorsdic_fmp.pickle')
+    for p in (panel, sectors):
+        if not os.path.exists(p):
+            pytest.skip('offline backtest input absent on this machine: %s' % p)
+    d = pd.read_pickle(panel)
+    return d['cdx_df'], d['BoMetric_df'], pd.read_pickle(sectors)
+
+
+def _rebuild_veto_panel(cdx, bm, sources):
+    """The veto columns, rebuilt with the PRODUCTION formulas over the EXACT row set the
+    saved panel kept.
+
+    Row set: `getData_fmp` drops the OLDEST `rpy` rows of each source's metric frame
+    (verified on this panel -- 2,592 of 2,613 sources have a later `min(date)` in
+    BoMetric_df than in cdx_df, and NOT ONE has an earlier `max(date)`), so taking the
+    newest `len(BoMetric_df[source])` rows of `cdx_df[source]` reproduces it without
+    assuming a stored row order.  Every veto formula is row-local, so order cannot change a
+    value -- only which rows survive.
+    """
+    import calcMetrics as cm
+    import createDicts as cdic
+    import reporting_period as rp
+    rpymap = rp.rows_per_year_by_source(cdx)
+    nbm = bm.groupby('source').size().to_dict()
+    vetodict = cdic.getVetoDict()
+    frames = []
+    for s in sources:
+        g = cdx[cdx['source'] == s].sort_values('date', ascending=False)
+        g = g.head(nbm.get(s, max(len(g) - rpymap.get(s, 4), 0)))
+        if not len(g):
+            continue
+        out = pd.DataFrame({'source': s, 'date': g['date'].values})
+        for key, spec in vetodict.items():
+            if cm.veto_missing_inputs(g, key):
+                continue
+            out[key] = cm.calc_veto(g, key, rpy=rpymap.get(s, 4),
+                                    guard=spec.get('Guard'))[key].values
+        frames.append(out)
+    return pd.concat(frames, ignore_index=True)
+
+
+def test_every_RAW_INPUT_the_designed_flags_need_is_ON_the_saved_panel():
+    """The premise the whole correction rests on, checked directly: the DERIVED columns are
+    absent (that part of the old comment was right) and every RAW input is present (that
+    part was wrong)."""
+    import calcMetrics as cm
+    cdx, bm, _sec = _load_cur3k()
+    for key in cm._VETO_KEYS:
+        assert key not in bm.columns and key not in cdx.columns, (
+            '%r is on the saved panel -- the "derived columns are absent" half of the '
+            'correction no longer holds' % key)
+        assert cm.veto_missing_inputs(cdx, key) == [], (
+            '%r is missing raw inputs %r from cdx_df -- it really would not be '
+            'backtestable' % (key, cm.veto_missing_inputs(cdx, key)))
+
+
+@pytest.mark.parametrize('pool', sorted(_EXPECTED))
+def test_the_designed_cohort_flags_reproduce_their_MEASURED_ejection_rate(pool):
+    """The measurement recorded in `POOL_FLAGS`, made re-runnable.
+
+    Mining lands at 10.8% against a design that predicted 10.1%, so the 32.1% overshoot
+    really was the three reverted additions and not the designed set -- that is now a
+    measurement rather than an inference from the arithmetic.
+    """
+    exp = _EXPECTED[pool]
+    cdx, bm, sec = _load_cur3k()
+    sources = sorted(set(cdx['source'].unique()) & set(sec[exp['sector']]))
+    assert len(sources) == exp['n_sources'], (
+        '%s cohort is %d sources, expected %d -- the denominator moved, so the recorded '
+        'rate no longer describes this panel' % (pool, len(sources), exp['n_sources']))
+
+    panel = _rebuild_veto_panel(cdx, bm, sources)
+    failed, abstained = sv._evaluate(panel, sv.POOL_FLAGS[pool])
+    bad = {s: f for s, f in failed.items() if f}
+    per_flag = {}
+    for flags in bad.values():
+        for c in flags:
+            per_flag[c] = per_flag.get(c, 0) + 1
+
+    assert len(bad) == exp['n_failed'], (
+        '%s ejects %d of %d, recorded as %d' % (pool, len(bad), len(sources),
+                                                exp['n_failed']))
+    assert per_flag == exp['per_flag']
+    assert len(abstained) == exp['n_sources_with_abstention'], (
+        'abstention count moved -- the designed flags PARTITION the cohort by construction, '
+        'so who abstains is part of the claim, not a detail')
+
+
+def test_the_RECORDED_numbers_and_the_MEASURED_numbers_cannot_drift_apart():
+    """The comment in `POOL_FLAGS` is where a reader looks; `_EXPECTED` above is what the
+    backtest asserts.  If those two disagree, the comment is a stale claim again -- which
+    is the entire defect class this correction belongs to.
+
+    NOT a "the sentence was deleted" test: the corrected comment deliberately QUOTES the
+    refuted claim so the correction is legible, so a substring ban would fail on the fix
+    itself.  What is pinned is that the NUMBERS are present and agree.
+    """
+    import os
+    here = os.path.dirname(os.path.abspath(__file__))
+    with open(os.path.join(here, 'stage1_veto.py'), encoding='utf-8') as fh:
+        src = fh.read()
+    m, r = _EXPECTED['Mining'], _EXPECTED['REIT']
+    for token in ('%d of %d' % (m['n_failed'], m['n_sources']),
+                  '%d of %d' % (r['n_failed'], r['n_sources']),
+                  '10.8%', '3.9%',
+                  '`producerEbitdaPositive` 14', '`cashRunwayOneYear` 11',
+                  '`equityPositive` 6'):
+        assert token in src, (
+            'POOL_FLAGS does not record %r -- the measured result and the comment a '
+            'reader trusts have drifted apart' % token)
+    #  and the file it shares the defect with carries the corrected framing too
+    with open(os.path.join(here, 'calcMetrics.py'), encoding='utf-8') as fh:
+        cm_src = fh.read()
+    assert 'REBUILD, not a re-fetch' in cm_src, (
+        'calcMetrics still frames the missing derived columns as a re-fetch -- correcting '
+        'one of the two files and leaving the other is how a stale claim survives a pass')

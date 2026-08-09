@@ -345,13 +345,47 @@ POOL_FLAGS = {
     #  half of this cohort that is pre-production -- exactly the failure mode the
     #  five-flag register documents for REITs, reproduced in a new cohort.
     #
-    #  NOT BACKTESTABLE, STATED PLAINLY: the three designed flags are built from `ebitda`
-    #  and `cashAndCashEquivalents`, captured only from the 2026-08-05 preReq change, so NO
-    #  SAVED PANEL CARRIES THEM -- including the 2026-08-07 CUR3K panel.  The 22-of-218
-    #  prediction therefore CANNOT be verified offline; what could be measured is the 89
-    #  above, which is the part being removed.  Mining reports `applies=False` with
-    #  `missing_columns` set until the next full fetch.  Do not read a clean Mining report
-    #  before that fetch as the veto passing.
+    #  IT IS BACKTESTABLE, AND IT HAS NOW BEEN BACKTESTED (corrected 2026-08-09).
+    #  This block used to say "NOT BACKTESTABLE ... NO SAVED PANEL CARRIES THEM ... the
+    #  22-of-218 prediction therefore CANNOT be verified offline".  THAT WAS FALSE, and it
+    #  conflated two different things: the DERIVED columns are indeed absent from
+    #  `BoMetric_df` (checked: all four veto keys absent from both `BoMetric_df` and
+    #  `cdx_df` on the 2026-08-07 CUR3K panel), but every RAW INPUT they are built from is
+    #  present on that panel's `cdx_df` -- `ebitda`, `cashAndCashEquivalents`,
+    #  `netCashProvidedByOperatingActivities`, `totalStockholdersEquity`, `revenue` and
+    #  `interestExpense`, all six verified.  A missing derived column is a rebuild, not a
+    #  re-fetch.  The claim survived because nobody tried it.
+    #
+    #  MEASURED 2026-08-09 by rebuilding the columns with the PRODUCTION formulas
+    #  (`calcMetrics.calc_veto`, with each key's declared `Guard`, `rpy` per source from
+    #  `reporting_period.rows_per_year_by_source`) over the EXACT row set the saved panel
+    #  kept, then running this module's own `_evaluate`:
+    #
+    #    MINING   30 of 277 Basic-Materials sources = 10.8%   against a design that
+    #             predicted 10.1%.  Per flag: `producerEbitdaPositive` 14,
+    #             `cashRunwayOneYear` 11, `equityPositive` 6 (overlapping).  63 sources
+    #             carry at least one abstention -- the pre-revenue explorers the design
+    #             says `producerEbitdaPositive` should refuse.
+    #    REIT      3 of 76 Real-Estate sources = 3.9%, all on
+    #             `reitEbitdaInterestCoverage`; 21 sources abstain.
+    #
+    #  So the designed set lands where it was designed to land, and the 32.1% overshoot was
+    #  entirely the three reverted additions -- that is now a MEASUREMENT rather than an
+    #  inference from the arithmetic.
+    #
+    #  WHAT IS STILL TRUE, AND MUST NOT BE READ AS WEAKENED BY THE ABOVE: a LIVE run on a
+    #  panel built before the 2026-08-05 preReq change still reports Mining `applies=False`
+    #  with `missing_columns` set, because the live path reads the derived columns off
+    #  `BoMetric_df` and does not rebuild them.  Do not read a clean Mining report before
+    #  the next full fetch as the veto passing.  The offline rebuild above is a BACKTEST,
+    #  not the shipped path.
+    #
+    #  OPEN, FLAGGED NOT FIXED: `createDicts.BoMetric_veto_dict` states per-flag counts
+    #  "of 218" (43 abstain / 11 / 7 / 4).  That denominator matches no cohort measured
+    #  here -- Basic Materials on this panel is 277 -- so those numbers are either from a
+    #  different population or from the design rather than a measurement.  They are left
+    #  alone rather than silently restated, because guessing at their provenance is how a
+    #  number acquires a label it does not own.
     'Mining': {
         'producerEbitdaPositive': lambda s: s > 0,
         'cashRunwayOneYear':      lambda s: s > 0,

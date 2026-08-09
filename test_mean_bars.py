@@ -419,3 +419,88 @@ def test_the_report_carries_the_agreed_columns():
                 'proposed_constant'):
         assert col in cal.columns
     assert len(cal) == len(mb.BARS)
+
+
+# --------------------------------------------------------------------------- #
+#  THE CALIBRATION REPORT HAS TO REACH THE OTHER MACHINE  (2026-08-09)         #
+#                                                                              #
+#  It is WRITTEN ALWAYS -- its presence IS the evidence the check ran -- and it #
+#  matched no transfer pattern, so it reached the other machine on no run.  It  #
+#  is git-tracked, which is why the defect was invisible: it survived HERE.     #
+# --------------------------------------------------------------------------- #
+def _sbocker_allowlist_patterns():
+    """The literal list out of `Sbocker.transfer_outputs_to_drive`.
+
+    Read from SOURCE rather than imported because it is a function-local list -- and read
+    as a list rather than string-matched, so this test checks that the pattern MATCHES,
+    not merely that somebody typed the filename into a comment.
+    """
+    import ast
+    import os as _os
+    path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), 'Sbocker.py')
+    with open(path, encoding='utf-8') as fh:
+        tree = ast.parse(fh.read())
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Assign)
+                and any(getattr(t, 'id', None) == 'allowlist_patterns' for t in node.targets)):
+            return [ast.literal_eval(e) for e in node.value.elts]
+    raise AssertionError('Sbocker.allowlist_patterns not found')
+
+
+def test_the_calibration_csv_is_MATCHED_by_a_transfer_pattern(tmp_path):
+    """A LIVE GLOB, not a typed string.  The filename is built by `emit_calibration`, so
+    the pattern is checked against a name that function actually produced -- the dead-glob
+    failure mode (a pattern that looks protective and matches nothing) is exactly what this
+    catches, and it is the reason DedupSurvivorReport was given no pattern at all."""
+    import fnmatch
+    mb.emit_calibration(_panel('mBookToPrice', [0.6] * 8), _signs(),
+                        universe='fmp_stock_CUR3K', directory=str(tmp_path), verbose=False)
+    written = [p.name for p in tmp_path.glob('MeanBarCalibration-*.csv')]
+    assert written, 'emit_calibration wrote nothing to match against'
+    pats = _sbocker_allowlist_patterns()
+    for name in written:
+        assert any(fnmatch.fnmatch(name, p) for p in pats), (
+            '%r matches NO transfer pattern (%r) -- the run\'s own bar watchdog does not '
+            'ship' % (name, pats))
+
+
+def test_the_calibration_writer_still_targets_the_directory_the_pattern_can_SEE():
+    """The other half of the same guarantee: `allowlist_patterns` are resolved by
+    `glob.glob()` from CWD, so the top-level `MeanBarCalibration-*.csv` pattern only works
+    while the PRODUCTION CALLER writes to CWD.
+
+    ASSERTED AT THE CALL SITE, NOT ON THE SIGNATURE, and the difference is the whole test.
+    `postBo` reaches the default BY OMISSION, so a guard on `emit_calibration`'s default
+    closes the door one along from the one that opens: adding `directory='output'` to the
+    postBo call leaves the signature untouched while making the transfer pattern a dead
+    glob AND restarting every breach streak -- exactly the pair of consequences this test's
+    name claims to prevent.  Both ends are checked here.
+
+    (The streak half is a CONTINGENT reason not to move the file -- a coordinated move of
+    writer and reader would work, for no gain.  The UNCONDITIONAL reason is the channel
+    arithmetic: `output/` is .gitignore'd and this file is git-tracked, so moving it TRADES
+    the git channel for Drive, while a pattern ADDS Drive and keeps git.)
+    """
+    import ast
+    import inspect
+    import os as _os
+
+    path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), 'postBo.py')
+    with open(path, encoding='utf-8') as fh:
+        tree = ast.parse(fh.read())
+    calls = [n for n in ast.walk(tree)
+             if isinstance(n, ast.Call)
+             and getattr(n.func, 'attr', None) == 'emit_calibration']
+    assert len(calls) == 1, (
+        'expected exactly one production emit_calibration call site in postBo, found %d'
+        % len(calls))
+    passed = {kw.arg for kw in calls[0].keywords}
+    assert 'directory' not in passed, (
+        "postBo now passes `directory=` to emit_calibration. If it is anything but CWD, "
+        "the top-level MeanBarCalibration-*.csv transfer pattern is a DEAD GLOB and "
+        "_prior_streaks is reading a directory the tracked history is not in.")
+    #  and the default it thereby inherits is still CWD
+    assert inspect.signature(mb.emit_calibration).parameters['directory'].default == '.'
+    #  the reader keys off that same directory -- which is what couples the two
+    assert 'directory' in inspect.getsource(mb._prior_streaks), (
+        '_prior_streaks no longer keys off the same directory')

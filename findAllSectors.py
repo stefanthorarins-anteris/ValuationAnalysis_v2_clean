@@ -144,6 +144,8 @@ def buildSectorIndustryMaps(symbols, baseurl, api_key, batch_size=100, pace=None
     #  Profile price + trading currency: capture-only, folded into the volAvg entry below
     #  so a traded VALUE always carries ONE as-of date. See the long note at the capture.
     pricedic, currencydic = {}, {}
+    #  Four more capture-only profile fields (2026-08-09), same entry, same as-of date.
+    activedic, exchangedic, exchangeshortdic, countrydic, betadic = {}, {}, {}, {}, {}
     for prof in profiles:
         sym = prof.get('symbol') if isinstance(prof, dict) else None
         if not sym:
@@ -231,6 +233,63 @@ def buildSectorIndustryMaps(symbols, baseurl, api_key, batch_size=100, pace=None
         #  per-entry date was added to prevent.
         pricedic[sym] = prof.get('price')
         currencydic[sym] = prof.get('currency')
+        #  ---- isActivelyTrading / exchange / exchangeShortName / country / beta -------
+        #  CAPTURE ONLY, NOT WIRED (CEO-approved 2026-08-09).  Fourth time, same argument:
+        #  all five are ALREADY IN this response and were being discarded on the lines
+        #  above, so capturing them costs ZERO extra API calls, and a fetch is the only
+        #  chance we ever get to gain a column.
+        #
+        #  PRESENCE IS MEASURED, NOT INFERRED FROM THE VENDOR DOCS.  On a real 100-row
+        #  v3/profile payload taken 2026-08-09, every one of the five was non-null on
+        #  100/100 rows: `country` was a 2-letter ISO code with 17 distinct values and no
+        #  'N/A'; `beta` a float spanning -0.965..3.003 with NO 0.0 placeholder rows (the
+        #  usual tell that a vendor is defaulting rather than reporting).
+        #
+        #  *** WARNING 1 -- `isActivelyTrading` CARRIES NO DISCRIMINATING SIGNAL ON THIS
+        #  POPULATION, MEASURED.  It was True on 100/100 of that sample INCLUDING all 39
+        #  sampled names that FAILED the previous fetch.  So it separates nothing here.
+        #  DO NOT WIRE IT AS A DELISTING, LIVENESS OR TRADEABILITY FILTER EXPECTING IT TO
+        #  REJECT ANYTHING -- on the evidence we have it rejects zero names, and a filter
+        #  that never fires is worse than absent because it LOOKS like coverage.  It is
+        #  captured so that a future fetch can show whether it ever goes False, which is a
+        #  question no saved artifact can answer today.  The gate that actually removes
+        #  dead names is the delisted prune in getData_gen.get_tickers.
+        #
+        #  *** WARNING 2 -- `exchange` AND `exchangeShortName` ARE TWO DIFFERENT FIELDS and
+        #  both are captured deliberately rather than picking one: `exchange` is the long
+        #  venue string ('London Stock Exchange'), `exchangeShortName` the code ('LSE').
+        #  They are both free in this payload; guessing which one a future consumer wants
+        #  and being wrong would cost a re-fetch, which is the expensive thing here.
+        #  NOTE the collision hazard for whoever wires them: `Tickers_df` ALREADY carries
+        #  its own `exchangeShortName` from v3/available-traded/list (getData_gen), which
+        #  is a DIFFERENT source for the same concept.  Do not assume they agree; if they
+        #  are ever joined, the disagreement is a finding, not a merge conflict to resolve
+        #  by preference.
+        #
+        #  *** AND THE ONE ALREADY-CAPTURED FIELD THIS GROUP MAKES EASIER TO MISUSE:
+        #  profile `currency` above is the TRADING currency of the listing line, NOT
+        #  `reportedCurrency`.  11 of the 100 sampled LSE lines quote in `GBp`, while
+        #  fx_rates.py's panel note records that ZERO sources REPORTED in `GBp` on the
+        #  2026-08-07 panel -- that was the STATEMENT currency.  So routing profile
+        #  `currency` into anything the FX table consumes would take the `GBp` minor-unit
+        #  path LIVE FOR THE FIRST TIME.  It does resolve correctly (verified 0.013490),
+        #  but "correct" and "unchanged" are not the same claim: that is a real change of
+        #  live path and must be made deliberately, with the FX artifact re-read, not
+        #  discovered as a side effect of using a field because it was there.
+        #
+        #  NOT WIRED.  No consumer reads any of the five, and none should until a fetch has
+        #  actually run with this capture in place -- the same capture-now-wire-later
+        #  discipline `isin`, `volAvg`, `price` and `currency` were given, for the same
+        #  reason: they are absent from every existing artifact, so nothing built on them
+        #  can be tested first.  They ride in the SAME volavgdic entry under the SAME asof
+        #  (see the note at the write below), and `carveOut._load_volavg_map` normalises
+        #  each entry to (volAvg, asof) and IGNORES every other key, so no consumer today
+        #  changes by a byte.
+        activedic[sym] = prof.get('isActivelyTrading')
+        exchangedic[sym] = prof.get('exchange')
+        exchangeshortdic[sym] = prof.get('exchangeShortName')
+        countrydic[sym] = prof.get('country')
+        betadic[sym] = prof.get('beta')
         sec = prof.get('sector')
         sectordic.setdefault(sec, []).append(sym)
 
@@ -281,8 +340,23 @@ def buildSectorIndustryMaps(symbols, baseurl, api_key, batch_size=100, pace=None
     #  artifacts would reintroduce the stale-vs-fresh comparison the date was added to stop.
     #  `carveOut._load_volavg_map` normalises to (volAvg, asof) and ignores the extra keys,
     #  so every consumer today is byte-unaffected.
+    #  FOUR MORE FIELDS RIDE THE SAME ENTRY (2026-08-09, capture-only): isActivelyTrading,
+    #  exchange, exchangeShortName, country, beta.  Same reasoning as `price`/`currency` --
+    #  they are only jointly meaningful AT ONE POINT IN TIME (a venue changes, a country of
+    #  domicile changes, a beta is a rolling estimate that moves every day), so they share
+    #  the one `asof` rather than getting artifacts of their own, which would reintroduce the
+    #  stale-vs-fresh comparison the per-entry date exists to prevent.
+    #  MERGE-NEVER-OVERWRITE OPERATES ON WHOLE ENTRIES, and that is worth stating: a symbol
+    #  this run did not fetch keeps its PREVIOUS entry intact, so it will carry the OLD key
+    #  set (no beta, no country) alongside its old asof.  A consumer must therefore treat a
+    #  MISSING KEY and a null value as the same thing -- "not captured at that asof" -- and
+    #  must never read an absent key as a meaningful False/0.
     volavg_dated = {s: {'volAvg': v, 'asof': fidag,
-                        'price': pricedic.get(s), 'currency': currencydic.get(s)}
+                        'price': pricedic.get(s), 'currency': currencydic.get(s),
+                        'isActivelyTrading': activedic.get(s),
+                        'exchange': exchangedic.get(s),
+                        'exchangeShortName': exchangeshortdic.get(s),
+                        'country': countrydic.get(s), 'beta': betadic.get(s)}
                     for s, v in volavgdic.items()}
     merged_volavg, n_kept_v = _merge_industry_dics(
         _read_pickle_or_none(_prev_volavg) if _prev_volavg else None, volavg_dated)
@@ -303,6 +377,20 @@ def buildSectorIndustryMaps(symbols, baseurl, api_key, batch_size=100, pace=None
           f'STATEMENT currency, while volAvg counts traded units in the TRADING currency -- '
           f'27 of 100 top-100 names differ by >2x (SHEL.L quotes in PENCE and reports USD; '
           f'SMSN.L/SKHY/BZ differ by their GDR/ADR ratio). The floor waits for these fields.')
+    _n_sym = len(volavgdic)
+    print(f'[sector/industry build] profile EXTRAS captured into the SAME '
+          f'volavgdic_fmp_{fidag}.pickle entry under the SAME asof, of {_n_sym} symbols: '
+          f'isActivelyTrading {sum(1 for v in activedic.values() if v is not None)}, '
+          f'exchange {sum(1 for v in exchangedic.values() if v)}, '
+          f'exchangeShortName {sum(1 for v in exchangeshortdic.values() if v)}, '
+          f'country {sum(1 for v in countrydic.values() if v)}, '
+          f'beta {sum(1 for v in betadic.values() if v is not None)}. CAPTURE ONLY -- '
+          f'NOTHING reads them yet, and two of them carry a warning that must survive this '
+          f'run: (1) isActivelyTrading was True on 100/100 of a measured sample INCLUDING '
+          f'39 names that FAILED the last fetch, so it is NOT a delisting/liveness filter '
+          f'and must not be wired as one; (2) `currency` here is the TRADING currency -- '
+          f'LSE lines quote in GBp while ZERO sources REPORT in GBp, so routing it into an '
+          f'FX-consuming path takes the GBp minor-unit path live for the first time.')
     print(f'[sector/industry build] ISIN captured for {sum(1 for v in isindic.values() if v)} '
           f'of {len(isindic)} symbols -> isindic_fmp_{fidag}.pickle (kept {n_kept_x} '
           f'pre-existing entr(ies)). CAPTURE ONLY -- register K-1 is NOT wired.')

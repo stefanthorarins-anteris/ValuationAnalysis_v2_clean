@@ -207,7 +207,8 @@ EXCLUDED_CURRENCIES = {
 #  now would be a rule with no referent and no evidence behind it.
 #  IF A TRY (or VES, or LBP) REPORTER EVER APPEARS, this is the decision to make
 #  deliberately, with the three grounds re-checked against it -- note that ground (2) does
-#  NOT hold for TRY (it IS in carveOut.FX_TO_USD, at 0.030), so TRY would not simply
+#  NOT hold for TRY (it IS in carveOut.FX_TO_USD -- 0.020969, re-seeded 2026-08-09 from
+#  0.030; see the re-seed log there), so TRY would not simply
 #  inherit ARS's case.  Recorded here so the asymmetry is a decision, not an oversight.
 
 

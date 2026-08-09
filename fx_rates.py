@@ -8,6 +8,10 @@ THIRTEEN currencies were past 10% (TRY -30.1%, ILS +23.5%, ZAR +14.1%, HUF +13.8
 NOK +13.0%, INR -12.5%, ISK +12.5%, MYR +11.2%, IDR -11.1%, SEK +11.1%, RUB +11.0%,
 CZK +11.0%, CHF +10.5%); the majors were EUR 1.08 -> 1.1562 (+7.1%), GBP 1.27 -> 1.34839
 (+6.2%), CAD 0.73 -> 0.717 (-1.8%), KRW 0.00073 -> 0.000706 (-3.3%).
+That list is a DATED MEASUREMENT of 2026-08-08 and is kept as the case for this module; do
+not read it as today's drift.  TRY and ILS -- the top two -- were RE-SEEDED on 2026-08-09
+and now sit on their anchors (carveOut's RE-SEED LOG records the date and the source of
+each number); the rest of the list is untouched and still drifting.
 
 Recomputed on the 2026-08-07 CUR3K panel, the stale table gets **11 universe-membership
 decisions wrong at the $25M floor** -- 7 EUR names WRONGLY DELETED (0GJS.L, 0O0E.L,
@@ -110,21 +114,32 @@ FX_STALE_MAX_DAYS = 7.0
 
 #  A live rate must land within +-50% of its FX_TO_USD constant or it is REFUSED.
 #  This is a UNITS check (a 100x minor-unit flip, an inverted quote, a decimal slip), not
-#  an accuracy check.  TRY already sits ~30% from its constant on real data, so a tighter
-#  band would start rejecting good rates; a 100x or 1/x error is out by orders of magnitude.
+#  an accuracy check.  THE CALIBRATION IS HISTORICAL AND STAYS TRUE AS HISTORY: TRY sat
+#  ~30% from its constant on real 2026-08-08/09 data, so a tighter band would have started
+#  rejecting good rates; a 100x or 1/x error is out by orders of magnitude.  (That
+#  particular anchor was re-seeded on 2026-08-09 -- see carveOut's RE-SEED LOG -- so TRY is
+#  no longer the live example.  The band is NOT re-tuned by a re-seed: what sets its width
+#  is how far a real currency can travel between re-seeds, which is unchanged.)
 FX_SANITY_BAND = 0.5
 
 #  The band is measured against a FIXED constant, so a currency in a sustained trend walks
-#  toward the edge over time and is eventually refused while being perfectly correct.
-#  Measured 2026-08-08, TRY is the closest at 0.6975x its constant -- about another 28% of
-#  depreciation from being dropped.  A rate whose ratio is within this fraction of the
-#  edge is REPORTED (still used) so the drift is seen coming rather than discovered as a
-#  name silently leaving the universe.  Remedy: re-seed that constant, not widen the band.
+#  toward the edge over time and is eventually refused while being perfectly correct.  A
+#  rate whose ratio is within this fraction of the edge is REPORTED (still used) so the
+#  drift is seen coming rather than discovered as a name silently leaving the universe.
+#  Remedy: RE-SEED that constant, not widen the band.
 #
 #  Read as "fraction of the half-band consumed": 0.5 warns once a rate has drifted at
-#  least HALFWAY to refusal, i.e. |ratio - 1| >= 0.25.  On the 2026-08-08 quote that
-#  fires on exactly one currency -- TRY at 0.6975x -- and on nothing else (ILS, the
-#  runner-up, sits at 1.2343x).  Tuned to be the early warning, not a second alarm.
+#  least HALFWAY to refusal, i.e. |ratio - 1| >= 0.25.
+#
+#  WHAT THE THRESHOLD ACTUALLY CAUGHT, AND THE LIMIT OF IT (2026-08-09).  On the
+#  2026-08-08 quote it fired on exactly one currency, TRY at 0.6975x, and on nothing else.
+#  On 2026-08-09 the picture was the same -- TRY at 0.699x (60.2% consumed) was the ONLY
+#  warning -- but ILS was at 46.9%, i.e. UNDER this threshold and therefore SILENT while
+#  being one modest move from becoming the next alarm.  BOTH were re-seeded together for
+#  that reason.  The lesson is about the threshold, not about ILS: a single-sided warning
+#  tells you what is already hot, never what is about to be, so a re-seed pass should look
+#  at the RANKING in the shipped FxRates CSV's `band_consumed_pct` column and not only at
+#  the rows that warned.  After that pass the hottest anchor was ZAR at 29.7%.
 FX_BAND_EDGE_WARN = 0.5
 
 #  THE SECOND, INDEPENDENT UNITS CHECK -- and the one that catches what the band cannot.
@@ -132,7 +147,8 @@ FX_BAND_EDGE_WARN = 0.5
 #  The +-50% band cannot see an INVERTED quote on a near-parity currency: serving
 #  USD-per-EUR as EUR-per-USD turns 1.15593 into 0.86511, which is 0.80x the 1.08 constant
 #  -- comfortably INSIDE the band.  Same for GBP and CHF.  Tightening the band is not an
-#  option (TRY legitimately sits at 0.70x), so the band alone leaves a real hole.
+#  option (TRY legitimately sat at 0.70x on 2026-08-08/09, before its re-seed), so the band
+#  alone leaves a real hole.
 #
 #  The same one response also carries the RECIPROCAL pair `USD{CUR}` for every currency we
 #  use (probed 2026-08-08: present and fresh for all 35 major units), and for a correct
@@ -197,6 +213,17 @@ HISTORY_ENDPOINT = 'v3/historical-price-full/%s'
 #  right by construction and by unit test, NOT proven by any run -- do not cite the run as
 #  evidence for it.  It is kept because the field is a vendor string we do not control and
 #  `GBp` is what LSE-quoted lines carry when it does appear.
+#
+#  AND `GBp` IS EXACTLY WHERE THE TWO CURRENCY FIELDS DIVERGE (measured 2026-08-09).  The
+#  sentence above is about `reportedCurrency`, the STATEMENT currency, which is the only
+#  currency this table is fed from today.  On a 100-row v3/profile sample the TRADING
+#  currency (profile `currency`, captured but NOT wired -- see findAllSectors) was `GBp` on
+#  11 LSE lines.  So the moment anything routes profile `currency` into this module, the
+#  minor-unit path stops being unexercised and GOES LIVE FOR THE FIRST TIME on ~1-in-9 LSE
+#  names.  It resolves correctly on that sample (0.013490 = GBPUSD/100, verified), but
+#  "resolves correctly" is not "no-op": that is a change of LIVE PATH and has to be made as
+#  a deliberate, re-verified change, never as a side effect of reusing a field that happened
+#  to be captured.
 MINOR_UNITS = {'GBp': ('GBP', 100.0), 'GBX': ('GBP', 100.0)}
 
 #  Currencies ADDED to the supported set with this feed (CEO 2026-08-08).  They are

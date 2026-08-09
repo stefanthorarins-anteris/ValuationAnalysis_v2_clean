@@ -274,6 +274,12 @@ MCAP_BANDS = [
 # ## currency field drives this conversion.  The not-wired note on the trading side ##
 # ## lives in findAllSectors.py, which is NOT where an FX author looks -- hence this##
 # ## copy, here, next to the table.                                                 ##
+# ##                                                                               ##
+# ## SECOND-ORDER, MEASURED 2026-08-09 -- the swap would also be a LIVE-PATH change.##
+# ## On a 100-row profile sample, 11 LSE lines carry TRADING currency `GBp`, while  ##
+# ## ZERO sources REPORT in `GBp` (fx_rates MINOR_UNITS note, 2026-08-07 panel).  So##
+# ## feeding profile `currency` in would fire the pence minor-unit path for the     ##
+# ## FIRST TIME EVER -- correct on that sample (0.013490), but newly live, not inert.##
 # ###################################################################################
 #
 # THESE CONSTANTS ARE NO LONGER A RATE SOURCE IN PRODUCTION.  They were a hardcoded,
@@ -287,8 +293,9 @@ MCAP_BANDS = [
 #   2. THE SANITY BAND -- every LIVE rate must land within +-fx_rates.FX_SANITY_BAND of
 #      its constant or it is REFUSED and treated as absent.  That is the one new failure
 #      mode a live feed has and a constant does not: a vendor-side unit flip or an
-#      inverted quote.  It is a UNITS check, not an accuracy check -- TRY already sits
-#      ~30% from its constant on real data, so a tighter band would reject good rates.
+#      inverted quote.  It is a UNITS check, not an accuracy check -- TRY sat ~30% from
+#      its constant on real 2026-08-08 data (re-seeded 2026-08-09, see the log below), so
+#      a band tight enough to police accuracy would reject good rates.
 #
 # The live table is installed by fx_rates.install_for_run (one v3/quotes/forex call at
 # run start) via set_live_fx_rates below.  See fx_rates.py for the whole contract,
@@ -309,20 +316,45 @@ FX_TO_USD = {
     'CHF': 1.12, 'JPY': 0.0067, 'SEK': 0.095, 'NOK': 0.093, 'DKK': 0.145,
     'CAD': 0.73, 'AUD': 0.66, 'NZD': 0.61, 'HKD': 0.128, 'SGD': 0.74,
     'CNY': 0.138, 'CNH': 0.138, 'INR': 0.012, 'KRW': 0.00073, 'TWD': 0.031,
-    'ZAR': 0.054, 'BRL': 0.185, 'MXN': 0.055, 'PLN': 0.25, 'ILS': 0.27,
-    'AED': 0.272, 'SAR': 0.267, 'THB': 0.028, 'IDR': 0.000063, 'TRY': 0.030,
+    'ZAR': 0.054, 'BRL': 0.185, 'MXN': 0.055, 'PLN': 0.25, 'ILS': 0.33326,
+    'AED': 0.272, 'SAR': 0.267, 'THB': 0.028, 'IDR': 0.000063, 'TRY': 0.020969,
     'RUB': 0.011, 'CZK': 0.043, 'HUF': 0.0028, 'PHP': 0.017, 'MYR': 0.22,
     'ISK': 0.0072, 'PEN': 0.29656, 'MAD': 0.10738,
 }
 
-#  THE ANCHORS AGE, AND ONE OF THEM IS ALREADY CLOSE (flagged 2026-08-08).
+#  THE ANCHORS AGE (flagged 2026-08-08).
 #  The band is measured against a FIXED constant, so a currency in a sustained trend walks
-#  toward the edge and is eventually REFUSED while being perfectly correct.  Measured on
-#  the 2026-08-08 live quote, TRY sits at 0.6975x its constant -- the closest of the 38 --
-#  so roughly another 28% of depreciation would start silently dropping every TRY reporter
-#  out of the floor and the bands.  That must not be DISCOVERED as a name disappearing, so
-#  fx_rates warns when a rate gets within FX_BAND_EDGE_WARN of the edge.  The remedy is a
-#  one-line dated re-seed of the constant below, not a wider band.
+#  toward the edge and is eventually REFUSED while being perfectly correct.  That must not
+#  be DISCOVERED as a name disappearing, so fx_rates warns when a rate gets within
+#  FX_BAND_EDGE_WARN of the edge.  The remedy is a one-line DATED re-seed of the constant
+#  above -- NOT a wider band.  A wider band buys drift tolerance by giving up the only
+#  thing the band detects (an order-of-magnitude unit flip), so it trades a real check for
+#  a cosmetic one.  This is recorded here, in fx_rates' band constants, in the drift
+#  warning text and in the shipped FxRates CSV; the four must stay in agreement.
+#
+#  ============ RE-SEED LOG -- how old is each anchor, without archaeology ============
+#  Undated entries above are the ORIGINAL hardcoded snapshot; treat them as of unknown
+#  age (measured 2026-08-08, their median absolute drift against live rates was ~7% and
+#  13 of them were past 10%).  Anything re-seeded is dated here, with the observation it
+#  came from, so the next reader can see the age of the number rather than infer it.
+#
+#    2026-08-08  PEN 0.29656, MAD 0.10738   seeded on ADD from that day's live quote.
+#    2026-08-09  TRY 0.030 -> 0.020969      was 0.699x its anchor = 60.2% of the half-band
+#                                           consumed, and the ONLY `[fx] ANCHOR` warning on
+#                                           the 2026-08-09 live call.  Re-seeded from
+#                                           output/FxRates_2026-08-09.csv (TRYUSD
+#                                           0.02096854, quote_age 0.32d, status ok,
+#                                           reciprocal-checked).
+#    2026-08-09  ILS 0.27  -> 0.33326       the runner-up at 46.9% consumed -- UNDER the
+#                                           50% warn threshold, so it produced NO warning
+#                                           and would have become the next one silently.
+#                                           Re-seeded in the same pass, from the same
+#                                           artifact (ILSUSD 0.33326, status ok), because
+#                                           doing it when it warns means doing it under
+#                                           time pressure before a fetch.
+#  NO API CALL WAS MADE FOR THIS RE-SEED.  Both numbers come from the FxRates CSV the
+#  pre-flight gate run already wrote, which is the same feed the run would have used.
+#  ====================================================================================
 
 
 # --- the run's FX SOURCE STATE ------------------------------------------------------
@@ -831,6 +863,17 @@ def _load_volavg_map(volavg_pickle=None):
       * {sym: v}                                   -- the UNDATED shape the capture-only
         version wrote. Returned with asof None.
     Both are normalised to (value, asof) here so no consumer has to branch.
+
+    EVERY OTHER KEY IN A DATED ENTRY IS IGNORED, ON PURPOSE.  findAllSectors folds the
+    capture-only profile fields into the SAME entry so they share the one `asof` --
+    `price` and `currency` from 2026-08-08, and `isActivelyTrading`, `exchange`,
+    `exchangeShortName`, `country`, `beta` from 2026-08-09.  None of them is wired, and
+    this loader is the single seam through which the pickle reaches every consumer, so
+    two `.get()`s here are what make "capture changes nothing" a PROPERTY rather than an
+    intention.  Note the corollary for anyone who later wires one of those fields: this
+    map merges NEVER-OVERWRITE at the ENTRY level, so an entry carried forward from an
+    older run has an older KEY SET as well as an older `asof` -- a missing key means "not
+    captured at that asof", never False/0.
 
     WHY DATING WAS REQUIRED BEFORE WIRING.  Unlike a sector, an industry or an ISIN,
     AVERAGE VOLUME IS TIME-VARYING, and findAllSectors merges MERGE-NEVER-OVERWRITE --

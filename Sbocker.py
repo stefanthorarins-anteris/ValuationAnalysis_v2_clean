@@ -106,18 +106,60 @@ def transfer_outputs_to_drive(transfer_dir, configdic, verbose=True):
         'ReportingFrequencyConflicts_*.csv',
         'RunProvenance-*.json',
         'pick_log*.csv',
+        #  The mean-bar calibration (added 2026-08-09).  It is the run's own watchdog on the
+        #  Stage-1 bars -- WRITTEN ALWAYS, even with no breach, because its PRESENCE is the
+        #  evidence the check ran -- and it matched no pattern here, so it reached the other
+        #  machine on no run.
+        #  WHY A PATTERN AND NOT A MOVE INTO output/, which is the opposite of the call made
+        #  for DedupSurvivorReport below.  Two reasons, both specific to this file:
+        #    1. `meanBars._prior_streaks` READS THE PRIOR CALIBRATION CSVs FROM THE SAME
+        #       DIRECTORY to chain the breach-streak hysteresis.  Moving the writer to
+        #       output/ would strand the existing root-level history (which is git-TRACKED)
+        #       outside the search path and silently restart every streak at zero -- a
+        #       transfer fix that breaks a correctness mechanism is not a fix.
+        #    2. output/ is .gitignore'd.  This file is tracked, so moving it TRADES the git
+        #       channel for the Drive channel; a pattern ADDS the Drive channel and keeps
+        #       both.
+        #  The objection recorded below -- that a top-level pattern would be a DEAD GLOB --
+        #  is about a file living in output/. This one is written to CWD by
+        #  `meanBars.emit_calibration(directory='.')`, which is where `glob.glob` looks, so
+        #  the pattern genuinely matches. Checked against the on-disk name
+        #  (`MeanBarCalibration-2026-08-07_stock_CUR3K.csv`), not against the format string.
+        'MeanBarCalibration-*.csv',
+        #  The RAW vendor delisted list (added 2026-08-09).  The record of what the prune
+        #  REMOVED is `output/DelistedPrune_<date>.csv` and ships with output/ -- this is
+        #  the other half: what the VENDOR said on the day.  It ships because it is NOT
+        #  REPRODUCIBLE: `v3/delisted-companies?page=0` is a moving window, so a later call
+        #  cannot recover the list this run pruned against, and without it a disputed
+        #  removal can only be argued from our own derived file.  Top-level and dated, so
+        #  the glob genuinely matches (unlike a pattern aimed into output/ -- see below).
+        'delisted_tickers_*.csv',
         # --- the profile maps (added 2026-08-08) ---
         # THE SAME EVIDENCE GAP 84abd40 CLOSED EVERYWHERE ELSE, missed here because these
         # are INPUTS rather than run outputs -- but they are inputs that DECIDE WHICH
         # TICKER SURVIVES, and they are rebuilt by the run itself, so nothing else on the
-        # transfer side records their contents.  The 2026-08-08 run is the first on which
-        # this bites: volavgdic went 0 -> 3,127 entries, the volume term decided 12 dedup
-        # groups, and the map that made those 12 decisions never left the run machine, so
-        # the picks could not be checked against the readings behind them.  `sectorsdic`
-        # is the same class of object (it gates the cohort split and an eight-month-old
-        # copy of it was one of the four silent failures above) and `industrydic` feeds
-        # the concentration split.  Checked, not assumed: none of the four was matched by
-        # any pattern in this list, and none is caught by the denylist.
+        # transfer side records their contents.  `sectorsdic` is the same class of object
+        # (it gates the cohort split and an eight-month-old copy of it was one of the four
+        # silent failures above) and `industrydic` feeds the concentration split.  Checked,
+        # not assumed: none of the four was matched by any pattern in this list, and none is
+        # caught by the denylist.
+        #
+        # A CLAIM THAT USED TO SIT HERE, CORRECTED TO WHAT IS ACTUALLY EVIDENCED (2026-08-09).
+        # This block asserted that on the 2026-08-08 run "volavgdic went 0 -> 3,127 entries,
+        # the volume term decided 12 dedup groups".  MEASURED on the only artifact from that
+        # date on THIS machine, `output/DedupSurvivorReport_2026-08-08.csv`: 248 rows,
+        # `decided_by` = canonicity 94, punctuation 93, alphabetical 31, shares 29,
+        # marketCap 1 -- **ZERO** decided by either volume term -- with `dropped_volAvg` and
+        # `survivor_volAvg` null and `*_volAvg_asof` = 'not-captured' on all 248 rows.  This
+        # machine also holds NO `volavgdic_fmp_*.pickle` and no `isindic_fmp_*.pickle` at all.
+        # THE 3,127 IS NOT REFUTED, IT IS UNVERIFIED HERE.  The likely reading is that it came
+        # from the CEO's separate FETCH machine (which did build the map) while the CSV above
+        # is from a local run with no map -- two different runs on one date.  That cannot be
+        # settled from this machine, so it is recorded as unverified rather than asserted or
+        # deleted.  WHAT THE LOCAL EVIDENCE DOES ESTABLISH is the argument this list needs and
+        # is enough on its own: with no map, 31 groups fell to the ALPHABET on 2026-08-08 --
+        # the failure mode the maps exist to remove -- and nothing on the transfer side
+        # recorded whether a map was present, which is precisely why these four now ship.
         #
         # `sectorsdic_fmp.pickle` is UNDATED in its filename -- the only one of the four
         # that is -- so on the receiving side it is distinguishable only by mtime; the
@@ -147,6 +189,16 @@ def transfer_outputs_to_drive(transfer_dir, configdic, verbose=True):
     # which is exactly the "if it is the ONLY record of a decision the pipeline made about
     # the universe, it ships" rule above -- and it was missing while this very list was
     # being widened to close evidence gaps.
+    #
+    # `output/` ALSO carries `DelistedPrune_<date>.csv` from 2026-08-09 -- the named list of
+    # every symbol the delisted prune removed from the universe, with its reason and the
+    # page-0 limitation stated IN the file.  That prune was the LAST gate that removed names
+    # with no count, no banner and no shipped artifact, and the end-of-run reconciliation
+    # could not have caught it: the prune runs UPSTREAM of Tickers_df, so `resolved` is
+    # already post-prune and a residual of 0 proves nothing about it.  Written into
+    # `output/` for the same reason as the dedup report -- this directory ships whole, so a
+    # top-level pattern (which glob.glob() resolves from CWD and would therefore match
+    # nothing) is not needed and would be decorative.
     #
     # `run_logs/` is DELIBERATELY NOT unconditional.  Its only writer is
     # delisted_ingest.py (run_logging.RunLogger is constructed nowhere else), so on a

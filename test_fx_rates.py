@@ -68,6 +68,41 @@ def _body(pairs=None, age_days=0.2, extra=(), reciprocals=True):
     return out
 
 
+#  The rates the 2026-08-09 pre-flight gate call actually returned, all 38 usable,
+#  RECORDED HERE because `output/` is .gitignore'd and the CSV they came from does not
+#  travel with the source.  They are what the TRY/ILS re-seed was taken from, and the
+#  anchor-health test below measures every anchor against them.
+_LIVE_2026_08_09 = {
+    'AED': 0.27229, 'AUD': 0.70706, 'BRL': 0.19669, 'CAD': 0.71723, 'CHF': 1.23777,
+    'CNH': 0.14763, 'CNY': 0.14843, 'CZK': 0.0476849, 'DKK': 0.15462, 'EUR': 1.15593,
+    'GBP': 1.34899, 'GBX': 0.0134899, 'GBp': 0.0134899, 'HKD': 0.12748,
+    'HUF': 0.00318363, 'IDR': 5.5912776e-05, 'ILS': 0.33326, 'INR': 0.0105042,
+    'ISK': 0.00810651, 'JPY': 0.00633702, 'KRW': 0.0007103672, 'MAD': 0.10738,
+    'MXN': 0.05835612, 'MYR': 0.24468, 'NOK': 0.10538, 'NZD': 0.58952, 'PEN': 0.29656,
+    'PHP': 0.01643735, 'PLN': 0.2689, 'RUB': 0.01216545, 'SAR': 0.26667, 'SEK': 0.10548,
+    'SGD': 0.78253, 'THB': 0.03027652, 'TRY': 0.02096854, 'TWD': 0.03104914, 'USD': 1.0,
+    'ZAR': 0.06200704,
+}
+
+
+def _body_with_a_DRIFTED_anchor(cur='SEK', factor=0.70):
+    """`_body()` with exactly ONE currency quoted at `factor` x ITS OWN sanity anchor.
+
+    WHY SYNTHETIC RATHER THAN "whichever currency is drifting today".  These tests used to
+    key off TRY, which really was at 0.70x its constant -- and the 2026-08-09 re-seed of
+    TRY (the correct remedy, applied) therefore broke four tests that were about the
+    WARNING MECHANISM and not about TRY.  A test whose subject disappears the moment the
+    defect it warns about is fixed is pinned to the wrong thing.  The drift is now
+    constructed, so the mechanism stays covered no matter which anchors are fresh.
+
+    The INPUT is anchor-relative by necessity (the property under test IS "0.70x its own
+    anchor"); every EXPECTED value below is hardcoded independently of the code.
+    """
+    pairs = dict(_LIVE_2026_08_08)
+    pairs['%sUSD' % cur] = co.FX_TO_USD[cur] * factor
+    return _body(pairs)
+
+
 def _full_body(age_days=0.2):
     """A body covering the WHOLE supported set, each pair quoted exactly at its sanity
     anchor.  Needed for the coverage tests: `_body()` carries 8 pairs, which is a
@@ -309,14 +344,24 @@ def test_the_minor_unit_reciprocal_uses_the_MAJOR_units_product():
     assert got['GBp'].usable and got['GBp'].rate == pytest.approx(1.34899 / 100)
 
 
-def test_TRY_at_MINUS_30_PERCENT_is_ACCEPTED_because_the_band_is_a_UNITS_check():
-    """The calibration argument, pinned.  TRY really is ~30% from its constant on live
-    data, so a band tight enough to 'catch drift' would reject good rates.  The band exists
-    to catch ORDERS OF MAGNITUDE, not to police accuracy."""
-    got = {r.currency: r for r in fx.resolve_rates(fx._index_quotes(_body()), now=NOW)}
-    assert got['TRY'].usable
-    assert got['TRY'].ratio == pytest.approx(0.02092441 / 0.030, rel=1e-6)
-    assert got['TRY'].ratio < 0.71
+def test_a_rate_at_MINUS_30_PERCENT_is_ACCEPTED_because_the_band_is_a_UNITS_check():
+    """The calibration argument, pinned.  A rate 30% from its constant is a real currency
+    that has moved, not a broken feed, so a band tight enough to 'catch drift' would reject
+    good rates.  The band exists to catch ORDERS OF MAGNITUDE, not to police accuracy.
+
+    GROUNDED, NOT INVENTED: TRY was measured at 0.6975x its anchor on the 2026-08-08 live
+    quote and 0.699x on 2026-08-09, which is where the +-50% figure comes from.  That
+    anchor has since been re-seeded (carveOut FX_TO_USD re-seed log), so the 30% case is
+    now CONSTRUCTED rather than borrowed from whichever currency happens to be drifting.
+    """
+    got = {r.currency: r for r in fx.resolve_rates(
+        fx._index_quotes(_body_with_a_DRIFTED_anchor('SEK', 0.70)), now=NOW)}
+    assert got['SEK'].usable, 'a 30%-drifted rate must still be USED'
+    assert got['SEK'].ratio == pytest.approx(0.70, rel=1e-6)
+    assert fx.FX_SANITY_BAND == 0.5, (
+        'the band was widened -- the recorded remedy for a drifting anchor is a DATED '
+        'RE-SEED, never a wider band, because widening it gives up the only thing the '
+        'band detects (an order-of-magnitude unit flip)')
 
 
 def test_a_refused_rate_is_indistinguishable_from_a_missing_one_DOWNSTREAM():
@@ -335,16 +380,102 @@ def test_a_refused_rate_is_indistinguishable_from_a_missing_one_DOWNSTREAM():
         assert co._fx_to_usd('EUR') is None
 
 
-def test_the_band_edge_warning_fires_on_TRY_and_on_nothing_else():
+def test_the_band_edge_warning_fires_on_the_DRIFTING_anchor_and_on_nothing_else():
     """The anchors AGE.  A currency in a sustained trend eventually gets refused while
     being correct, and that must be seen coming rather than discovered as a name silently
     leaving the universe."""
-    rows = fx.resolve_rates(fx._index_quotes(_body()), now=NOW)
+    rows = fx.resolve_rates(
+        fx._index_quotes(_body_with_a_DRIFTED_anchor('SEK', 0.70)), now=NOW)
     near = {r.currency for r in fx.near_band_edge(rows)}
-    assert near == {'TRY'}, near
-    try_row = next(r for r in rows if r.currency == 'TRY')
-    assert try_row.usable, 'a drifting rate is still USED, not refused'
-    assert try_row.band_consumed == pytest.approx(0.605, abs=0.01)
+    assert near == {'SEK'}, near
+    drifted = next(r for r in rows if r.currency == 'SEK')
+    assert drifted.usable, 'a drifting rate is still USED, not refused'
+    assert drifted.band_consumed == pytest.approx(0.60, abs=0.01)
+
+
+def _resolve_recorded_2026_08_09():
+    """Every recorded 2026-08-09 rate, through `resolve_rates`, keyed by currency."""
+    return {r.currency: r for r in fx.resolve_rates(
+        fx._index_quotes(_body(
+            {'%sUSD' % c: p for c, p in _LIVE_2026_08_09.items()
+             if c != 'USD' and c not in fx.MINOR_UNITS})), now=NOW)}
+
+
+def test_the_recorded_rates_cover_EVERY_anchor_so_none_can_hide():
+    """The anchor-health test below filters out any currency with no recorded rate, so a
+    currency ADDED to FX_TO_USD but not to `_LIVE_2026_08_09` would be silently EXEMPT from
+    it -- present in the table, absent from the check, green either way.
+
+    That is not hypothetical: PEN and MAD were added on 2026-08-08, one day before the
+    re-seed this file records.  Adding an anchor is a live path, so the two key sets are
+    pinned EQUAL rather than the rates being treated as a sample.
+    """
+    assert set(_LIVE_2026_08_09) == set(co.FX_TO_USD), (
+        'recorded rates and FX_TO_USD disagree -- missing a rate for %s, extra rate for '
+        '%s. An anchor with no recorded rate is EXEMPT from the health check below.'
+        % (sorted(set(co.FX_TO_USD) - set(_LIVE_2026_08_09)),
+           sorted(set(_LIVE_2026_08_09) - set(co.FX_TO_USD))))
+
+
+def test_NO_anchor_was_near_its_edge_after_the_2026_08_09_reseed():
+    """The re-seed's own acceptance test, and the reason ILS was done alongside TRY.
+
+    TRY was the only currency to WARN (60.2% of the half-band consumed) but ILS sat at
+    46.9% -- under the 50% threshold, so it would have become the next warning with no
+    warning.  Re-seeding only the one that shouted would have left that in place.  Pinned
+    against the RECORDED 2026-08-09 rates, so this fails if a future edit re-seeds one
+    anchor and leaves a neighbour close.
+    """
+    rows = _resolve_recorded_2026_08_09()
+    hot = {c: round(r.band_consumed, 3) for c, r in rows.items()
+           if r.band_consumed is not None and r.band_consumed >= fx.FX_BAND_EDGE_WARN}
+    assert not hot, 'anchor(s) still within the warn threshold after the re-seed: %s' % hot
+    #  and the two that were re-seeded are now essentially ON their anchors
+    assert rows['TRY'].band_consumed == pytest.approx(0.0, abs=0.01)
+    assert rows['ILS'].band_consumed == pytest.approx(0.0, abs=0.01)
+
+
+@pytest.mark.parametrize('cur,old_const,expected_consumed,expected_warns',
+                         [('TRY', 0.030, 0.602, True), ('ILS', 0.27, 0.469, False)])
+def test_the_PRE_reseed_anchors_reproduce_their_recorded_drift_THROUGH_the_real_code(
+        cur, old_const, expected_consumed, expected_warns, monkeypatch):
+    """NON-VACUITY for the test above, run through PRODUCTION CODE rather than restated.
+
+    An earlier version of this recomputed `abs(ratio - 1) / FX_SANITY_BAND` inside the test
+    and asserted the answer.  That is arithmetic the test does itself: it stayed green under
+    mutations of `FxRate.band_consumed`, so the comment claimed a proof the three lines did
+    not perform.  Now the old constant is put BACK into `co.FX_TO_USD` and the rate is
+    re-resolved, so `band_consumed` and `near_band_edge` are the shipped implementations.
+
+    It also pins the asymmetry the re-seed pass turned on: TRY WARNED, ILS did NOT -- 46.9%
+    is under the 50% threshold -- which is precisely why a re-seed pass must read the
+    band_consumed RANKING and not only the rows that warned.
+    """
+    monkeypatch.setitem(co.FX_TO_USD, cur, old_const)
+    rows = _resolve_recorded_2026_08_09()
+    row = rows[cur]
+    assert row.usable, 'a drifted-but-correct rate must still be USED'
+    assert row.band_consumed == pytest.approx(expected_consumed, abs=0.005), (
+        '%s at its PRE-re-seed anchor no longer reproduces the recorded %.1f%% of the '
+        'half-band -- the re-seed log and the code disagree'
+        % (cur, expected_consumed * 100))
+    warned = {r.currency for r in fx.near_band_edge(list(rows.values()))}
+    assert (cur in warned) is expected_warns, (
+        '%s warns=%r at its old anchor, recorded as %r' % (cur, cur in warned,
+                                                           expected_warns))
+    #  and with the re-seeded anchor restored by monkeypatch teardown, neither warns --
+    #  asserted in test_NO_anchor_was_near_its_edge_after_the_2026_08_09_reseed.
+
+
+def test_the_reseeded_anchors_carry_a_DATED_record():
+    """"Record the date next to the constants" is the whole point -- an undated anchor is
+    how the original snapshot drifted ~7% median without anyone being able to say since
+    when.  The log has to name the date, the old value and where the number came from."""
+    src = open(os.path.join(_HERE, 'carveOut.py'), encoding='utf-8').read()
+    assert 'RE-SEED LOG' in src
+    for token in ('2026-08-09', '0.020969', '0.33326', 'FxRates_2026-08-09.csv'):
+        assert token in src, 'the re-seed log does not record %r' % token
+    assert co.FX_TO_USD['TRY'] == 0.020969 and co.FX_TO_USD['ILS'] == 0.33326
 
 
 def test_the_anchor_drift_warning_SHIPS_in_the_csv_not_only_on_the_console(tmp_path):
@@ -353,15 +484,15 @@ def test_the_anchor_drift_warning_SHIPS_in_the_csv_not_only_on_the_console(tmp_p
     It has to be in the dated artifact that travels to the other machine."""
     fx.install_for_run('http://b/', 'KEY', now=NOW, run_date='2026-08-08',
                        outdir=str(tmp_path), verbose=False,
-                       _get=_get_returning(_body()))
+                       _get=_get_returning(_body_with_a_DRIFTED_anchor('SEK', 0.70)))
     got = pd.read_csv(tmp_path / 'FxRates_2026-08-08.csv').set_index('currency')
     assert {'band_consumed_pct', 'band_edge_warning'} <= set(got.columns)
-    warn = got.loc['TRY', 'band_edge_warning']
+    warn = got.loc['SEK', 'band_edge_warning']
     assert isinstance(warn, str) and warn.startswith('DRIFT:')
     #  the remedy has to be IN the artifact, not only in someone's head
     assert 're-seed' in warn and 'do NOT widen the band' in warn
     assert 'unknown-currency' in warn
-    assert got.loc['TRY', 'band_consumed_pct'] == pytest.approx(60.5, abs=1.0)
+    assert got.loc['SEK', 'band_consumed_pct'] == pytest.approx(60.0, abs=1.0)
     #  and a healthy currency carries no warning
     assert not isinstance(got.loc['EUR', 'band_edge_warning'], str) or \
         got.loc['EUR', 'band_edge_warning'] == ''
@@ -371,9 +502,9 @@ def test_the_anchor_drift_warning_SHIPS_in_the_provenance_json(tmp_path):
     import json
     import postBo
     fx.install_for_run('http://b/', 'KEY', now=NOW, outdir=str(tmp_path), verbose=False,
-                       _get=_get_returning(_body()))
+                       _get=_get_returning(_body_with_a_DRIFTED_anchor('SEK', 0.70)))
     blob = postBo._fx_provenance()
-    assert blob['band_edge_warnings'] == {'TRY': pytest.approx(60.5, abs=1.0)}
+    assert blob['band_edge_warnings'] == {'SEK': pytest.approx(60.0, abs=1.0)}
     assert 're-seed' in blob['band_edge_remedy']
     assert 'do NOT widen the band' in blob['band_edge_remedy']
     json.dumps(blob, default=str)

@@ -772,6 +772,228 @@ def test_LOW_sector_coverage_does_NOT_count_as_cached(tmp_path, monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
+#  THE DELISTED PRUNE MUST NAME WHAT IT REMOVES  (2026-08-09)                   #
+#                                                                               #
+#  It was the last gate that removed universe members with no count, no banner   #
+#  and no shipped artifact -- and the end-of-run reconciliation cannot cover for #
+#  it, because the prune runs UPSTREAM of Tickers_df so `resolved` is already    #
+#  post-prune.                                                                   #
+# --------------------------------------------------------------------------- #
+def _get_tickers_with_delist(tmp_path, monkeypatch, delisted, rows=None):
+    rows = rows or [('AAPL', 'Apple Inc.', 'NASDAQ', 'stock'),
+                    ('MCFT', 'MasterCraft Boat Holdings, Inc.', 'NASDAQ', 'stock'),
+                    ('GYL.OL', 'Gyldendal ASA', 'OSL', 'stock')]
+    at = [dict(symbol=s, name=n, price=1.0, exchange=e, exchangeShortName=e, type=t)
+          for s, n, e, t in rows]
+
+    def _fake_get(url, *a, **k):
+        if 'available-traded' in url:
+            return at
+        if 'symbol-lists' in url:
+            return [{'symbol': s} for s, _n, _e, _t in rows]
+        if 'delisted-companies' in url:
+            return [{'symbol': s} for s in delisted]
+        return []
+
+    monkeypatch.setattr(gdg, 'safe_get', _fake_get)
+    monkeypatch.setattr(fas, 'ensure_sector_industry_maps', lambda *a, **k: None)
+    monkeypatch.chdir(tmp_path)
+    out = gdg.get_tickers('fmp', 'https://x/', 'KEY', [], 'stock_NA1_EU1',
+                          sfilt='all', mcapf=-1, fn='')
+    return out
+
+
+def test_the_delisted_prune_NAMES_every_symbol_it_removes(tmp_path, monkeypatch, capsys):
+    """The house invariant: a name that leaves the universe is named, with its reason, in
+    a shipped artifact.  Both channels are checked -- the console banner an operator reads
+    and the CSV that travels."""
+    df = _get_tickers_with_delist(tmp_path, monkeypatch, ['MCFT', 'NOT_IN_UNIVERSE'])
+    assert 'MCFT' not in set(df['symbol']), 'the prune must still prune'
+    assert {'AAPL', 'GYL.OL'} <= set(df['symbol'])
+
+    out = capsys.readouterr().out
+    assert 'DELISTED PRUNE' in out
+    assert 'MCFT' in out, 'a removed symbol was not NAMED on the console'
+    assert '1 of 3' in out, 'the count of removed rows is not stated'
+
+    rec = sorted(tmp_path.glob('output/DelistedPrune_*.csv'))
+    assert rec, 'no shipped record of the prune was written'
+    got = pd.read_csv(rec[-1])
+    assert list(got['symbol']) == ['MCFT'], (
+        'the record must name what WE removed, not the raw vendor list -- '
+        'NOT_IN_UNIVERSE was on the vendor list and was never ours to remove')
+    assert (got['reason'] == 'delisted_prune').all()
+    assert int(got['vendor_list_size'].iloc[0]) == 2
+
+
+def test_the_prune_banner_STATES_the_page_0_limitation(tmp_path, monkeypatch, capsys):
+    """Keeping page-0-only is a separate (deferred) question; reading the prune as
+    COMPLETE is the defect.  The limitation is stated on the console AND inside the CSV,
+    because the two travel to different readers."""
+    _get_tickers_with_delist(tmp_path, monkeypatch, ['MCFT'])
+    out = capsys.readouterr().out
+    assert 'page=0' in out and 'PARTIAL' in out
+    got = pd.read_csv(sorted(tmp_path.glob('output/DelistedPrune_*.csv'))[-1])
+    assert 'PAGE 0 ONLY' in got['coverage_note'].iloc[0]
+
+
+def test_the_prune_reports_the_ZERO_case_too(tmp_path, monkeypatch, capsys):
+    """"0 removed" is a measurement; silence is not, and the two were indistinguishable.
+    A run where the gate removed nothing must still say so -- otherwise a broken endpoint
+    returning [] looks exactly like a clean universe."""
+    df = _get_tickers_with_delist(tmp_path, monkeypatch, [])
+    assert len(df) == 3
+    out = capsys.readouterr().out
+    assert 'DELISTED PRUNE' in out and '0 of 3' in out
+    assert 'REMOVED: none' in out
+    assert 'page=0' in out, 'the scope caveat must print even on the zero case'
+
+
+def test_the_prune_record_is_reachable_by_the_transfer_allowlist(tmp_path, monkeypatch):
+    """The artifact only counts if it SHIPS.  `output/` is in Sbocker's allowlist_dirs and
+    ships whole, and the raw vendor list gets a top-level pattern because it is a MOVING
+    WINDOW -- a later call cannot recover the list this run pruned against."""
+    _get_tickers_with_delist(tmp_path, monkeypatch, ['MCFT'])
+    assert (tmp_path / 'output' / ('DelistedPrune_%s.csv'
+                                   % datetime.today().strftime('%Y-%m-%d'))).exists()
+    assert sorted(tmp_path.glob('delisted_tickers_*.csv')), 'raw vendor list not written'
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'Sbocker.py'),
+              encoding='utf-8', errors='ignore') as _f:
+        src = _f.read()
+    assert "'delisted_tickers_*.csv'" in src, (
+        'the raw vendor list has no transfer pattern -- it is top-level and dated, so a '
+        'glob genuinely matches it (unlike one aimed into output/)')
+    assert 'DelistedPrune' in src, (
+        "Sbocker must record WHY the prune record rides output/ rather than a pattern")
+
+
+# --------------------------------------------------------------------------- #
+#  CAPTURE-ONLY PROFILE FIELDS  (2026-08-08 price/currency, 2026-08-09 +5)      #
+#                                                                               #
+#  The whole safety argument for capture-now-wire-later is TWO claims:           #
+#    (1) the fields actually LAND, in the volavgdic entry, under the SAME asof;   #
+#    (2) capturing them changes NOTHING, because the single loader every consumer #
+#        goes through ignores every key but volAvg/asof.                          #
+#  Neither was covered before this block -- 90b0d5f's message asserted the        #
+#  enriched shape was tested, and no test in the suite built one.                 #
+# --------------------------------------------------------------------------- #
+#  A payload shaped like the measured 2026-08-09 v3/profile sample: an LSE line
+#  quoting in GBp (11 of 100 did), a US line, and a name whose profile omits the new
+#  fields entirely -- the vendor-drops-a-field case, which must give None, not KeyError.
+_PROFILE_ROWS = [
+    {'symbol': 'AAA.L', 'sector': 'Technology', 'industry': 'Software',
+     'isin': 'GB00AAA00001', 'volAvg': 123456, 'price': 412.5, 'currency': 'GBp',
+     'isActivelyTrading': True, 'exchange': 'London Stock Exchange',
+     'exchangeShortName': 'LSE', 'country': 'GB', 'beta': 1.234},
+    {'symbol': 'BBB', 'sector': 'Technology', 'industry': 'Software',
+     'isin': 'US00BBB00001', 'volAvg': 987654, 'price': 31.2, 'currency': 'USD',
+     'isActivelyTrading': True, 'exchange': 'NASDAQ Global Select',
+     'exchangeShortName': 'NASDAQ', 'country': 'US', 'beta': -0.965},
+    {'symbol': 'CCC', 'sector': 'Technology', 'industry': 'Software',
+     'isin': 'US00CCC00001', 'volAvg': 10},
+]
+_EXTRA_KEYS = ('price', 'currency', 'isActivelyTrading', 'exchange',
+               'exchangeShortName', 'country', 'beta')
+
+
+def _build_with_profiles(tmp_path, monkeypatch, rows):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(fas, '_fetch_profiles_batched',
+                        lambda *a, **k: (list(rows), 1, True, set()))
+    fas.buildSectorIndustryMaps(['x'], 'https://x/', 'KEY')
+    return pd.read_pickle(sorted(tmp_path.glob('volavgdic_fmp_*.pickle'))[-1])
+
+
+def test_the_capture_only_profile_fields_LAND_under_the_SAME_asof(tmp_path, monkeypatch):
+    """Claim (1).  All seven capture-only fields must be IN the volAvg entry -- not in
+    sidecar artifacts -- because a traded value, a venue and a beta are only jointly
+    meaningful at ONE point in time, and separate artifacts would reintroduce exactly the
+    stale-vs-fresh comparison the per-entry `asof` was added to prevent."""
+    on_disk = _build_with_profiles(tmp_path, monkeypatch, _PROFILE_ROWS)
+    e = on_disk['AAA.L']
+    assert e['volAvg'] == 123456
+    assert e['price'] == 412.5 and e['currency'] == 'GBp'
+    assert e['isActivelyTrading'] is True
+    assert e['exchange'] == 'London Stock Exchange'
+    assert e['exchangeShortName'] == 'LSE'      # a SEPARATE field from `exchange`
+    assert e['country'] == 'GB' and e['beta'] == 1.234
+    #  ONE date for all of them -- the property that makes sharing the entry the point.
+    assert set(e) == {'asof'} | {'volAvg'} | set(_EXTRA_KEYS)
+    assert e['asof'] == on_disk['BBB']['asof'] == on_disk['CCC']['asof']
+    assert e['asof'] == datetime.today().strftime('%Y-%m-%d')
+    #  A profile that OMITS the fields yields None, never a KeyError and never a
+    #  fabricated default -- absence must stay legible as absence.
+    assert all(on_disk['CCC'][k] is None for k in _EXTRA_KEYS)
+
+
+def test_capturing_the_extra_fields_changes_NOTHING_a_consumer_sees(tmp_path, monkeypatch):
+    """Claim (2), and it is what makes 'capture only' a PROPERTY rather than an intention.
+
+    `carveOut._load_volavg_map` is the SINGLE seam through which this pickle reaches every
+    consumer (grepped: nothing else opens volavgdic_fmp_*.pickle), so if the loader's
+    output is identical with and without the extra keys, no consumer can be affected.
+
+    NON-VACUITY: the same assertion is made against a bare {'volAvg','asof'} pickle built
+    from the same rows, so a loader that started leaking the extra keys through would fail
+    here rather than silently agreeing with itself.
+    """
+    on_disk = _build_with_profiles(tmp_path, monkeypatch, _PROFILE_ROWS)
+    enriched = co._load_volavg_map(
+        str(sorted(tmp_path.glob('volavgdic_fmp_*.pickle'))[-1]))
+    stripped_path = tmp_path / 'stripped.pickle'
+    pd.to_pickle({s: {'volAvg': v['volAvg'], 'asof': v['asof']}
+                  for s, v in on_disk.items()}, stripped_path)
+    assert enriched == co._load_volavg_map(str(stripped_path))
+    assert enriched['AAA.L'] == (123456, datetime.today().strftime('%Y-%m-%d'))
+    #  and the loaded value is a 2-tuple, so nothing downstream can even reach a new field
+    assert all(len(v) == 2 for v in enriched.values())
+    #  non-vacuity: the enriched pickle really did carry the extra keys
+    assert all(k in on_disk['AAA.L'] for k in _EXTRA_KEYS)
+
+
+def test_isActivelyTrading_is_captured_but_is_NOT_wired_as_a_liveness_filter(tmp_path,
+                                                                            monkeypatch):
+    """MEASURED WARNING, pinned so it cannot be forgotten: on the 2026-08-09 sample
+    `isActivelyTrading` was True on 100/100 rows INCLUDING all 39 sampled names that
+    FAILED the previous fetch.  It therefore rejects nothing on this population, and a
+    filter that never fires is worse than absent because it LOOKS like coverage.
+
+    This test pins the ABSENCE of such a filter: a symbol with isActivelyTrading False
+    must still be captured and must still load exactly like any other name.
+    """
+    rows = list(_PROFILE_ROWS) + [
+        {'symbol': 'DEAD', 'sector': 'Technology', 'industry': 'Software',
+         'volAvg': 5, 'isActivelyTrading': False, 'country': 'US'}]
+    on_disk = _build_with_profiles(tmp_path, monkeypatch, rows)
+    assert on_disk['DEAD']['isActivelyTrading'] is False, 'the False value must be kept'
+    loaded = co._load_volavg_map(
+        str(sorted(tmp_path.glob('volavgdic_fmp_*.pickle'))[-1]))
+    assert loaded['DEAD'] == (5, datetime.today().strftime('%Y-%m-%d')), (
+        'isActivelyTrading=False changed what a consumer sees -- it has been WIRED as a '
+        'liveness/delisting filter, which the measured sample says it cannot support')
+
+
+def test_the_volavg_pickle_still_has_exactly_ONE_reading_seam():
+    """The assumption the test above RESTS ON, made checkable instead of assumed.
+
+    "Capturing extra keys cannot affect a consumer" is only true while `_load_volavg_map`
+    is the sole reader -- a second module doing its own `pd.read_pickle` on this artifact
+    would see the raw entries and the argument silently lapses.  So the set of modules
+    naming the artifact is pinned: findAllSectors WRITES it, carveOut LOADS it, Sbocker
+    SHIPS it, and there is no fourth.
+    """
+    import pathlib
+    root = pathlib.Path(__file__).resolve().parent
+    naming = {p.name for p in sorted(root.glob('*.py'))
+              if not p.name.startswith('test_')
+              and 'volavgdic_fmp_' in p.read_text(encoding='utf-8', errors='ignore')}
+    assert naming == {'findAllSectors.py', 'carveOut.py', 'Sbocker.py'}, (
+        'the volavgdic artifact gained or lost a naming module (%s) -- if a NEW module '
+        'reads it directly, the capture-only guarantee no longer follows from '
+        '_load_volavg_map alone' % sorted(naming))
+
+
+# --------------------------------------------------------------------------- #
 #  THE CONSUMER-SIDE COVERAGE GUARD                                            #
 # --------------------------------------------------------------------------- #
 def test_the_coverage_thresholds_sit_between_the_measured_healthy_and_poisoned_cases():

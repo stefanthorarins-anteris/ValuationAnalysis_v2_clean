@@ -1191,10 +1191,27 @@ def tickerfilterWrapper(tickdf,tfilt,sfilt,mcapf,baseurl,api_key):
 
     if sfilt != 'all':
         df = filterBySector(df, sfilt)
+    # ------------------------------------------------------------------------------
+    #  THE DELISTED PRUNE.  It removes names from the universe, so it says WHICH ONES.
+    #
+    #  IT WAS THE LAST SILENT GATE (fixed 2026-08-09).  Every other stage that removes a
+    #  member of the universe names it in a shipped artifact -- the DQ removal CSV, the
+    #  currency-floor flips, the excluded share classes, the dedup survivor report.  This
+    #  one dropped rows with `df[~df['symbol'].isin(delist)]` and printed NOTHING: no
+    #  count, no banner, no names.  Its only record was `delisted_tickers_<date>.csv`,
+    #  which (a) is the RAW VENDOR LIST, not the set of names WE removed, (b) is matched by
+    #  `delisted_tickers_*.csv` in .gitignore, and (c) matched no transfer pattern -- so it
+    #  never left the run machine by either channel.  (c) is now fixed too: it has a
+    #  transfer pattern, because the vendor's page-0 window is not reproducible later.
+    #
+    #  AND THE RESIDUAL CANNOT COVER FOR IT.  This runs UPSTREAM of `Tickers_df`, so the
+    #  reconciliation's `resolved` count is already POST-prune: a residual of 0 says the
+    #  stages downstream of here balance, and says NOTHING about what this line took.
+    # ------------------------------------------------------------------------------
     delist_json = safe_get(f'{baseurl}/v3/delisted-companies?page=0&apikey={api_key}')
     delist_df = pd.DataFrame(delist_json) if delist_json else pd.DataFrame()
     delist = list(delist_df['symbol']) if 'symbol' in delist_df.columns else []
-    # record delisted tickers to a file for auditing
+    # record the RAW VENDOR LIST for auditing (unchanged; it is the input, not the record)
     try:
         import csv
         fidag = pd.Timestamp.today().strftime('%Y-%m-%d')
@@ -1204,7 +1221,75 @@ def tickerfilterWrapper(tickdf,tfilt,sfilt,mcapf,baseurl,api_key):
     except Exception:
         # non-fatal: if we can't write, continue
         pass
+
+    #  Guarded so the instrumentation can never raise EARLIER than the prune itself did:
+    #  a non-frame / column-less `df` still fails on the `df[~...]` line below, exactly as
+    #  before this block existed.  Adding evidence must not add a failure mode.
+    _prunable = isinstance(df, pd.DataFrame) and 'symbol' in getattr(df, 'columns', [])
+    removed = sorted(set(df['symbol']) & set(delist)) if _prunable else []
+    n_before = len(df) if _prunable else 0
     df = df[~df['symbol'].isin(delist)].reset_index(drop=True)
+
+    #  THE RECORD OF WHAT *WE* REMOVED -- one row per name, with its reason.
+    #  It goes in `output/`, which Sbocker's `allowlist_dirs` already ships WHOLE.  That is
+    #  the precedent set for the dedup survivor report and recorded at the `allowlist_dirs`
+    #  block in `Sbocker.transfer_outputs_to_drive` (referenced by NAME, not line number --
+    #  that block moves):
+    #  `allowlist_patterns` are consumed by `glob.glob()` from CWD, so a top-level pattern
+    #  for a file that lives in `output/` would match NOTHING -- a dead glob that looks
+    #  protective while being decorative.  A directory that already ships whole cannot lose
+    #  the evidence to a filename change.
+    try:
+        _delist_rows = pd.DataFrame({
+            'symbol': removed,
+            'reason': 'delisted_prune',
+            'source_endpoint': 'v3/delisted-companies',
+            'page': 0,
+            'vendor_list_size': len(delist),
+            'universe': tfilt,
+            'asof': pd.Timestamp.today().strftime('%Y-%m-%d'),
+            #  Stated IN the artifact, not only in the console: a reader of this CSV must
+            #  not be able to mistake it for the complete set of dead names.
+            'coverage_note': ('PAGE 0 ONLY of a paginated endpoint -- this is a PARTIAL '
+                              'delisted list, so absence from this file is NOT evidence '
+                              'that a name is still listed'),
+        })
+        os.makedirs('output', exist_ok=True)
+        _delist_fn = os.path.join(
+            'output', 'DelistedPrune_%s.csv' % pd.Timestamp.today().strftime('%Y-%m-%d'))
+        _delist_rows.to_csv(_delist_fn, index=False)
+    except Exception as _de:
+        _delist_fn = None
+        print('  WARNING: could not write the delisted-prune record (%s: %s) -- the prune '
+              'itself DID run, so %d name(s) left the universe with no shipped record. '
+              'Treat this run\'s universe as unreconcilable at this stage.'
+              % (type(_de).__name__, _de, len(removed)), flush=True)
+
+    #  THE BANNER.  Printed on EVERY run including the zero case: "0 removed" is a
+    #  measurement, "silence" is not, and the two were indistinguishable until now.
+    bar = '=' * 78
+    print('\n' + bar, flush=True)
+    print('DELISTED PRUNE (%s): %d of %d universe row(s) removed; vendor list carried %d '
+          'symbol(s).' % (tfilt, len(removed), n_before, len(delist)), flush=True)
+    if removed:
+        print('  REMOVED: %s' % ', '.join(removed), flush=True)
+    else:
+        print('  REMOVED: none -- no universe symbol appeared on the vendor list.',
+              flush=True)
+    #  THE LIMITATION, IN THE BANNER, EVERY TIME.  Keeping page-0-only is a separate
+    #  question (a full paginated `registry` is deferred Phase 2/3 -- the reasoning is in
+    #  `get_tickers`'s docstring, which is the caller that reaches this wrapper); what is
+    #  NOT deferred is that nobody may read this prune as complete.
+    print('  SCOPE: page=0 ONLY of a PAGINATED endpoint, so this prune is PARTIAL BY '
+          'CONSTRUCTION. Names delisted beyond page 0 are NOT removed here and will be '
+          'carried by the universe. Do not read a small count as "few delisted names".',
+          flush=True)
+    if _delist_fn:
+        print('  RECORD: %s (ships with output/)' % _delist_fn, flush=True)
+    print('  NOTE: this gate is UPSTREAM of Tickers_df, so the end-of-run reconciliation '
+          'residual is already post-prune and cannot verify it. This banner and the CSV '
+          'are the only evidence it behaved.', flush=True)
+    print(bar + '\n', flush=True)
 
     return df
 

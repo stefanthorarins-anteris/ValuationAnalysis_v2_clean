@@ -886,11 +886,20 @@ def calc_special(df,metstr,n,rpy=rp.DEFAULT_ROWS_PER_YEAR,guard=None):
 #  to change sign.  A row the guard refuses arrives at `stage1_veto` as NaN, so the ADMISSIBILITY
 #  DECISION LIVES IN THE COLUMN and no condition in `stage1_veto` can invert it.
 #
-#  NOT ON ANY EXISTING PANEL, AND THAT IS NOT FIXABLE OFFLINE.  `ebitda` and
-#  `cashAndCashEquivalents` were captured from the 2026-08-05 preReq change onward, so these
-#  columns can only be built by a fetch from that change on.  `stage1_veto.apply_veto` degrades
-#  the affected POOL to `applies=False` with `missing_columns` set rather than raising -- see
-#  `_STALE_PANEL_NOT_APPLICABLE`.  NOTHING HERE IS BACKTESTABLE.
+#  NOT ON ANY EXISTING PANEL -- BUT REBUILDABLE ON ONE (corrected 2026-08-09).  These four
+#  DERIVED columns are absent from every saved `BoMetric_df`, so `stage1_veto.apply_veto`
+#  degrades the affected POOL to `applies=False` with `missing_columns` set rather than raising
+#  (see `_STALE_PANEL_NOT_APPLICABLE`), and that is still exactly what a LIVE run on a stale
+#  panel does.
+#  WHAT WAS WRONG was the sentence that used to end this block: "NOTHING HERE IS BACKTESTABLE".
+#  The RAW INPUTS are a different question from the derived columns, and all six of them --
+#  `ebitda`, `cashAndCashEquivalents`, `netCashProvidedByOperatingActivities`,
+#  `totalStockholdersEquity`, `revenue`, `interestExpense` -- are present on the 2026-08-07
+#  CUR3K panel's `cdx_df` (verified 2026-08-09).  So an offline caller can rebuild these columns
+#  with THIS function and evaluate them; it was done, and the numbers are recorded at
+#  `stage1_veto.POOL_FLAGS['Mining']`.  A missing derived column is a REBUILD, not a re-fetch.
+#  Backtestable is not the same as shipped: the live path reads the columns off the panel and
+#  does not rebuild them, so the `applies=False` degradation above is unchanged.
 _VETO_KEYS = ('reitEbitdaInterestCoverage', 'producerEbitdaPositive',
               'cashRunwayOneYear', 'equityPositive')
 
