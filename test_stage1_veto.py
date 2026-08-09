@@ -89,8 +89,16 @@ def test_the_flag_ships_ON_and_the_scope_is_pinned_as_POOL_PLUS_FLAG_SET_PAIRS()
         #  unrealised revaluation gains inside net income).  What replaces them is the one
         #  solvency question a rent-collector answers.
         'REIT': ['reitEbitdaInterestCoverage'],
-        'Mining': ['CFOlessEarnings', 'cashRunwayOneYear', 'equityPositive',
-                   'producerEbitdaPositive', 'returnOnAssets', 'uInterestCoverage'],
+        #  THE THREE DESIGNED FLAGS ONLY (reverted 2026-08-08, CEO).  `returnOnAssets`,
+        #  `CFOlessEarnings` and `uInterestCoverage` were added by a dispatch brief, not by
+        #  the design, and MEASURED on the 2026-08-07 CUR3K panel those three ALONE eject
+        #  89 of 277 Basic-Materials sources (32.1%) -- returnOnAssets 80, uInterestCoverage
+        #  45, CFOlessEarnings 2 -- against a design predicting 22 of 218 for the whole set.
+        #  An exploration-stage miner has no earnings and no interest cover BY DEFINITION,
+        #  so those two are structurally undefined on the pre-production half of this
+        #  cohort: the REIT failure mode, reproduced.  The three that remain PARTITION the
+        #  cohort instead (producer / explorer / balance-sheet floor).
+        'Mining': ['cashRunwayOneYear', 'equityPositive', 'producerEbitdaPositive'],
         'FinManager': ['CFOlessEarnings', 'returnOnAssets', 'uInterestCoverage'],
         #  ONE flag: a bank that cannot earn on its own asset base fails at the only thing its
         #  asset base is for.  `ebitda / interestExpense` is deliberately NOT copied from REIT --

@@ -194,7 +194,91 @@ def check_price_sanity(row, price_col='price', mcap_col='marketCap',
     return True, None
 
 
-def filter_invalid_data(cdx_df, price_col='price', mcap_col='marketCap', 
+def guarded_row_pass(df, fn, banner_lines, verbose=True):
+    """Apply ONE row-removing pass so that the rows and their RECORD move together.
+
+    Returns `(df, records, removed_sources)` -- `df` unchanged and both lists empty if the
+    pass failed.
+
+    WHY THIS EXISTS (reviewer F-6, 2026-08-08).  PASS 0 and PASS 0b were each written as
+
+        try:
+            mask, records = <compute>
+            if mask.any():
+                df = df[~mask]          # <-- frame mutated
+                <verbose printing>      # <-- can raise
+        except Exception:
+            records = []                # <-- record destroyed, rows already gone
+
+    so anything raising AFTER the drop deleted rows while asserting that nothing had been
+    removed -- names leaving the universe with no artifact naming them, which is the exact
+    defect class this filter exists to make impossible.  (The faithful reproduction is a
+    PRINT that raises -- a Windows console-codepage failure, say -- because the verbose
+    printing was the only code between the mutation and the `except`.  Under the old shape
+    that gave `clean=8, removed=0`: ten rows gone, no record.)
+
+    TWO HALVES, AND BOTH ARE NOW ENFORCED RATHER THAN TRUSTED:
+
+      1. ORDERING.  `fn` runs inside the guard and only computes; the mutation happens
+         OUTSIDE the guard and only after the record is in hand; no printing happens
+         anywhere near either.  There is no ordering left for a future editor to get wrong.
+      2. COMPLETENESS (reviewer F-11, 2026-08-08).  The seam used to drop `mask.sum()` rows
+         and return whatever `fn` handed back, UNCHECKED -- so an `fn` returning
+         `(one_true_mask, [])` delivered F-6's exact harm THROUGH THE SEAM BUILT TO CLOSE
+         IT.  Neither shipped `fn` does that, but "atomic by construction" was only half
+         true while the record half was still by care.  A pass whose record does not cover
+         every row it masks is now REFUSED.
+
+    THE REFUSAL DIRECTION IS DELIBERATE.  On any violation the frame is returned UNCHANGED
+    and both lists empty: not removing rows is visible and recoverable (the names are still
+    there, and the banner says the pass did not apply), whereas removing them unrecorded is
+    invisible and permanent.  Availability loses to integrity here, which is the whole
+    point of F-6.
+
+    `fn(df)` must return `(row_mask, [record])`, must emit ONE record per masked row, and
+    must not mutate `df`.
+    """
+    try:
+        mask, records = fn(df)
+        records = list(records or [])
+    except Exception as e:
+        print("!" * 78, flush=True)
+        for line in banner_lines:
+            print(line % {'err': '%s: %s' % (type(e).__name__, e)}
+                  if '%(err)s' in line else line, flush=True)
+        print("!" * 78, flush=True)
+        return df, [], []
+
+    n_masked = 0 if (mask is None or not len(mask)) else int(mask.sum())
+
+    #  THE COMPLETENESS CHECK, BEFORE ANY ROW MOVES.  Checked in BOTH directions: records
+    #  without a mask is a record of a removal that never happened, which corrupts the
+    #  reconciliation just as surely as the reverse.
+    if len(records) != n_masked:
+        print("!" * 78, flush=True)
+        print("!!! A ROW-REMOVING PASS DID NOT RECORD WHAT IT REMOVED -- PASS REFUSED.",
+              flush=True)
+        print("!!!   rows masked for removal : %d" % n_masked, flush=True)
+        print("!!!   removal records returned: %d" % len(records), flush=True)
+        print("!!! Every removed row must carry a record, or names leave the universe with\n"
+              "!!! no artifact naming them and the reconciliation cannot balance. NOTHING\n"
+              "!!! was removed by this pass; the rows are STILL IN THE PANEL. Fix the pass\n"
+              "!!! -- do NOT relax this check.", flush=True)
+        for line in banner_lines:
+            if '%(err)s' not in line:
+                print(line, flush=True)
+        print("!" * 78, flush=True)
+        return df, [], []
+
+    if not n_masked:
+        return df, [], []
+
+    removed_sources = sorted(set(df.loc[mask, 'source'])) if 'source' in df.columns else []
+    df = df[~mask].reset_index(drop=True)
+    return df, records, removed_sources
+
+
+def filter_invalid_data(cdx_df, price_col='price', mcap_col='marketCap',
                         min_periods_required=8, verbose=True):
     """
     Filter out rows with clearly invalid/corrupted price data.
@@ -236,6 +320,13 @@ def filter_invalid_data(cdx_df, price_col='price', mcap_col='marketCap',
     # Sort by source and date for sequential checking
     df = df.sort_values(['source', 'date']).reset_index(drop=True)
 
+    # The source set AS IT ARRIVED, captured before PASS 0/0b drop rows from `df`.  The
+    # summary's "Tickers: Original / Removed entirely" lines are derived from this, not
+    # from the post-pass frame -- otherwise a source removed ENTIRELY by PASS 0b (the
+    # reporting-currency exclusion) would silently shrink the "Original" count and report
+    # itself as zero tickers removed.
+    sources_in = set(df['source']) if 'source' in df.columns else set()
+
     # =========================================================================
     # PASS 0: VENDOR-CONTAMINATION QUARANTINE  (vendor_contamination.py)
     # =========================================================================
@@ -262,32 +353,135 @@ def filter_invalid_data(cdx_df, price_col='price', mcap_col='marketCap',
     # real KRW straight through the window, so every market-cap-based sanity rule in this
     # module passes, and the 13x scale break at the boundary is an order of magnitude below
     # _MCAP_BREAK_RATIO (and is in the wrong field anyway).
-    quarantine_records = []
-    try:
+    #
+    # ATOMIC BY CONSTRUCTION (reviewer F-6, fixed 2026-08-08): `guarded_row_pass` computes
+    # the record inside the guard and mutates the frame outside it, so rows can never leave
+    # while their record is discarded.
+    #
+    # WHAT IS AND IS NOT NON-FATAL, STATED EXACTLY (reviewer F-12, 2026-08-08).  This comment
+    # used to say "LOUD, never silent, never fatal", which was true of the old shape and is
+    # now true of only HALF the code.  The line matters because it is read as a promise about
+    # a ~12-hour run, so it must not overstate:
+    #
+    #   * THE `fn` LIMB IS NON-FATAL.  A failure computing the mask or the records (a bad
+    #     rule, a missing module, an unreadable column) is caught, announced with the banner
+    #     below, and the run continues with the rows STILL PRESENT.  Same trade-off as the
+    #     primary-presence eject.
+    #   * EVERYTHING AFTER THE GUARD IS DELIBERATELY FATAL.  `sorted(set(...))` over the
+    #     `source` column, the drop itself, and the verbose print blocks below all sit
+    #     OUTSIDE any handler, and are genuinely fatal -- verified for a raising print (a
+    #     Windows console-codepage failure) and for `sorted()` on a mixed-type `source`
+    #     column.  THIS IS THE FIX, NOT AN OVERSIGHT: the print is exactly what used to
+    #     raise between the mutation and the `except` and silently discard the record, so
+    #     re-wrapping this region would walk F-6 straight back.  A crash here loses the run
+    #     and loses nothing else; the old behaviour lost ten rows and told nobody.
+    #     Integrity over availability, chosen on purpose.
+    def _quarantine(frame):
         import vendor_contamination as vc
-        q_mask, quarantine_records = vc.quarantine_records(
-            df, price_col=price_col, mcap_col=mcap_col)
-        if q_mask.any():
-            _q_src = sorted(set(df.loc[q_mask, 'source']))
-            df = df[~q_mask].reset_index(drop=True)
-            if verbose:
-                print("VENDOR-CONTAMINATION QUARANTINE: removed %d row(s) across %d "
-                      "source(s): %s" % (len(quarantine_records), len(_q_src),
-                                         ', '.join(_q_src)))
-                for _r in vc.QUARANTINE_RULES:
-                    if _r.source in _q_src:
-                        print("  %s" % _r.label())
-    except Exception as _qe:
-        # LOUD, never silent, never fatal: this sits on the critical path of a ~12-hour
-        # run, and the same trade-off is already made for the primary-presence eject below.
-        print("!" * 78, flush=True)
-        print("!!! VENDOR-CONTAMINATION QUARANTINE DID NOT RUN (%s: %s)."
-              % (type(_qe).__name__, _qe), flush=True)
-        print("!!! Known-contaminated vendor rows (another issuer's statements served\n"
-              "!!! under this ticker) are STILL IN THIS PANEL. The backtest reads the\n"
-              "!!! affected window. DO NOT treat this output as quarantined.", flush=True)
-        print("!" * 78, flush=True)
-        quarantine_records = []
+        return vc.quarantine_records(frame, price_col=price_col, mcap_col=mcap_col)
+
+    df, quarantine_records, _q_src = guarded_row_pass(
+        df, _quarantine,
+        ["!!! VENDOR-CONTAMINATION QUARANTINE DID NOT RUN (%(err)s).",
+         "!!! Known-contaminated vendor rows (another issuer's statements served\n"
+         "!!! under this ticker) are STILL IN THIS PANEL. The backtest reads the\n"
+         "!!! affected window. DO NOT treat this output as quarantined."],
+        verbose=verbose)
+
+    if verbose and _q_src:
+        import vendor_contamination as _vc_p
+        print("VENDOR-CONTAMINATION QUARANTINE: removed %d row(s) across %d "
+              "source(s): %s" % (len(quarantine_records), len(_q_src),
+                                 ', '.join(_q_src)))
+        for _r in _vc_p.QUARANTINE_RULES:
+            if _r.source in _q_src:
+                print("  %s" % _r.label())
+
+    # =========================================================================
+    # PASS 0b: REPORTING-CURRENCY EXCLUSION  (currency_exclusions.py)
+    # =========================================================================
+    # NAMED, DATED, EVIDENCED reporting currencies whose STATEMENTS are refused outright.
+    # Today that is `ARS`, on three grounds stated in full in `currency_exclusions`: this
+    # vendor is wrong on ARS by three orders of magnitude on BMA in this very panel; no ARS
+    # name can be valued in USD at all (no admitted rate, so no band and a NEUTRAL size
+    # tilt); and separating a correctly IAS 29-restated series from a mishandled one needs
+    # a per-name audit this codebase does not do.
+    #
+    # WHY IT IS AN EXCLUSION AND NOT THE FX ABSTENTION IT REPLACES (CEO, 2026-08-08).
+    # `fx_rates.ABSTAIN_CURRENCIES` refuses the ARS->USD rate and KEEPS the name, scored
+    # neutral on the size tilt.  That fixes the CURRENCY.  On BMA the statements themselves
+    # are wrong by three orders of magnitude, so every metric downstream of them is
+    # contaminated -- and the name goes on feeding the cross-sectional medians that every
+    # mean-relative Stage-1 test scores every OTHER company against.  The abstention is kept
+    # as the backstop for paths that never reach this filter (see the concrete list in
+    # `currency_exclusions`: `getData_fmp` converts on the RAW panel before this filter runs,
+    # and four `baseline_tools` entry points never import `data_quality` at all).
+    #
+    # SOURCE-SCOPED, so the whole name leaves -- which is also what keeps the universe
+    # reconciliation balanced: an entirely-removed source drops out of the panel and lands
+    # in `removed_df`, so `resolved == panel + failed + removed + residual` still holds.
+    # (See apply_data_quality_filter, where the removed-source counter is derived from the
+    # sources that actually LEFT rather than from every source with a removed row.)
+    #
+    # WHY IT RUNS HERE, CORRECTED (reviewer F-3, 2026-08-08).  This block used to claim
+    # PASS 0's rationale -- "an ARS row would otherwise be the adjacent preceding row for
+    # the market-cap step check".  THAT MECHANISM CANNOT OPERATE HERE: PASS 1 keys both of
+    # its baselines (`prev_data`, `prev_row`) strictly PER SOURCE, and 0b removes the source
+    # ENTIRELY, so no ARS row is ever adjacent to another name's row.  The rationale was
+    # copied and was wrong.
+    # THE ORDER IS STILL RIGHT, for a different and checkable reason: if an excluded source
+    # also trips an arithmetic check, PASS 2/3 would record `data_before_corruption` rows
+    # for rows PASS 0b has already recorded as `currency_excluded` -- the same rows logged
+    # twice under two different reasons, inflating `n_dq_removed_rows` and making the
+    # transparency CSV self-contradictory about why a name left.  Running the exclusion
+    # first makes those rows absent from `df` before PASS 1 ever iterates.
+    #
+    # A PANEL WITHOUT `reportedCurrency` CANNOT BE FILTERED THIS WAY, and that fact now
+    # reaches an ARTIFACT, not just the console (reviewer F-5): `verbose=False` callers used
+    # to lose it entirely.
+    #
+    # ATOMICITY: the same `guarded_row_pass` seam as PASS 0 -- see its docstring, and see
+    # PASS 0's note on exactly which half is non-fatal.  Same split here: the `fn` limb is
+    # caught and announced; the drop and the verbose block below are deliberately fatal.
+    _cx_status = []
+    try:
+        import currency_exclusions as cx
+        _cx_status = cx.status_rows(df)
+    except Exception as _se:
+        _cx_status = [{'status': 'ERROR', 'currency': '', 'source': '',
+                       'n_rows_in_currency': '', 'n_rows_total': '', 'minority_label': '',
+                       'watched_currencies': '',
+                       'note': '%s: %s' % (type(_se).__name__, _se)}]
+
+    def _currency_exclude(frame):
+        import currency_exclusions as _cx
+        return _cx.exclusion_records(frame, price_col=price_col, mcap_col=mcap_col)
+
+    df, currency_excl_records, _c_src = guarded_row_pass(
+        df, _currency_exclude,
+        ["!!! REPORTING-CURRENCY EXCLUSION DID NOT RUN (%(err)s).",
+         "!!! Names reporting in a currency whose STATEMENTS this pipeline refuses\n"
+         "!!! (ARS) are STILL IN THIS PANEL and are being scored. DO NOT treat this\n"
+         "!!! output as currency-filtered."],
+        verbose=verbose)
+
+    if verbose:
+        if _c_src:
+            print("REPORTING-CURRENCY EXCLUSION: removed %d source(s) entirely "
+                  "(%d row(s)): %s"
+                  % (len(_c_src), len(currency_excl_records), ', '.join(_c_src)))
+            for _row in _cx_status:
+                if _row.get('status') == 'EXCLUDED':
+                    print("  %s: %s on %s/%s rows%s"
+                          % (_row['source'], _row['currency'],
+                             _row['n_rows_in_currency'], _row['n_rows_total'],
+                             '  <-- MINORITY LABEL, possible stray vendor value'
+                             if _row.get('minority_label') else ''))
+        elif _cx_status and _cx_status[0].get('status') == 'NOT_APPLIED':
+            print("REPORTING-CURRENCY EXCLUSION: NOT APPLIED -- %s. Watched currencies "
+                  "(%s) are still present in this frame if it contains any."
+                  % (_cx_status[0].get('note', ''),
+                     _cx_status[0].get('watched_currencies', '')))
 
     # =========================================================================
     # PASS 1: Identify all corrupt data points
@@ -358,7 +552,10 @@ def filter_invalid_data(cdx_df, price_col='price', mcap_col='marketCap',
     # `n_dq_removed_*` counters the universe reconciliation balances against.  Dropping
     # them here would delete the rows while asserting nothing had been removed, which is
     # precisely the accumulate-never-assign defect fixed on 2026-08-07 further down.
-    removal_records = list(quarantine_records)
+    # PASS 0b joins it for the identical reason: an excluded name that left the panel
+    # without a row in `removed_df` would be a name that vanished with no artifact naming
+    # it, and it would break the universe reconciliation on the way out.
+    removal_records = list(quarantine_records) + list(currency_excl_records)
     rows_to_remove = set()
 
     for idx, row in df.iterrows():
@@ -480,14 +677,24 @@ def filter_invalid_data(cdx_df, price_col='price', mcap_col='marketCap',
 
     removed_df = pd.DataFrame(removal_records)
 
+    # The PASS 0b status rides out on the frame's `attrs` (the same channel the Stage-2
+    # frames use to declare their basis) so that `apply_data_quality_filter` -- which is
+    # where this module is allowed to touch the filesystem -- can write it to
+    # `output/CurrencyExclusionStatus_<date>.csv`.  A pure filter must not write files;
+    # a status that only exists in a console line is the asymmetry F-5 is about.
+    try:
+        removed_df.attrs['currency_exclusion_status'] = list(_cx_status)
+    except Exception:
+        pass
+
     # =========================================================================
     # Summary
     # =========================================================================
     if verbose:
-        # n_total counts the frame AS IT ARRIVED (pass 0 has already dropped its rows from
-        # `df`), so the removed-percentage stays honest rather than quietly excluding the
-        # quarantine from its own denominator.
-        n_total = len(df) + len(quarantine_records)
+        # n_total counts the frame AS IT ARRIVED (passes 0 and 0b have already dropped
+        # their rows from `df`), so the removed-percentage stays honest rather than quietly
+        # excluding them from their own denominator.
+        n_total = len(df) + len(quarantine_records) + len(currency_excl_records)
         n_removed = len(removal_records)
         n_kept = len(filtered_df)
         
@@ -509,8 +716,9 @@ def filter_invalid_data(cdx_df, price_col='price', mcap_col='marketCap',
             for reason, count in reason_counts.items():
                 print(f"  {reason.strip()}: {count:,}")
         
-        # Tickers removed entirely
-        original_tickers = df['source'].nunique()
+        # Tickers removed entirely -- measured against the ARRIVING source set, so the
+        # PASS 0b exclusions are counted rather than erased from their own denominator.
+        original_tickers = len(sources_in)
         remaining_tickers = filtered_df['source'].nunique()
         removed_tickers = original_tickers - remaining_tickers
         
@@ -529,34 +737,60 @@ def filter_invalid_data(cdx_df, price_col='price', mcap_col='marketCap',
     return filtered_df, removed_df
 
 
-def save_removed_data(removed_df, filename=None):
+def run_identifier(dmdic):
+    """A short string identifying the RUN a removal record came from.
+
+    Reviewer F-9: `removed_data_quality_*.csv` carried a timestamp and nothing else, so a
+    file could not be tied to the run that produced it -- and this directory now receives
+    removal records from the pipeline AND from a standalone `backtest_unified` invocation,
+    which are not the same thing.  Built from the stamps the run already carries
+    (`universes.provenance` -> configdic -> dmdic); never re-derived, never guessed, and
+    explicitly `unknown-unstamped-run` when the panel predates stamping."""
+    if not isinstance(dmdic, dict):
+        return 'unknown-unstamped-run'
+    universe = dmdic.get('universe') or dmdic.get('tickerfilter')
+    fingerprint = dmdic.get('universe_fingerprint')
+    if not universe and not fingerprint:
+        return 'unknown-unstamped-run'
+    return '%s@%s' % (universe or 'unknown', fingerprint or 'unstamped')
+
+
+def save_removed_data(removed_df, filename=None, run_id=''):
     """
     Save removed data to CSV for transparency.
-    
+
     Parameters:
     -----------
     removed_df : DataFrame
         DataFrame of removed rows from filter_invalid_data()
     filename : str, optional
         Custom filename. Default: removed_data_quality_YYYYMMDD.csv
+    run_id : str, optional
+        Run identifier stamped into every row (see run_identifier).
     """
     if removed_df is None or removed_df.empty:
         return None
-    
+
     if filename is None:
         date_str = datetime.now().strftime('%Y%m%d_%H%M%S')
         filename = f"removed_data_quality_{date_str}.csv"
-    
+
     # Ensure output directory exists
     output_dir = 'output'
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
-    
+
+    #  The run stamp goes in as the FIRST column, on a copy -- the caller's frame is not
+    #  mutated by having been logged.
+    out = removed_df.copy()
+    if 'run_id' not in out.columns:
+        out.insert(0, 'run_id', run_id or 'unknown-unstamped-run')
+
     filepath = os.path.join(output_dir, filename)
-    removed_df.to_csv(filepath, index=False)
-    
+    out.to_csv(filepath, index=False)
+
     print(f"Removed data logged to: {filepath}")
-    
+
     return filepath
 
 
@@ -592,22 +826,40 @@ def apply_data_quality_filter(dmdic, verbose=True, save_log=True):
         verbose=verbose
     )
     
+    _run_id = run_identifier(dmdic)
+
     # Get list of affected sources (for filtering BoMetric_df consistently)
     if not removed_cdx.empty:
         # Get sources that had ALL their data removed (completely invalid)
         sources_in_clean = set(clean_cdx['source'].unique())
         sources_original = set(dmdic['cdx_df']['source'].unique())
         completely_removed = sources_original - sources_in_clean
-        
+
         if verbose and len(completely_removed) > 0:
             print(f"Tickers completely removed (all data invalid): {len(completely_removed)}")
             if len(completely_removed) <= 20:
                 print(f"  {list(completely_removed)}")
-        
+
         # Save log
         if save_log:
-            save_removed_data(removed_cdx)
-    
+            save_removed_data(removed_cdx, run_id=_run_id)
+
+    # THE REPORTING-CURRENCY STATUS SHIPS ON EVERY PASS, INCLUDING THE PASSES WHERE THE
+    # RULE COULD NOT RUN (reviewer F-5).  It is written OUTSIDE the `if not removed_cdx.
+    # empty` block above on purpose: the case this exists to record -- a panel with no
+    # `reportedCurrency` column -- removes nothing, so gating it on a non-empty removal
+    # frame would drop exactly the fact it is meant to carry.
+    if save_log:
+        try:
+            import currency_exclusions as _cx_w
+            _status = (removed_cdx.attrs.get('currency_exclusion_status')
+                       if hasattr(removed_cdx, 'attrs') else None)
+            if _status:
+                _cx_w.write_status(_status, run_id=_run_id)
+        except Exception as _we:
+            if verbose:
+                print(f"[data_quality] WARNING: currency-exclusion status not written: {_we}")
+
     # Update dictionary
     dmdic['cdx_df'] = clean_cdx
     #
@@ -634,31 +886,78 @@ def apply_data_quality_filter(dmdic, verbose=True, save_log=True):
 
     # Scalar counters stamped at the SAME site as the frame, so the reconciliation
     # 3140 - 445 - n_dq_removed_sources == 2613 can be checked straight off the
-    # pickle without re-deriving anything.  `_dq_source_col` is resolved defensively:
+    # pickle without re-deriving anything.  `_src_col` is resolved defensively:
     # the removed frame carries the source identifier under whichever column this
     # pipeline version uses, and a counter that raises would be worse than one that
     # reports None.
+    #
+    # `n_dq_removed_sources` COUNTS THE SOURCES THAT ACTUALLY LEFT (fixed 2026-08-08).
+    #
+    # It used to count every source with ANY removed row -- a different quantity the moment
+    # a removal is PARTIAL.  `Sbocker.print_universe_reconciliation` balances
+    #
+    #     resolved == panel + fetch_failures + filter_removals + residual
+    #
+    # and that identity is about names LEAVING THE UNIVERSE.  A partially-removed source is
+    # in the panel AND in the removed frame, so counting it here subtracts it twice and
+    # drives the residual NEGATIVE.
+    #
+    # MEASURED on the 2026-08-07 CUR3K panel under the current tree: the old definition
+    # counts **108** sources against a true **84**, i.e. residual **-24**, and fires the
+    # "UNIVERSE DOES NOT RECONCILE -- 24 name(s) UNACCOUNTED FOR" banner on a run that
+    # reconciles perfectly.  A reconciliation that cries wolf is worse than none, because
+    # the next REAL residual is then read as the same known noise.
+    #
+    # THE MISCOUNT IS NOT A QUARANTINE ARTEFACT AND LONG PREDATES IT (corrected 2026-08-08,
+    # reviewer F-2; an earlier version of this comment said "83 against a true 82" and
+    # blamed 817df52 -- both wrong, and the wrong attribution was relayed upward).  Of the
+    # 24 partially-removed sources, **23 are ordinary `data_before_corruption` PASS-3
+    # trims** -- a source loses its pre-corruption rows and survives with the rest -- and
+    # only **1** is the `058820.KQ` quarantine.  PASS 3 has behaved this way for as long as
+    # it has existed, so the counter has been wrong on every panel with any partial trim;
+    # the quarantine merely added a 24th case.  What actually kept it invisible until now is
+    # the accumulate-never-assign bug fixed on 2026-08-07, which destroyed the removal frame
+    # before anything could count it.
+    #
+    # Partial removals are NOT swept under the rug -- they get their own counter and list
+    # below.  They are real removals with real evidence in the transparency CSV; they are
+    # simply not universe EXITS, which is the only thing the identity is about.
     try:
         _rem = dmdic.get('removed_data_quality')
+        _panel_srcs = set()
+        _clean = dmdic.get('cdx_df')
+        if _clean is not None and len(_clean) and 'source' in _clean.columns:
+            _panel_srcs = set(_clean['source'].dropna().tolist())
         if _rem is not None and len(_rem) > 0:
             _src_col = next((c for c in ('source', 'symbol', 'ticker', 'source_id')
                              if c in _rem.columns), None)
             dmdic['n_dq_removed_rows'] = int(len(_rem))
             if _src_col:
-                _srcs = sorted(set(_rem[_src_col].dropna().tolist()))
-                dmdic['n_dq_removed_sources'] = len(_srcs)
-                dmdic['dq_removed_source_list'] = _srcs
+                _touched = set(_rem[_src_col].dropna().tolist())
+                _gone = sorted(_touched - _panel_srcs)
+                _partial = sorted(_touched & _panel_srcs)
+                dmdic['n_dq_removed_sources'] = len(_gone)
+                dmdic['dq_removed_source_list'] = _gone
+                dmdic['n_dq_partially_removed_sources'] = len(_partial)
+                dmdic['dq_partially_removed_source_list'] = _partial
             else:
                 dmdic['n_dq_removed_sources'] = None
                 dmdic['dq_removed_source_list'] = []
+                dmdic['n_dq_partially_removed_sources'] = None
+                dmdic['dq_partially_removed_source_list'] = []
         else:
             dmdic['n_dq_removed_rows'] = 0
             dmdic['n_dq_removed_sources'] = 0
             dmdic['dq_removed_source_list'] = []
+            dmdic['n_dq_partially_removed_sources'] = 0
+            dmdic['dq_partially_removed_source_list'] = []
         if verbose:
             print(f"[data_quality] cumulative removals this run: "
-                  f"{dmdic.get('n_dq_removed_sources')} source(s), "
-                  f"{dmdic.get('n_dq_removed_rows')} row(s) "
+                  f"{dmdic.get('n_dq_removed_sources')} source(s) removed ENTIRELY "
+                  f"(the universe-reconciliation figure), "
+                  f"{dmdic.get('n_dq_partially_removed_sources')} source(s) PARTIALLY "
+                  f"trimmed and still in the panel, "
+                  f"{dmdic.get('n_dq_removed_rows')} row(s) total "
                   f"(accumulated across all filter passes)")
     except Exception as _e:
         if verbose:

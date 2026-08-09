@@ -1050,7 +1050,45 @@ def run_all(dmdic=None, loadfname=None, buy_years=None, eval_years_list=None,
         
         load_dic = {'loadBoMetric': 1, 'loadBoMetricfname': loadfname}
         dmdic = utils.loadWrapper('metric', load_dic)
-    
+
+        # THE QUALITY FILTER RUNS ON THE LOAD PATH (2026-08-08).  A saved panel is RAW
+        # with respect to every data-side rule added after it was written, and this
+        # module's own CLI is the reason two of them exist:
+        #
+        #   * the `058820.KQ` quarantine was justified by "Stage-1 is untouched; the
+        #     BACKTEST IS hit, since backtest_unified defaults to --buy_years
+        #     2020,2021,2022" -- i.e. by THIS entry point, which never applied it;
+        #   * the ARS reporting-currency exclusion removes names whose statements are
+        #     wrong by three orders of magnitude, and the backtest scores statements.
+        #
+        # Without this, `python backtest_unified.py --loadfname <panel>` scored exactly the
+        # contaminated rows the quarantine was written to remove, and a re-run "against the
+        # current tree" would silently reproduce the stale result it was meant to replace.
+        # The pipeline path is unaffected: Sbocker filters before calling run_all (both on
+        # the fetch path and after -loadbometric), and the filter is idempotent by
+        # construction, so this only ever bites the standalone path.  It is applied ONLY
+        # here, inside `if dmdic is None`, so an in-pipeline caller is not re-filtered.
+        #
+        # Guarded, never fatal: a backtest that cannot run at all is worse than one that
+        # runs unfiltered -- but an unfiltered one must SAY SO.
+        # `save_log=True` on purpose.  A backtest whose numbers depend on what was removed
+        # must leave an on-disk record of what it removed -- `output/removed_data_quality_
+        # <timestamp>.csv`, the same channel the pipeline uses.  The alternative (console
+        # only) is exactly the class of decision-without-an-artifact this project has been
+        # digging out of.  The file is timestamped, so it cannot collide with a pipeline
+        # run's; it also cannot be attributed to one, which is the accepted cost.
+        try:
+            import data_quality as _dq
+            dmdic = _dq.apply_data_quality_filter(dmdic, verbose=verbose, save_log=True)
+        except Exception as _dqe:
+            print('!' * 78, flush=True)
+            print('!!! DATA-QUALITY FILTER DID NOT RUN ON THE LOADED PANEL (%s: %s).'
+                  % (type(_dqe).__name__, _dqe), flush=True)
+            print('!!! This backtest is scoring the RAW saved panel: known vendor-\n'
+                  '!!! contaminated windows and excluded reporting currencies are STILL\n'
+                  '!!! IN IT. DO NOT read these numbers as a filtered result.', flush=True)
+            print('!' * 78, flush=True)
+
     # Ensure dates are datetime
     dmdic['BoMetric_df']['date'] = pd.to_datetime(dmdic['BoMetric_df']['date'])
     dmdic['cdx_df']['date'] = pd.to_datetime(dmdic['cdx_df']['date'])
@@ -1212,7 +1250,20 @@ def run_all(dmdic=None, loadfname=None, buy_years=None, eval_years_list=None,
     
     # Save all outputs using the new output module
     if save_results and HAS_OUTPUT_MODULE:
-        output_folder = bt_out.save_all_outputs(all_results, verbose=verbose)
+        # THE PICKS TABLE IS JOINED BY UNIVERSE FINGERPRINT, NOT BY FILENAME SORT
+        # (2026-08-08).  Without this stamp `save_all_outputs` refuses to write
+        # `stock_picks.csv` at all -- which is correct: it used to grab the
+        # alphabetically-last `postRank_*.pickle` in the working directory and, on the
+        # 2026-08-08 run, published picks from the 126-name TEST universe beside returns
+        # computed on the 2,613-source CUR3K panel.
+        import os as _os
+        _panel_stamp = {
+            'universe': dmdic.get('universe') or dmdic.get('tickerfilter'),
+            'universe_fingerprint': dmdic.get('universe_fingerprint'),
+            'dir': _os.path.dirname(loadfname) if loadfname else '',
+        }
+        output_folder = bt_out.save_all_outputs(all_results, verbose=verbose,
+                                                panel_stamp=_panel_stamp)
         all_results['output_folder'] = output_folder
     elif save_results:
         # Fallback: save simple CSVs if output module not available

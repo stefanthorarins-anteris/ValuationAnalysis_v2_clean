@@ -215,9 +215,26 @@ ADDED_CURRENCIES = ('PEN', 'MAD')
 #
 #  Supplying a CORRECT ARS rate would make this ACTIVELY WORSE, not better: BMA would then
 #  score as a confidently-measured $4.9B bank sitting on top of numbers that are wrong by
-#  1000x.  An unknown currency keeps the name in the universe, scores it NEUTRAL on the size
-#  metric and never lets an absolute USD edge act on it -- which is the correct treatment of
-#  data we do not trust.  DO NOT "fix" this by adding 'ARS' to FX_TO_USD.
+#  1000x.  DO NOT "fix" this by adding 'ARS' to FX_TO_USD.
+#
+#  THE ABSTENTION IS NO LONGER THE PRIMARY TREATMENT (CEO, 2026-08-08).  It was, and it was
+#  ruled INSUFFICIENT: abstaining fixes only the CURRENCY, so the name stayed in the
+#  universe and every metric downstream of those broken statements kept being scored -- and
+#  kept feeding the cross-sectional medians every other company is scored against.  ARS
+#  reporters are now EXCLUDED FROM THE UNIVERSE by `currency_exclusions.EXCLUDED_CURRENCIES`,
+#  applied in data_quality.filter_invalid_data (PASS 0b), with the evidence attached there.
+#
+#  THIS ENTRY IS STILL LOAD-BEARING AND MUST NOT BE DELETED AS REDUNDANT, and the paths are
+#  named rather than hand-waved:
+#    * `getData_fmp` materialises `cdx_df['marketCap_usd']` via `carveOut.
+#      marketcap_usd_series` on the RAW fetched panel -- INSIDE the main pipeline, BEFORE
+#      `Sbocker` calls the quality filter.  On every full fetch the ARS names are converted
+#      before they are excluded, and this abstention is what makes that conversion NaN
+#      instead of a confident USD number on 1000x-wrong assets.
+#    * `baseline_tools/depth_horizon_grid.py`, `tune_run.py`, `pipeline_analysis.py` and
+#      `stage2_pit.py` reach carveOut's conversions and never import `data_quality` at all.
+#  Exclusion is the primary rule; this is the backstop for the paths that bypass it.
+#  Removing either one alone leaves a live hole.
 ABSTAIN_CURRENCIES = {'ARS': ('statement data broken (IAS 29 restatement noise or vendor '
                               'defect): BMA totalAssets 2.32e16 between 2.06e13 and '
                               '2.42e13 = 960x break; revenue 1.2e9 between 1.44e12 and '

@@ -1392,17 +1392,122 @@ def generate_html_report(output_folder, results_dict, stock_picks_df=None, ols_r
     return path
 
 
-def save_all_outputs(results_dict, verbose=True):
+#  --------------------------------------------------------------------------------- #
+#  THE PICKS TABLE MUST DESCRIBE THE UNIVERSE THAT WAS ACTUALLY GRADED                #
+#  --------------------------------------------------------------------------------- #
+#  THE DEFECT (found 2026-08-08, fixed here).  This module used to pick its postRank with
+#
+#      postrank_files = glob.glob('postRank_*.pickle'); postrank_files.sort(reverse=True)
+#
+#  i.e. the alphabetically-last FILENAME in the working directory.  On the 2026-08-08 run
+#  that selected `postRank_2026-08-04_fmp_stock_TEST1.pickle` -- the **126-name curated TEST
+#  universe**, whose own provenance note says "POOL-RELATIVE OUTPUT IS MEANINGLESS HERE...
+#  never to read a pick" -- while the scenarios were being graded on the **2,613-source
+#  CUR3K panel**.  `stock_picks.csv` and the HTML report therefore showed picks from one
+#  universe beside returns computed on another, with nothing saying so.
+#
+#  IT IS THE SAME CLASS AS THE BUG ALREADY FIXED IN `verify_test_universe.newest_panel()`
+#  (a filename sort choosing a curated test panel over the production one, because 'T' > 'N').
+#  Fixing it by date would NOT have been enough here either: 2026-08-04 TEST1 was genuinely
+#  the newest artifact in the working directory.  The question is not "which is newest" but
+#  "which belongs to THIS panel", and the repo already stamps the answer.
+#
+#  THE RULE: match on `universe_fingerprint` -- the stamp built for exactly this purpose
+#  ("match on fingerprint, not name", 2026-08-02) -- or REFUSE and write a note saying why.
+#  A missing picks table is a visible absence; a wrong one is an invisible error.
+def select_postrank_for_panel(panel_stamp, search_dirs=None, verbose=True):
+    """(postrank_df, path, note) for the postRank belonging to the SAME RUN as the panel
+    being graded, or (None, None, reason) when that cannot be established.
+
+    `panel_stamp` is `{'universe':, 'universe_fingerprint':, 'dir':}` describing the panel
+    the scenarios were scored on.  `dir` (the directory the panel pickle was loaded from) is
+    searched alongside the working directory, because a run's artifacts live together --
+    the CUR3K postRank sits in `panels_2026-08-07/` next to its panel, where the old
+    working-directory-only glob could not see it at all.
+    """
+    import glob as _glob
+
+    stamp = panel_stamp or {}
+    want = stamp.get('universe_fingerprint')
+    if not want:
+        return None, None, (
+            'the graded panel carries NO universe_fingerprint (it predates the 2026-08-02 '
+            'stamp), so no postRank can be MATCHED to it -- refusing rather than guessing')
+
+    dirs = list(search_dirs or [])
+    if not dirs:
+        dirs = ['.']
+        if stamp.get('dir'):
+            dirs.append(stamp['dir'])
+
+    seen, candidates = set(), []
+    for d in dirs:
+        for path in _glob.glob(os.path.join(d, 'postRank_*.pickle')):
+            key = os.path.abspath(path)
+            if key in seen:
+                continue
+            seen.add(key)
+            try:
+                data = pd.read_pickle(path)
+            except Exception:
+                continue
+            if not isinstance(data, dict):
+                continue
+            candidates.append((path, data.get('universe_fingerprint'),
+                               data.get('universe'), data.get('postRank')))
+
+    for path, fp, uni, frame in candidates:
+        if fp and fp == want and frame is not None and len(frame):
+            return frame, path, 'universe_fingerprint %s matched' % want
+
+    others = ', '.join('%s(%s/%s)' % (os.path.basename(p), u or '?', f or 'unstamped')
+                       for p, f, u, _fr in candidates) or 'none found'
+    reason = (
+        'NO postRank matches the graded panel (%s / fingerprint %s). Candidates: %s. '
+        'Refusing to publish a picks table from a DIFFERENT universe than the one these '
+        'returns were computed on.' % (stamp.get('universe', '?'), want, others))
+    if verbose:
+        bar = '!' * 78
+        print('\n' + bar)
+        print('!!! STOCK-PICKS TABLE NOT WRITTEN -- no postRank belongs to this panel.')
+        print('!!! %s' % reason)
+        print('!!! The scenario/cohort/OLS results above are UNAFFECTED: they are computed')
+        print('!!! from the panel itself. Only the picks table needs a postRank.')
+        print(bar + '\n', flush=True)
+    return None, None, reason
+
+
+def _write_picks_refusal(output_folder, reason, verbose=True):
+    """Record the refusal IN THE OUTPUT FOLDER.  An absent `stock_picks.csv` and a picks
+    table that was never attempted look identical on disk otherwise, and this run folder is
+    the only artifact a later reader has."""
+    try:
+        path = os.path.join(output_folder, 'data', 'stock_picks_NOT_WRITTEN.txt')
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, 'w', encoding='utf-8') as fh:
+            fh.write('stock_picks.csv was deliberately NOT written.\n\n%s\n' % reason)
+        if verbose:
+            print('  - %s' % os.path.basename(path))
+        return path
+    except Exception:
+        return None
+
+
+def save_all_outputs(results_dict, verbose=True, panel_stamp=None):
     """
     Main function to save all outputs from a backtest run.
-    
+
     Parameters:
     -----------
     results_dict : dict
         Dictionary with keys: 'summary', 'scenarios', 'ols_analysis', 'postrank_ols', 'top100_ols'
     verbose : bool
         Print progress
-        
+    panel_stamp : dict, optional
+        `{'universe':, 'universe_fingerprint':, 'dir':}` for the panel these results were
+        computed on.  Without it the stock-picks table is REFUSED rather than joined
+        against whatever postRank happens to sort last -- see select_postrank_for_panel.
+
     Returns:
     --------
     str : Path to the output folder
@@ -1572,31 +1677,28 @@ def save_all_outputs(results_dict, verbose=True):
     # Load postRank data for stock picks
     stock_picks_df = None
     ols_reranked_df = None
-    
+
     try:
-        import glob
-        postrank_files = glob.glob('postRank_*.pickle')
-        if postrank_files:
-            postrank_files.sort(reverse=True)
-            postrank_data = pd.read_pickle(postrank_files[0])
-            postrank_df = postrank_data.get('postRank', pd.DataFrame())
-            
-            if not postrank_df.empty:
-                if verbose:
-                    print(f"\nLoaded postRank: {postrank_files[0]}")
-                
-                # Compute OLS-weighted ranking if we have top100 coefficients
-                if 'top100_ols' in results_dict and results_dict['top100_ols'] is not None:
-                    coefficients = results_dict['top100_ols'].get('coefficients')
-                    if coefficients is not None:
-                        ols_reranked_df = compute_ols_weighted_ranking(postrank_df, coefficients)
-                        if ols_reranked_df is not None and verbose:
-                            print("  - Computed OLS-weighted re-ranking")
-                
-                # Save stock picks
-                stock_picks_df = save_stock_picks(output_folder, postrank_df, ols_reranked_df)
-                if stock_picks_df is not None and verbose:
-                    print("  - Saved stock picks CSV")
+        postrank_df, _pr_path, _pr_note = select_postrank_for_panel(
+            panel_stamp, verbose=verbose)
+        if postrank_df is not None and not postrank_df.empty:
+            if verbose:
+                print(f"\nLoaded postRank: {_pr_path}  [{_pr_note}]")
+
+            # Compute OLS-weighted ranking if we have top100 coefficients
+            if 'top100_ols' in results_dict and results_dict['top100_ols'] is not None:
+                coefficients = results_dict['top100_ols'].get('coefficients')
+                if coefficients is not None:
+                    ols_reranked_df = compute_ols_weighted_ranking(postrank_df, coefficients)
+                    if ols_reranked_df is not None and verbose:
+                        print("  - Computed OLS-weighted re-ranking")
+
+            # Save stock picks
+            stock_picks_df = save_stock_picks(output_folder, postrank_df, ols_reranked_df)
+            if stock_picks_df is not None and verbose:
+                print("  - Saved stock picks CSV")
+        else:
+            _write_picks_refusal(output_folder, _pr_note, verbose=verbose)
     except Exception as e:
         if verbose:
             print(f"  - Warning: Could not load postRank: {e}")

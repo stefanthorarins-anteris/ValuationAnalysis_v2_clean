@@ -333,7 +333,15 @@ def print_universe_reconciliation(datandmetricdic, getfunddic, verbose=True):
                             if c in cdx.columns), None)
             n_panel = int(cdx[src_col].nunique()) if src_col else int(len(cdx))
 
+        # ENTIRELY-removed sources only.  A PARTIAL removal (the 058820.KQ quarantine
+        # window, a pre-corruption row trim) leaves the name in the panel, so counting it
+        # here would subtract it twice and manufacture a negative residual -- see the
+        # counter's derivation in data_quality.apply_data_quality_filter.  The partial
+        # count travels beside it in `n_dq_partially_removed_sources` and is reported
+        # below, because "trimmed but kept" is a fact worth seeing, just not a universe
+        # exit.
         n_removed = datandmetricdic.get('n_dq_removed_sources')
+        n_partial = datandmetricdic.get('n_dq_partially_removed_sources')
 
         if resolved is None or n_panel is None:
             if verbose:
@@ -350,9 +358,13 @@ def print_universe_reconciliation(datandmetricdic, getfunddic, verbose=True):
         datandmetricdic['reconcile_filter_removals'] = n_removed
         datandmetricdic['reconcile_residual'] = residual
 
+        datandmetricdic['reconcile_partial_removals'] = n_partial
+
         if verbose:
             print(f'[reconcile] universe {resolved} = panel {n_panel} + fetch-failed '
-                  f'{n_failed} + filter-removed {n_removed} + residual {residual}',
+                  f'{n_failed} + filter-removed {n_removed} + residual {residual}'
+                  f'  (plus {n_partial} source(s) partially trimmed and KEPT -- not a '
+                  f'universe exit, so not in the identity)',
                   flush=True)
             if residual != 0:
                 bar = '!' * 78

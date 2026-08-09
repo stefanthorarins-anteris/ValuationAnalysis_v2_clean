@@ -193,7 +193,10 @@ than twelve months for one filer and six for another.
 
 WHAT THE COHORT FLAGS COST TODAY, STATED PLAINLY: FinManager ejects 2 of 52 and one of them
 (`PREVA.AS`) IS IN THE CURRENT TOP-25 -- this change moves a shipped list.  BalanceSheetFin
-ejects 3 of 125 (two shells and MBIA in runoff), REIT 2 of 67, Mining 22 of 218; none of those
+ejects 3 of 125 (two shells and MBIA in runoff), REIT 2 of 67, Mining 22 of 218 (the DESIGNED
+three-flag set -- see the 2026-08-08 revert note in `POOL_FLAGS['Mining']`; this figure is a
+PREDICTION and is not verifiable on any saved panel, because no saved panel carries those three
+columns); none of those
 three touch a top-25.
 
 THE FOUR NEW PANEL COLUMNS NOW EXIST, ON THEIR OWN CHANNEL -- AND NO SAVED PANEL CARRIES THEM.
@@ -321,21 +324,37 @@ POOL_FLAGS = {
         'reitEbitdaInterestCoverage': lambda s: s > 1,
     },
 
-    #  MINING.  Gone: the same two undefined flags, plus `returnOnAssets` and `CFOlessEarnings`
-    #  are KEPT (a miner's income statement is an ordinary one).  The three additions replace the
-    #  leverage question with the two questions that actually disqualify a mining name, and they
-    #  PARTITION the cohort by construction: `producerEbitdaPositive` abstains on a pre-revenue
-    #  explorer (there is no cost curve to be wrong about), and `cashRunwayOneYear` is the flag
-    #  that judges exactly those names.  Union 22 of 218, 0 of the top-25.
+    #  MINING -- THE THREE DESIGNED FLAGS, AND ONLY THOSE (CEO, 2026-08-08).
+    #
+    #  These three were the specialist's design: they PARTITION the cohort by construction.
+    #  `producerEbitdaPositive` asks whether a PRODUCING miner earns money at its own cost
+    #  curve and ABSTAINS on a pre-revenue explorer (there is no cost curve to be wrong
+    #  about); `cashRunwayOneYear` is the flag that judges exactly those explorers; and
+    #  `equityPositive` is the balance-sheet floor under both.  Predicted union 22 of 218,
+    #  0 of the top-25.
+    #
+    #  REVERTED 2026-08-08.  `returnOnAssets`, `CFOlessEarnings` and `uInterestCoverage`
+    #  were added here by a dispatch brief and were NEVER PART OF THE DESIGN.  MEASURED on
+    #  the 2026-08-07 CUR3K panel (277 Basic-Materials sources), those three ALONE eject
+    #  **89 of 277 = 32.1%** -- `returnOnAssets` 80, `uInterestCoverage` 45,
+    #  `CFOlessEarnings` 2 (overlapping) -- against a design that predicted 22 of 218
+    #  (10.1%) for the WHOLE set.  So the three additions accounted for the entire
+    #  overshoot, and they do it for a reason the design already anticipated: an
+    #  exploration-stage miner has no earnings and no interest cover BY DEFINITION, so
+    #  `returnOnAssets > 0` and `uInterestCoverage > 1` are structurally undefined on the
+    #  half of this cohort that is pre-production -- exactly the failure mode the
+    #  five-flag register documents for REITs, reproduced in a new cohort.
+    #
+    #  NOT BACKTESTABLE, STATED PLAINLY: the three designed flags are built from `ebitda`
+    #  and `cashAndCashEquivalents`, captured only from the 2026-08-05 preReq change, so NO
+    #  SAVED PANEL CARRIES THEM -- including the 2026-08-07 CUR3K panel.  The 22-of-218
+    #  prediction therefore CANNOT be verified offline; what could be measured is the 89
+    #  above, which is the part being removed.  Mining reports `applies=False` with
+    #  `missing_columns` set until the next full fetch.  Do not read a clean Mining report
+    #  before that fetch as the veto passing.
     'Mining': {
-        'returnOnAssets':         lambda s: s > 0,
-        'CFOlessEarnings':        lambda s: s > 0,
-        'uInterestCoverage':      lambda s: s > 1,
-        #  11 of 218 fail, 43 abstain (= the pre-production names).
         'producerEbitdaPositive': lambda s: s > 0,
-        #  7 of 218, all pre-revenue explorers.
         'cashRunwayOneYear':      lambda s: s > 0,
-        #  4 of 218.
         'equityPositive':         lambda s: s > 0,
     },
 

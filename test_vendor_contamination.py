@@ -183,9 +183,15 @@ def test_the_quarantine_runs_BEFORE_the_arithmetic_checks():
     assert src.index('vendor_contamination') < src.index('check_price_sanity')
 
 
-def test_a_broken_quarantine_is_LOUD_but_never_fatal(monkeypatch, capsys):
-    """Warn-and-continue, like every other guard on this path -- but it must be impossible
-    to read the output as quarantined."""
+def test_a_failure_COMPUTING_the_quarantine_is_LOUD_but_never_fatal(monkeypatch, capsys):
+    """RENAMED (reviewer F-12, 2026-08-08).  This patches `__import__`, so it raises INSIDE
+    the `fn` limb of `data_quality.guarded_row_pass` -- the half that genuinely is
+    non-fatal.  The old name claimed the whole pass was never fatal; that stopped being
+    true when the F-6 fix moved the mutation and the verbose printing OUTSIDE the handler
+    deliberately (a raising print there is now fatal, and is meant to be).  See
+    `guarded_row_pass`'s docstring for which half is which.
+
+    Warn-and-continue, and it must be impossible to read the output as quarantined."""
     import builtins
     real_import = builtins.__import__
 

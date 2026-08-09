@@ -299,6 +299,11 @@ MCAP_BANDS = [
 # their constants are seeded from that day's live quote, so they are anchors, not history.
 # 'ARS' is DELIBERATELY ABSENT -- see fx_rates.ABSTAIN_CURRENCIES for the reasoning
 # (the rate is fine; our ARS statement data is broken by three orders of magnitude).
+# As of 2026-08-08 ARS reporters are also EXCLUDED FROM THE UNIVERSE outright by
+# currency_exclusions.EXCLUDED_CURRENCIES (applied in data_quality PASS 0b), because
+# abstaining on the rate fixed only the currency while every metric downstream of those
+# statements stayed contaminated.  The abstention above is retained as the backstop for
+# paths that never reach the quality filter -- do not delete it as redundant.
 FX_TO_USD = {
     'USD': 1.0, 'EUR': 1.08, 'GBP': 1.27, 'GBp': 0.0127, 'GBX': 0.0127,
     'CHF': 1.12, 'JPY': 0.0067, 'SEK': 0.095, 'NOK': 0.093, 'DKK': 0.145,
