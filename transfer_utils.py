@@ -41,6 +41,32 @@ from pathlib import Path
 # same constant so the incremental path and the end-of-run path can never diverge.
 DENYLIST_PATTERNS = ['*key*', '*pem', 'fmpAPIkey.txt']
 
+# --- WHERE THE PIPELINE'S EVIDENCE CSVs ARE WRITTEN (CEO, 2026-08-10) --------------------
+# THE REPO ROOT, i.e. the run's CWD.  It was `output/` for five of them, and the 2026-08-10
+# run is the case that decided it: EVERY root-level artifact from that run reached Drive, and
+# `output/` and `logs/` DID NOT -- no DedupSurvivorReport, no FxRates, no
+# CurrencyExclusionStatus, no DelistedPrune, no run log for 08-10 ever arrived.  Drive's copies
+# of those groups stop at 08-08 / 08-07.  The dedup breakdown for 08-10 was recoverable at all
+# only because it happened to be inside a pickle.
+#
+# THE ARGUMENT THAT USED TO POINT THE OTHER WAY IS NOT WRONG, IT IS SPENT.  `Sbocker` declined
+# a top-level glob for `DedupSurvivorReport` on the grounds that "output/ already ships whole,
+# so the evidence cannot be lost to a pattern that stops matching after a filename change" and
+# that "a top-level pattern would be a DEAD GLOB" for a file living in `output/`.  Both legs
+# INVERT once the file is at root: the glob is live because that is where `glob.glob` looks,
+# and "ships whole" is exactly the property that failed.  A directory that ships whole and does
+# not arrive ships nothing.
+#
+# ONE NAMED CONSTANT rather than seven string literals, so the next move is one edit and so no
+# writer can drift from the transfer manifest by accident.  It lives HERE, beside the denylist,
+# because this module is already the single source of truth for what travels.
+#
+# THE ONE FILE THAT WAS ALREADY AT ROOT AND MUST STAY THERE: `MeanBarCalibration-*.csv`.
+# `meanBars._prior_streaks` READS the prior calibration CSVs back from the directory it writes
+# to, to chain the breach-streak hysteresis, and it is git-TRACKED -- moving it would strand
+# that history and silently restart every streak at zero.  It is unaffected by this change.
+EVIDENCE_DIR = '.'
+
 # Top-level key filenames the post-copy safety net actively removes if present.
 KEY_FILENAMES = ('fmpAPIkey.txt',)
 

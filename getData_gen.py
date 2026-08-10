@@ -196,7 +196,7 @@ def safe_json_list(url, params=None, headers=None, timeout=10, retries=3, backof
 
 
 def get_tickers(ds, baseurl, api_key, manual_elim=None, tfilt='stock_NA1',sfilt='all', mcapf=-1,fn='',
-                as_of=None, registry=None):
+                as_of=None, registry=None, force_rebuild_maps=False):
     """Build the ticker universe.
 
     as_of : point-in-time date D (default None).  as_of=None reproduces the live
@@ -338,9 +338,14 @@ def get_tickers(ds, baseurl, api_key, manual_elim=None, tfilt='stock_NA1',sfilt=
         # the "membership is an explicit curated list" test.
         try:
             from findAllSectors import ensure_sector_industry_maps
+            #  `force_rebuild` is threaded from `-force_rebuild_maps` (CEO, 2026-08-10).
+            #  It bypasses the freshness/presence/coverage skip conditions ONLY; the
+            #  subset-universe refusal still stands, because a curated subset must never
+            #  author these shared maps whoever asked.
             ensure_sector_industry_maps(list(df['symbol']), baseurl, api_key, pace=15,
                                         universe_is_subset=(un.symbols(tfilt) is not None),
-                                        universe_name=tfilt)
+                                        universe_name=tfilt,
+                                        force_rebuild=bool(force_rebuild_maps))
         except Exception as _e:
             print(f"WARNING: sector/industry map self-heal hook error (non-fatal): {_e}")
 
@@ -1254,9 +1259,15 @@ def tickerfilterWrapper(tickdf,tfilt,sfilt,mcapf,baseurl,api_key):
                               'delisted list, so absence from this file is NOT evidence '
                               'that a name is still listed'),
         })
-        os.makedirs('output', exist_ok=True)
+        #  REPO ROOT since 2026-08-10 (CEO).  The prune runs UPSTREAM of Tickers_df, so the
+        #  end-of-run reconciliation cannot catch a missing record of it -- this CSV is the
+        #  only evidence the prune produces, and `output/` did not travel on 2026-08-10.
+        #  See `transfer_utils.EVIDENCE_DIR`.
+        import transfer_utils as _tu
+        os.makedirs(_tu.EVIDENCE_DIR, exist_ok=True)
         _delist_fn = os.path.join(
-            'output', 'DelistedPrune_%s.csv' % pd.Timestamp.today().strftime('%Y-%m-%d'))
+            _tu.EVIDENCE_DIR,
+            'DelistedPrune_%s.csv' % pd.Timestamp.today().strftime('%Y-%m-%d'))
         _delist_rows.to_csv(_delist_fn, index=False)
     except Exception as _de:
         _delist_fn = None

@@ -75,6 +75,7 @@ from collections import defaultdict
 
 import numpy as np
 import pandas as pd
+import transfer_utils as _tu   # EVIDENCE_DIR: where the run's evidence CSVs are written
 
 
 # --------------------------------------------------------------------------- #
@@ -167,7 +168,7 @@ def quarantine_mask(df, rules=None):
 
 def quarantine_records(df, rules=None, price_col='price', mcap_col='marketCap'):
     """(mask, [removal_record]) in the shape `data_quality` already logs removals in, so
-    the quarantine appears in `output/removed_data_quality_*.csv` beside every other
+    the quarantine appears in `removed_data_quality_*.csv` beside every other
     removal and propagates to BoMetric_df through the existing (source, date) pairing."""
     rules = QUARANTINE_RULES if rules is None else rules
     mask = quarantine_mask(df, rules)
@@ -333,16 +334,16 @@ def detect_shared_fundamentals(cdx_df, names=None, min_shared=MIN_SHARED_TRIPLES
     return out
 
 
-def run_detector_stage(cdx_df, names=None, run_date=None, outdir='output', verbose=True):
+def run_detector_stage(cdx_df, names=None, run_date=None, outdir=None, verbose=True):
     """The standing POST-FETCH check.  Never raises; returns the flag frame (possibly
-    empty) and writes `output/VendorContaminationFlags_<date>.csv`.
+    empty) and writes `VendorContaminationFlags_<date>.csv` at the repo ROOT.
 
-    The CSV goes in `output/` rather than getting its own top-level transfer pattern for
-    the same reason `DedupSurvivorReport_*.csv` does: `output/` already ships whole via
-    Sbocker's `allowlist_dirs`, so evidence cannot be lost to a pattern that stops
-    matching after a rename.  It ships because it is the ONLY on-disk record of this
-    check having run -- the evidence rule stated in
-    `Sbocker.transfer_outputs_to_drive`."""
+    MOVED OUT OF `output/` (CEO, 2026-08-10), together with the other evidence CSVs.  The
+    argument this docstring used to make -- that `output/` ships whole via Sbocker's
+    `allowlist_dirs`, so evidence cannot be lost to a pattern that stops matching -- is
+    exactly the one the 2026-08-10 run falsified: the directory shipped nothing.  It still
+    ships because it is the ONLY on-disk record of this check having run; it now does so by
+    its own top-level manifest pattern.  Directory: `transfer_utils.EVIDENCE_DIR`."""
     try:
         flags = detect_shared_fundamentals(cdx_df, names=names)
     except Exception as e:
@@ -379,6 +380,7 @@ def run_detector_stage(cdx_df, names=None, run_date=None, outdir='output', verbo
             print(bang + '\n', flush=True)
 
     try:
+        outdir = _tu.EVIDENCE_DIR if outdir is None else outdir
         run_date = run_date or _dt.date.today().strftime('%Y-%m-%d')
         if not os.path.isdir(outdir):
             os.makedirs(outdir)

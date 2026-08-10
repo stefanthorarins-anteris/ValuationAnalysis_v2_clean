@@ -285,9 +285,14 @@ def test_the_five_cohort_vectors_SPEND_what_they_should_and_normalise_to_one():
     #  FIN-3 did NOT unpark and now spends LESS (0.8796 -> 0.832): its S ratio is above the
     #  anchor, so Rule PROP raised its HELD budget 0.1204 -> 0.1680 along with the general S
     #  budget, and capital adequacy is still invisible to the pipeline.
+    #  0.832 -> 0.8354 on 2026-08-10 (CEO's N re-budget): the general take is proportional, so
+    #  FIN-3's HELD S budget shrinks with everything else and it therefore spends marginally
+    #  MORE of its total.  The direction is worth noting -- paying for the cycle block made the
+    #  unpriceable block slightly cheaper, which is arithmetic, not an improvement in what the
+    #  pipeline can see about bank capital.
     expected_spendable = {
         'Mining': 1.0, 'REIT': 1.0, 'InvestmentVehicle': 1.0,
-        'FinManager': 1.0, 'BalanceSheetFin': 0.832,
+        'FinManager': 1.0, 'BalanceSheetFin': 0.8353502898261044,
     }
     assert set(sw.COHORT_WEIGHTS_RAW) == set(expected_spendable)
     for label, want in expected_spendable.items():

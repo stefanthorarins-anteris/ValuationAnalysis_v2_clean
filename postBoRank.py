@@ -10,9 +10,16 @@ import pandas as pd
 import numpy as np
 from tqdm import tqdm
 
+import adhoc_penalty as ap
 import nan_policy as npol
 import stage2_metrics as sm
 import reporting_period as rp
+
+#  THE AD-HOC PENALTY BUCKET's column, re-exported here because this module is where it is
+#  written and where `ROR_EXCLUDE` has to name it.  It is NOT a metric key: it carries an
+#  absolute AggScore penalty, not a z-score, and it is deliberately absent from
+#  `scoringWeights.METRIC_KEYS` so the `Sigma|w| = 1` invariant cannot be perturbed by it.
+ADHOC_PENALTY_COLUMN = ap.PENALTY_COLUMN
 
 
 # --------------------------------------------------------------------------- #
@@ -33,7 +40,7 @@ import reporting_period as rp
 # --------------------------------------------------------------------------- #
 def postBoScoreRanking(bmtop, bstop, cdxtop, baseurl, api_key, period='quarter',
                        nq=16, as_of=None, weight_override=None, names=None,
-                       dedup_issuers=True, pool_label=None):
+                       dedup_issuers=True, pool_label=None, penalty_book=None):
     # pool_label : names THIS pool in the missing-data fill report ('general' or a carve-out
     # cohort label).  Diagnostic only -- it reaches no scoring path.
     # as_of : point-in-time date D (default None).  as_of=None reproduces the live
@@ -203,6 +210,35 @@ def postBoScoreRanking(bmtop, bstop, cdxtop, baseurl, api_key, period='quarter',
     #  The name `psmdf_normalized` is the trap this stamp defuses: it says "normalized", it is
     #  stored in resdic under that name, and its metric columns are WEIGHTED.
     stamp_metric_basis(psmdf_normalized, BASIS_Z_TIMES_W)
+
+    #  --- THE AD-HOC PENALTY BUCKET (CEO, 2026-08-10) -----------------------------------
+    #  APPLIED HERE, AND THE POSITION IS THE RULING: *"which is then added (which in effect
+    #  lowers the score) BEFORE SORTING/RANKING TAKES PLACE"*.  So it goes on AFTER the metric
+    #  columns have been weighted and BEFORE `getAggScore`, which sums every column and then
+    #  sorts.  It is therefore inside the score and outside the weight vector -- see
+    #  `adhoc_penalty` for why that distinction is load-bearing (`Sigma|w| = 1.000000` is
+    #  asserted at import in scoringWeights and every published AggScore range rests on it).
+    #
+    #  A COLUMN AND NOT A POST-HOC SUBTRACTION, deliberately: the column ships in `postRank`,
+    #  so a reader of the artifact can see WHICH names were penalised and by how much without
+    #  re-deriving it, and `getAggScore`'s deterministic column order handles it like any
+    #  other addend.  It is EXCLUDED from `rankOfRanks_diag` (ROR_EXCLUDE) because that is an
+    #  equal-weight METRIC lens and a penalty is not a metric.
+    #
+    #  A pool given no book gets an all-zero column rather than no column: an absent column
+    #  and a zero column read the same to a consumer, and only one of them is a statement.
+    _pen = (penalty_book.penalty_series(list(psmdf_normalized['source']))
+            if penalty_book is not None
+            else pd.Series(0.0, index=range(len(psmdf_normalized)), dtype='float64'))
+    psmdf_normalized[ADHOC_PENALTY_COLUMN] = _pen.to_numpy()
+    _n_pen = int((_pen < 0).sum())
+    print('AD-HOC PENALTY BUCKET [%s]: %d of %d name(s) carry a penalty (total %.4f AggScore, '
+          'worst %.4f) at the fixed weight %.3f%s'
+          % (pool_label or 'general', _n_pen, len(_pen), float(_pen.sum()),
+             float(_pen.min()) if len(_pen) else 0.0, ap.WEIGHT,
+             '' if penalty_book is not None else
+             ' -- NO BOOK PASSED, so this pool is scored with NO penalty; that is a caller '
+             'decision, not a finding that this pool has no data gaps'), flush=True)
 
     postRank = getAggScore(psmdf_normalized)
     #  DECLARED INVARIANT, not an accident: getAggScore mutates its argument in place and
@@ -1671,7 +1707,49 @@ def missing_data_fill_report(raw_df, norm_df, weight_series, pool='general',
     SCORE-NEUTRAL BY CONSTRUCTION: both frames arrive as inputs and are only read; nothing is
     assigned back, and the function returns its own frames.  Fully guarded -- a diagnostic must
     never be able to cost a 12-hour run.
+
+    THE GENERAL POOL PRODUCED NO SECTION AT ALL UNTIL 2026-08-10, AND THE GUARD HID IT.
+    `MissingDataFillReport_2026-08-10.csv` carries the five carve-out cohorts and NOTHING for
+    `general` -- i.e. the one pool that produces the deliverable had no imputation audit.  The
+    cause is an INDEX MISMATCH, not a missing call: `normalizeAndDropNA` begins with
+    `df.reset_index(inplace=True, drop=True)`, which mutates the CALLER'S frame, while
+    `postScoreMetric_raw` was snapshotted BEFORE that call and keeps the original index
+    (0..104 with gaps on the general pool, inherited from `BoS_dftop100`).  `zc[~imputed]` then
+    indexes a 0..99 Series with a boolean Series labelled 0..104 and pandas raises
+    `IndexingError: Unalignable boolean Series`.  The cohorts survived only because their
+    frames happened to arrive already 0-based, which is exactly the kind of accident that makes
+    a defect look pool-specific.  The `except` below then printed a one-line WARNING that
+    scrolled past in a 12-hour run.
+    THE FIX IS POSITIONAL ALIGNMENT, not a re-index of either frame: the two frames are
+    ROW-ALIGNED BY CONSTRUCTION (one is a copy of the other taken before normalisation, and
+    normalisation drops a row only when every metric is NaN), so `source` is the thing to check
+    and position is the thing to join on.  The check is asserted rather than assumed -- if a
+    future change ever DOES drop a row, this must fail loudly instead of silently pairing name
+    i's raw values with name i+1's z-scores.
     """
+    #  --- THE ALIGNMENT GATE SITS **OUTSIDE** THE TRY, DELIBERATELY (reviewer S4) ----------
+    #  It was inside, and that made it the bug it replaces: the `except Exception` below caught
+    #  it, printed one WARNING line to stdout and returned `(None, None)` -- byte-for-byte the
+    #  signature of the swallowed `IndexingError` that hid this whole report from the general
+    #  pool for a full run.  A guard whose failure is indistinguishable from the defect it
+    #  guards against is not a guard.
+    #
+    #  IT RAISES rather than warning, and that is the right severity even for a diagnostic:
+    #  every OTHER failure in this function costs a report, while THIS one would silently
+    #  attribute one name's missingness to another and PUBLISH it.  The caller is
+    #  `_safe_diagnose`, so a raise still cannot cost the run -- it costs the report, loudly,
+    #  with a traceback instead of a one-liner.
+    if raw_df is not None and norm_df is not None and (
+            len(raw_df) != len(norm_df)
+            or 'source' not in getattr(raw_df, 'columns', [])
+            or 'source' not in getattr(norm_df, 'columns', [])
+            or not (raw_df['source'].to_numpy() == norm_df['source'].to_numpy()).all()):
+        raise ValueError(
+            'missing-data fill report [pool=%s]: the raw and normalised frames are no longer '
+            'row-aligned (%d vs %d rows). They must be -- the raw frame is a copy of the '
+            'pre-normalisation frame and normalizeAndDropNA drops a row only when EVERY metric '
+            'is NaN. Pairing them positionally would attribute one name\'s missingness to '
+            'another.' % (pool, len(raw_df), len(norm_df)))
     try:
         wser = dict(weight_series) if weight_series is not None else {}
         wcols = [c for c in raw_df.columns
@@ -1681,8 +1759,10 @@ def missing_data_fill_report(raw_df, norm_df, weight_series, pool='general',
         rows = []
         for c in wcols:
             w = float(wser[c])
-            rawc = pd.to_numeric(raw_df[c], errors='coerce')
-            zc = pd.to_numeric(norm_df[c], errors='coerce')
+            #  POSITIONAL, via `.to_numpy()`: see the docstring.  An index-based join here is
+            #  what suppressed this whole report for the general pool.
+            rawc = pd.Series(pd.to_numeric(raw_df[c], errors='coerce').to_numpy())
+            zc = pd.Series(pd.to_numeric(norm_df[c], errors='coerce').to_numpy())
             imputed = rawc.isna()
             obs = zc[~imputed].dropna()           # the OBSERVED (non-imputed) z distribution
             if len(obs) == 0:
@@ -2050,7 +2130,12 @@ def getAggScore(df):
 #  Columns that must never be ranked INSIDE the rank-of-ranks: AggScore is the weighted
 #  SUM of every other column here, so ranking it alongside its own components counts the
 #  whole score a second time (audit M1).
-ROR_EXCLUDE = ['source', 'AggScore', 'rankOfRanks', 'rankOfRanks_diag']
+#  `adhocPenalty` is excluded too (CEO, 2026-08-10): rankOfRanks weights every column it
+#  ranks EQUALLY, so a 0.01-per-point penalty column would carry the same say there as a whole
+#  metric -- and it is not a metric at all, it is an absolute score adjustment.  Excluding it
+#  keeps this diagnostic what it claims to be: an equal-weight view of the METRICS.
+ROR_EXCLUDE = ['source', 'AggScore', 'rankOfRanks', 'rankOfRanks_diag',
+               ADHOC_PENALTY_COLUMN]
 
 #  DIAGNOSTIC name.  rankOfRanks orders NOTHING that ships (AggScore does), and it is
 #  invariant to weight MAGNITUDE -- only weight SIGNS survive a per-column rank -- so it

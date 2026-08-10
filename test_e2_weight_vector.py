@@ -34,41 +34,74 @@ import stage2_metrics as s2m
 # --------------------------------------------------------------------------- #
 #  A.  the general vector                                                     #
 # --------------------------------------------------------------------------- #
-#  Section 15.3's table re-derived at the CEO's DECIDED budgets, AS RE-BUDGETED FOR THE S
-#  BLOCK ON 2026-08-06: W_S 0.0860 -> 0.1200 to pay for `interestCoverage` (S's first Tier-1
-#  member), with the 0.034 taken PROPORTIONALLY from the other six blocks (x 0.880/0.914).
-#  P 0.250328  R 0.157322  N 0.124201  D 0.250328  S 0.120000  M 0.049680  C 0.048140.
-#  **19** non-zero weights now, not 18.
+#  Section 15.3's table re-derived at the CEO's DECIDED budgets, through TWO re-budgets:
 #
-#  WHAT THE PROPORTIONAL TAKE BUYS, and it is why this table could be re-derived by
-#  multiplication rather than re-argued: every ratio among NON-S metrics is preserved exactly.
-#  So P stays equal to D (Rule PROP's 1:1 residual split is untouched) and the thesis margin
-#  is numerically unchanged at 1.2928.  Only the three S weights are a new argument.
+#    2026-08-06  W_S 0.0860 -> 0.1200 to pay for `interestCoverage` (S's first Tier-1
+#                member), 0.034 taken PROPORTIONALLY from the other six blocks.
+#    2026-08-10  W_N 0.124201 -> 0.141667 so `CycleHeat` reads the -0.085 the CEO asked for
+#                ("slightly increase the weight in stage 2, but just slightly"), with the
+#                0.017466 taken PROPORTIONALLY from the other six (x 0.98005780).
+#
+#  Live budgets: P 0.245336  R 0.154184  N 0.141667  D 0.245336  S 0.117607  M 0.048690
+#  C 0.047180.  **19** non-zero weights, unchanged.
+#
+#  WHAT THE PROPORTIONAL TAKE BUYS, and it is why this table can be re-derived by
+#  multiplication rather than re-argued: every ratio among the blocks NOT being re-budgeted is
+#  preserved exactly.  So P stays equal to D (Rule PROP's 1:1 residual split is untouched) and
+#  the thesis margin against `incomeQuality` is numerically UNCHANGED at 1.2928 through both
+#  re-budgets.  Only the re-budgeted block's own members are a new argument each time.
 DESIGN_GENERAL = {
-    'earnYield':                   0.122035,
-    'incomeQuality':               0.094393,
-    'freeCashFlowPerShareGrowth':  0.083443,
-    'CycleHeat':                  -0.074521,
-    'bVpRatio':                    0.065711,
-    'freeCashFlowYield':           0.062929,
-    'RoA':                         0.062582,
-    'returnOnCapitalEmployed':     0.062582,
-    #  THE THREE S WEIGHTS -- the only ones that are a new decision rather than a rescale.
-    #  W_S = 0.120 over tiers {1,2,3} at tau 3:2:1 gives 0.060 / 0.040 / 0.020, which
-    #  DELIBERATELY costs the two incumbents ~30%: holding them harmless would have needed
+    'earnYield':                   0.119601,
+    'incomeQuality':               0.092511,
+    #  THE TWO N WEIGHTS -- the 2026-08-10 decision.  W_N over tiers {1,2} at tau 3:2 gives
+    #  0.6/0.4, so `CycleHeat` = 0.085 EXACTLY (which is how W_N was chosen: the CEO named
+    #  CycleHeat's number, and the budget is DERIVED from it) and `EPStoEPSmean` rides up with
+    #  it from 0.049681.  That second move is a consequence of the tau ladder, not a separate
+    #  decision, and it is recorded here so it is not mistaken for one.
+    'CycleHeat':                  -0.085000,
+    'EPStoEPSmean':                0.056667,
+    'freeCashFlowPerShareGrowth':  0.081779,
+    'bVpRatio':                    0.064401,
+    'freeCashFlowYield':           0.061674,
+    'RoA':                         0.061334,
+    'returnOnCapitalEmployed':     0.061334,
+    #  THE THREE S WEIGHTS -- the 2026-08-06 decision, now rescaled by the N take.
+    #  W_S = 0.120 over tiers {1,2,3} at tau 3:2:1 gave 0.060 / 0.040 / 0.020, which
+    #  DELIBERATELY cost the two incumbents ~30%: holding them harmless would have needed
     #  W_S = 0.1720, and the CEO capped at 0.120 instead.
-    'interestCoverage':            0.060000,
-    'currentRatio':                0.040000,
-    'Altman-Z':                    0.020000,
-    'EPStoEPSmean':                0.049681,
-    'marketCapRevQuants':          0.049681,
-    'grahamNumberToPrice':         0.040678,
-    'Piotroski':                   0.032093,
-    'tbVpRatio':                   0.021904,
-    'grossProfitMargin':           0.020861,
-    'returnOnEquity':              0.020861,
-    'revenueGrowth':               0.016047,
+    'interestCoverage':            0.058803,
+    'currentRatio':                0.039202,
+    'Altman-Z':                    0.019601,
+    'marketCapRevQuants':          0.048690,
+    'grahamNumberToPrice':         0.039867,
+    'Piotroski':                   0.031453,
+    'tbVpRatio':                   0.021467,
+    'grossProfitMargin':           0.020445,
+    'returnOnEquity':              0.020445,
+    'revenueGrowth':               0.015727,
 }
+
+
+def test_the_N_re_budget_hit_the_TARGET_and_paid_for_it_PROPORTIONALLY():
+    """*** THE 2026-08-10 RULING, pinned as a DERIVATION rather than as a decimal. ***
+
+    The CEO named `CycleHeat`'s weight (-0.085), not a block budget, so the code derives
+    `W_N` from it and this test checks the derivation both ways: the target is HIT EXACTLY,
+    and everything outside N paid for it by ONE common factor.  A hand-picked or flat take of
+    the same 0.017466 would pass a "CycleHeat == -0.085" assertion and fail this one -- and it
+    would silently move the thesis margin and Rule PROP's residual split with it.
+    """
+    assert sw.DEPLOYED['CycleHeat'] == pytest.approx(-sw.CYCLEHEAT_TARGET_W, abs=1e-15)
+    assert sw.GENERAL_BUDGETS['N'] == pytest.approx(sw.CYCLEHEAT_TARGET_W * 5.0 / 3.0,
+                                                    abs=1e-15)
+    #  ONE factor, on every non-N block.  `_POST_S_BUDGETS` is the pre-ruling table.
+    factors = {b: sw.GENERAL_BUDGETS[b] / sw._POST_S_BUDGETS[b]
+               for b in sw.GENERAL_BUDGETS if b != 'N'}
+    assert len(set(round(f, 12) for f in factors.values())) == 1, (
+        'the take was NOT proportional: %s' % factors)
+    assert list(factors.values())[0] == pytest.approx(0.98005780, abs=5e-8)
+    #  P = D survives, which is what keeps Rule PROP's 1:1 cohort residual split honest.
+    assert sw.GENERAL_BUDGETS['P'] == pytest.approx(sw.GENERAL_BUDGETS['D'], abs=1e-15)
 
 
 def test_the_general_vector_IS_the_decided_one():
@@ -140,7 +173,17 @@ def test_earnYield_is_the_LARGEST_single_weight_in_the_general_vector():
     ey = abs(sw.DEPLOYED[sw.THESIS_METRIC])
     other = _largest_other(sw.DEPLOYED, sw.THESIS_METRIC)
     assert ey > other, (ey, other)
+    #  UNCHANGED THROUGH THE 2026-08-10 N RE-BUDGET TOO, for the same reason: `earnYield` and
+    #  `incomeQuality` are both non-N, so both scale by 0.98005780 and the ratio is invariant.
+    #  Asserted anyway -- the invariance is a property of the METHOD (a proportional take),
+    #  not a fact about the numbers, and the method is what a future edit would break.
     assert ey / other == pytest.approx(1.2928, abs=5e-4)
+    #  ...and the runner-up is still `incomeQuality`, NOT `CycleHeat`.  The N re-budget closed
+    #  the gap to the cycle metric from 1.638x to 1.407x, so this is now the assertion that
+    #  would catch a further N increase quietly making the cycle the largest weight -- which
+    #  is exactly what it already did in the Mining cohort (see the Mining exemption test).
+    assert other == pytest.approx(abs(sw.DEPLOYED['incomeQuality']), abs=1e-15)
+    assert ey / abs(sw.DEPLOYED['CycleHeat']) == pytest.approx(1.4071, abs=5e-4)
 
 
 def test_the_margin_SURVIVES_the_D3_fix_and_this_is_the_forward_trap():
@@ -152,10 +195,11 @@ def test_the_margin_SURVIVES_the_D3_fix_and_this_is_the_forward_trap():
     cheapness: at the proportional alternative (W_R = 0.1748) `incomeQuality` would be
     0.10488 and the D3 fix would break the margin outright.
 
-    THE HEADROOM SHRANK WITH THE 2026-08-06 S RE-BUDGET -- 0.00336 -> 0.003235 -- because both
-    sides scale by 0.880/0.914 while their RATIO is unchanged.  So the trap is no more likely
-    to spring than it was, but it is 3.7% closer in absolute terms, and any further take out of
-    the non-S blocks shrinks it again.
+    THE HEADROOM KEEPS SHRINKING WITH EVERY RE-BUDGET THAT TAXES THE NON-P/R BLOCKS -- 0.00336
+    (pre-S) -> 0.003235 (post-S, 2026-08-06) -> 0.003170 (post-N, 2026-08-10) -- because both
+    sides scale by the same factor while their RATIO is unchanged.  So the trap is no more
+    likely to spring than it was, but it is now 5.6% closer in absolute terms than it was
+    originally, and any further take out of the re-budgeted block's siblings shrinks it again.
 
     So this test is the instruction as much as the check: when D3 is fixed, re-run it, and do
     NOT fix D3 and a block budget in the same change."""
@@ -164,11 +208,11 @@ def test_the_margin_SURVIVES_the_D3_fix_and_this_is_the_forward_trap():
     post_d3['grahamNumberToPrice'] = (block, sub, 2, sign)
     v = sw._block_vector(sw.GENERAL_BUDGETS, post_d3)
     ey, iq = abs(v['earnYield']), abs(v['incomeQuality'])
-    assert ey == pytest.approx(0.097628, abs=5e-6)
-    assert iq == pytest.approx(0.094393, abs=5e-6)
+    assert ey == pytest.approx(0.095681, abs=5e-6)
+    assert iq == pytest.approx(0.092511, abs=5e-6)
     assert ey > iq, ('the D3 fix has broken the thesis margin -- see scoringWeights B.6; '
                      'the recorded remedy is W_P >= 0.27', ey, iq)
-    assert ey - iq == pytest.approx(0.003235, abs=5e-6), 'and the headroom is this thin'
+    assert ey - iq == pytest.approx(0.003170, abs=5e-6), 'and the headroom is this thin'
 
 
 @pytest.mark.parametrize('label', ['FinManager'])
@@ -184,21 +228,35 @@ def test_the_margin_also_holds_in_the_non_exempt_cohorts(label):
     assert set(sw.THESIS_MARGIN_EXEMPT_COHORTS) == set(sw.COHORT_LABELS) - {'FinManager'}
 
 
-def test_the_Mining_exemption_is_recorded_AND_earned():
-    """Mining is DECLARED exempt, and the reason is not "it fails" -- it currently PASSES at
-    1.17x.  The exemption is that post-D3 the failure is NOT RECOVERABLE at any admissible
-    budget: it would need W_P > 1.538 * W_N = 0.280 here, or W_N cut below its cohort
-    deviation, and that deviation is the entire purpose of the cohort.
+def test_the_Mining_exemption_is_recorded_AND_NOW_BINDS():
+    """*** RE-AUTHORED 2026-08-10.  THE EXEMPTION HAS STOPPED BEING LATENT. ***
 
-    Both halves are asserted, because an exemption recorded without its mechanism is just a
-    disabled test."""
+    Mining was DECLARED exempt from the thesis margin while still PASSING it at 1.17x, on the
+    stated mechanism that *for a miner the trailing E IS the commodity price, so the cycle
+    question is genuinely co-dominant with the thesis*.  The CEO's 2026-08-10 N re-budget is
+    what turned that argument into an observation: Mining's N ratio is ABOVE the general
+    anchor's, so Rule PROP hands the cohort MORE than a proportional share of the increase
+    (W_N 0.1822 -> 0.2078, +14.1% against the general +14.1% on a bigger base), and
+    `CycleHeat` OVERTAKES `earnYield` -- 0.12467 against 0.12086, a ratio of 0.969.
+
+    THIS IS A REAL RE-RANKING OF THE MINING SIDE-LIST, not a rounding consequence, and it is
+    pinned rather than tolerated so it cannot happen again unremarked.  It is the declared
+    exemption doing exactly what it was declared for; if the CEO does not want the cycle to be
+    the largest weight in the Mining cohort, the lever is Mining's N RATIO in `_cohort_ratios`,
+    not the general budget.
+    """
     assert 'Mining' in sw.THESIS_MARGIN_EXEMPT_COHORTS
     v = sw.COHORT_WEIGHTS['Mining']
     ey = abs(v[sw.THESIS_METRIC])
-    assert ey > _largest_other(v, sw.THESIS_METRIC), 'today it passes'
-    #  UNCHANGED by the 2026-08-06 S re-budget: every Mining block rescales by the same
-    #  factor, and neither `earnYield` nor `CycleHeat` is an S metric.
-    assert ey / _largest_other(v, sw.THESIS_METRIC) == pytest.approx(1.1707, abs=5e-4)
+    other = _largest_other(v, sw.THESIS_METRIC)
+    assert other == pytest.approx(abs(v['CycleHeat']), abs=1e-15), (
+        'the metric that outweighs the thesis in Mining must be the CYCLE metric -- that is '
+        'the whole stated mechanism of the exemption. If it is anything else, the exemption '
+        'is covering a different problem and must be re-argued.')
+    assert ey < other, (
+        'Mining now PASSES the thesis margin again -- the exemption may no longer be needed; '
+        're-read scoringWeights B.6 before deleting it', ey, other)
+    assert ey / other == pytest.approx(0.9695, abs=5e-4)
 
     post_d3 = dict(sw._cohort_assignment('Mining'))
     block, sub, _tier, sign = post_d3['grahamNumberToPrice']
@@ -217,31 +275,38 @@ def test_the_Mining_exemption_is_recorded_AND_earned():
 #  Mining's D is pinned BELOW its residual share by the contamination override (P takes the
 #  freed weight), and REIT's P and D come out exactly equal to the general 0.26.
 #
-#  RE-DERIVED AT THE 2026-08-06 S BUDGETS.  Three of the five are a PURE RESCALE of the row
-#  they replace (x 0.880/0.914 on every block), because their S RATIO equals the anchor's 0.10
-#  and so their residual scales with everything else: Mining, REIT and FinManager.
+#  RE-DERIVED AT THE 2026-08-10 N BUDGETS.  NONE OF THE FIVE IS A PURE RESCALE THIS TIME, and
+#  that is the difference between this re-budget and the S one -- worth stating, because "the
+#  cohorts just follow" is the reading a skimmer takes away from Rule PROP.
 #
-#  **BalanceSheetFin IS NOT**, and it is the one row a reader must not skim.  Its S ratio is
-#  0.14, i.e. ABOVE the 0.10 anchor, so Rule PROP hands it a LARGER absolute S increase
-#  (0.1204 -> 0.1680) -- and FIN-3 spends none of it (capital adequacy is still invisible to
-#  the pipeline, and `interestCoverage` is declared OOD there: for a bank, interest expense is
-#  a cost of goods, not a financing charge).  That extra budget comes OUT OF THE P/D RESIDUAL,
-#  so FIN-3's cheapness and durability fall by more than the proportional 3.7% (0.3194 ->
-#  0.3001, i.e. -6.0%) and its reported unpriced risk rises 12.04% -> 16.80%.  That is Rule UNM
-#  working as designed -- the solvency question got more expensive everywhere, and the one
-#  cohort that cannot answer it honestly reports more of its budget unspent -- but it IS a real
-#  re-ranking of the FIN-3 side-list, not a rescale.
+#  Rule PROP gives each cohort its own N RATIO to the anchor, and those ratios are NOT all
+#  1.0: Mining runs the cycle block HOT (its whole reason for existing) and REIT runs it cold.
+#  So raising the anchor's W_N moves each cohort's N by a DIFFERENT absolute amount and the
+#  residual redistribution differs per cohort:
+#      Mining   N 0.1822 -> 0.2078  (+0.0256, the largest -- and it is what pushes `CycleHeat`
+#                                    PAST `earnYield` there; see the Mining exemption test)
+#      REIT     N 0.0994 -> 0.1133  (+0.0139, the smallest)
+#      FinManager N 0.1159 -> 0.1322;  BalanceSheetFin N 0.1325 -> 0.1511
+#      InvestmentVehicle UNCHANGED -- its N ratio is 0, the cycle block is out of domain
+#                                    there, so the anchor's N cannot reach it at all.
+#
+#  **BalanceSheetFin** still carries the S story from 2026-08-06 on top of this: its S ratio is
+#  0.14, ABOVE the 0.10 anchor, so Rule PROP hands it a LARGER absolute S budget than the
+#  proportional share -- and FIN-3 spends none of it (capital adequacy is invisible to the
+#  pipeline, and `interestCoverage` is declared OOD there: for a bank, interest expense is a
+#  cost of goods, not a financing charge).  Its reported unpriced risk is 16.46%, and every
+#  cohort's P and D fall again to pay for the cycle.  Rule UNM working as designed.
 DESIGN_COHORT_BUDGETS = {
-    'Mining':            {'P': 0.2625, 'R': 0.1656, 'N': 0.1822, 'D': 0.1802,
-                          'S': 0.1200, 'M': 0.0414, 'C': 0.0481},
-    'REIT':              {'P': 0.2503, 'R': 0.1904, 'N': 0.0994, 'D': 0.2503,
-                          'S': 0.1200, 'M': 0.0414, 'C': 0.0481},
+    'Mining':            {'P': 0.2479, 'R': 0.1623, 'N': 0.2078, 'D': 0.1766,
+                          'S': 0.1176, 'M': 0.0406, 'C': 0.0472},
+    'REIT':              {'P': 0.2473, 'R': 0.1866, 'N': 0.1133, 'D': 0.2473,
+                          'S': 0.1176, 'M': 0.0406, 'C': 0.0472},
     'InvestmentVehicle': {'P': 0.5500, 'R': 0.1500, 'N': 0.0000, 'D': 0.0000,
                           'S': 0.1500, 'M': 0.1500, 'C': 0.0000},
-    'FinManager':        {'P': 0.2586, 'R': 0.1490, 'N': 0.1159, 'D': 0.2586,
-                          'S': 0.1200, 'M': 0.0497, 'C': 0.0481},
-    'BalanceSheetFin':   {'P': 0.3001, 'R': 0.0662, 'N': 0.1325, 'D': 0.3001,
-                          'S': 0.1680, 'M': 0.0331, 'C': 0.0000},
+    'FinManager':        {'P': 0.2541, 'R': 0.1461, 'N': 0.1322, 'D': 0.2541,
+                          'S': 0.1176, 'M': 0.0487, 'C': 0.0472},
+    'BalanceSheetFin':   {'P': 0.2934, 'R': 0.0649, 'N': 0.1511, 'D': 0.2934,
+                          'S': 0.1646, 'M': 0.0325, 'C': 0.0000},
 }
 
 
@@ -273,11 +338,15 @@ def test_the_P_floor_is_SLACK_everywhere_and_that_is_recorded_not_assumed():
     deliberately, rather than letting the clamp absorb it."""
     for label in sw.COHORT_LABELS:
         p = sw._cohort_budgets(label)['P']
-        assert p > sw.GENERAL_BUDGETS['P'] + 1e-9 or label == 'REIT', (label, p)
-    #  REIT lands EXACTLY on the general 0.26 -- by arithmetic coincidence of its own ratios,
-    #  not by the clamp.  Pinned separately so "equal to the floor" is not read as "clamped".
-    assert sw._cohort_budgets('REIT')['P'] == pytest.approx(sw.GENERAL_BUDGETS['P'], abs=1e-12)
-    assert sw._cohort_budgets('Mining')['P'] == pytest.approx(0.2625, abs=5e-5)
+        assert p > sw.GENERAL_BUDGETS['P'] + 1e-9, (label, p)
+    #  REIT USED TO LAND EXACTLY ON the general P -- by arithmetic coincidence of its own
+    #  ratios, not by the clamp -- and the 2026-08-10 N re-budget broke that coincidence: REIT
+    #  runs the cycle block COLD (N ratio below the anchor), so raising the anchor's N takes
+    #  proportionally LESS from REIT's residual than from the general vector's, and its P now
+    #  sits marginally ABOVE the floor at 0.2473 vs 0.2453.  Recorded rather than deleted: the
+    #  old equality was worth pinning, and its ending is worth stating.
+    assert sw._cohort_budgets('REIT')['P'] == pytest.approx(0.2473, abs=5e-5)
+    assert sw._cohort_budgets('Mining')['P'] == pytest.approx(0.2479, abs=5e-5)
 
 
 def test_Rule_PROP_puts_the_residual_on_P_and_D_in_the_GENERAL_P_to_D_ratio():
@@ -323,6 +392,12 @@ def test_REIT_UNPARKS_its_survival_budget_and_FIN3_still_holds_ITS_unspent():
     16.80%) instead of being spent -- which is Rule UNM's point: a question that got more
     expensive and that the cohort still cannot answer means MORE unpriced risk reported.
 
+    THE ABSOLUTE NUMBERS MOVED WITH THE 2026-08-10 N RE-BUDGET and the STRUCTURE did not,
+    which is the distinction to keep: every cohort's S budget is rescaled by the same
+    proportional take that paid for `CycleHeat` (0.120 -> 0.117607 at the anchor), so the
+    tier SHAPE, the OOD zeros and the unpriced-risk story are all unchanged -- only the
+    magnitudes are one multiplication smaller.
+
     THE LIMIT ON THE REIT HALF, recorded here because no assertion can carry it: interest
     coverage INSTRUMENTS the refinancing question, it does not ANSWER it.  A REIT's real
     solvency risk is the maturity wall and the LTV covenant, and a name that covers today's
@@ -330,14 +405,22 @@ def test_REIT_UNPARKS_its_survival_budget_and_FIN3_still_holds_ITS_unspent():
     instrument", not "REIT leverage risk is priced"."""
     reit = sw.COHORT_WEIGHTS_RAW['REIT']
     assert reit['currentRatio'] == 0.0 and reit['Altman-Z'] == 0.0
-    assert reit['interestCoverage'] == pytest.approx(0.120, abs=1e-12), \
+    assert reit['interestCoverage'] == pytest.approx(sw._cohort_budgets('REIT')['S'],
+                                                     abs=1e-12), \
         'the lone Tier-1 member takes the whole S budget'
+    #  Read from the cohort's own budget rather than transcribed, so a proportional re-budget
+    #  (which is what 2026-08-10 was) cannot break a STRUCTURAL assertion.  The magnitude is
+    #  pinned once, beside it, so a non-proportional change still fails.
+    assert reit['interestCoverage'] == pytest.approx(0.117607, abs=5e-6)
     assert sw.COHORT_UNPRICED_RISK['REIT'] == pytest.approx(0.0, abs=1e-12)
 
     fin3 = sw.COHORT_WEIGHTS_RAW['BalanceSheetFin']
     assert fin3['interestCoverage'] == 0.0, 'OOD: a bank pays interest as a cost of goods'
     assert fin3['currentRatio'] == 0.0 and fin3['Altman-Z'] == 0.0
-    assert sw.COHORT_UNPRICED_RISK['BalanceSheetFin'] == pytest.approx(0.1680, abs=5e-5)
+    #  16.80% -> 16.46% on 2026-08-10: FIN-3's held S budget rides the same proportional take
+    #  as everything else, so the unspent share falls slightly.  The FACT it is unspent, which
+    #  is what this test is about, is unchanged.
+    assert sw.COHORT_UNPRICED_RISK['BalanceSheetFin'] == pytest.approx(0.1646, abs=5e-5)
 
     for label in ('Mining', 'FinManager', 'InvestmentVehicle'):
         assert sw.COHORT_UNPRICED_RISK[label] == pytest.approx(0.0, abs=1e-12), label
@@ -347,10 +430,19 @@ def test_interestCoverage_carries_S_TIER_1_wherever_the_question_APPLIES():
     """The other half of the same decision, asserted rather than left as a side effect: it is a
     GENERAL metric, so Mining and FIN-2 inherit it and their S blocks restructure from tiers
     {2,3} to {1,2,3}.  `currentRatio` goes from two-thirds of S to one-third of it in both --
-    a real shift in those two side-lists, beyond the proportional rescale."""
-    for label, want in (('Mining', 0.060), ('FinManager', 0.060), ('REIT', 0.120)):
+    a real shift in those two side-lists, beyond the proportional rescale.
+
+    THE SHARES ARE ASSERTED AS SHARES OF THE COHORT'S OWN S BUDGET (2026-08-10), not as
+    transcribed decimals: the N re-budget rescaled every S budget proportionally, and a
+    STRUCTURAL claim ("the Tier-1 member takes 3/6 of S, or all of it") must not have to be
+    re-typed every time an unrelated block moves.  The magnitudes are pinned once below."""
+    for label, share in (('Mining', 0.5), ('FinManager', 0.5), ('REIT', 1.0)):
         assert sw.COHORT_WEIGHTS_RAW[label]['interestCoverage'] == pytest.approx(
-            want, abs=1e-12), label
+            share * sw._cohort_budgets(label)['S'], abs=1e-12), label
+    for label, want in (('Mining', 0.058803), ('FinManager', 0.058803),
+                        ('REIT', 0.117607)):
+        assert sw.COHORT_WEIGHTS_RAW[label]['interestCoverage'] == pytest.approx(
+            want, abs=5e-6), label
     for label in ('Mining', 'FinManager'):
         v = sw.COHORT_WEIGHTS_RAW[label]
         assert v['interestCoverage'] > v['currentRatio'] > v['Altman-Z'], label
@@ -366,8 +458,10 @@ def test_FIN3_declares_ROE_above_earnYield_on_purpose():
     rather than becoming a surprise."""
     v = sw.COHORT_WEIGHTS_RAW['BalanceSheetFin']
     assert v['returnOnEquity'] > v['earnYield']
-    assert v['returnOnEquity'] == pytest.approx(0.180047, abs=5e-6)
-    assert v['RoA'] == pytest.approx(0.120032, abs=5e-6)
+    #  Rescaled by the 2026-08-10 N take (x 0.98005780 on FIN-3's D budget); the ORDERING
+    #  above is the decision, these are its magnitudes.
+    assert v['returnOnEquity'] == pytest.approx(0.176058, abs=5e-6)
+    assert v['RoA'] == pytest.approx(0.117372, abs=5e-6)
     assert v['returnOnCapitalEmployed'] == 0.0, 'OOD: no meaningful capital-employed base'
     assert v['grossProfitMargin'] == 0.0, 'OOD: no gross margin exists'
 
@@ -478,7 +572,11 @@ def test_the_allow_list_is_TIED_to_the_weight_vector_now():
     #  The number moved because the page got better, not because the guard was loosened.
     #  general 0.897 -> 0.9006 on 2026-08-06: `interestCoverage` is on the allow-list and
     #  carries 0.060, so the page explains a further 0.4pp of its own score.
-    assert covered['general'] == pytest.approx(0.9006, abs=0.005)
+    #  general 0.9006 -> 0.8946 on 2026-08-10: the N re-budget moved weight ONTO `CycleHeat`
+    #  and `EPStoEPSmean`, and `CycleHeat` is `_ALLOW_LIST_EXEMPT`, so the page explains 0.6pp
+    #  LESS of its own score.  That is the honest consequence of paying for the cycle block --
+    #  not a regression in the page, which is unchanged.
+    assert covered['general'] == pytest.approx(0.8946, abs=0.005)
     #  and the residual is NAMED rather than merely tolerated
     for pool, (_cov, missing) in rr.allow_list_coverage().items():
         for m in missing:

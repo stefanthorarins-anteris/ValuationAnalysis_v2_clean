@@ -400,17 +400,31 @@ def postBoWrapper(dmdic, as_of=None):
     # GUARDED like the carve-out, and for the same reason: the veto must never be able to destroy
     # the main deliverable.  A failure (e.g. an older panel with no `uInterestCoverage` column)
     # degrades to the UN-VETOED pool with a loud warning, never to a crash.
+    #  --- THE AD-HOC PENALTY BUCKET (CEO, 2026-08-10) ---------------------------------
+    #  ONE book per run, filled by the veto layer (which is the only thing that currently
+    #  raises contributions) and handed to EVERY Stage-2 pool below.  It is created OUTSIDE
+    #  the try so that a veto failure leaves an EMPTY book rather than an undefined name --
+    #  a run with no veto has no data-gap findings, which is the honest state, and Stage-2
+    #  then scores a zero penalty column rather than no column at all.
+    import adhoc_penalty as ap
+    penalty_book = ap.PenaltyBook()
+
     veto_reports = {}
     _gp_pre_veto = gp_count
     try:
         import stage1_veto as sv
-        general_scores, _vrep = sv.apply_veto(general_scores, bmdf, pool_label='general')
+        #  `cdx_df` is passed for the AD-HOC BUCKET ONLY -- it decides whether a refused row
+        #  is a data problem (`stage1_veto.REFUSAL_CORROBORATOR`) and reaches no verdict.
+        #  Without it the bucket cannot judge a refusal and SAYS SO rather than charging zero.
+        general_scores, _vrep = sv.apply_veto(general_scores, bmdf, pool_label='general',
+                                              penalty_book=penalty_book, cdx_df=cdx_df)
         veto_reports['general'] = _vrep
         if carve is not None and _vrep['enabled']:
             #  ONE call per cohort: it returns (kept, report) together, so the report's `n_in`
             #  is the PRE-veto count.  Calling it twice would report the post-veto pool as the
             #  input and every cohort would look like it ejected nobody.
-            _vetoed = {lab: sv.apply_veto(cs, bmdf, pool_label=lab)
+            _vetoed = {lab: sv.apply_veto(cs, bmdf, pool_label=lab,
+                                          penalty_book=penalty_book, cdx_df=cdx_df)
                        for lab, cs in carve['cohorts'].items()}
             carve['cohorts'] = {lab: kept for lab, (kept, _r) in _vetoed.items()}
             veto_reports.update({lab: r for lab, (_k, r) in _vetoed.items()})
@@ -421,6 +435,15 @@ def postBoWrapper(dmdic, as_of=None):
         print('WARNING: STAGE-1 VETO DID NOT RUN -- pools are UN-VETOED this run (%s: %s)'
               % (type(_e).__name__, _e), flush=True)
         veto_reports = {}
+
+    #  SHIP THE BUCKET AS EVIDENCE, at the repo ROOT (CEO, 2026-08-10 -- the root-level
+    #  artifacts travel, `output/` demonstrably did not on the 2026-08-10 run).  Written
+    #  BEFORE Stage-2 rather than after, so the record of what the bucket charged survives
+    #  even if the scoring stage later fails.
+    _pen_csv = ap.write_evidence_csv(penalty_book)
+    print('AD-HOC PENALTY BUCKET: %d contribution(s) across %d name(s); evidence -> %s'
+          % (len(penalty_book), len(penalty_book.sources), _pen_csv or '<not written>'),
+          flush=True)
 
     # --- SHORT-POOL RE-CHECK, AFTER THE VETO (reviewer, 2026-08-05) -------------
     # THE DEFECT THIS CLOSES: the carve-out's `<100` warning above fires on the PRE-veto
@@ -460,7 +483,7 @@ def postBoWrapper(dmdic, as_of=None):
                  and 'name' in getattr(_tdf, 'columns', []) else {})
     rankdic = pbr.postBoScoreRanking(BoM_dftop100, BoS_dftop100, cdx_dftop100, dmdic['baseurl'], dmdic['api_key'],
                                      dmdic['period'],n,as_of=as_of,names=_names,
-                                     pool_label='general')
+                                     pool_label='general', penalty_book=penalty_book)
 
     # UNWINNED FILTER: -1.5 z-score pass-filter on six metrics (earnYield, grahamNumberToPrice,
     # RoA, EPStoEPSmean, freeCashFlowYield, revenueGrowth). Computed and stored in resdic but
@@ -487,7 +510,12 @@ def postBoWrapper(dmdic, as_of=None):
                           # per-pool veto report (see stage1_veto). {} when the flag is off or
                           # the layer did not run -- so a reader can tell "no ejections" from
                           # "the veto was not applied", which a bare count could not.
-                          'stage1_veto': veto_reports}}
+                          'stage1_veto': veto_reports,
+                          #  The AD-HOC PENALTY BUCKET as data (CEO, 2026-08-10), beside the
+                          #  dated CSV.  Itemised, so a penalised name in a saved resdic can be
+                          #  explained without the CSV and without re-running the veto.
+                          'adhoc_penalty': penalty_book.itemised(),
+                          'adhoc_penalty_weight': ap.WEIGHT}}
 
     # --- Side-lists: guarded best-effort, AFTER resdic is complete -------------
     # Only runs if the partition succeeded.  Per-cohort try/except so one
@@ -525,7 +553,8 @@ def postBoWrapper(dmdic, as_of=None):
                 carveout_sidelists[label] = pbr.postBoScoreRanking(bm, head, cd, dmdic['baseurl'], dmdic['api_key'],
                                                                    dmdic['period'], n, as_of=as_of,
                                                                    weight_override=wov,
-                                                                   pool_label=label)
+                                                                   pool_label=label,
+                                                                   penalty_book=penalty_book)
             except Exception as e:
                 print(f"CARVE-OUT side-list '{label}' FAILED ({type(e).__name__}: {e}); "
                       f"skipping this side-list (main output unaffected).", flush=True)
@@ -797,6 +826,7 @@ def writeResWrapper(resdic):
         flag_df = writeBoAggToCSV(fb_df, mscore, cscore, baseurl, api_key, ntopagg,
                                   fname_AggScoretop, flag_df,
                                   raw_df=resdic.get('postScoreMetric_raw'),
+                                  cdx_df=resdic.get('cdx_dftop100'),
                                   universe_stamp={
                                       'universe': resdic.get('universe'),
                                       'universe_fingerprint':
@@ -953,7 +983,7 @@ def writeResWrapper(resdic):
                       #  is the 2026-08-07 post-mortem rule (the allowlist note in
                       #  Sbocker.transfer_outputs_to_drive), and FX is
                       #  now a live input that can differ run to run or fail outright.
-                      #  `fx_rates_as_of` + the dated output/FxRates_*.csv are what make
+                      #  `fx_rates_as_of` + the dated FxRates_*.csv are what make
                       #  the two distinguishable on the receiving machine.
                       #
                       #  READ FROM MODULE STATE, NEVER FROM resdic: on the -loadbometric /
@@ -1016,11 +1046,99 @@ def writeResWrapper(resdic):
     # nothing here changes scoring/ranking/forensic output.
     return deliverables
 
+def _pe_panel_table(cdx_df):
+    """{source: (newest earningsYield, rows-per-year)} from the run's OWN panel.
+
+    Newest row per source, taken by DATE rather than by arrival order, because nothing on
+    this path guarantees the ingestion order (the same reason Stage-1 and Stage-2 both
+    re-sort at their own boundary).  Returns {} on any failure -- this feeds a REPORT column,
+    so it degrades to the vendor fallback rather than costing the CSV.
+    """
+    try:
+        if cdx_df is None or 'earningsYield' not in getattr(cdx_df, 'columns', []):
+            return {}
+        import reporting_period as _rp
+        df = cdx_df.copy()
+        df['date'] = pd.to_datetime(df['date'], errors='coerce')
+        df = df.sort_values(['source', 'date'], ascending=[True, False])
+        newest = df.groupby('source', sort=False).head(1)
+        try:
+            freq = _rp.frequency_by_source(df, verbose=False)
+        except Exception:
+            freq = None
+        out = {}
+        for _, r in newest.iterrows():
+            s = r['source']
+            try:
+                rpy = _rp.rows_per_year(freq, s) if freq is not None else _rp.DEFAULT_ROWS_PER_YEAR
+            except Exception:
+                rpy = _rp.DEFAULT_ROWS_PER_YEAR
+            out[s] = (pd.to_numeric(r.get('earningsYield'), errors='coerce'), float(rpy))
+        return out
+    except Exception:
+        return {}
+
+
+def _pe_ratio_from_panel(table, symb):
+    """The published `PE-ratio` for `symb`, COMPUTED, or None if the panel cannot answer.
+
+    THE DEFECT THAT FORCED THIS (2026-08-10).  The column was FMP's `priceEarningsRatio`
+    read straight off `v3/ratios/<symb>` and printed.  On the 2026-08-10 shipped top-100
+    `086280.KS` displayed **66.28 at RANK 4** while the panel's own newest row gives
+    `earningsYield = 0.021864` per quarter -> an annualised P/E of **11.43**, and
+    `price / epsTTM = 207,500 / 22,306 = 9.30`.  Two independent readings off our own data
+    agree to within a third; the vendor's is 5.8x either of them.
+
+    IT IS NOT A COLUMN-WIDE ERROR, AND THAT WAS CHECKED BEFORE CHANGING ANYTHING: across the
+    same 100 names the displayed value tracks the panel's earnings yield with a MEDIAN RATIO
+    OF 1.000.  So the column is right about the population and wrong about individual cells --
+    `086280.KS` at 5.80x and `281820.KS` at 3.94x, with the next-largest deviation 1.43x.
+    (The brief that raised this called it a single isolated cell; there are TWO past 1.5x.)
+
+    WHY COMPUTE RATHER THAN PATCH THE CELL.  A per-name correction would be a hard-coded
+    number with no rule behind it, and the next bad cell would arrive unannounced.  The house
+    rule is the general one: the vendor supplies RAW INPUTS, we compute the derived quantity.
+    Here the reconstruction is free -- the panel already carries `earningsYield`, which is the
+    same FIELD that Stage-2's `earnYield` is built from.
+
+    THEY ARE NOT THE SAME OBJECT, AND AN EARLIER VERSION OF THIS NOTE SAID THEY WERE
+    (corrected, reviewer S3).  `earnYield` is a SIXTEEN-QUARTER windowed mean of that field
+    (`stage2_metrics.STAGE2_METRIC_SPEC` declares it WINDOW_SCORING); this is the NEWEST ROW
+    only.  So the published P/E and the scored cheapness share an input and a sign convention,
+    not a value -- a name whose newest quarter is unrepresentative can read cheap here and
+    ordinary in the score.  Newest-row is the right basis for a REPORT column (it is the P/E a
+    reader would compute from today's statements) and the wrong one for a score, which is why
+    the two differ on purpose.
+
+    THE BASIS, STATED: `P/E = 1 / (rpy * earningsYield)` on the newest row.  `rpy` is the
+    source's own rows-per-year (4 quarterly, 2 semi-annual), so a semi-annual filer's
+    per-period yield is annualised by 2 rather than by a hard-coded 4 -- the same treatment
+    every other flow quantity in this pipeline gets.
+
+    REFUSED (None -> the vendor fallback, then 'NaN') when the yield is missing or NOT
+    POSITIVE.  A loss-maker has no meaningful P/E; publishing a negative one invites it to be
+    read as "cheap", which is the sign-inversion class this repo keeps finding.  `price /
+    epsTTM` is deliberately NOT used as a second fallback: it is a DIFFERENT basis, and
+    silently mixing two bases in one column is how a column stops meaning one thing.
+    """
+    try:
+        ey, rpy = table.get(symb, (None, None))
+        if ey is None or not np.isfinite(ey) or ey <= 0 or not rpy:
+            return None
+        return 1.0 / (float(rpy) * float(ey))
+    except Exception:
+        return None
+
+
 def writeBoAggToCSV(fb_df, mscore, cscore, baseurl, api_key, ntopagg, fname_AggScoretop,
-                    flag_df=None, raw_df=None, universe_stamp=None):
+                    flag_df=None, raw_df=None, universe_stamp=None, cdx_df=None):
     """raw_df : resdic['postScoreMetric_raw'] -- the UNWEIGHTED, UN-NORMALISED metric
     frame.  Required to publish any metric under its own name: `fb_df` is postRank,
-    whose metric columns are all `z x w` (see the CycleHeat note below)."""
+    whose metric columns are all `z x w` (see the CycleHeat note below).
+
+    cdx_df : resdic['cdx_dftop100'] -- the run's OWN fundamentals panel for these names.
+    Used to COMPUTE the published `PE-ratio` instead of consuming FMP's, see
+    `_pe_ratio_from_panel`."""
     fbdf_tocsv = fb_df.head(ntopagg)
     symblist = list(fbdf_tocsv['source'])
     #BoComp_tocsv = pd.DataFrame(columns=['source','currentRatio','dividendYield','grahamNumberToPrice','price','beta',
@@ -1040,6 +1158,11 @@ def writeBoAggToCSV(fb_df, mscore, cscore, baseurl, api_key, ntopagg, fname_AggS
     pEratioVec = []
     mscoreVec = []
     cscoreVec = []
+    #  The published P/E is COMPUTED from this table, not read off the vendor -- see
+    #  `_pe_ratio_from_panel`.  Built ONCE for the whole CSV rather than per name: it is a
+    #  groupby over the panel, and doing it inside the loop would be 100 passes over it.
+    _pe_panel = _pe_panel_table(cdx_df)
+    _pe_vendor_fallback = []
     # Note: Bulk endpoints require higher subscription tier, using individual API calls only
     profile_bulk_dict = {}
     rating_bulk_dict = {}
@@ -1215,13 +1338,28 @@ def writeBoAggToCSV(fb_df, mscore, cscore, baseurl, api_key, ntopagg, fname_AggS
             else:
                 sectorVec.append(temp_resp_pr[0]['sector'])
             
-            # Check priceEarningsRatio
-            if len(temp_resp_fr) == 0 or 'priceEarningsRatio' not in temp_resp_fr[0]:
+            # PE-ratio -- COMPUTED FROM OUR OWN PANEL, NOT READ OFF THE VENDOR.
+            # See `_pe_ratio_from_panel` for the defect that forced this and the basis chosen.
+            # The vendor's `priceEarningsRatio` is still READ, but only as a FALLBACK for a
+            # name the panel cannot answer for, and it is labelled as such in the log.
+            _pe_ours = _pe_ratio_from_panel(_pe_panel, symb)
+            if _pe_ours is not None:
+                pEratioVec.append("{:.4f}".format(_pe_ours))
+            elif len(temp_resp_fr) == 0 or 'priceEarningsRatio' not in temp_resp_fr[0]:
                 pEratioVec.append('NaN')
             else:
                 perat = temp_resp_fr[0]['priceEarningsRatio']
-                if type(perat) == int or type(perat) == float:
+                #  THE FALLBACK TAKES THE SAME SIGN TEST AS THE COMPUTED VALUE (reviewer S3,
+                #  2026-08-10).  Without it the refusal was defeated by its own fallback: our
+                #  own P/E is refused precisely when `earningsYield <= 0`, and the vendor's
+                #  P/E on that same name is then NEGATIVE for the same reason -- so 100% of
+                #  the refusing population got published exactly what the refusal exists to
+                #  prevent.  MEASURED on the shipped 2026-08-10 top-100: one name refuses,
+                #  `NEXN` (`earningsYield = -0.013804`), and its published `PE-ratio` was
+                #  **-18.1111**.  A negative P/E invites "cheap"; a loss-maker has none.
+                if (type(perat) == int or type(perat) == float) and perat > 0:
                     pEratioVec.append("{:.4f}".format(perat))
+                    _pe_vendor_fallback.append(symb)
                 else:
                     pEratioVec.append('NaN')
                 
@@ -1303,6 +1441,17 @@ def writeBoAggToCSV(fb_df, mscore, cscore, baseurl, api_key, ntopagg, fname_AggS
                       'columns written as NaN: %s'
                       % (len(_rows_degraded), len(BoComp_tocsv),
                          ', '.join(map(str, _rows_degraded))))
+    #  SAY HOW MANY CELLS THE VENDOR STILL SUPPLIED.  A silently-mixed column is the thing
+    #  this change exists to stop, so the count of fallback cells is printed rather than left
+    #  to be inferred from the numbers.
+    if _pe_vendor_fallback:
+        gdg.bar_print(
+            "PE-ratio: %d of %d name(s) fell back to FMP's `priceEarningsRatio` because our "
+            "own panel could not answer (no positive earningsYield on the newest row): %s. "
+            "Every OTHER cell is COMPUTED as 1/(rpy x earningsYield) from the run's own "
+            "panel -- see postBo._pe_ratio_from_panel."
+            % (len(_pe_vendor_fallback), len(BoComp_tocsv),
+               ', '.join(map(str, _pe_vendor_fallback[:20]))))
     BoComp_tocsv['price'] = priceVec
     BoComp_tocsv['PE-ratio'] = pEratioVec
     BoComp_tocsv['beta'] = betaVec

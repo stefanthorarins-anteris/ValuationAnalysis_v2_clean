@@ -600,7 +600,10 @@ def apply_boundary_imputation(df, values, boundary, admissible=None):
 #  whatever earnings do.  The four measured cells over the 61,481 head(8) rows of the
 #  2026-07-17 CORRECTED panel and the required behaviour of each:
 #
-#      netDebt > 0, EBITDA > 0   33,615 rows   test netDebt/EBITDA < 1.0   (unchanged)
+#      netDebt > 0, EBITDA > 0   33,615 rows   test netDebt/EBITDA < the BAR (1.0x when
+#                                                     this table was measured; 3.0x since
+#                                                     2026-08-10 -- see NET_DEBT_TO_EBITDA_BAR.
+#                                                     The CELL is unchanged, the LEVEL moved.)
 #      netDebt < 0, EBITDA > 0   11,844 rows   PASS  (already passed via a negative ratio)
 #      netDebt > 0, EBITDA <= 0   6,324 rows   FAIL  (debt, no earnings -- correct today, kept
 #                                                     as a REFUSAL so the NaN accounting still
@@ -649,22 +652,80 @@ def apply_boundary_imputation(df, values, boundary, admissible=None):
 #  THE FLOW LEG IS THIS FUNCTION'S RESPONSIBILITY NOW.  `build_bometric_rows` applies
 #  `rp.stage1_flow_factor` only inside its ratio loop, and a `special` never enters that loop.
 #  `netDebtToEBITDA` is ('flow_den', 'annualize') -- a net-debt STOCK over ONE PERIOD's EBITDA
-#  -- so the factor (0.25 quarterly, 0.5 semi-annual) is what makes the `< 1.0` bar an ANNUAL
-#  one.  Dropping it here would have raised the bar 4x for every name.
+#  -- so the factor (0.25 quarterly, 0.5 semi-annual) is what makes the bar an ANNUAL one.
+#  Dropping it here would have raised the bar 4x for every name.
 #
 #  THE EMITTED COLUMN IS A VERDICT-BEARING QUANTITY, NOT A LEVERAGE RATIO.  Sign +1, scored as
 #  `value > 0`:
-#      +1.0        branch 1 admission (net cash).  A SENTINEL -- the magnitude means nothing.
-#      1.0 - r     branch 2, the headroom below the 1.0x bar; > 0 iff r < 1.  Informative.
+#      +1.0        branch 1 admission (net cash).  A SENTINEL -- the magnitude means nothing,
+#                  and it is deliberately NOT re-based on the bar: nothing downstream reads the
+#                  magnitude, and moving a sentinel with a threshold invites someone to.
+#      bar - r     branch 2, the headroom below the bar; > 0 iff r < bar.  Informative.
+#                  `bar` is NET_DEBT_TO_EBITDA_BAR = 3.0x since 2026-08-10 (was 1.0x).
 #      NaN         branch 3 / unrecoverable, refused -> scores as a fail, as today.
 #  Nothing downstream reads this column except `calcScore.calcByTier`'s sign test and the NaN
 #  accounting, so a mixed sentinel/margin column is safe -- but do NOT start reading it as a
 #  ratio.
-def net_debt_three_branch(df, rpy=rp.DEFAULT_ROWS_PER_YEAR):
+#  --- THE BAR: 3.0x ANNUALISED NET DEBT / EBITDA  (CEO, 2026-08-10) -----------------------
+#  RAISED FROM 1.0x.  The CEO chose this over the alternative on the table (relabelling the
+#  flag as something other than a solvency test), so the flag KEEPS ITS SOLVENCY LABEL and the
+#  level is what moves.
+#
+#  1.0x WAS NOT A SOLVENCY BAR, IT WAS A NEAR-DEBT-FREE BAR.  On the 2026-08-10 CUR3K panel it
+#  ejected 549 of the 1,388 general names -- 80% of them on FULLY-POPULATED numbers at a median
+#  3.02x -- so the modal ejected name was an ordinary company with ordinary leverage, not a
+#  distressed one.  A veto flag whose modal catch is "normal" is measuring the wrong thing.
+#
+#  3.0x IS WHAT "SERVICEABLE LEVERAGE" MEANS IN CREDIT PRACTICE: leveraged-loan and
+#  investment-grade maintenance covenants sit at ~3.0-3.5x net debt / EBITDA, and distress is
+#  conventionally read at 5-6x.  So 3.0 is the CONSERVATIVE end of the covenant band -- the
+#  flag still fails a name the credit market itself would call over-levered, and no longer
+#  fails one it would call ordinary.  It is a bar with a stated referent, which is more than
+#  1.0x ever had.
+#
+#  IT IS A `special` COLUMN, SO IT MOVES TWO THINGS AT ONCE -- SAY SO RATHER THAN DISCOVER IT.
+#  `netDebtToEBITDA` is BOTH a `stage1_veto` flag AND a Stage-1 SCORING criterion (Tier A,
+#  w = 0.75, `createDicts.BoMetric_special_dict`), and both read the SAME emitted column
+#  through the same `value > 0` test.  Loosening the bar therefore (a) un-ejects names from the
+#  veto and (b) raises the Stage-1 score of every name whose annualised ratio lies in
+#  [1.0, 3.0), which changes WHICH names reach the top-100 at all.  That coupling is inherent
+#  to a `special` and is not a defect -- but a reader who expects only (a) will mis-read the
+#  churn, so it is stated here.
+#
+#  WHAT MUST NOT MOVE: THE `EBITDA <= 0` AND NET-DEBT BRANCH.  Branch 3 refuses a row that has
+#  net DEBT and no EBITDA, and `stage1_veto.FIELD_EVIDENCE['netDebtToEBITDA'] = 'counts'` turns
+#  that refusal into a NON-PASS.  It is untouched by construction: the bar appears ONLY in
+#  branch 2's margin, and branch 2 is gated on `ebitda > 0`.  Do not "generalise" the bar into
+#  branch 1 or branch 3.
+#
+#  ITS VALUE, MEASURED RATHER THAN ASSERTED (corrected 2026-08-10, reviewer).  An earlier
+#  version of this note called the branch "the flag's most valuable catch" that "exists
+#  nowhere else in the veto set (11 names on this panel)".  The 11 is right and the rest was
+#  not.  MEASURED on the 2026-08-10 CUR3K general pool at the 3.0x bar: 11 sources have a
+#  WHOLLY refused `netDebtToEBITDA` window (net debt, no EBITDA) -- and **0 of the 11 are
+#  ejected by this flag alone**; every one of them also fails another flag.  So the branch's
+#  MARGINAL contribution to the ejection set is currently ZERO, and the honest reason to keep
+#  it is that it is the only flag that ASKS the question, not that it is catching names
+#  nothing else catches.
+#  SEPARATELY, and not to be confused with the above: across the WHOLE flag the bar move
+#  un-ejects 350 names (549 -> 199 failures), of which **251 were ejected by this flag ALONE**
+#  (unique catches 334 -> 83).  That is the real cost of the level change, it is much larger
+#  than the branch figure, and the two must never be quoted interchangeably.
+NET_DEBT_TO_EBITDA_BAR = 3.0
+
+
+def net_debt_three_branch(df, rpy=rp.DEFAULT_ROWS_PER_YEAR,
+                          bar=None):
     """The three-branch leverage verdict for one source's frame (newest-first).
 
     Returns a float Series positionally aligned to `df`: > 0 pass, <= 0 fail, NaN refused.
+
+    `bar` -- the annualised net-debt/EBITDA level branch 2 tests against, defaulting to
+    `NET_DEBT_TO_EBITDA_BAR` (3.0x since 2026-08-10).  A parameter ONLY so an offline A/B can
+    measure a level without mutating module state, exactly as `stage1_veto.apply_veto` takes
+    `enabled=`/`pools=`; the production path passes nothing.
     """
+    bar = NET_DEBT_TO_EBITDA_BAR if bar is None else float(bar)
     r = pd.to_numeric(df['netDebtToEBITDA'], errors='coerce')
     ebitda = (pd.to_numeric(df['operatingIncome'], errors='coerce')
               + pd.to_numeric(df['depreciationAndAmortization'], errors='coerce'))
@@ -677,7 +738,7 @@ def net_debt_three_branch(df, rpy=rp.DEFAULT_ROWS_PER_YEAR):
 
     #  BRANCH 2 -- the ordinary debt-service test, on the ANNUALISED ratio.
     factor = rp.stage1_flow_factor('netDebtToEBITDA', rpy)
-    margin = 1.0 - (r * factor)
+    margin = bar - (r * factor)
 
     #  BRANCH 3 is the fall-through: neither net cash nor admissible EBITDA -> NaN.
     out = pd.Series(np.nan, index=df.index, dtype='float64')

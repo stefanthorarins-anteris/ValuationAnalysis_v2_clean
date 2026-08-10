@@ -16,6 +16,7 @@ from datetime import datetime
 import os
 
 import nan_policy as npol
+import transfer_utils as _tu   # EVIDENCE_DIR: where the run's evidence CSVs are written
 
 
 # --- cross-field plausibility thresholds (see checks 5-7 in check_price_sanity) -----
@@ -680,7 +681,7 @@ def filter_invalid_data(cdx_df, price_col='price', mcap_col='marketCap',
     # The PASS 0b status rides out on the frame's `attrs` (the same channel the Stage-2
     # frames use to declare their basis) so that `apply_data_quality_filter` -- which is
     # where this module is allowed to touch the filesystem -- can write it to
-    # `output/CurrencyExclusionStatus_<date>.csv`.  A pure filter must not write files;
+    # `CurrencyExclusionStatus_<date>.csv` (repo root since 2026-08-10).  A pure filter must not write files;
     # a status that only exists in a console line is the asymmetry F-5 is about.
     try:
         removed_df.attrs['currency_exclusion_status'] = list(_cx_status)
@@ -775,8 +776,11 @@ def save_removed_data(removed_df, filename=None, run_id=''):
         date_str = datetime.now().strftime('%Y%m%d_%H%M%S')
         filename = f"removed_data_quality_{date_str}.csv"
 
-    # Ensure output directory exists
-    output_dir = 'output'
+    # AT THE REPO ROOT since 2026-08-10 (CEO), not in `output/`: this file names the sources
+    # the data-quality filter REMOVED and the reason for each, so it is the sole on-disk
+    # record of a decision about the universe -- and `output/` demonstrably did not reach the
+    # other machine on the 2026-08-10 run.  See `transfer_utils.EVIDENCE_DIR`.
+    output_dir = _tu.EVIDENCE_DIR
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
 

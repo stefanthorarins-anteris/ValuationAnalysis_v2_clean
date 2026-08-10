@@ -96,7 +96,7 @@ def _build_parser():
                  '-run_estimation', '-transfer_dir'):
         p.add_argument(flag, **_VALUED)
     for flag in ('-newOnly', '-ingest_delisted', '-startfromlastindex',
-                 '-runbacktest', '-no_transfer'):
+                 '-runbacktest', '-no_transfer', '-force_rebuild_maps'):
         p.add_argument(flag, **_PRESENT)
     return p
 
@@ -421,6 +421,25 @@ def getDataFetchConfiguration(args):
         delisted_max_pages = 500
     startfromlastindex = 1 if ns.startfromlastindex else 0
 
+    # -force_rebuild_maps (default OFF, PRESENCE-ONLY): rebuild the four profile-derived
+    # maps even when the skip conditions say they are fine.
+    #
+    # WHY IT EXISTS (CEO, 2026-08-10).  The maps did not rebuild on the 2026-08-10 run --
+    # CORRECTLY, by the gate's own rules: all four exist, none is over the 60-day staleness
+    # bar and sector coverage is above the floor.  The consequence is that two capture
+    # changes shipped and never landed: the `price`/`currency` capture (90b0d5f) and the
+    # `isActivelyTrading`/`exchange`/`exchangeShortName`/`country`/`beta` capture (1e9d353).
+    # Every 2026-08-10 pick therefore carries `volAvg_asof = 2026-08-07`, and the liquidity
+    # distribution remains uncomputable.  Nothing forces a rebuild until 2026-10-06.
+    #
+    # AN EXPLICIT ONE-OFF, NOT SELF-MAINTAINING LOGIC -- the CEO's choice, and the reason is
+    # that this gate has ALREADY had one serious bug (the presence check covered two of the
+    # four artifacts the writer produces, so isindic/volavgdic could never be born on a
+    # machine that held the older two).  A gate with that history earns a manual override
+    # before it earns more automatic cleverness.  The 60-day staleness rule is deliberately
+    # LEFT ALONE.
+    force_rebuild_maps = 1 if ns.force_rebuild_maps else 0
+
     if _given(ns, 'portfolioTest'):
         # NOTE: stays a STRING when given, while the default is the INT -1.
         # That mixed type is pre-existing and is preserved deliberately.
@@ -570,7 +589,8 @@ def getDataFetchConfiguration(args):
                  'backtest_eval_years': backtest_eval_years, 'backtest_topn': backtest_topn,
                  'as_of': as_of, 'ingest_delisted': ingest_delisted,
                  'delisted_max_pages': delisted_max_pages,
-                 'startfromlastindex': startfromlastindex, 'transfer_dir': transfer_dir,
+                 'startfromlastindex': startfromlastindex,
+                 'force_rebuild_maps': force_rebuild_maps, 'transfer_dir': transfer_dir,
                  'transfer_disabled_reason': transfer_disabled_reason,
                  'run_estimation': run_estimation}
 

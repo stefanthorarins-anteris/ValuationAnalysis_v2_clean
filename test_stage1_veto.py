@@ -289,11 +289,23 @@ def test_the_per_source_row_floor_is_DERIVED_and_bites_at_the_same_boundary():
     assert not hasattr(sv, 'MIN_WINDOW_ROWS'), (
         'MIN_WINDOW_ROWS was re-added. It is now DERIVED from the per-flag evidence floor; a '
         'second rule that merely agrees with the first is the pair that diverges silently.')
+    #  *** THE BOUNDARY MOVED ON 2026-08-10 (CEO): "judge on available rows AND penalise the
+    #  gap".  It is `PARTIAL_MIN_EVIDENCE_ROWS`, not `WINDOW_ROWS` -- so the two sides pinned
+    #  below are one row either side of SIX, and the property being held is the same one: the
+    #  floor must abstain BELOW it and must still evaluate AT it.
+    m = sv.PARTIAL_MIN_EVIDENCE_ROWS
+    assert 1 < m <= sv.WINDOW_ROWS, (
+        'the partial-window floor must sit strictly inside (1, WINDOW_ROWS]: at 1 a source '
+        'that PASSED its only row would be ejected on it, which is the C-15 defect')
     src = {'X': {'uCurrentRatio': 0.5}}
-    kept, rep = sv.apply_veto(_scores(src), _short_panel(src, sv.WINDOW_ROWS - 1),
-                              enabled=True)
+    kept, rep = sv.apply_veto(_scores(src), _short_panel(src, m - 1), enabled=True)
     assert list(kept['source']) == ['X'] and rep['n_short_window']['uCurrentRatio'] == 1, (
-        'one row under the window must abstain')
+        'one row under the partial-window floor must abstain ENTIRELY  '
+        '(`n_short_window` counts SOURCES per flag, not rows)')
+    kept, rep = sv.apply_veto(_scores(src), _short_panel(src, m), enabled=True)
+    assert list(kept['source']) == [] and rep['n_short_window'] == {}, (
+        'AT the partial-window floor the veto must JUDGE on the rows that exist -- that is '
+        'the ruling, and it must not have disabled the veto for every short source either')
     kept, rep = sv.apply_veto(_scores(src), _short_panel(src, sv.WINDOW_ROWS), enabled=True)
     assert list(kept['source']) == [] and rep['n_short_window'] == {}, (
         'AT the full window the veto must evaluate normally -- the change must not have '
@@ -342,18 +354,132 @@ def test_the_benign_field_still_fails_on_a_full_window_of_real_evidence():
     assert list(sv.apply_veto(_scores(src), _panel(src), enabled=True)[0]['source']) == []
 
 
-def test_the_benign_field_needs_a_FULL_window_of_admissible_rows_to_fail():
-    """The floor is on EVIDENCE, not rows: 7 admissible rows of failure plus one refusal is 7
-    rows of evidence, which is under the window, so the flag abstains.  This is the tension the
-    old module docstring flagged as unresolved ("the floor counts ROWS, not NON-NaN rows")."""
+def _cdx(src, total_debt, n=8):
+    """A minimal raw panel carrying the corroborating columns.
+
+    DATED BY THE SAME EXPRESSION `_panel` USES, because the corroborator is joined on
+    (source, date): a fixture whose dates merely LOOK right would join to nothing and every
+    assertion below would pass vacuously on an empty charge."""
+    dates = [pd.Timestamp('2026-03-31') - pd.DateOffset(months=3 * i) for i in range(n)]
+    td = total_debt if isinstance(total_debt, (list, tuple)) else [total_debt] * n
+    return pd.DataFrame({'source': [src] * n, 'date': dates, 'totalDebt': td,
+                         'revenue': [100.0] * n})
+
+
+def test_the_benign_field_is_JUDGED_on_a_partial_window_and_CHARGED_for_the_gap():
+    """*** RE-AUTHORED 2026-08-10 (CEO): "judge on available rows AND penalise the gap". ***
+
+    THIS TEST USED TO ASSERT THE OPPOSITE, and the change is the ruling, not a relaxation.  It
+    was `test_the_benign_field_needs_a_FULL_window_of_admissible_rows_to_fail`: 7 admissible
+    rows of failure plus one refusal ABSTAINED, so the name passed the flag unchecked.  MEASURED
+    on the 2026-08-10 CUR3K panel, that shape is 131 of the 372 general names abstaining on
+    `uInterestCoverage` -- and a MIXED `interestExpense` window (zero on some rows, positive on
+    others, 550 sources panel-wide) cannot mean the company is debt-free.
+
+    So a 7-of-8 window is now JUDGED, and the missing row is CHARGED to the ad-hoc penalty
+    bucket.  Both halves are asserted, because either alone is the wrong ruling: judging with
+    no charge forgets the gap, and charging without judging is what the CEO overruled.
+    """
+    import adhoc_penalty as ap
     seven = [0.5] * 7 + [np.nan]
     src = {'X': {'uInterestCoverage': seven}}
-    kept, rep = sv.apply_veto(_scores(src), _panel(src), enabled=True)
+    book = ap.PenaltyBook()
+    kept, rep = sv.apply_veto(_scores(src), _panel(src), enabled=True, penalty_book=book,
+                              cdx_df=_cdx('X', 500.0))
+    assert list(kept['source']) == [], (
+        'seven admissible rows is at or above the partial-window floor, so the flag must be '
+        'JUDGED on them -- 7 failures of 7 is a persistent red flag, not an abstention')
+    assert rep['n_short_window'] == {}, 'a judged flag is not an abstention'
+    assert rep['adhoc_penalty_points'] == {'X': 1.0}, (
+        'the ONE refused row must still be charged: the whole ruling is judge AND penalise')
+    assert len(book) == 1 and book.points_by_source() == {'X': 1.0}
+    _item = book.itemised().iloc[0]
+    assert _item['check'] == sv.CHECK_REFUSED_ROWS
+    assert 'uInterestCoverage' in _item['reason'] and 'JUDGED' in _item['reason'], (
+        'a contribution must SAY which check raised it and why, or a penalised name can only '
+        'be explained by archaeology')
+    assert _item['penalty'] == pytest.approx(-ap.WEIGHT)
+
+    #  BELOW the floor it still abstains ENTIRELY -- and is charged MORE, because the gap is
+    #  bigger.  A name with one usable row must never be ejected on that row.
+    one = [0.5] + [np.nan] * 7
+    src = {'X': {'uInterestCoverage': one}}
+    book = ap.PenaltyBook()
+    kept, rep = sv.apply_veto(_scores(src), _panel(src), enabled=True, penalty_book=book,
+                              cdx_df=_cdx('X', 500.0))
     assert list(kept['source']) == ['X'] and rep['n_short_window'] == {'uInterestCoverage': 1}
+    assert rep['adhoc_penalty_points'] == {'X': 7.0}, (
+        'an abstention is no longer FREE -- and it costs MORE than a judged partial window, '
+        'because the gap it rests on is larger')
+
+    #  *** A FULLY REFUSED WINDOW IS DECIDED BY THE ROW'S OWN `totalDebt`, NOT BY ITS SHAPE
+    #  (reviewer S1, 2026-08-10). ***  This arm used to assert the OPPOSITE -- that a
+    #  fully-refused window is never charged -- and that free pass made the penalty
+    #  NON-MONOTONE: -0.07 at seven missing rows of eight, 0.00 at eight of eight, so the
+    #  worst data paid least.  `AAPL` sat in the free-pass set with $97.5bn of debt.
+    #  DEBT-FREE -> still not charged.  C-15 is preserved, by the operand rather than by the
+    #  window: a company with no debt genuinely has no coverage ratio.
+    src = {'X': {'uInterestCoverage': [np.nan] * 8}}
+    book = ap.PenaltyBook()
+    kept, rep = sv.apply_veto(_scores(src), _panel(src), enabled=True, penalty_book=book,
+                              cdx_df=_cdx('X', 0.0))
+    assert list(kept['source']) == ['X'] and rep['adhoc_penalty_points'] == {} and not len(book), (
+        'a fully-refused window on a company with NO DEBT is the field being inapplicable, '
+        'which is a fact about the company and not a data problem')
+
+    #  CARRIES DEBT -> charged the FULL window, which is what makes the scale monotone.
+    book = ap.PenaltyBook()
+    kept, rep = sv.apply_veto(_scores(src), _panel(src), enabled=True, penalty_book=book,
+                              cdx_df=_cdx('X', 500.0))
+    assert rep['adhoc_penalty_points'] == {'X': 8.0}, (
+        'eight zero-interest rows on a balance sheet reporting real debt is eight MISSING '
+        'ROWS, not a debt-free company -- and it must cost MORE than seven, never less')
+    assert 'positive `totalDebt`' in book.itemised().iloc[0]['reason']
+
+    #  MONOTONE ACROSS THE WHOLE RANGE, asserted rather than inferred: this is the property
+    #  the shape-based rule broke, so it is the property worth pinning.
+    prev = -1.0
+    for k in range(1, 9):
+        s2 = {'X': {'uInterestCoverage': [0.5] * (8 - k) + [np.nan] * k}}
+        b2 = ap.PenaltyBook()
+        _k2, r2 = sv.apply_veto(_scores(s2), _panel(s2), enabled=True, penalty_book=b2,
+                                cdx_df=_cdx('X', 500.0))
+        got = r2['adhoc_penalty_points'].get('X', 0.0)
+        assert got == float(k) and got > prev, (k, got, prev)
+        prev = got
+
+    #  A MIXED window whose refused rows report NO debt is NOT charged either -- the reverse
+    #  error the row rule closes (74 rows across 20 general names on the 2026-08-10 panel).
+    src = {'X': {'uInterestCoverage': [0.5] * 6 + [np.nan] * 2}}
+    book = ap.PenaltyBook()
+    _k, rep = sv.apply_veto(_scores(src), _panel(src), enabled=True, penalty_book=book,
+                            cdx_df=_cdx('X', [500.0] * 6 + [0.0, 0.0]))
+    assert rep['adhoc_penalty_points'] == {}, (
+        'a genuinely debt-free QUARTER inside a mixed window was being billed as a data gap')
+
+    #  NO cdx panel -> the bucket declines to charge and SAYS SO. "Charged nothing" and
+    #  "could not look" must never read the same; that confusion IS the defect above.
+    book = ap.PenaltyBook()
+    _k, rep = sv.apply_veto(_scores(src), _panel(src), enabled=True, penalty_book=book)
+    assert rep['adhoc_penalty_points'] == {} and not len(book)
+    assert rep['adhoc_penalty_uncorroborated'] == ['uInterestCoverage'], (
+        'a missing corroborator must be REPORTED as a missing measurement')
+
     #  ...and the same 7-of-8 shape on an ADVERSE field still FAILS, because there the refused
-    #  row IS evidence.  The two branches must not be collapsed.
+    #  row IS evidence.  The two branches must not be collapsed -- and an adverse field's
+    #  refusal is NOT a data gap, so it earns no points either.
     src = {'X': {'uCurrentRatio': [0.5] * 7 + [np.nan]}}
-    assert list(sv.apply_veto(_scores(src), _panel(src), enabled=True)[0]['source']) == []
+    book = ap.PenaltyBook()
+    kept, rep = sv.apply_veto(_scores(src), _panel(src), enabled=True, penalty_book=book,
+                              cdx_df=_cdx('X', 500.0))
+    assert list(kept['source']) == []
+    assert not len(book), (
+        'on a `counts` field every row is evidence, so there is no gap to charge -- charging '
+        'one would penalise a name for the very rows the flag already read as failures, i.e. '
+        'bill the same row through the veto AND through the bucket')
+    assert rep['adhoc_penalty_uncorroborated'] == [], (
+        'a `counts` field has NO corroborator by ruling, which is not the same as one whose '
+        'corroborator could not be reached -- only the latter is a missing measurement')
 
 
 def test_every_flag_IN_EVERY_POOL_has_an_explicit_evidence_ruling():
@@ -736,14 +862,50 @@ _CUR3K_PANEL = ('panels_2026-08-07/Bometric_dic-fmp_stock_CUR3K_all_2026-08-07_'
 #  MEASURED 2026-08-09 by the rebuild below.  Hardcoded, NOT recomputed from the code under
 #  test: a test that derives its expectation from the thing it is testing cannot detect that
 #  thing changing.
+#  RE-MEASURED 2026-08-10 under the partial-window ruling ("judge on available rows AND
+#  penalise the gap", `PARTIAL_MIN_EVIDENCE_ROWS = 6`).  What moved and what did not is the
+#  interesting part, so both are recorded rather than just overwritten:
+#
+#    Mining   n_failed 30 -> 30 UNCHANGED, but `producerEbitdaPositive` 14 -> 17.  The three
+#             newly-judged explorers were ALREADY failing another flag, so the cohort's
+#             ejection count is untouched while the per-flag attribution sharpens.
+#             Abstentions 63 -> 58: five sources had 6+ computable rows and are now judged.
+#    REIT     n_failed 3 -> 3 UNCHANGED; abstentions 21 -> 11.  Ten REITs with a partially
+#             refused `reitEbitdaInterestCoverage` window are now JUDGED and all ten PASS --
+#             which is the point: they were passing that flag unchecked before.
+#
+#  `n_gap_sources` / `n_points` are the bucket, pinned here because this is the only test that
+#  runs on the real panel.  A ruling that charges nothing on live data is not in force.
+#
+#  RE-MEASURED 2026-08-10 under the ROW-LEVEL CORROBORATOR (reviewer S1): a refused row is
+#  charged iff the row's own raw data contradicts the "structurally inapplicable" reading.
+#  The two cohorts move in OPPOSITE directions, and both are informative:
+#
+#    REIT   19 -> 20 gap sources, 51 -> 59 points.  The corroborator is `totalDebt > 0`, and
+#           the increase is the FULLY-refused windows the shape rule let off: a REIT with
+#           mortgage debt and no interest expense on any row is eight missing rows, not a
+#           debt-free REIT.
+#    Mining  9 -> 5 gap sources, 34 -> 11 points.  `producerEbitdaPositive`'s corroborator is
+#           a revenue figure that is ABSENT **or NEGATIVE** -- never an exact zero, which IS
+#           the pre-production fact the flag abstains for.  So most of the 34 points the
+#           shape rule charged were explorers being billed for being explorers (the C-15
+#           defect re-committed inside the bucket), and the residual 11 are real: a NaN or a
+#           contra-revenue quarter inside a producing history.
+#           AN INTERMEDIATE VERSION OF THIS RULE TESTED `missing` ONLY and landed at 0 -- a
+#           REGRESSION, because it also de-charged the negative-revenue rows (`OCI.AS` has two
+#           interior negatives among positives).  `revenue` is the guard's OWN input, so a
+#           predicate naming one of its three outcomes silently passes the other two; see the
+#           independence note on `REFUSAL_CORROBORATOR`.
 _EXPECTED = {
     'Mining': {'sector': 'Basic Materials', 'n_sources': 277, 'n_failed': 30,
-               'per_flag': {'producerEbitdaPositive': 14, 'cashRunwayOneYear': 11,
+               'per_flag': {'producerEbitdaPositive': 17, 'cashRunwayOneYear': 11,
                             'equityPositive': 6},
-               'n_sources_with_abstention': 63},
+               'n_sources_with_abstention': 58,
+               'n_gap_sources': 5, 'n_points': 11.0},
     'REIT':   {'sector': 'Real Estate', 'n_sources': 76, 'n_failed': 3,
                'per_flag': {'reitEbitdaInterestCoverage': 3},
-               'n_sources_with_abstention': 21},
+               'n_sources_with_abstention': 11,
+               'n_gap_sources': 20, 'n_points': 59.0},
 }
 
 
@@ -829,7 +991,11 @@ def test_the_designed_cohort_flags_reproduce_their_MEASURED_ejection_rate(pool):
         'rate no longer describes this panel' % (pool, len(sources), exp['n_sources']))
 
     panel = _rebuild_veto_panel(cdx, bm, sources)
-    failed, abstained = sv._evaluate(panel, sv.POOL_FLAGS[pool])
+    #  `_evaluate` returns a THIRD value since 2026-08-10 -- the ad-hoc penalty bucket
+    #  contributions.  Unpacked and asserted below rather than discarded: this is the one
+    #  test in the file that runs on the REAL panel, so it is where "the bucket actually
+    #  fires on live data" can be pinned instead of assumed from synthetic frames.
+    failed, abstained, gaps = sv._evaluate(panel, sv.POOL_FLAGS[pool], cdx_df=cdx)
     bad = {s: f for s, f in failed.items() if f}
     per_flag = {}
     for flags in bad.values():
@@ -843,6 +1009,25 @@ def test_the_designed_cohort_flags_reproduce_their_MEASURED_ejection_rate(pool):
     assert len(abstained) == exp['n_sources_with_abstention'], (
         'abstention count moved -- the designed flags PARTITION the cohort by construction, '
         'so who abstains is part of the claim, not a detail')
+
+    #  THE AD-HOC PENALTY BUCKET, ON THE REAL PANEL (CEO, 2026-08-10).  A ruling that charges
+    #  nothing on live data is not in force, and synthetic frames cannot show that.
+    _pts = {s: sum(p for _c, _r, p in v) for s, v in gaps.items()}
+    assert len(gaps) == exp['n_gap_sources'], (
+        '%s: %d source(s) carry a data gap, recorded as %d' % (pool, len(gaps),
+                                                               exp['n_gap_sources']))
+    assert sum(_pts.values()) == pytest.approx(exp['n_points'])
+    assert all(p > 0 for p in _pts.values()), 'a charged source must carry positive points'
+    assert all(r and c for v in gaps.values() for c, r, _p in v), (
+        'every contribution must name its check AND its reason -- the bucket is only a soft '
+        'veto anyone can audit if a penalised name explains itself')
+    #  AND THE CORROBORATOR WAS ACTUALLY REACHED.  Without this, a cohort that charges 0
+    #  because the raw column was missing would pass the assertion above identically to one
+    #  that charges 0 because its data is clean -- which is the exact confusion the whole
+    #  finding is about, reproduced inside its own test.
+    assert sv._UNCORROBORATED_KEY not in gaps, (
+        '%s: the corroborating raw column was NOT reachable, so this cohort\'s 0 points is a '
+        'MISSING MEASUREMENT and the numbers above prove nothing' % pool)
 
 
 def test_the_RECORDED_numbers_and_the_MEASURED_numbers_cannot_drift_apart():

@@ -90,7 +90,8 @@ ABSTENTIONS ARE COUNTED PER FLAG, NOT PER SOURCE, and the change of unit is the 
 that abstained on `uInterestCoverage` because it is DEBT-FREE and a source that abstained on
 everything because its history is short are different facts, and a per-source count cannot tell
 them apart -- it would report "1,668 names not fully evaluated" and hide that they are all one
-flag and all for one benign reason.  A veto that silently declined to evaluate a fifth of a pool
+flag -- though NOT, as this paragraph once implied, all for one benign reason: see the
+JUDGE-AND-PENALISE section below.  A veto that silently declined to evaluate a fifth of a pool
 would otherwise be indistinguishable from one that found it clean.  See
 design/stage1-veto-decisions.md.
 
@@ -221,6 +222,35 @@ ON THE GENERAL POOL THE CHANGE IS SMALL: the veto moves only 5 of the top 100 (9
 ejecting UHS, PEY.TO, SBH, 215200.KQ, TCL-A.TO and promoting 000270.KS, ATH.TO, DRW3.DE,
 HCO.PA, LEGH.  A defensible cleanup, not a rewrite of the deliverable.
 
+JUDGE ON AVAILABLE ROWS **AND** PENALISE THE GAP  (CEO, 2026-08-10)
+-------------------------------------------------------------------
+The evidence floor above is no longer ALL-OR-NOTHING, and the abstention is no longer FREE.
+Two changes, one ruling:
+
+  1. A flag with at least `PARTIAL_MIN_EVIDENCE_ROWS` (6) rows of countable evidence is
+     JUDGED on the rows it has.  Below that it still abstains entirely -- a name with one
+     usable row must not be ejected on that row.  The number is argued at its definition.
+  2. EVERY data gap this layer meets is charged to the AD-HOC PENALTY BUCKET
+     (`adhoc_penalty`) -- a SOFT veto that lowers the name's Stage-2 `AggScore` before the
+     sort instead of removing it.  Two checks: a short PANEL (fewer than eight rows at all,
+     charged once per source) and REFUSED ROWS within the rows that exist (charged per flag).
+
+WHAT IS CHARGED IS DECIDED PER **ROW**, AGAINST A RAW INPUT (reviewer S1, 2026-08-10).  A
+refused row is charged iff the row's own corroborating field says the refusal cannot be
+structural: a zero `interestExpense` on a row reporting positive `totalDebt`, or an ABSENT
+revenue figure behind the pre-production reading.  See `REFUSAL_CORROBORATOR` for the table,
+the per-field rulings, and the measurement that forced this shape.
+
+THE RULE THIS REPLACED WAS NON-MONOTONE AND WAS LIVE IN THE SHIPPED 100.  It read the SHAPE
+of the refusals instead -- charging a PARTIALLY refused window and giving a FULLY refused one
+a free pass on the reading that it meant a debt-free company.  So the charge climbed to -0.07
+at seven missing rows of eight and fell to 0.00 at eight of eight: THE WORST DATA PAID LEAST.
+`AAPL` sat in the free-pass set with a median `totalDebt` of $97.5bn.  C-15 is still
+preserved, but by the operand rather than by the window: a name with no debt is still not
+charged for having no coverage ratio, and a name with debt no longer escapes by having ALL its
+rows broken instead of some.  See also `FIELD_EVIDENCE['uInterestCoverage']`, which carries the
+correction of the "i.e. DEBT-FREE names" claim that used to justify the abstention ruling.
+
 WHAT IT IS NOT -- `psbrfilter`
 ------------------------------
 `postBo.psbrfilter` (postBo.py) is a DIFFERENT mechanism and is deliberately untouched: it is a
@@ -257,12 +287,68 @@ WINDOW_ROWS = 8
 #  A flag FAILS when it passed at most this many of `WINDOW_ROWS` rows of EVIDENCE.  1, not 0 --
 #  see the docstring.
 FAIL_MAX_PASSES = 1
+
+#  --- THE PARTIAL-WINDOW FLOOR (CEO, 2026-08-10) ----------------------------------------
+#  "JUDGE ON AVAILABLE ROWS **AND** PENALISE THE GAP."  Until this ruling the evidence floor
+#  was all-or-nothing at `WINDOW_ROWS`: a flag with seven usable rows of eight ABSTAINED, and
+#  the name passed it unchecked.  Now a flag with at least `PARTIAL_MIN_EVIDENCE_ROWS` rows is
+#  JUDGED on the rows it has, and the missing rows go to the ad-hoc penalty bucket instead of
+#  being forgotten (`adhoc_penalty`).  Below the floor it still abstains ENTIRELY -- and the
+#  gap is still bucketed.
+#
+#  WHY 6, AND NOT 1 / 2 / 8 -- the number is a decision, so it is argued rather than picked:
+#    * `FAIL_MAX_PASSES` is an ABSOLUTE allowance for ONE bad vendor print, so the pass RATE a
+#      failure claims depends on the window: <=1 of 8 is <=12.5%, <=1 of 6 is <=16.7%, <=1 of 2
+#      is <=50%.  6 keeps the failure claim within ~1.33x of the full-window claim, i.e. the
+#      SAME KIND of statement.  At 2 rows it is a different statement wearing the same words,
+#      which is exactly the objection the C-15 docstring above raises against the proportional
+#      rule and it is not weakened by this ruling.
+#    * 6 quarterly rows is 18 MONTHS.  The failure wording is "essentially never passes"; over
+#      18 months that is still a PERSISTENCE claim.  Over 2 rows (6 months) it is not.
+#    * EJECTION IS ABSOLUTE and removes a name from the deliverable, so the asymmetry the
+#      docstring states -- wrongly ejecting on thin evidence is the more expensive error --
+#      argues for a HIGH floor, and the bucket now carries the cost of the abstention that a
+#      high floor leaves behind.  That is the trade the ruling makes: the thin-evidence names
+#      are no longer un-penalised, so the floor no longer has to do all the work.
+#  MEASURED on the 2026-08-10 CUR3K panel, general pool (1,388 in / 799 ejected today), as the
+#  NEW ejections a floor of `m` would add: m=7 -> 10, m=6 -> 12, m=5 -> 14, m=4 -> 15,
+#  m=3 -> 22, m=2 -> 27, m=1 -> 40.  All of them `uInterestCoverage`; no other flag has a
+#  partial window on this panel.  So 6 buys 12 ejections of the 303 mixed-window names -- a
+#  conservative reading of the ruling, and the rest are handled by the bucket rather than by
+#  the gate.
+PARTIAL_MIN_EVIDENCE_ROWS = 6
+
 #  NO `MIN_WINDOW_ROWS` -- DELETED AT C-15, DELIBERATELY.  The per-source row floor is now a
 #  DERIVED consequence of the per-flag evidence floor (a 5-row source has <= 5 evidence rows on
 #  every flag, so every flag abstains).  Do not re-add it: a second rule that merely agrees with
 #  the first is the pair that silently diverges later.
 #  Failed flags needed to eject.  1 -- one persistent red flag is a disqualification.
 EJECT_MIN_FLAGS = 1
+
+#  --- THE BUCKET CONTRIBUTIONS THIS LAYER RAISES (CEO, 2026-08-10) -----------------------
+#  Named so the evidence CSV's `check` column is a fixed vocabulary rather than an f-string,
+#  and so a reader can grep for the mechanism that penalised a name.
+#  TWO checks, not three, and the split is by CAUSE rather than by consequence: a source that
+#  has fewer than eight rows AT ALL is a different data problem from a source with eight rows
+#  on which the vendor refused some.  Whether the flag was then JUDGED on the partial window or
+#  ABSTAINED is carried in the `reason` text, not in a third check name -- the points already
+#  separate them (an abstention has a bigger gap by construction, so it costs more).
+CHECK_SHORT_PANEL = 'stage1_veto:short_panel'
+CHECK_REFUSED_ROWS = 'stage1_veto:refused_rows'
+#  Not a charge -- a declared HOLE in the measurement.  Carries 0 points and rides the CSV's
+#  `NOT_MEASURED` section, so an unreachable corroborator is visible in the artifact a reader
+#  opens rather than only on stdout (reviewer R3).
+CHECK_UNCORROBORATED = 'stage1_veto:corroborator_unavailable'
+
+#  Reserved key in `_evaluate`'s `gaps` -- NOT a source.  Carries the flags whose corroborating
+#  raw column could not be reached, so `apply_veto` can report a MISSING MEASUREMENT instead of
+#  presenting "charged nothing" as "found nothing".  A ticker cannot collide with it: no symbol
+#  contains a space.
+_UNCORROBORATED_KEY = '__uncorroborated flags__'
+
+#  Prefix the corroborating raw columns are joined under, so they can never collide with (or be
+#  silently suffixed beside) a veto column of the same name.  See `_corroborator_frame`.
+_CORROBORATOR_PREFIX = '__corroborator__'
 
 #  --- THE FIVE FLAGS: BoMetric_df column -> the row-level pass condition -----------------
 #  Each condition is stated on the COLUMN AS THE PANEL CARRIES IT, so no arithmetic is
@@ -451,12 +537,33 @@ FIELD_EVIDENCE = {
     #  names it exists for.
     'netDebtToEBITDA':   'counts',
     #  BENIGN -> abstain.  THE ONE THAT CHANGES, and the measured defect behind C-15: of the
-    #  19.74pp of refused rows, 19.01pp are `interestExpense == 0`, i.e. DEBT-FREE names that
-    #  the `interest_expense_positive` guard refuses because a debt-free company does not HAVE
-    #  a coverage ratio.  Counting that as a non-pass ejected 1,668 sources (21.5% of the
-    #  universe) FOR HAVING NO DEBT.  The residual refusals -- 0.70% negative reported interest
-    #  expense (the ratio inverts sign) and 0.03% genuinely NaN -- have no adverse reading
-    #  either, so they abstain too rather than being split out.
+    #  19.74pp of refused rows, 19.01pp are `interestExpense == 0`, which the
+    #  `interest_expense_positive` guard refuses because a company with no interest bill does
+    #  not HAVE a coverage ratio.  Counting that as a non-pass ejected 1,668 sources (21.5% of
+    #  the universe).  The residual refusals -- 0.70% negative reported interest expense (the
+    #  ratio inverts sign) and 0.03% genuinely NaN -- have no adverse reading either, so they
+    #  abstain too rather than being split out.
+    #
+    #  ***"i.e. DEBT-FREE NAMES" WAS WRONG FOR THE MAJORITY, AND IS CORRECTED HERE***
+    #  (CEO, 2026-08-10).  This comment used to justify the ruling as "19.01pp are
+    #  `interestExpense == 0`, i.e. DEBT-FREE names" and the log line repeated it.  MEASURED on
+    #  the 2026-08-10 CUR3K panel over each source's newest EIGHT rows:
+    #      interestExpense == 0 on 14.67% of rows (20,952 rows, 2,619 sources)
+    #      160 sources are zero on EVERY row      -- consistent with debt-free
+    #      550 sources are MIXED: zero on some rows and POSITIVE on others
+    #  A company is not debt-free in five quarters and indebted in three, so on those 550 the
+    #  zero is FMP writing 0 where it has no value.  `CUBE` reads 0 for five consecutive
+    #  quarters and then 29-31M; `EQR` reads 0 on three rows, and on one of them
+    #  `ebitda == operatingIncome` EXACTLY -- a second broken field on the same row.  In the
+    #  general pool the split is just as stark: of the 372 names abstaining on this flag, 69
+    #  have NO computable row (the debt-free reading survives for those) and 303 have between
+    #  one and seven (131 of them at seven of eight).
+    #
+    #  THE RULING ITSELF STANDS -- 'not_evidence' is still right, because a refused row still
+    #  has no ADVERSE reading and counting it as a non-pass would still eject names for a
+    #  vendor's blank.  What changed is that the abstention is no longer FREE: a MIXED window
+    #  is charged to the ad-hoc penalty bucket in `_evaluate`, and a window with six or more
+    #  computable rows is now JUDGED on them (`PARTIAL_MIN_EVIDENCE_ROWS`).
     #  A debt-free name is NOT thereby unvetted on leverage: `netDebtToEBITDA`'s net-cash
     #  branch still evaluates it, on an explicit operand condition.
     'uInterestCoverage': 'not_evidence',
@@ -536,6 +643,112 @@ if _unruled:
 del _unruled
 
 
+#  --- IS A REFUSED ROW A DATA PROBLEM, OR A FACT ABOUT THE COMPANY?  (reviewer S1,
+#  --- 2026-08-10) ------------------------------------------------------------------------
+#  THE DEFECT THIS REPLACES, AND IT WAS LIVE IN THE SHIPPED 100.  The first version of the
+#  ad-hoc bucket charged a PARTIALLY refused window and gave a FULLY refused one a free pass,
+#  on the reading that a fully-refused `uInterestCoverage` window means a DEBT-FREE company.
+#  That made the penalty NON-MONOTONE in exactly the wrong direction: it climbed to -0.07 at
+#  seven missing rows of eight and then fell to 0.00 at eight of eight, so THE WORST DATA PAID
+#  LEAST.
+#
+#  MEASURED on the 2026-08-10 CUR3K panel, general pool: 69 sources have a fully-refused
+#  `uInterestCoverage` window, and **62 of them carry POSITIVE `totalDebt`** -- 492 rows of
+#  real debt reported alongside `interestExpense == 0`.  `AAPL` is in that set with a MEDIAN
+#  `totalDebt` of $97.5bn and a zero interest expense on all eight rows.  Four of the 69 are in
+#  the shipped top-100 (`BKE` $372M, `BZ` $220M, `QLYS` $53M, and `DPAM.PA` which is genuinely
+#  debt-free) and the first three paid nothing while 21 names in the same 100 paid -0.01 for a
+#  single missing row.
+#
+#  THE ARGUMENT THAT KILLS THE FREE PASS IS THE ONE THE MIXED-WINDOW RULE ALREADY MADE.  That
+#  rule says a company is not debt-free in five quarters and indebted in three, so a mixed
+#  window is the vendor rather than the balance sheet.  The identical logic refutes the
+#  zero-window reading: AAPL with $97.5bn of debt and eight zero rows is not a debt-free
+#  company, it is eight missing rows.  The correction had been applied HALF-WAY.
+#
+#  SO THE TEST MOVES FROM THE WINDOW TO THE ROW, and it reads a RAW INPUT rather than
+#  inferring from the shape of the refusals: **a refused row is charged iff the row's own
+#  corroborating field says the refusal cannot be structural.**  That closes both directions at
+#  once -- it charges the zero-window names that carry debt, and it STOPS charging refused rows
+#  in a mixed window whose own `totalDebt` is 0 (74 rows across 20 general names, which were a
+#  genuinely debt-free quarter being billed as a data gap).
+#
+#  `column` is read from `cdx_df`, joined to the veto window on (source, date).  A field with
+#  NO corroborator is ruled explicitly as None WITH ITS REASON -- absence must be a decision.
+#  PREFER AN OPERAND THAT IS **INDEPENDENT** OF THE REFUSAL CHANNEL; WHERE YOU CANNOT,
+#  ENUMERATE EVERY OUTCOME OF THE SHARED ONE.  (reviewer R1, 2026-08-10 -- this generalises to
+#  every corroborator anyone adds later, so it is stated here rather than in one entry.)
+#    * `totalDebt` is INDEPENDENT of `interestExpense <= 0`, the channel it corroborates, so it
+#      can distinguish every case and a single `> 0` test is complete.
+#    * `revenue` IS `producerEbitdaPositive`'s OWN GUARD INPUT (`revenue > 0`), so it can only
+#      ever witness ONE SIDE of that guard: every refused row is NaN, zero, or negative BY
+#      CONSTRUCTION.  A predicate that names only one of those three silently lets the others
+#      through -- which is exactly the defect corrected below.
+_CORROBORATE_POSITIVE = 'positive'      # charge the row iff column > 0
+#  Charge iff the column is NaN OR NEGATIVE -- i.e. every refused-row outcome EXCEPT an exact
+#  zero.  The three outcomes, ruled one at a time:
+#    NaN      -> no revenue FIGURE at all.  Missing data; charge.
+#    0        -> the PRE-PRODUCTION fact this flag abstains for.  Do NOT charge; charging it
+#                would bill the exploration half of the cohort for being explorers, which is
+#                the C-15 defect re-committed inside the bucket.
+#    negative -> contra-revenue / a restatement.  NOT a pre-production fact -- a company with
+#                no operations does not report NEGATIVE sales -- so it is adverse or broken
+#                either way; charge.
+#  MEASURED (reviewer R1): `078130.KQ` runs 16.7bn, 15.0bn, 15.8bn, 18.4bn, 18.7bn, **-1.62bn**,
+#  20.1bn, 12.8bn -- one negative quarter inside a fully-producing history; `OCI.AS` has two
+#  interior negatives among positives.  An earlier version of this table tested `missing` only,
+#  which de-charged both of them.
+_CORROBORATE_MISSING_OR_NEGATIVE = 'missing_or_negative'
+
+REFUSAL_CORROBORATOR = {
+    #  The refusal channel is `interest_expense_positive` (`interestExpense <= 0`).  DEBT is
+    #  what makes an interest bill non-optional, so a row reporting positive `totalDebt` and
+    #  zero interest expense is a data problem on its face; a row with no debt genuinely has
+    #  no coverage ratio and is not charged.  This is the field the whole finding is about.
+    'uInterestCoverage': ('totalDebt', _CORROBORATE_POSITIVE),
+    #  SAME CHANNEL, SAME RULING.  A REIT with mortgage debt and a zero interest expense is
+    #  the identical defect; a REIT with no debt is the identical non-defect.
+    'reitEbitdaInterestCoverage': ('totalDebt', _CORROBORATE_POSITIVE),
+    #  The refusal channel is `revenue > 0`, and `revenue` is that guard's OWN INPUT -- see
+    #  the independence note above -- so every outcome must be named.  ZERO is the
+    #  pre-production fact and is NOT charged; NaN (408 of the 61,144 panel rows, 0.67%) and
+    #  NEGATIVE (370 rows) both are.
+    'producerEbitdaPositive': ('revenue', _CORROBORATE_MISSING_OR_NEGATIVE),
+    #  --- the `counts` fields: NO CORROBORATOR, AND THAT IS NOT AN OMISSION -----------------
+    #  On a `counts` field every row is evidence and a refused row is already scored as a
+    #  NON-PASS, so the flag has ALREADY priced it.  Charging the bucket as well would bill the
+    #  same row twice -- once through the veto and once through the score.
+    'returnOnAssets': None,
+    'CFOlessEarnings': None,
+    'uCurrentRatio': None,
+    'netDebtToEBITDA': None,
+    'cashRunwayOneYear': None,
+    'equityPositive': None,
+}
+
+#  EVERY FLAG HAS A CORROBORATOR RULING, CHECKED AT IMPORT -- the same guard, and for the same
+#  reason, as the `FIELD_EVIDENCE` check above: a cohort flag added without one would silently
+#  charge nothing, and "no data problems here" is the answer a missing ruling gives.
+_uncorroborated = sorted({c for f in POOL_FLAGS.values() for c in f}
+                         - set(REFUSAL_CORROBORATOR))
+if _uncorroborated:
+    raise KeyError(
+        'stage1_veto: %d veto flag(s) have no REFUSAL_CORROBORATOR ruling: %s. Whether a '
+        'refused row is a DATA PROBLEM or a FACT ABOUT THE COMPANY is a property of the field '
+        'and must be RULED -- `None` with a reason is a valid ruling, a missing entry is not.'
+        % (len(_uncorroborated), _uncorroborated))
+del _uncorroborated
+
+#  Emitted when the bucket CANNOT judge a refusal because the corroborating column is not in
+#  reach.  A distinct, reported state: "we charged nothing" and "we could not tell" must not
+#  look the same, which is the failure the free pass was.
+_NO_CORROBORATOR_PANEL = (
+    'the ad-hoc penalty bucket could not judge refused rows on %s: the corroborating column '
+    '%r is not available (no cdx panel was passed, or it lacks the column). Refusals on that '
+    'flag are NOT charged this run -- that is a MISSING MEASUREMENT, not a finding that the '
+    'data is clean.')
+
+
 def failed_flags(bm_df, flags=None):
     """{source: sorted list of FAILED flag names} over every source in `bm_df`.
 
@@ -580,12 +793,116 @@ def _flag_evidence(win, col, cond, refusal):
     return len(vals), int(cond(vals).sum())
 
 
-def _evaluate(bm_df, flags=None):
-    """(failed, abstained) -- `{source: [failed flag names]}` and
+def _corroborator_frame(bm_df, cdx_df, flags):
+    """`bm_df` with each flag's corroborating raw column joined on (source, date).
+
+    Returns (frame, unavailable) -- `unavailable` names the flags whose corroborator could NOT
+    be reached, so the caller can REPORT that rather than silently charge nothing.
+
+    JOINED ON (source, date) AND NOT ASSUMED POSITIONAL.  `getData_fmp` drops the oldest `rpy`
+    rows of each source's metric frame, so `bm_df` and `cdx_df` have DIFFERENT row counts per
+    source and a positional pairing would read one quarter's debt against another quarter's
+    refusal.  VERIFIED on the 2026-08-10 panel: all 52,092 distinct (source, date) keys in
+    `BoMetric_df` are present in `cdx_df`, so the join loses nothing.  `cdx_df` is de-duplicated
+    on the key first -- restated quarters appear twice there and would otherwise multiply the
+    veto window's rows.
+    """
+    wanted = {}
+    for col in flags:
+        spec = REFUSAL_CORROBORATOR.get(col)
+        if spec is not None:
+            wanted[col] = spec
+    if not wanted:
+        return bm_df, []
+    cols = {c for c, _p in wanted.values()}
+    if cdx_df is None:
+        return bm_df, sorted(wanted)
+    #  `or []` on an Index raises (`The truth value of a Index is ambiguous`), so the default
+    #  is supplied to getattr rather than by falsy-coalescing the result.
+    have = set(getattr(cdx_df, 'columns', []))
+    #  BOTH SIDES OF THE JOIN ARE GUARDED, not just the right one (reviewer R5).  A `bm_df`
+    #  without `date` used to reach `merge(on=['source','date'])` and raise `KeyError` INSIDE
+    #  `_evaluate` -- and `postBo` wraps the whole veto in ONE `except`, so a missing column on
+    #  a DIAGNOSTIC input would have degraded the run to ENTIRELY UN-VETOED.  That is the
+    #  per-layer-versus-per-pool degradation failure this module already fixed once for stale
+    #  panels (`_STALE_PANEL_NOT_APPLICABLE`); the bucket must degrade the BUCKET, never the veto.
+    left_have = set(getattr(bm_df, 'columns', []))
+    if not {'date', 'source'} <= have or not {'date', 'source'} <= left_have:
+        return bm_df, sorted(wanted)
+    missing_cols = cols - have
+    unavailable = sorted(c for c, (col, _p) in wanted.items() if col in missing_cols)
+    usable = sorted(cols & have)
+    if not usable:
+        return bm_df, sorted(wanted)
+    right = cdx_df[['source', 'date'] + usable].copy()
+    right['date'] = pd.to_datetime(right['date'], errors='coerce')
+    #  `keep='first'` IS A DECISION, DECLARED (reviewer R6).  A restated quarter appears
+    #  twice in `cdx_df` and the two rows can carry DIFFERENT `totalDebt`; the frame arrives
+    #  newest-first per source, so "first" is the LATEST-INGESTED restatement -- the same
+    #  canonical-restatement choice `stage2_metrics.prepare_eps_series` makes, and the one that
+    #  matches what the rest of the pipeline scores.  It is decisive on only 2-3 rows of this
+    #  panel, which is why it is declared rather than instrumented.
+    right = right.drop_duplicates(['source', 'date'], keep='first')
+    #  RENAMED TO A RESERVED PREFIX, not merged under the raw name.  If `bm_df` ever carried a
+    #  column of the same name, a plain merge would either overwrite it or silently suffix it
+    #  -- and a suffixed corroborator is one `_row_is_a_data_problem` would fail to FIND,
+    #  charging nothing and reporting nothing.  A reserved name makes "not joined" detectable
+    #  instead of invisible, which is the whole class of defect this finding is about.
+    right = right.rename(columns={c: _CORROBORATOR_PREFIX + c for c in usable})
+    out = bm_df.merge(right, on=['source', 'date'], how='left')
+    return out, unavailable
+
+
+def _row_is_a_data_problem(win, col):
+    """Boolean Series over `win`: is a REFUSED row on `col` a data problem rather than a fact
+    about the company?  All-False when the flag has no corroborator or the column is absent.
+
+    THE WHOLE FINDING S1 IS IN THIS FUNCTION.  See `REFUSAL_CORROBORATOR` for the measurement
+    that forced it: the previous rule read the SHAPE of the refusals (a fully-refused window
+    was assumed structural) and therefore charged the worst data the least.  This reads a RAW
+    INPUT on the SAME ROW instead, so the answer does not depend on how many of the source's
+    other rows happened to compute.
+    """
+    spec = REFUSAL_CORROBORATOR.get(col)
+    if spec is None:
+        return pd.Series(False, index=win.index)
+    column, predicate = spec
+    joined = _CORROBORATOR_PREFIX + column
+    if joined not in win.columns:
+        #  NOT silently False: reaching here means the join did not happen for this flag, and
+        #  `_corroborator_frame` will have named it in `unavailable` so `apply_veto` reports a
+        #  MISSING MEASUREMENT.  The all-False return is the safe arithmetic; the REPORT is
+        #  what stops it being read as "no data problems".
+        return pd.Series(False, index=win.index)
+    vals = pd.to_numeric(win[joined], errors='coerce')
+    if predicate == _CORROBORATE_POSITIVE:
+        return vals > 0
+    if predicate == _CORROBORATE_MISSING_OR_NEGATIVE:
+        #  Every refused-row outcome EXCEPT an exact zero.  Written as the UNION of the two
+        #  charged cases rather than as `~(vals == 0)`, because the negation form would also
+        #  charge a row the guard never refused, and it hides which outcomes were ruled on.
+        return vals.isna() | (vals < 0)
+    raise ValueError('stage1_veto: %r declares unknown corroborator predicate %r'
+                     % (col, predicate))
+
+
+def _evaluate(bm_df, flags=None, cdx_df=None):
+    """(failed, abstained, gaps) -- `{source: [failed flag names]}`,
     `{source: {flag: n_evidence}}` for every (source, flag) pair that ABSTAINED for want of
-    evidence.  Split out from `failed_flags` so `apply_veto` can REPORT the abstentions
-    without a second pass over the panel; the public single-value contract of `failed_flags`
-    is unchanged.
+    evidence, and `{source: [(check, reason, points), ...]}` -- the AD-HOC PENALTY BUCKET
+    contributions this panel earns (CEO, 2026-08-10).  Split out from `failed_flags` so
+    `apply_veto` can REPORT the abstentions and raise the bucket without a second pass over
+    the panel; the public single-value contract of `failed_flags` is unchanged.
+
+    THE ABSTENTION SET IS UNCHANGED IN MEANING but no longer unchanged in SIZE: a flag with
+    at least `PARTIAL_MIN_EVIDENCE_ROWS` rows of evidence is now JUDGED on them (CEO ruling,
+    "judge on available rows AND penalise the gap"), so it appears in neither `abstained` nor
+    -- unless it actually failed -- in `failed`.
+
+    `cdx_df` -- the RAW fundamentals panel, used ONLY to decide whether a refused row is a data
+    problem (`REFUSAL_CORROBORATOR`).  IT REACHES NO VERDICT: `failed` and `abstained` are
+    computed from `bm_df` alone and are bit-identical with or without it.  Absent, the bucket
+    declines to charge refusals and `apply_veto` says so -- see `_NO_CORROBORATOR_PANEL`.
     """
     if flags is None:
         flags = FLAGS
@@ -603,23 +920,86 @@ def _evaluate(bm_df, flags=None):
         df['date'] = pd.to_datetime(df['date'], errors='coerce')
         df = df.sort_values(['source', 'date'], ascending=[True, False])
 
-    out, abstained = {}, {}
+    df, _uncorroborated = _corroborator_frame(df, cdx_df, flags)
+    #  Carried out on the returned `gaps` under a reserved key, so `apply_veto` can report the
+    #  degradation without a second inspection of the panel.
+    out, abstained, gaps = {}, {}, {}
+    if _uncorroborated:
+        gaps[_UNCORROBORATED_KEY] = _uncorroborated
     for source, grp in df.groupby('source', sort=False):
         win = grp.head(WINDOW_ROWS)
+        n_rows = len(win)
         bad = []
+        #  --- BUCKET CONTRIBUTION 1: THE SOURCE SIMPLY HAS FEWER THAN EIGHT ROWS ---------
+        #  Raised ONCE PER SOURCE, not once per flag.  A 5-row source has at most 5 evidence
+        #  rows on EVERY flag, so charging the same three missing rows five times over would
+        #  make a short history five times worse than one broken field -- a scaling nobody
+        #  decided.  One panel-level gap, one contribution.
+        if n_rows < WINDOW_ROWS:
+            gaps.setdefault(source, []).append((
+                CHECK_SHORT_PANEL,
+                'panel carries %d of the %d newest-first rows the veto window needs, so every '
+                'flag is evaluated (or refused) on a short history'
+                % (n_rows, WINDOW_ROWS),
+                float(WINDOW_ROWS - n_rows)))
         for col, cond in flags.items():
             n_ev, passes = _flag_evidence(win, col, cond, FIELD_EVIDENCE[col])
-            #  THE EVIDENCE FLOOR (C-15).  `FAIL_MAX_PASSES` is an ABSOLUTE count, so it is
-            #  only meaningful over a full window: on 1 row of evidence a flag that PASSED
-            #  that row scores `passes = 1 <= 1` and would fail -- a 100% pass rate read as a
-            #  persistent red flag.  Under the floor the flag ABSTAINS: it is not a failure
-            #  and it is not a pass, and it does not reach the `k` count either way.
-            if n_ev < WINDOW_ROWS:
+            #  THE EVIDENCE FLOOR (C-15), NOW IN TWO STEPS (CEO, 2026-08-10).
+            #  `FAIL_MAX_PASSES` is an ABSOLUTE count, so it is only meaningful over a window
+            #  long enough for "passed at most one" to still mean "essentially never": on 1 row
+            #  of evidence a flag that PASSED that row scores `passes = 1 <= 1` and would fail
+            #  -- a 100% pass rate read as a persistent red flag.  So:
+            #    n_ev >= PARTIAL_MIN_EVIDENCE_ROWS -> JUDGE on the rows that exist;
+            #    below it                          -> ABSTAIN entirely, as before.
+            #  EITHER WAY the missing rows go to the bucket below FOR ASSESSMENT, which is the
+            #  half of the ruling that stops an abstention being automatically free.  Whether
+            #  they are actually CHARGED is a separate question answered per row by the
+            #  corroborator -- an abstention on a genuinely debt-free name still costs nothing.
+            if n_ev >= PARTIAL_MIN_EVIDENCE_ROWS:
+                if passes <= FAIL_MAX_PASSES:
+                    bad.append(col)
+            else:
                 abstained.setdefault(source, {})[col] = n_ev
-            elif passes <= FAIL_MAX_PASSES:
-                bad.append(col)
+
+            #  --- BUCKET CONTRIBUTION 2: REFUSED ROWS THAT THE ROW'S OWN RAW DATA CONTRADICTS
+            #  PER ROW, AGAINST A RAW INPUT -- NOT per window, and NOT from the shape of the
+            #  refusals (reviewer S1, 2026-08-10).  The `n_ev == 0` free pass this replaces is
+            #  documented at `REFUSAL_CORROBORATOR`, together with the measurement that killed
+            #  it: it made the penalty NON-MONOTONE, climbing to -0.07 at seven missing rows of
+            #  eight and falling to 0.00 at eight of eight, so the WORST data paid LEAST.
+            #
+            #  A row is charged iff it is REFUSED **and** its corroborator says the refusal
+            #  cannot be structural -- `totalDebt > 0` against a zero interest expense, or an
+            #  ABSENT revenue figure against the pre-production reading.  Both directions close
+            #  at once: a fully-refused window on a name carrying debt is now charged, and a
+            #  refused row in a mixed window whose own `totalDebt` is 0 is NOT (a genuinely
+            #  debt-free quarter was being billed as a data gap -- 74 rows across 20 general
+            #  names on this panel).
+            #
+            #  A `counts` field reaches here with no corroborator and charges nothing, which is
+            #  deliberate: its refused rows are ALREADY scored as non-passes by the flag itself,
+            #  so charging the bucket too would bill the same row twice.
+            if n_rows:
+                refused = pd.to_numeric(win[col], errors='coerce').isna()
+                chargeable = int((refused & _row_is_a_data_problem(win, col)).sum())
+                if chargeable:
+                    _spec = REFUSAL_CORROBORATOR.get(col)
+                    gaps.setdefault(source, []).append((
+                        CHECK_REFUSED_ROWS,
+                        '%s: %d of %d available rows are not computable AND report %s on the '
+                        'SAME row, so the refusal cannot mean the flag is inapplicable to this '
+                        'company -- it is missing data. Flag was %s.'
+                        % (col, chargeable, n_rows,
+                           ('a positive `%s`' % _spec[0])
+                           if _spec[1] == _CORROBORATE_POSITIVE
+                           else ('no `%s` figure at all, or a NEGATIVE one' % _spec[0]),
+                           ('JUDGED on the %d row(s) that compute' % n_ev)
+                           if n_ev >= PARTIAL_MIN_EVIDENCE_ROWS
+                           else ('ABSTAINED -- %d row(s) is under the %d-row partial-window '
+                                 'floor' % (n_ev, PARTIAL_MIN_EVIDENCE_ROWS))),
+                        float(chargeable)))
         out[source] = sorted(bad)
-    return out, abstained
+    return out, abstained, gaps
 
 
 def pool_flags(pool_label):
@@ -634,7 +1014,7 @@ def pool_flags(pool_label):
 
 
 def apply_veto(scores_df, bm_df, pool_label='general', enabled=None, verbose=True,
-               pools=None):
+               pools=None, penalty_book=None, cdx_df=None):
     """`scores_df` with vetoed sources removed.  Returns (kept, report).
 
     `scores_df` is a Stage-1 score frame carrying a `source` column (`BoScore_df` or a carve-out
@@ -659,6 +1039,20 @@ def apply_veto(scores_df, bm_df, pool_label='general', enabled=None, verbose=Tru
     so on today's panel the cohorts that need NEW columns must degrade to un-vetoed while the
     ones that need only EXISTING columns still run.  Raising would have taken every pool down
     together through `postBo`'s single guard.
+
+    `cdx_df` -- the RAW fundamentals panel.  Used ONLY by the ad-hoc penalty bucket, to decide
+    whether a refused row is a DATA PROBLEM or a fact about the company (see
+    `REFUSAL_CORROBORATOR`).  IT REACHES NO VERDICT -- the ejection set is bit-identical with or
+    without it -- but WITHOUT it the bucket cannot judge a refusal, declines to charge one, and
+    REPORTS that as a missing measurement rather than letting it look like a clean panel.
+
+    `penalty_book` -- an `adhoc_penalty.PenaltyBook` (CEO, 2026-08-10).  When given, every
+    data gap this layer meets is CHARGED to it, per source and per check, for THIS POOL's
+    members only.  The bucket is a SOFT veto: it never removes a name here, it lowers that
+    name's Stage-2 score before the sort.  Optional purely so the existing callers and the
+    offline A/B harnesses keep working unchanged -- a call with no book behaves exactly as
+    before, and the report still carries `adhoc_penalty_points` so a reader can see what the
+    bucket WOULD have charged.
     """
     if enabled is None:
         enabled = ENABLED
@@ -672,11 +1066,23 @@ def apply_veto(scores_df, bm_df, pool_label='general', enabled=None, verbose=Tru
               'n_ejected': 0, 'n_out': len(scores_df), 'by_flag': {}, 'ejected': [],
               #  ABSTENTIONS, PER FLAG (C-15) -- `{flag: number of sources in THIS pool that
               #  abstained on it}`.  Per FLAG and not per SOURCE deliberately: the dominant
-              #  abstention is `uInterestCoverage` on DEBT-FREE names, and a per-source count
+              #  abstention is `uInterestCoverage`, and a per-source count
               #  would report those as "not evaluated" alongside genuinely short-history names
-              #  and hide that they are one flag with one benign cause.  Reported, not hidden:
-              #  "found clean" and "never evaluated" are different facts.
-              'n_short_window': {}, 'short_window': {}}
+              #  and hide that they are one flag.  Reported, not hidden: "found clean" and
+              #  "never evaluated" are different facts.
+              #  THEY ARE **NOT** ALL ONE BENIGN CAUSE, and an earlier version of this comment
+              #  said they were (corrected 2026-08-10, reviewer R2): 206 of the 222 names still
+              #  abstaining on a coverage flag on this panel carry POSITIVE median `totalDebt`.
+              #  The bucket charges those; the abstention count alone does not distinguish
+              #  them, which is why both numbers are reported side by side.
+              'n_short_window': {}, 'short_window': {},
+              #  THE AD-HOC PENALTY BUCKET this pool raised (CEO, 2026-08-10).  Reported per
+              #  pool for the same reason the abstentions are: a pool that raised no points
+              #  and a pool the layer never looked at must not read the same.
+              'adhoc_penalty_points': {},
+              #  Flags whose refusals the bucket COULD NOT judge for want of the corroborating
+              #  raw column (reviewer S1).  Non-empty means "NOT MEASURED", never "clean".
+              'adhoc_penalty_uncorroborated': []}
     if not enabled:
         return scores_df, report
     if not applies:
@@ -706,9 +1112,35 @@ def apply_veto(scores_df, bm_df, pool_label='general', enabled=None, verbose=Tru
                   % (pool_label, report['not_applicable_reason']), flush=True)
         return scores_df, report
 
-    bad, abstained = _evaluate(bm_df, flags)
+    bad, abstained, gaps = _evaluate(bm_df, flags, cdx_df=cdx_df)
+    _uncorroborated = gaps.pop(_UNCORROBORATED_KEY, [])
     ejected = [s for s in scores_df['source']
                if len(bad.get(s, [])) >= EJECT_MIN_FLAGS]
+
+    #  --- RAISE THE AD-HOC PENALTY BUCKET (CEO, 2026-08-10) ------------------------------
+    #  RESTRICTED TO THIS POOL'S MEMBERS, exactly as the abstention report is: `_evaluate`
+    #  walks the WHOLE panel (it has to -- the window is per source), so charging every gap it
+    #  found would give the general pool the cohorts' data problems as well.
+    #  CHARGED TO EJECTED NAMES TOO, deliberately: a name can be ejected on one flag and have
+    #  a data gap on another, and the bucket is written to the evidence CSV for every name it
+    #  touched.  Only the SURVIVORS reach Stage-2, so an ejected name's points cost it nothing
+    #  -- it is already gone -- but the record of the gap is what the CSV is for.
+    #  REACHES THE SHIPPED CSV, not just the report (reviewer R3).  Declared BEFORE the
+    #  charges so the caveat is written even on a pool that charged nothing.
+    if penalty_book is not None:
+        for _f in _uncorroborated:
+            penalty_book.declare_unmeasured(
+                CHECK_UNCORROBORATED,
+                _NO_CORROBORATOR_PANEL % (_f, (REFUSAL_CORROBORATOR.get(_f)
+                                               or ('<none>', ''))[0]),
+                pool=pool_label)
+    _pool_members = list(scores_df['source'])
+    adhoc_points = {}
+    for s in _pool_members:
+        for check, reason, points in gaps.get(s, ()):
+            adhoc_points[s] = adhoc_points.get(s, 0.0) + points
+            if penalty_book is not None:
+                penalty_book.add(s, check, reason, points, pool=pool_label)
     by_flag = {}
     for s in ejected:
         for f in bad[s]:
@@ -726,25 +1158,52 @@ def apply_veto(scores_df, bm_df, pool_label='general', enabled=None, verbose=Tru
                   by_flag=dict(sorted(by_flag.items())), ejected=sorted(ejected),
                   n_short_window=dict(sorted(n_short_by_flag.items())),
                   short_window={s: dict(sorted(f.items()))
-                                for s, f in sorted(pool_short.items())})
+                                for s, f in sorted(pool_short.items())},
+                  adhoc_penalty_points=dict(sorted(adhoc_points.items())),
+                  adhoc_penalty_uncorroborated=list(_uncorroborated))
     if verbose:
         #  PER-POOL LOGGING IS PART OF THE DESIGN, not debug output: a veto that removed most of
         #  a cohort and one that removed nobody are indistinguishable without it.
         #  THE FLAG COUNT IS THIS POOL'S, not a hard-coded 5: the cohorts carry 1, 3 and 6 flags,
         #  and a line reading "k>=1 of 5" on a one-flag cohort would misreport the gate that ran.
         print('STAGE-1 VETO [%s]: %d -> %d names (%d ejected, k>=%d of %d flags %s failed at '
-              '<=%d of %d EVIDENCE rows). Ejections by flag: %s'
+              '<=%d passes over a window of at least %d EVIDENCE rows, out of %d). '
+              'Ejections by flag: %s'
               % (pool_label, report['n_in'], report['n_out'], report['n_ejected'],
-                 EJECT_MIN_FLAGS, len(flags), sorted(flags), FAIL_MAX_PASSES, WINDOW_ROWS,
+                 EJECT_MIN_FLAGS, len(flags), sorted(flags), FAIL_MAX_PASSES,
+                 PARTIAL_MIN_EVIDENCE_ROWS, WINDOW_ROWS,
                  report['by_flag'] or '{}'), flush=True)
         if n_short_by_flag:
             #  PER FLAG.  A count of names would say "1,668 not evaluated" and conceal that
             #  every one is `uInterestCoverage` on a debt-free balance sheet -- the exact
             #  confusion between "found clean" and "declined to look" this line exists to stop.
-            print('STAGE-1 VETO [%s]: ABSTENTIONS by flag (under %d rows of countable evidence, '
-                  'so the flag could not fail -- these names passed THAT flag UNCHECKED): %s. '
-                  'For `uInterestCoverage` the usual cause is a DEBT-FREE name (no interest '
-                  'expense, so no coverage ratio exists), not missing data.'
-                  % (pool_label, WINDOW_ROWS, dict(sorted(n_short_by_flag.items()))),
+            print('STAGE-1 VETO [%s]: ABSTENTIONS by flag (under %d rows of countable '
+                  'evidence, so the flag could not fail -- these names passed THAT flag '
+                  'UNCHECKED): %s. Whether an abstention is ALSO a data problem is decided '
+                  'PER ROW against a raw operand (`REFUSAL_CORROBORATOR`), not from how many '
+                  'of the window refused: on this panel 206 of the 222 names still abstaining '
+                  'on a coverage flag carry POSITIVE median `totalDebt`, so most of them are '
+                  'missing rows rather than debt-free companies. See the bucket line below '
+                  'for what was charged.'
+                  % (pool_label, PARTIAL_MIN_EVIDENCE_ROWS,
+                     dict(sorted(n_short_by_flag.items()))),
                   flush=True)
+        for _f in _uncorroborated:
+            #  LOUD, and BEFORE the bucket line: a reader who sees a small bucket must be able
+            #  to tell "few data problems" from "we could not look".
+            print('STAGE-1 VETO [%s]: %s'
+                  % (pool_label,
+                     _NO_CORROBORATOR_PANEL
+                     % (_f, (REFUSAL_CORROBORATOR.get(_f) or ('<none>', ''))[0])), flush=True)
+        if adhoc_points:
+            #  THE SOFT VETO'S OWN LINE.  Without it the bucket would be the one gate in this
+            #  file whose action is invisible from the run -- and a penalty nobody can see is
+            #  indistinguishable from no penalty, which is the failure the per-pool logging
+            #  above exists to stop.
+            _worst = sorted(adhoc_points.items(), key=lambda kv: -kv[1])[:8]
+            print('STAGE-1 VETO [%s]: AD-HOC PENALTY BUCKET -- %d name(s) charged %.0f point(s) '
+                  'in total (a SOFT veto: lowers the Stage-2 score before the sort, ejects '
+                  'nobody). Worst: %s'
+                  % (pool_label, len(adhoc_points), sum(adhoc_points.values()),
+                     ', '.join('%s %.0f' % (s, p) for s, p in _worst)), flush=True)
     return kept, report

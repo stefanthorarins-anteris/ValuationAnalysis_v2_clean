@@ -756,6 +756,51 @@ def _score(df, W, with_diag, raw=None):
     return pbr.getAggScore(psm).set_index("source")["AggScore"]
 
 
+def test_the_fill_report_SURVIVES_the_index_reset_that_silenced_it_for_general(capsys):
+    """*** THE DEFECT: THE GENERAL POOL HAD NO IMPUTATION AUDIT AT ALL. ***
+
+    `MissingDataFillReport_2026-08-10.csv` carries the five carve-out cohorts and NOTHING for
+    `general` -- the one pool that produces the deliverable.  The call was made; it RAISED and
+    the guard swallowed it into a one-line WARNING that scrolled past in a 12-hour run.
+
+    THE CAUSE IS AN INDEX MISMATCH.  `normalizeAndDropNA` starts with
+    `df.reset_index(inplace=True, drop=True)`, which mutates the CALLER'S frame, while
+    `postScoreMetric_raw` is snapshotted BEFORE that call and keeps its original index -- on
+    the general pool 0..104 with gaps, inherited from `BoS_dftop100`.  `zc[~imputed]` then
+    indexes a 0..99 Series with a boolean labelled 0..104 and pandas raises
+    `IndexingError: Unalignable boolean Series`.  The cohorts survived only because their
+    frames happened to arrive 0-based, which is what made it look pool-specific.
+
+    Reproduced here EXACTLY (a raw frame with a gappy index, a normalised frame without), so
+    the fix is pinned against the shape that broke rather than against a tidy fixture.
+    """
+    import postBoRank as pbr
+    df, W = _fill_fixture()
+    raw = df.copy()
+    raw.index = range(0, 5 * len(raw), 5)          # the gappy, non-0-based general index
+    norm, _o = pbr.normalizeAndDropNA(df.copy(), weight_series=W)
+    col, name = pbr.missing_data_fill_report(raw, norm, W, pool="general", csv=False,
+                                             verbose=False)
+    out = capsys.readouterr().out
+    assert col is not None and name is not None, (
+        'the general pool STILL produces no fill report: %s' % out)
+    assert 'skipped for pool=general' not in out
+    assert set(col['pool']) == {'general'} and len(col) == 2
+    #  the numbers must be the ones the aligned frames give, not merely non-empty
+    assert int(col.set_index('column').loc['earnYield', 'n_imputed']) == 3
+    assert int(col.set_index('column').loc['CycleHeat', 'n_imputed']) == 1
+
+    #  AND A GENUINELY MIS-ALIGNED PAIR MUST **RAISE**, NOT WARN (reviewer S4).  The guard
+    #  originally sat INSIDE the function's own `try`, so its `except Exception` caught it and
+    #  returned `(None, None)` after one stdout line -- byte-for-byte the signature of the
+    #  swallowed `IndexingError` above.  A guard that fails the same way as the defect it
+    #  guards against is not a guard, so it now sits outside the `try` and propagates to
+    #  `_safe_diagnose`, which is what keeps a raise from costing the run.
+    bad = raw.iloc[:-1].copy()
+    with pytest.raises(ValueError, match='row-aligned'):
+        pbr.missing_data_fill_report(bad, norm, W, pool="general", csv=False, verbose=False)
+
+
 def test_the_fill_report_leaves_AggScore_BIT_IDENTICAL(capsys):
     """THE property that makes this safe to add on the night of a 12-hour fetch.  A diagnostic
     that perturbs the score is not a diagnostic."""

@@ -194,8 +194,58 @@ _PRE_S_BUDGETS = {
 }
 W_S = 0.120
 _S_SCALE = (1.0 - W_S) / (1.0 - _PRE_S_BUDGETS['S'])
-GENERAL_BUDGETS = {b: (W_S if b == 'S' else w * _S_SCALE)
+_POST_S_BUDGETS = {b: (W_S if b == 'S' else w * _S_SCALE)
                    for b, w in _PRE_S_BUDGETS.items()}
+
+# THE N RE-BUDGET (CEO, 2026-08-10): *"slightly increase the weight in stage 2, but just
+# slightly."*  `CycleHeat` is N's Tier-1 member against `EPStoEPSmean` at Tier 2, so the 3:2
+# tau split gives it exactly 0.6 of the block: it read -0.074521 and the CEO asked for
+# roughly -0.085.
+#
+# WRITTEN AS THE TARGET WEIGHT, NOT AS A BUDGET, and that is the point of doing it here rather
+# than by nudging a decimal until it lands: the number the CEO named is CycleHeat's, so
+# CycleHeat's is the number in the file and the block budget is DERIVED from it.  0.085 * 5/3
+# is non-terminating, so transcribing its display value is how `Sigma|w|` becomes 0.999999 and
+# `_validate()` halts every import (section header, and the same trap the S re-budget records).
+#
+# THE OTHER BLOCKS PAY FOR IT PROPORTIONALLY -- the SAME mechanism as the S re-budget, for the
+# same reason: a flat or hand-picked take would re-open every budget argument in section 15.
+# Scaling the six non-N blocks by (1 - W_N_new)/(1 - W_N_old) preserves EVERY ratio among
+# non-N metrics, and in particular the CEO's deliberate cheapness = durability equality (P and
+# D stay exactly equal), and therefore Rule PROP's 1:1 residual split for the cohorts.
+#
+# THE COST, PRICED RATHER THAN IMPLIED -- ALL 19 LIVE WEIGHTS, BEFORE -> AFTER.  Every non-N
+# weight is multiplied by exactly 0.98005779865 (a 1.99% cut); the two N members rise by
+# 1.14062.  This is the whole invoice for the CEO's "just slightly":
+#     earnYield                   0.122035 -> 0.119601        RoA                       0.062582 -> 0.061334
+#     incomeQuality               0.094393 -> 0.092511        returnOnCapitalEmployed   0.062582 -> 0.061334
+#     freeCashFlowPerShareGrowth  0.083443 -> 0.081779        freeCashFlowYield         0.062929 -> 0.061674
+#     bVpRatio                    0.065711 -> 0.064401        interestCoverage          0.060000 -> 0.058803
+#     marketCapRevQuants          0.049681 -> 0.048690        grahamNumberToPrice       0.040678 -> 0.039867
+#     currentRatio                0.040000 -> 0.039202        Piotroski                 0.032093 -> 0.031453
+#     tbVpRatio                   0.021904 -> 0.021467        returnOnEquity            0.020861 -> 0.020445
+#     grossProfitMargin           0.020861 -> 0.020445        Altman-Z                  0.020000 -> 0.019601
+#     revenueGrowth               0.016047 -> 0.015727
+#     EPStoEPSmean                0.049681 -> 0.056667   (RISES -- N's Tier-2 member)
+#     CycleHeat                  -0.074521 -> -0.085000   (the change being bought)
+# The three DELIBERATELY_ZEROED metrics and the two FIN-1-only extractions stay at 0.000000.
+#
+# THE THESIS MARGIN SURVIVES AND ITS RATIOS ARE UNCHANGED: `earnYield` is still the largest
+# single |w| (0.119601 vs `incomeQuality` 0.092511 = 1.293x, exactly as before), because a
+# PROPORTIONAL take cannot move a ratio between two non-N metrics.  Against CycleHeat's new
+# 0.085000 it holds at 1.407x -- down from 1.638x, and that narrowing IS the purchase.
+#
+# SIGN IS NOT TOUCHED HERE AND CANNOT BE.  `CycleHeat` carries its sign on the ASSIGNMENT
+# (`('N', '-', 1, -1)`), not on the budget, and `_block_vector` multiplies the derived
+# magnitude by it -- so raising a BUDGET can only make the penalty larger, never invert it.
+# That is the property to check if this number is ever moved again: hot late-cycle must stay
+# WORSE, and the test asserts `DEPLOYED['CycleHeat'] < 0`.
+CYCLEHEAT_TARGET_W = 0.085
+#  CycleHeat = W_N * tau_1 / (tau_1 + tau_2) = W_N * 3/5, so W_N = target * 5/3.
+W_N = CYCLEHEAT_TARGET_W * (TIER_TAU[1] + TIER_TAU[2]) / TIER_TAU[1]
+_N_SCALE = (1.0 - W_N) / (1.0 - _POST_S_BUDGETS['N'])
+GENERAL_BUDGETS = {b: (W_N if b == 'N' else w * _N_SCALE)
+                   for b, w in _POST_S_BUDGETS.items()}
 
 # --- B.3  metric -> (block, sub-block, tier, sign) -------------------------- #
 # THE GENERAL POOL'S ASSIGNMENT.  A metric ABSENT from this table is OUT OF THE SCHEME and
@@ -334,15 +384,28 @@ DEPLOYED.update(_block_vector(GENERAL_BUDGETS, GENERAL_ASSIGNMENT))
 #
 # MINING IS DECLARED EXEMPT from the thesis margin, and the reason is not "it fails" -- it
 # is that the failure is NOT RECOVERABLE at any admissible budget.  Post-D3 Mining would
-# need W_P > 1.538 * W_N = 0.311, or W_N cut below 0.169, and cutting W_N abandons the
+# need W_P > 1.538 * W_N, or W_N cut below its cohort deviation, and cutting W_N abandons the
 # cycle-block deviation that is the entire purpose of the Mining cohort.  On stated
 # mechanism: for a miner the trailing E *is* the commodity price, so the cycle question is
 # genuinely co-dominant with the thesis.  Same footing as FIN-3's ROE exemption.
 # (Recorded consequence, per the designer: two declared exemptions out of six is the point
 # at which this stops being a property of the DESIGN and becomes a property of the GENERAL
-# vector only.  Under the equal-D budgets Mining's margin currently PASSES at 1.17x, up
-# from the 1.04x hairline the proportional variant gave it; the exemption is about what
-# happens after D3, not about today.)
+# vector only.)
+#
+# *** THE EXEMPTION NOW BINDS.  IT IS ABOUT TODAY, NOT ABOUT POST-D3.  (2026-08-10) ***
+# This block used to close with "Mining's margin currently PASSES at 1.17x ... the exemption
+# is about what happens after D3, not about today".  BOTH HALVES OF THAT ARE NOW FALSE, and
+# they are corrected rather than deleted because the reversal is the informative part.
+# The CEO's N re-budget (W_N 0.124201 -> 0.141667, so `CycleHeat` reads the -0.085 he asked
+# for) reaches the cohorts through Rule PROP, and Mining's N RATIO IS ABOVE THE ANCHOR'S by
+# design -- so Mining's N rose further than the general vector's, from 0.1822 to 0.2078.
+# MEASURED on the shipped vector: `CycleHeat` 0.124667 against `earnYield` 0.120861, a ratio
+# of **0.9695**.  The cycle metric is now the LARGEST SINGLE WEIGHT in the Mining cohort and
+# the thesis is second, which re-ranks the Mining side-list.
+# That is the declared exemption doing exactly what it was declared for -- but it is now an
+# OBSERVATION, not a hypothetical, and `test_e2_weight_vector` pins it as such.  If the cycle
+# is not wanted as Mining's largest weight, the lever is Mining's N ratio in `_cohort_ratios`,
+# NOT the general budget: lowering W_N would give back the -0.085 the CEO asked for.
 THESIS_METRIC = 'earnYield'
 THESIS_MARGIN_EXEMPT_COHORTS = frozenset({
     # cohort -> the exemption is declared, with its mechanism, in the notes above / below

@@ -106,6 +106,40 @@ def transfer_outputs_to_drive(transfer_dir, configdic, verbose=True):
         'ReportingFrequencyConflicts_*.csv',
         'RunProvenance-*.json',
         'pick_log*.csv',
+        #  --- THE EVIDENCE CSVs THAT MOVED OUT OF `output/` (CEO, 2026-08-10) ------------
+        #  THE CASE THAT DECIDED IT.  On the 2026-08-10 CUR3K run every ROOT-LEVEL artifact
+        #  reached Drive and `output/` AND `logs/` DID NOT: no DedupSurvivorReport, no
+        #  FxRates, no CurrencyExclusionStatus, no DelistedPrune and no run log for that date
+        #  ever arrived, and Drive's copies of those groups stop at 08-08 / 08-07.  The dedup
+        #  breakdown was recoverable only because a copy happened to be inside a pickle.
+        #
+        #  THIS INVERTS THE REASONING RECORDED BELOW, WHICH IS WHY THE FILES MOVED RATHER
+        #  THAN JUST GAINING PATTERNS.  The `MeanBarCalibration` note further down declines a
+        #  top-level glob for a file living in `output/` on the grounds that it would be a
+        #  DEAD GLOB -- `glob.glob` resolves from CWD, so a pattern cannot reach into a
+        #  subdirectory -- and the `DedupSurvivorReport` note declines one on the grounds
+        #  that `output/` "already ships whole, so the evidence cannot be lost to a pattern
+        #  that stops matching after a filename change".  BOTH LEGS FLIP once the file is at
+        #  root: the glob is live because root IS where glob looks, and "ships whole" is
+        #  precisely the guarantee that failed.  A directory that ships whole and does not
+        #  arrive ships nothing.
+        #
+        #  The writers now resolve their directory from `transfer_utils.EVIDENCE_DIR`, so
+        #  these six patterns and those six writers have one place to disagree, not two.
+        #  `output/` STAYS in `allowlist_dirs` below -- the historical files already in it
+        #  must still travel if it ever does, and nothing is removed by this change.
+        'DedupSurvivorReport_*.csv',
+        'FxRates_*.csv',
+        'FxRatesHistorical_*.csv',
+        'CurrencyExclusionStatus_*.csv',
+        'DelistedPrune_*.csv',
+        'VendorContaminationFlags_*.csv',
+        'removed_data_quality_*.csv',
+        #  The AD-HOC PENALTY BUCKET (CEO, 2026-08-10) -- the itemised record of every name
+        #  whose Stage-2 score was lowered for a data problem, and why.  It is the SOLE
+        #  on-disk record of that decision, so it ships by the rule stated above, and it is
+        #  written at root for the reason stated above.
+        'AdHocPenaltyBucket_*.csv',
         #  The mean-bar calibration (added 2026-08-09).  It is the run's own watchdog on the
         #  Stage-1 bars -- WRITTEN ALWAYS, even with no breach, because its PRESENCE is the
         #  evidence the check ran -- and it matched no pattern here, so it reached the other
@@ -125,9 +159,15 @@ def transfer_outputs_to_drive(transfer_dir, configdic, verbose=True):
         #  `meanBars.emit_calibration(directory='.')`, which is where `glob.glob` looks, so
         #  the pattern genuinely matches. Checked against the on-disk name
         #  (`MeanBarCalibration-2026-08-07_stock_CUR3K.csv`), not against the format string.
+        #  SINCE 2026-08-10 THIS FILE IS NO LONGER THE EXCEPTION -- the other evidence CSVs
+        #  moved to root beside it (see the block above) -- but reason 1 above is still the
+        #  reason this one CANNOT move anywhere else: `meanBars._prior_streaks` reads the
+        #  prior calibration CSVs back from the directory it writes to, so relocating the
+        #  writer would strand the git-tracked root-level history and silently restart every
+        #  breach streak at zero.  It stays at root, and it stays at root for its own reason.
         'MeanBarCalibration-*.csv',
         #  The RAW vendor delisted list (added 2026-08-09).  The record of what the prune
-        #  REMOVED is `output/DelistedPrune_<date>.csv` and ships with output/ -- this is
+        #  REMOVED is `DelistedPrune_<date>.csv` (moved to the repo root 2026-08-10) -- this is
         #  the other half: what the VENDOR said on the day.  It ships because it is NOT
         #  REPRODUCIBLE: `v3/delisted-companies?page=0` is a moving window, so a later call
         #  cannot recover the list this run pruned against, and without it a disputed
@@ -180,25 +220,33 @@ def transfer_outputs_to_drive(transfer_dir, configdic, verbose=True):
     # `output/` holds the per-decision detail CSVs (e.g. removed_data_quality_*.csv,
     # which names the 82 dropped sources and the reason for each).
     #
-    # `output/` ALSO carries `DedupSurvivorReport_*.csv` from 2026-08-08 -- the per-dropped
-    # -line record of WHICH TICKER SURVIVED each issuer group, which term decided it, and
-    # the raw volAvg readings and as-of dates behind that decision. It is deliberately
-    # written INTO `output/` rather than given its own top-level pattern here: this
-    # directory already ships whole, so the evidence cannot be lost to a pattern that stops
-    # matching after a filename change. It is the sole on-disk record of the survivor pick,
-    # which is exactly the "if it is the ONLY record of a decision the pipeline made about
-    # the universe, it ships" rule above -- and it was missing while this very list was
-    # being widened to close evidence gaps.
+    # `output/` CARRIED `DedupSurvivorReport_*.csv` and `DelistedPrune_<date>.csv` UNTIL
+    # 2026-08-10, AND THAT IS THE POINT: it carried them, and they did not travel.
     #
-    # `output/` ALSO carries `DelistedPrune_<date>.csv` from 2026-08-09 -- the named list of
-    # every symbol the delisted prune removed from the universe, with its reason and the
-    # page-0 limitation stated IN the file.  That prune was the LAST gate that removed names
-    # with no count, no banner and no shipped artifact, and the end-of-run reconciliation
-    # could not have caught it: the prune runs UPSTREAM of Tickers_df, so `resolved` is
-    # already post-prune and a residual of 0 proves nothing about it.  Written into
-    # `output/` for the same reason as the dedup report -- this directory ships whole, so a
-    # top-level pattern (which glob.glob() resolves from CWD and would therefore match
-    # nothing) is not needed and would be decorative.
+    # The arguments this block used to make were: the dedup report is "deliberately written
+    # INTO `output/` rather than given its own top-level pattern here: this directory already
+    # ships whole, so the evidence cannot be lost to a pattern that stops matching after a
+    # filename change"; and the delisted-prune record likewise, because "a top-level pattern
+    # (which glob.glob() resolves from CWD and would therefore match nothing) is not needed
+    # and would be decorative".  Both were sound conditional on `output/` arriving.  On the
+    # 2026-08-10 run it did not, and neither did `logs/`, so BOTH files were lost for that
+    # date while every root-level artifact from the same run was fine.  A pattern that stops
+    # matching is a risk you can test for; a directory that silently does not copy is one
+    # nobody was checking.  The CEO's ruling is therefore to move the writers to root, which
+    # is what the pattern block above records, and both files now have live top-level globs.
+    #
+    # WHAT THEY ARE, kept because it is the reason they ship at all.  The dedup report is the
+    # per-dropped-line record of WHICH TICKER SURVIVED each issuer group, which term decided
+    # it, and the raw volAvg readings and as-of dates behind that decision -- the sole on-disk
+    # record of the survivor pick.  The delisted-prune record is the named list of every
+    # symbol the prune removed, with its reason and the page-0 limitation stated IN the file;
+    # that prune runs UPSTREAM of Tickers_df, so `resolved` is already post-prune and the
+    # end-of-run reconciliation's residual of 0 proves nothing about it.
+    #
+    # `output/` REMAINS in this list, unchanged: the historical files already inside it (and
+    # the backtest output folders, which are not evidence CSVs and did not move) must still
+    # travel whenever the directory copy does succeed.  Nothing was removed from the manifest
+    # by this change -- only added.
     #
     # `run_logs/` is DELIBERATELY NOT unconditional.  Its only writer is
     # delisted_ingest.py (run_logging.RunLogger is constructed nowhere else), so on a
@@ -676,7 +724,8 @@ def main():
             manualelim_applied = []
             manualelimtickers = manualelim_applied
             Tickers_df = gdg.get_tickers(datasource, baseurl, api_key, manualelimtickers, tickerfilter,
-                                         sfilt ='all', mcapf = -1, fn = '', as_of=as_of)
+                                         sfilt ='all', mcapf = -1, fn = '', as_of=as_of,
+                                         force_rebuild_maps=configdic.get('force_rebuild_maps'))
             # Assign variables and get financial data and calculate relevant metrics
             cdx_df, BoMetric_df, nrTaT = datandmetricdic['cdx_df'], datandmetricdic['BoMetric_df'], configdic['nrTaT']
             getfunddic = gdf.get_fundamentals_fmp(Tickers_df, cdx_df, BoMetric_df, baseurl, api_key, configdic['compyear'],

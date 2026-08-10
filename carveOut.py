@@ -50,6 +50,7 @@ import numpy as np
 import pandas as pd
 
 import scoringWeights as sw     # SINGLE SOURCE OF TRUTH for every scoring weight
+import transfer_utils as _tu   # EVIDENCE_DIR: where the run's evidence CSVs are written
 
 # --- Financial-Services sub-classification patterns --------------------------
 # FIN-1 Investment Vehicles (CEF / investment trust / BDC): widened CEF keyword set
@@ -342,7 +343,7 @@ FX_TO_USD = {
 #    2026-08-09  TRY 0.030 -> 0.020969      was 0.699x its anchor = 60.2% of the half-band
 #                                           consumed, and the ONLY `[fx] ANCHOR` warning on
 #                                           the 2026-08-09 live call.  Re-seeded from
-#                                           output/FxRates_2026-08-09.csv (TRYUSD
+#                                           FxRates_2026-08-09.csv (in output/ when it was written; root since 2026-08-10) (TRYUSD
 #                                           0.02096854, quote_age 0.32d, status ok,
 #                                           reciprocal-checked).
 #    2026-08-09  ILS 0.27  -> 0.33326       the runner-up at 46.9% consumed -- UNDER the
@@ -761,6 +762,45 @@ _UNKNOWN_SECTORS = {'Unspecified', 'Unknown', ''}
 def _is_known_sector(sec):
     """True only for a real sector label (not a no-sector sentinel / None / empty)."""
     return bool(sec) and sec not in _UNKNOWN_SECTORS
+
+
+#  --- THE SECTOR MAP IN THIS REPO IS NOT THE ONE THE RUNS USE.  READ THIS BEFORE MEASURING
+#  --- ANYTHING SECTOR-RELATED OFFLINE.  (2026-08-10) --------------------------------------
+#  `sectorsdic_fmp.pickle` is .gitignore'd and REBUILT BY THE RUN, so the copy sitting in a
+#  working tree is whatever that machine last built -- and the two that exist right now are
+#  not the same KIND of object:
+#
+#      repo copy (2025-12-10)   40 keys / 40,164 symbols   'Banking', 'Chemicals', 'Airlines',
+#                                                          'Biotechnology' ... an INDUSTRY
+#                                                          taxonomy misfiled as sectors
+#      run copy  (2026-08-07)   11 keys / 11,479 symbols   the FMP SECTOR taxonomy this module
+#                                                          is written against
+#
+#  THIS IS NOT STALENESS, IT IS A DIFFERENT TAXONOMY, and it silently breaks the carve: the
+#  cohort constants below (`FINANCIAL_SECTOR` = 'Financial Services') cannot match a map whose
+#  banks are filed under 'Banking', so FIN-3 under-carves wholesale.  Measured on the 08-10
+#  panel: the repo map gives general 1,489 / REIT 67 / Mining 217 where the run produced
+#  1,388 / 77 / 265.
+#
+#  IT CHANGES INDIVIDUAL VERDICTS, not just counts.  `MAS` reads 'Basic Materials' under the
+#  run's map and 'Industrials' under the repo's; `B` and `ABX.TO` are BOTH 'Basic Materials'
+#  under the run's (no conflict at all) and split Industrials/Basic Materials under the repo's;
+#  `AFG`, `AFGB` and `AFGE` are all 'Financial Services' under the run's.  Two independent
+#  offline measurements of the SAME change disagreed for exactly this reason and neither was
+#  wrong -- they were reading different worlds.
+#
+#  WHAT TO DO: measure against the map the run actually used.  `Sbocker` ships all four profile
+#  maps, so the run's copy travels with its outputs (the 2026-08-07 build is the one the 08-10
+#  run used -- it skipped the rebuild, which is what `-force_rebuild_maps` now exists to
+#  override).  Do not assume the working tree's copy is it.
+#
+#  --- AMBIGUOUS SECTOR -> GENERAL (CEO, 2026-08-10) ---------------------------------------
+#  The sector an issuer is given when its member lines DISAGREE and no tag has a plurality.
+#  It is a REAL, non-sentinel string so it survives `_is_known_sector` (an ambiguous issuer is
+#  not an UNMAPPED one -- we know its tags, we cannot choose between them), and it matches
+#  none of REIT_SECTOR / MINING_SECTOR / FINANCIAL_SECTOR, so `classify` routes it to
+#  'general' by its existing default rather than by a new branch.
+AMBIGUOUS_SECTOR = 'Ambiguous (sector conflict)'
 
 
 #  REPO-ROOT anchor for the undated data pickles (fix, 2026-07-27).
@@ -1661,7 +1701,7 @@ def _volavg_raw_liquidity_term(sym, group, volavg_map):
         never lets a 1.4x margin masquerade as the confident decade term;
       * the dedup report carries the RAW volumes and their as-of dates for the dropped and
         the surviving line, so a reader sees the MARGIN and can judge its weight; and
-      * that report is WRITTEN TO DISK as `output/DedupSurvivorReport_<date>.csv` and ships
+      * that report is WRITTEN TO DISK as `DedupSurvivorReport_<date>.csv` (repo root since 2026-08-10) and ships
         in the transfer, and `partition_universe` prints `n_decided_volavg_raw` beside
         `n_decided_alphabetical`.
     *** THE THIRD BULLET IS LOAD-BEARING AND WAS MISSING UNTIL 2026-08-08 (reviewer F1). ***
@@ -2360,18 +2400,93 @@ def dedup_to_issuers(BoScore_df, cdx_df, sector_map, names):
         secs = [x for x in (sector_map.get(m) for m in members) if _is_known_sector(x)]
         prop = None
         if secs:
-            # On a known-vs-known conflict, PREFER a cohort-relevant sector
-            # (REIT / Mining / Financial) so a conflicting non-cohort sibling tag
-            # (e.g. a baby-bond line mistagged 'Industrials') cannot demote a REIT/
-            # miner/BDC issuer out of its cohort. The three cohort sectors are
-            # mutually disjoint, so at most one is present; ties within the chosen
-            # pool break by majority then insertion order.
-            cohort_secs = [x for x in secs
-                           if x in (REIT_SECTOR, MINING_SECTOR, FINANCIAL_SECTOR)]
-            pool = cohort_secs if cohort_secs else secs
-            prop = Counter(pool).most_common(1)[0][0]
+            # THE OLD RULE, AND WHY IT WAS OVERRULED (CEO, 2026-08-10) -- kept, not deleted.
+            # On a known-vs-known conflict this used to PREFER a cohort-relevant sector
+            # (REIT / Mining / Financial) OUTRIGHT, so that a conflicting non-cohort sibling
+            # tag (e.g. a baby-bond line mistagged 'Industrials') could not demote a REIT /
+            # miner / BDC issuer out of its cohort. That intent is CORRECT and is preserved
+            # below by the PLURALITY, which is the evidence the intent was really appealing
+            # to. What the old rule additionally did -- and what the CEO overruled -- is
+            # resolve a DEAD TIE in the cohort's favour, i.e. decide on no evidence at all.
+            #
+            # THE COST, MEASURED: `MAS` (Masco, ~$12bn building products) arrived tagged
+            # `{'Consumer Cyclical': 1, 'Basic Materials': 1}` -- a 1-1 tie -- was routed to
+            # Basic Materials by this preference, landed in the Mining cohort, and was ejected
+            # there by `equityPositive`. Its negative book equity is buybacks, not distress;
+            # the flag is a miner's balance-sheet floor and Masco is not a miner. A tie is not
+            # evidence for a cohort, and a cohort carries SPECIALIST SOLVENCY FLAGS, so
+            # guessing into one is strictly more dangerous than guessing out of one: the
+            # general pool's flag set is the one designed for a company we cannot classify.
+            #
+            # THE RULE NOW: plurality on the FULL tag list, cohort-agnostic. A unique winner
+            # is taken (so 2 REIT tags still beat 1 mistagged Industrials -- the protective
+            # case survives). A TIE that would otherwise reach a cohort is AMBIGUOUS and the
+            # issuer routes to GENERAL. A tie between two non-cohort sectors already routed to
+            # general and still does; it is marked ambiguous anyway, because "we could not
+            # tell" is worth recording even when it changes nothing.
+            #
+            # MEASURED against the map the 2026-08-10 run ACTUALLY USED (see the taxonomy
+            # warning above -- the repo's copy answers a different question): 23 known-vs-known
+            # conflicts, of which the OLD rule put 9 into a cohort that the plurality alone
+            # would move out. The SHIPPED rule moves 7:
+            #   FRU.TO, CAR, KEEL, HIVE.TO -> general;  DML.TO, AQMS -> general;
+            #   LADR -> REIT (not general -- its own primary reads Real Estate, and only the
+            #                 LSE sibling said Financial Services; a commercial-mortgage REIT
+            #                 landing in REIT is a BETTER answer than either previous rule)
+            # and two names the all-lines plurality would have moved STAY PUT, correctly:
+            #   MAS  stays Mining -- its own primary is tagged Basic Materials and only the
+            #        LSE IOB sibling said Consumer Cyclical. The vendor genuinely classifies a
+            #        building-products company as a materials name; that is not an ambiguity
+            #        for this rule to resolve.
+            #   WY   stays REIT, same shape.
+            #
+            # NOT DONE HERE, AND EXPLICITLY PARKED BY THE CEO: deciding the cohort from the
+            # BUSINESS MODEL rather than from the vendor's sector tag. That is the real fix --
+            # and `MAS` is precisely the case that needs it, since no tiebreak can improve on a
+            # correct-but-unhelpful vendor tag on the only line that has one.
+            # ONLY THE ISSUER'S OWN EQUITY LINES GET A VOTE (reviewer S2, 2026-08-10).
+            # A baby bond, a preferred or an IOB line carries the vendor's classification of
+            # THE INSTRUMENT, not of the ISSUER, so counting it is counting the wrong thing --
+            # and because there can be SEVERAL of them against ONE equity line, they can carry
+            # the plurality outright.
+            #
+            # THE CASE THAT FORCED IT: `AFG` (American Financial Group) is tagged Financial
+            # Services x1 -- the equity -- against Industrials x2, which are `AFGB` and `AFGE`,
+            # its subordinated debentures.  Plurality alone therefore moved a P&C insurer out
+            # of BalanceSheetFin into the general pool, and NOT as an ambiguity: it was a
+            # confident wrong answer, unflagged.  Plurality protects the issuer only when the
+            # correct tag is in the majority, which is exactly what a stack of bond lines
+            # denies it.
+            #
+            # THE FILTER IS `_non_canonical_tag`, NOT A NEW HEURISTIC -- the same function the
+            # survivor pick already trusts to tell an instrument from an issuer's common line
+            # (it tags `AFGB`/`AFGE` `name-vocabulary:coupon-rate`, preferreds
+            # `preferred-suffix`, `.L` IOB lines `lse-iob`).  Reusing it means the vote and the
+            # pick cannot disagree about what a non-equity line is.
+            #
+            # THE CONFLICT REPORT STILL COUNTS EVERY MEMBER, deliberately: a reader must be
+            # able to see that a bond line disagreed and was NOT counted, which a report
+            # restricted to the voters would hide.
+            voters = [x for m, x in zip(members, (sector_map.get(m) for m in members))
+                      if _is_known_sector(x) and not _non_canonical_tag(
+                          m, names.get(m, ''), members)]
+            # A group of ONLY non-equity lines keeps the old behaviour rather than losing its
+            # sector: no equity line exists to be overruled, so there is nothing to protect.
+            pool = voters if voters else secs
+            counts = Counter(pool)
+            ranked = counts.most_common()
+            tied = len(ranked) > 1 and ranked[0][1] == ranked[1][1]
+            if tied:
+                prop = AMBIGUOUS_SECTOR
+            else:
+                prop = ranked[0][0]
             if len(set(secs)) > 1:
-                conflicts.append((surv, dict(Counter(secs)), prop))
+                #  Reported with the FULL member counts and, when they differ, the counts that
+                #  actually VOTED -- so "why did this resolve that way" is answerable from the
+                #  diagnostic alone.
+                _entry = dict(counts) if voters == secs else {
+                    'all_lines': dict(Counter(secs)), 'equity_voters': dict(counts)}
+                conflicts.append((surv, _entry, prop))
             sector_override[surv] = prop
         #  Read ONCE per group, not once per emitted cell. `_volavg_reading` is pure, so
         #  this cannot change a value; it stops the survivor's reading being recomputed for
@@ -2569,14 +2684,22 @@ def partition_universe(BoScore_df, cdx_df, tickers_df,
         #  artifact shows the margin, and there was no artifact. The same diff that widened
         #  the transfer manifest to close evidence gaps had missed the record of what those
         #  maps decided, which is the exact failure mode 84abd40 exists to prevent.
-        #  It goes in `output/`, which Sbocker's allowlist_dirs already ships WHOLE, so the
-        #  evidence travels without adding a pattern that could silently stop matching.
+        #  IT GOES AT THE REPO ROOT SINCE 2026-08-10 (CEO), NOT IN `output/`.  This block
+        #  used to say it went in `output/` "which Sbocker's allowlist_dirs already ships
+        #  WHOLE, so the evidence travels without adding a pattern that could silently stop
+        #  matching".  The 2026-08-10 run is the counter-example that retired that argument:
+        #  `output/` did not travel AT ALL, so the 08-10 survivor report never left the
+        #  machine, while every root-level artifact from the same run did.  The dedup
+        #  breakdown for that date was recoverable only because a copy happened to be inside
+        #  a pickle -- which is luck, not evidence design.  It now has its own top-level
+        #  manifest pattern in `Sbocker.allowlist_patterns`.  Directory:
+        #  `transfer_utils.EVIDENCE_DIR`.
         try:
             _dd_rep = dedup_diag.get('report')
             if _dd_rep is not None and len(_dd_rep):
-                os.makedirs('output', exist_ok=True)
+                os.makedirs(_tu.EVIDENCE_DIR, exist_ok=True)
                 _dd_fn = os.path.join(
-                    'output', 'DedupSurvivorReport_%s.csv'
+                    _tu.EVIDENCE_DIR, 'DedupSurvivorReport_%s.csv'
                     % pd.Timestamp.today().strftime('%Y-%m-%d'))
                 _dd_rep.to_csv(_dd_fn, index=False)
                 print('  dedup survivor report written to: %s' % _dd_fn, flush=True)
@@ -2720,7 +2843,7 @@ def partition_universe(BoScore_df, cdx_df, tickers_df,
                 "!!!   end, and any 'floor_enforced' label on it means 'the floor ran',",
                 "!!!   NOT 'every name passed it'. Usual cause: an FX feed that installed",
                 "!!!   LIVE while resolving only part of the supported currency set --",
-                "!!!   check the fx_rates block of RunProvenance and output/FxRates_*.csv.",
+                "!!!   check the fx_rates block of RunProvenance and FxRates_*.csv.",
                 _cbang, ""])
             print(_cbanner, file=sys.stderr, flush=True)
             print(_cbanner, flush=True)

@@ -816,7 +816,7 @@ def test_the_delisted_prune_NAMES_every_symbol_it_removes(tmp_path, monkeypatch,
     assert 'MCFT' in out, 'a removed symbol was not NAMED on the console'
     assert '1 of 3' in out, 'the count of removed rows is not stated'
 
-    rec = sorted(tmp_path.glob('output/DelistedPrune_*.csv'))
+    rec = sorted(tmp_path.glob('DelistedPrune_*.csv'))
     assert rec, 'no shipped record of the prune was written'
     got = pd.read_csv(rec[-1])
     assert list(got['symbol']) == ['MCFT'], (
@@ -833,7 +833,7 @@ def test_the_prune_banner_STATES_the_page_0_limitation(tmp_path, monkeypatch, ca
     _get_tickers_with_delist(tmp_path, monkeypatch, ['MCFT'])
     out = capsys.readouterr().out
     assert 'page=0' in out and 'PARTIAL' in out
-    got = pd.read_csv(sorted(tmp_path.glob('output/DelistedPrune_*.csv'))[-1])
+    got = pd.read_csv(sorted(tmp_path.glob('DelistedPrune_*.csv'))[-1])
     assert 'PAGE 0 ONLY' in got['coverage_note'].iloc[0]
 
 
@@ -850,12 +850,19 @@ def test_the_prune_reports_the_ZERO_case_too(tmp_path, monkeypatch, capsys):
 
 
 def test_the_prune_record_is_reachable_by_the_transfer_allowlist(tmp_path, monkeypatch):
-    """The artifact only counts if it SHIPS.  `output/` is in Sbocker's allowlist_dirs and
-    ships whole, and the raw vendor list gets a top-level pattern because it is a MOVING
-    WINDOW -- a later call cannot recover the list this run pruned against."""
+    """The artifact only counts if it SHIPS -- and since 2026-08-10 (CEO) that means it is
+    at the REPO ROOT with its OWN top-level pattern, not inside `output/`.
+
+    The ruling's evidence: on the 2026-08-10 run `output/` did not reach Drive at all, so
+    riding a directory that "ships whole" lost the record for that date while every
+    root-level artifact survived.  This test therefore pins BOTH halves -- the file is
+    written where glob.glob can see it, and the manifest carries a pattern that matches it."""
     _get_tickers_with_delist(tmp_path, monkeypatch, ['MCFT'])
-    assert (tmp_path / 'output' / ('DelistedPrune_%s.csv'
-                                   % datetime.today().strftime('%Y-%m-%d'))).exists()
+    _rec = tmp_path / ('DelistedPrune_%s.csv' % datetime.today().strftime('%Y-%m-%d'))
+    assert _rec.exists(), 'the prune record is not at the repo root'
+    assert not (tmp_path / 'output' / _rec.name).exists(), (
+        'the prune record is still being written into output/, which is the directory that '
+        'did not travel on 2026-08-10')
     assert sorted(tmp_path.glob('delisted_tickers_*.csv')), 'raw vendor list not written'
     with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'Sbocker.py'),
               encoding='utf-8', errors='ignore') as _f:
@@ -863,8 +870,9 @@ def test_the_prune_record_is_reachable_by_the_transfer_allowlist(tmp_path, monke
     assert "'delisted_tickers_*.csv'" in src, (
         'the raw vendor list has no transfer pattern -- it is top-level and dated, so a '
         'glob genuinely matches it (unlike one aimed into output/)')
-    assert 'DelistedPrune' in src, (
-        "Sbocker must record WHY the prune record rides output/ rather than a pattern")
+    assert "'DelistedPrune_*.csv'" in src, (
+        'the prune record is at root now and MUST have its own top-level manifest pattern; '
+        'riding output/ is exactly what failed on 2026-08-10')
 
 
 # --------------------------------------------------------------------------- #
@@ -2355,3 +2363,86 @@ def test_the_two_WRONG_company_names_cannot_come_back():
     for bad in ('skyharbour', 'sk growth opportunities', 'northwest pipe'):
         assert bad not in blob, (
             '%r is back in a CUR3K why-string -- it names the WRONG company' % bad)
+
+
+# =========================================================================== #
+#  -force_rebuild_maps  (CEO, 2026-08-10)                                      #
+# =========================================================================== #
+def test_force_rebuild_maps_BYPASSES_the_skip_conditions_and_SAYS_it_was_forced(
+        tmp_path, monkeypatch, capsys):
+    """*** WHY THE FLAG EXISTS. ***  On the 2026-08-10 run all four profile maps were present,
+    none was 60 days stale and sector coverage was above the floor, so the gate skipped --
+    CORRECTLY, by its own rules.  The consequence is that two capture changes that had already
+    shipped never landed (`price`/`currency` from 90b0d5f; `isActivelyTrading` / `exchange` /
+    `exchangeShortName` / `country` / `beta` from 1e9d353), every 2026-08-10 pick carries
+    `volAvg_asof = 2026-08-07`, and nothing would force a rebuild until 2026-10-06.  A CODE
+    change to WHAT the maps capture has no representation in a freshness rule about their AGE.
+
+    BOTH HALVES ARE PINNED, because the second is the operational one: the rebuild happens,
+    AND the banner distinguishes FORCED from TRIGGERED so a forced run is identifiable in the
+    log after the fact.
+    """
+    import findAllSectors as fas
+    monkeypatch.chdir(tmp_path)
+    #  all four maps present and fresh -> every skip condition satisfied
+    for name in ('sectorsdic_fmp.pickle', 'industrydic_fmp_2026-08-10.pickle',
+                 'isindic_fmp_2026-08-10.pickle', 'volavgdic_fmp_2026-08-10.pickle'):
+        pd.to_pickle({'Technology': ['A']} if name.startswith('sectors') else {'A': 'x'},
+                     tmp_path / name)
+    built = []
+    monkeypatch.setattr(fas, 'buildSectorIndustryMaps',
+                        lambda *a, **k: built.append(True) or ({}, {}))
+
+    #  WITHOUT the flag: skipped, no build, and the log offers the flag by name.
+    assert fas.ensure_sector_industry_maps(['A'], 'https://x/', 'KEY') is False
+    out = capsys.readouterr().out
+    assert not built and 'no rebuild, no API calls' in out
+    assert '-force_rebuild_maps' in out, (
+        'the skip banner must name the override, or an operator who needs it cannot find it')
+
+    #  WITH the flag: built, and the banner says FORCED rather than triggered.
+    assert fas.ensure_sector_industry_maps(['A'], 'https://x/', 'KEY',
+                                           force_rebuild=True) is True
+    out = capsys.readouterr().out
+    assert built, 'the flag did not bypass the skip conditions'
+    assert 'FORCED' in out and 'TRIGGERED' not in out, (
+        'a forced rebuild must be distinguishable from one the gate decided on its own')
+    assert 'no gate condition fired' in out
+
+
+def test_force_rebuild_maps_does_NOT_override_the_SUBSET_universe_refusal(
+        tmp_path, monkeypatch, capsys):
+    """The one thing the flag must NOT bypass.  A curated subset universe must never author
+    these SHARED maps -- a 142-symbol map applied to a later 10,693-name pool covers ~1% of
+    it, which is non-empty and so slips past carveOut's empty-map abort while REIT and Mining
+    leak wholesale.  "The operator asked for it" is not a reason to write that map."""
+    import findAllSectors as fas
+    monkeypatch.chdir(tmp_path)
+    built = []
+    monkeypatch.setattr(fas, 'buildSectorIndustryMaps',
+                        lambda *a, **k: built.append(True) or ({}, {}))
+    assert fas.ensure_sector_industry_maps(['A'], 'https://x/', 'KEY',
+                                           universe_is_subset=True,
+                                           universe_name='stock_TEST1',
+                                           force_rebuild=True) is False
+    assert not built
+    assert 'MAP BUILD SKIPPED' in capsys.readouterr().out
+
+
+def test_the_force_rebuild_flag_is_THREADED_from_the_CLI_to_the_gate():
+    """A flag that parses and reaches nothing is worse than no flag: it reports success and
+    changes nothing.  The whole chain is checked by source, because the fetch path itself
+    cannot be exercised without an API key."""
+    import inspect
+    import configuration as cfg
+    import getData_gen as gdg
+    ns, _ = cfg._build_parser().parse_known_args(['-force_rebuild_maps'])
+    assert ns.force_rebuild_maps is not None
+    assert 'force_rebuild_maps' in inspect.signature(gdg.get_tickers).parameters
+    #  `get_tickers` is where the self-heal hook actually lives (NOT `tickerfilterWrapper`,
+    #  which is a sibling call and never sees the maps) -- so that is the one function whose
+    #  body has to carry the argument through.
+    assert 'force_rebuild=bool(force_rebuild_maps)' in inspect.getsource(gdg.get_tickers)
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'Sbocker.py'),
+              encoding='utf-8', errors='ignore') as f:
+        assert "force_rebuild_maps=configdic.get('force_rebuild_maps')" in f.read()

@@ -1858,3 +1858,138 @@ def test_the_three_kinds_of_absence_stay_DISTINGUISHABLE_from_a_real_zero(
     #  ... and the per-name CSV frame agrees, because it is the same function.
     fr = co.volavg_report_frame(['X'], volavg_map=vmap)
     assert fr['volAvg_asof'].iloc[0] == exp_asof
+
+
+# =========================================================================== #
+#  AN AMBIGUOUS SECTOR ROUTES TO GENERAL  (CEO, 2026-08-10)                    #
+# =========================================================================== #
+def _dedup_sectors(groups, sector_map, names=None):
+    """Run `dedup_to_issuers` over synthetic issuer groups and return
+    (propagated sector per survivor, the conflicts it reported).
+
+    `cdx_df` carries one row per symbol with matching `weightedAverageShsOut` so the
+    grouping key collapses each group -- this test is about the SECTOR VOTE, not about the
+    grouping, which has its own tests above.
+    """
+    rows, _names, ranked = [], {}, []
+    for gi, (members, nm) in enumerate(groups):
+        for s in members:
+            rows.append({'source': s, 'date': '2026-03-31', 'price': 10.0,
+                         'weightedAverageShsOut': 1000.0 + gi, 'marketCap': 10000.0 + gi,
+                         'totalAssets': 1.0, 'revenue': 1.0})
+            _names[s] = nm
+            ranked.append(s)
+    cdx = pd.DataFrame(rows)
+    #  `names` matters now: `_non_canonical_tag`'s name-vocabulary rule is what identifies a
+    #  baby bond, so a fixture that passes only symbols would silently give every line a vote.
+    _names = {**_names, **(names or {})}
+    ded = co.dedup_to_issuers(pd.DataFrame({'source': ranked, 'score': range(len(ranked))}),
+                              cdx, sector_map, _names)
+    return ded['sector_override'], ded['diagnostics']['sector_conflicts']
+
+
+def test_a_TIED_sector_conflict_routes_the_issuer_to_GENERAL_not_into_a_cohort():
+    """*** THE RULE THE `MAS` CASE MOTIVATED. ***  A DEAD TIE between two equity lines used to
+    be resolved IN FAVOUR OF THE COHORT SECTOR, i.e. decided on no evidence at all -- and a
+    cohort carries SPECIALIST SOLVENCY FLAGS, so guessing INTO one is strictly more dangerous
+    than guessing out of one.  The general pool's flag set is the one designed for a company
+    we cannot classify.
+
+    WHAT ACTUALLY HAPPENS TO `MAS` ITSELF, corrected 2026-08-10 once the run's real sector map
+    was recovered (the repo's copy is a DIFFERENT TAXONOMY -- see the warning in `carveOut`):
+    **it stays in Mining.**  Its own primary line is tagged `Basic Materials`; only its LSE IOB
+    sibling said `Consumer Cyclical`, and the equity-voter rule strips that vote, so no tie
+    survives to resolve.  The vendor genuinely files a building-products company as a materials
+    name, and no tiebreak can improve on a correct-but-unhelpful tag on the only line that has
+    one -- that is the parked business-model cohort work.
+    So this fixture pins the RULE on a synthetic tie, not that name's fate.
+    """
+    override, conflicts = _dedup_sectors(
+        [(['MAS', 'MAS.SW'], 'Masco Corporation')],
+        {'MAS': 'Consumer Cyclical', 'MAS.SW': co.MINING_SECTOR})
+    assert override['MAS'] == co.AMBIGUOUS_SECTOR
+    assert len(conflicts) == 1 and conflicts[0][2] == co.AMBIGUOUS_SECTOR
+    #  ...and the sentinel must actually ROUTE to general through the real classifier, not
+    #  merely be a different string.
+    labels, _reasons = co.classify(['MAS'], override, pd.DataFrame(), {'MAS': 'Masco'})
+    assert labels['MAS'] == 'general'
+
+
+def test_the_ambiguous_sentinel_is_KNOWN_and_matches_NO_cohort_sector():
+    """It must survive `_is_known_sector` -- an ambiguous issuer is not an UNMAPPED one; we
+    know its tags and cannot choose between them -- while matching none of the three cohort
+    sectors, so `classify` routes it by its existing default rather than by a new branch."""
+    assert co._is_known_sector(co.AMBIGUOUS_SECTOR)
+    assert co.AMBIGUOUS_SECTOR not in (co.REIT_SECTOR, co.MINING_SECTOR,
+                                       co.FINANCIAL_SECTOR)
+    assert co.AMBIGUOUS_SECTOR not in co._UNKNOWN_SECTORS
+
+
+def test_only_the_issuers_EQUITY_lines_get_a_sector_vote():
+    """*** THE `AFG` CASE (reviewer S2, 2026-08-10). ***  American Financial Group is tagged
+    Financial Services x1 -- its equity -- against Industrials x2, which are `AFGB` and `AFGE`,
+    its SUBORDINATED DEBENTURES.  Plurality alone therefore moved a P&C insurer out of
+    BalanceSheetFin and into the general pool, and NOT as an ambiguity: it was a confident
+    wrong answer, unflagged.
+
+    A bond line carries the vendor's classification of the INSTRUMENT, not of the ISSUER, and
+    there can be several of them against one equity line -- so they can carry the plurality
+    outright.  The filter is `_non_canonical_tag`, the same function the survivor pick already
+    trusts to tell an instrument from a common line, so the vote and the pick cannot disagree
+    about what a non-equity line is.
+    """
+    override, conflicts = _dedup_sectors(
+        [(['AFG', 'AFGB', 'AFGE'], 'American Financial Group, Inc.')],
+        {'AFG': co.FINANCIAL_SECTOR, 'AFGB': 'Industrials', 'AFGE': 'Industrials'},
+        names={'AFG': 'American Financial Group, Inc.',
+               'AFGB': 'American Financial Group, Inc. 5.875% Subordinated Debentures',
+               'AFGE': 'American Financial Group, Inc. 5.125% Subordinated Debentures'})
+    surv = conflicts[0][0]
+    assert override[surv] == co.FINANCIAL_SECTOR, (
+        'two debenture lines outvoted the equity and demoted an insurer out of its cohort')
+    assert override[surv] != co.AMBIGUOUS_SECTOR, (
+        'this is not an ambiguity -- the issuer HAS a clear equity tag; routing it to general '
+        'as "ambiguous" would be a second wrong answer')
+    #  THE DIAGNOSTIC MUST SHOW BOTH SIDES.  A report restricted to the voters would hide that
+    #  a bond line disagreed and was not counted, which is the thing a reader needs to see.
+    entry = conflicts[0][1]
+    assert entry['all_lines'] == {co.FINANCIAL_SECTOR: 1, 'Industrials': 2}
+    assert entry['equity_voters'] == {co.FINANCIAL_SECTOR: 1}
+
+
+def test_a_group_of_ONLY_non_equity_lines_keeps_its_sector_rather_than_losing_it():
+    """The degenerate case, ruled rather than left to fall out: with no equity line there is
+    nothing to protect, so the old behaviour stands.  Dropping the sector entirely would push
+    a real issuer to general for having only preferred lines in the panel."""
+    override, _c = _dedup_sectors(
+        [(['RE-PA', 'RE-PB'], 'Some REIT Inc.')],
+        {'RE-PA': co.REIT_SECTOR, 'RE-PB': co.REIT_SECTOR},
+        names={'RE-PA': 'Some REIT Inc. 6% Series A Preferred',
+               'RE-PB': 'Some REIT Inc. 5% Series B Preferred'})
+    assert set(override.values()) == {co.REIT_SECTOR}
+
+
+def test_a_PLURALITY_still_wins_so_a_mistagged_sibling_cannot_demote_a_real_REIT():
+    """THE PROTECTIVE HALF OF THE OLD RULE, PRESERVED.  The cohort preference existed so a
+    baby-bond line mistagged 'Industrials' could not demote a REIT issuer out of its cohort.
+    That intent is correct and survives -- through the PLURALITY, which is the evidence the
+    intent was really appealing to.  Only the DEAD TIE changed hands."""
+    override, conflicts = _dedup_sectors(
+        [(['RE', 'RE-PA', 'RE-PB'], 'Some REIT Inc.')],
+        {'RE': co.REIT_SECTOR, 'RE-PA': co.REIT_SECTOR, 'RE-PB': 'Industrials'})
+    surv = conflicts[0][0]
+    assert override[surv] == co.REIT_SECTOR, (
+        '2 REIT tags against 1 mistagged Industrials is a plurality, not a tie -- the issuer '
+        'must stay in its cohort')
+    labels, _r = co.classify([surv], override, pd.DataFrame(), {surv: 'Some REIT Inc.'})
+    assert labels[surv] == 'REIT'
+
+
+def test_an_UNCONFLICTED_issuer_is_untouched():
+    """The change must bite ONLY on a conflict.  A group whose members agree keeps its sector
+    exactly as before, so the carve is unchanged for the overwhelming majority."""
+    override, conflicts = _dedup_sectors(
+        [(['M1', 'M1-B'], 'Miner Corp')],
+        {'M1': co.MINING_SECTOR, 'M1-B': co.MINING_SECTOR})
+    assert not conflicts
+    assert set(override.values()) == {co.MINING_SECTOR}

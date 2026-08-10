@@ -177,7 +177,7 @@ def test_the_filter_REMOVES_the_source_and_LOGS_it_with_the_EVIDENCE(capsys):
 
 
 def test_the_removal_reaches_the_TRANSPARENCY_frame_not_just_the_panel():
-    """`removed_df` is what drives output/removed_data_quality_*.csv -- which ships whole
+    """`removed_df` is what drives removed_data_quality_*.csv (repo root since 2026-08-10) -- which ships
     with output/ -- plus the BoMetric_df propagation and the reconciliation counters.
     Deleting rows while reporting nothing removed is this project's signature defect."""
     frame = _panel('ARS')
@@ -332,7 +332,10 @@ def test_the_COULD_NOT_APPLY_fact_reaches_an_ARTIFACT(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     no_ccy = _panel('ARS').drop(columns=['reportedCurrency'])
     dq.apply_data_quality_filter({'cdx_df': no_ccy}, verbose=False, save_log=True)
-    files = list((tmp_path / 'output').glob('CurrencyExclusionStatus_*.csv'))
+    #  REPO ROOT since 2026-08-10 (CEO): `output/` did not reach Drive on the 2026-08-10
+    #  run while every root-level artifact did, so the evidence CSVs moved.  The assertion
+    #  moves WITH the ruling and stays strict about the file existing.
+    files = list(tmp_path.glob('CurrencyExclusionStatus_*.csv'))
     assert len(files) == 1
     rows = pd.read_csv(files[0])
     assert list(rows['status']) == ['NOT_APPLIED']
@@ -350,7 +353,7 @@ def test_the_status_file_APPENDS_so_the_IDEMPOTENT_second_pass_cannot_erase_the_
                              ignore_index=True)}
     d = dq.apply_data_quality_filter(d, verbose=False, save_log=True)
     d = dq.apply_data_quality_filter(d, verbose=False, save_log=True)
-    rows = pd.read_csv(list((tmp_path / 'output').glob('CurrencyExclusionStatus_*.csv'))[0])
+    rows = pd.read_csv(list(tmp_path.glob('CurrencyExclusionStatus_*.csv'))[0])
     assert list(rows['status']) == ['EXCLUDED', 'APPLIED_NO_MATCH']
     assert rows['source'].iloc[0] == 'BMA'
 
@@ -362,7 +365,7 @@ def test_the_removal_CSV_carries_a_RUN_IDENTIFIER(tmp_path, monkeypatch):
     d = {'cdx_df': _panel('ARS'), 'universe': 'stock_CUR3K',
          'universe_fingerprint': 'abc123'}
     dq.apply_data_quality_filter(d, verbose=False, save_log=True)
-    f = list((tmp_path / 'output').glob('removed_data_quality_*.csv'))[0]
+    f = list(tmp_path.glob('removed_data_quality_*.csv'))[0]
     assert pd.read_csv(f)['run_id'].unique().tolist() == ['stock_CUR3K@abc123']
     assert dq.run_identifier({}) == 'unknown-unstamped-run'
 

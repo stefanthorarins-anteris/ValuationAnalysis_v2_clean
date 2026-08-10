@@ -1072,7 +1072,7 @@ def run_all(dmdic=None, loadfname=None, buy_years=None, eval_years_list=None,
         # Guarded, never fatal: a backtest that cannot run at all is worse than one that
         # runs unfiltered -- but an unfiltered one must SAY SO.
         # `save_log=True` on purpose.  A backtest whose numbers depend on what was removed
-        # must leave an on-disk record of what it removed -- `output/removed_data_quality_
+        # must leave an on-disk record of what it removed -- `removed_data_quality_
         # <timestamp>.csv`, the same channel the pipeline uses.  The alternative (console
         # only) is exactly the class of decision-without-an-artifact this project has been
         # digging out of.  The file is timestamped, so it cannot collide with a pipeline

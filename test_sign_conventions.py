@@ -663,7 +663,7 @@ def test_netDebtToEBITDA_three_branch_rule():
     (CEO, 2026-08-05.)  The predecessor test pinned the two-branch guarded form; the rule now
     has three branches and the FOURTH CELL FLIPPED from refuse to PASS:
 
-      netDebt > 0, EBITDA > 0  ->  test the annualised ratio < 1.0     (unchanged)
+      netDebt > 0, EBITDA > 0  ->  test the annualised ratio < the BAR
       netDebt < 0, EBITDA > 0  ->  PASS   (genuine net cash; 37.8% of passes, must SURVIVE)
       netDebt > 0, EBITDA <= 0 ->  REFUSED (debt and no earnings -- the 2026-08-04 defect)
       netDebt < 0, EBITDA <= 0 ->  PASS   <- THE FIX.  Net cash means no leverage problem.
@@ -672,15 +672,33 @@ def test_netDebtToEBITDA_three_branch_rule():
     choosing the RATIO's sign and the PROXY's sign together -- which is also what proves the
     net-cash branch is an OPERAND condition: cell 4's ratio is POSITIVE (negative/negative) and
     it must pass WITHOUT its magnitude being consulted.
+
+    THE BAR IS 3.0x SINCE 2026-08-10 (CEO), WAS 1.0x.  Only cell 1's LEVEL moves; the other
+    three cells are sign/operand conditions and are untouched -- which is the property this
+    test exists to hold, so the level is read from `cm.NET_DEBT_TO_EBITDA_BAR` and the
+    straddle below is asserted around it rather than around a transcribed number.
     """
     w = _weight('special', 'netDebtToEBITDA')
+    bar = cm.NET_DEBT_TO_EBITDA_BAR
+    assert bar == 3.0, ('the CEO set the leverage bar at 3.0x annualised net debt / EBITDA '
+                        '(credit-covenant practice, ~3.0-3.5x); it now reads %r' % bar)
 
     # --- cell 1: debt, earnings.  Ordinary test on the ANNUALISED ratio ------------------
-    # rpy=4 -> flow factor 0.25, so the `< 1.0` bar is on ratio*0.25, i.e. ratio < 4 annualised.
+    # rpy=4 -> flow factor 0.25, so a per-period ratio r is r*0.25 annualised: the bar bites
+    # at r = 4*bar = 12.0.
     assert _score(_stage1(_frame(netDebtToEBITDA=0.5)), 'netDebtToEBITDA', 'special',
                   'netDebtToEBITDA') == w, 'low leverage must pass'
+    assert _score(_stage1(_frame(netDebtToEBITDA=16.0)), 'netDebtToEBITDA', 'special',
+                  'netDebtToEBITDA') == 0.0, 'high leverage (4.0x annualised) must fail'
+
+    # THE STRADDLE THAT PINS THE RULING ITSELF.  8.0 per period is 2.0x annualised: inside
+    # the credit-covenant band, so it FAILED under the old 1.0x bar and must PASS now.  This
+    # is the one assertion that would catch a silent revert of the level.
     assert _score(_stage1(_frame(netDebtToEBITDA=8.0)), 'netDebtToEBITDA', 'special',
-                  'netDebtToEBITDA') == 0.0, 'high leverage must fail'
+                  'netDebtToEBITDA') == w, (
+        '2.0x annualised net debt / EBITDA is serviceable leverage by every covenant '
+        'convention and must pass the 3.0x bar; failing it is the 1.0x near-debt-free bar '
+        'the CEO overruled on 2026-08-10')
 
     # --- cell 2: NET CASH with positive EBITDA -> ratio negative -> PASS -----------------
     genuine = _stage1(_frame(netDebtToEBITDA=-1.5))

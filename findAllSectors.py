@@ -591,7 +591,8 @@ def warn_if_maps_stale(stale_days=MAP_STALE_DAYS, verbose=True):
 
 
 def ensure_sector_industry_maps(symbols, baseurl, api_key, batch_size=100, pace=None,
-                                universe_is_subset=False, universe_name=None):
+                                universe_is_subset=False, universe_name=None,
+                                force_rebuild=False):
     """GENERATE-IF-MISSING hook for the ingestion layer.
 
     If BOTH the sector map (undated sectorsdic_fmp.pickle) and an industry map
@@ -626,6 +627,12 @@ def ensure_sector_industry_maps(symbols, baseurl, api_key, batch_size=100, pace=
     pre-existing empty-map abort fires with its own banner -- the correct outcome: the
     operator builds the maps once from a full universe (any exchange-defined
     `-tickerfilter`, or `findAllSectorsViaProfile`) and every later run reuses them.
+
+    `force_rebuild` -- `-force_rebuild_maps` (CEO, 2026-08-10).  Bypasses the three skip
+    conditions (all-present / not-stale / coverage-above-floor) and rebuilds anyway.  It does
+    NOT bypass the `universe_is_subset` refusal below: a curated subset must never author
+    these shared maps, and "the operator asked for it" is not a reason to write a map that
+    covers ~1% of the next full run.  The banner states FORCED vs TRIGGERED explicitly.
 
     Returns True iff a build ran and wrote the maps; False otherwise.
 
@@ -669,16 +676,42 @@ def ensure_sector_industry_maps(symbols, baseurl, api_key, batch_size=100, pace=
     low_coverage = cov_pct is not None and cov_pct < MIN_SECTOR_COVERAGE_PCT
     all_present = sector_present and industry_present and isin_present and volavg_present
 
-    if all_present and not any_stale and not low_coverage:
+    #  --- THE EXPLICIT OVERRIDE: `-force_rebuild_maps` (CEO, 2026-08-10) -----------------
+    #  BYPASSES the three skip conditions above; it does NOT change any of them.  The 60-day
+    #  staleness rule is deliberately untouched -- the CEO chose an explicit one-off over
+    #  self-maintaining logic, on the grounds that this gate has already had one serious bug
+    #  (its presence check covered two of the four artifacts the writer produces, so
+    #  isindic/volavgdic could never be born on a machine holding the older two).
+    #
+    #  WHY IT WAS NEEDED, stated so the flag's purpose is not lost: on the 2026-08-10 run all
+    #  four maps existed, none was 60 days stale and coverage was above the floor, so the gate
+    #  skipped -- CORRECTLY, by its own rules -- and two capture changes that had already
+    #  shipped therefore never landed (`price`/`currency` from 90b0d5f, and
+    #  `isActivelyTrading`/`exchange`/`exchangeShortName`/`country`/`beta` from 1e9d353).
+    #  Every 2026-08-10 pick carries `volAvg_asof = 2026-08-07`, and nothing would have forced
+    #  a rebuild until 2026-10-06.  A CODE change to what the maps CAPTURE has no
+    #  representation in a freshness rule that only looks at their AGE.
+    if force_rebuild and all_present and not any_stale and not low_coverage:
+        print('[maps] REBUILD **FORCED** by -force_rebuild_maps -- the skip conditions were '
+              'ALL SATISFIED (all four maps present, none over the %d-day staleness bar, '
+              'sector coverage %s above the %.0f%% floor), so this run would have reused the '
+              'cached pickles and spent no API calls. The operator overrode that explicitly.'
+              % (MAP_STALE_DAYS,
+                 ('%.1f%%' % cov_pct) if cov_pct is not None else 'UNKNOWN',
+                 MIN_SECTOR_COVERAGE_PCT), flush=True)
+    elif all_present and not any_stale and not low_coverage:
         # Idempotent skip -- reuse cached pickles, no rebuild, no API calls.
         # SAY SO.  This branch used to `return False` in total silence.
         print('[maps] all four profile-derived maps present, fresh and above the '
               '%.0f%% coverage floor -- reusing cached pickles (no rebuild, no API '
-              'calls).' % MIN_SECTOR_COVERAGE_PCT, flush=True)
+              'calls). Pass -force_rebuild_maps to rebuild anyway (e.g. after a change '
+              'to WHICH FIELDS the maps capture, which no freshness rule can see).'
+              % MIN_SECTOR_COVERAGE_PCT, flush=True)
         return False
 
-    # Otherwise a build is WARRANTED.  State which trigger fired, so the API spend
-    # that follows is never unexplained.
+    # Otherwise a build is WARRANTED.  State WHY -- FORCED vs TRIGGERED must be
+    # distinguishable in the log, so a forced run is never mistaken for the gate having
+    # fired on its own (CEO, 2026-08-10).  The API spend that follows is never unexplained.
     triggers = []
     if not all_present:
         triggers.append('missing artifact(s): %s' % missing_desc)
@@ -689,7 +722,15 @@ def ensure_sector_industry_maps(symbols, baseurl, api_key, batch_size=100, pace=
     if low_coverage:
         triggers.append('sector coverage %.1f%% < %.0f%% floor'
                         % (cov_pct, MIN_SECTOR_COVERAGE_PCT))
-    print('[maps] REBUILD WARRANTED -- %s' % '; '.join(triggers), flush=True)
+    if triggers:
+        print('[maps] REBUILD WARRANTED (TRIGGERED by the gate\'s own conditions) -- %s%s'
+              % ('; '.join(triggers),
+                 ' [-force_rebuild_maps was ALSO passed, but the gate would have rebuilt '
+                 'anyway]' if force_rebuild else ''), flush=True)
+    else:
+        print('[maps] REBUILD WARRANTED (FORCED by -force_rebuild_maps) -- no gate condition '
+              'fired; this rebuild is the operator\'s explicit instruction, not the gate\'s '
+              'judgement.', flush=True)
 
     if universe_is_subset:
         bar = '!' * 78

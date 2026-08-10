@@ -69,7 +69,7 @@ EVIDENCE (the 2026-08-07 post-mortem rule, in `Sbocker.transfer_outputs_to_drive
 ----------------------------------------------------------------------------------
 A stale-FX run and a clean-FX run must NEVER produce identical artifacts.  Two things make
 them distinguishable on the receiving machine:
-  * `output/FxRates_<date>.csv` -- every supported currency with its rate, its quote
+  * `FxRates_<date>.csv` (repo root since 2026-08-10) -- every supported currency with its rate, its quote
     timestamp, its age and its status.  Written to `output/` DELIBERATELY rather than being
     given its own top-level allowlist pattern: `output/` already ships whole via
     `allowlist_dirs` (see `Sbocker.transfer_outputs_to_drive`), and the last dev correctly
@@ -82,7 +82,7 @@ POINT-IN-TIME FX (the backtest)
 -------------------------------
 Applying today's spot to a 2021 market cap is a look-ahead-flavoured error.
 `v3/historical-price-full/{PAIR}` gives dated daily closes at 1 call per currency per
-range; `fetch_historical_rates` pulls them into `output/FxRatesHistorical_*.csv` and
+range; `fetch_historical_rates` pulls them into `FxRatesHistorical_*.csv` and
 `load_pit_rates` turns that file into a table the conversion path accepts.  See
 `carveOut.marketcap_usd_series(fx=...)`.
 
@@ -97,6 +97,7 @@ import datetime as _dt
 import os
 
 import pandas as pd
+import transfer_utils as _tu   # EVIDENCE_DIR: where the run's evidence CSVs are written
 
 import carveOut as co
 import getData_gen as gdg
@@ -558,14 +559,17 @@ def fetch_spot_rates(baseurl, api_key, currencies=None, now=None, _get=None,
 # --------------------------------------------------------------------------- #
 #  Evidence                                                                   #
 # --------------------------------------------------------------------------- #
-def write_fx_rates_csv(rates, run_date=None, outdir='output'):
-    """`output/FxRates_<date>.csv` -- the run's rates as EVIDENCE.
+def write_fx_rates_csv(rates, run_date=None, outdir=None):
+    """`FxRates_<date>.csv` at the repo ROOT -- the run's rates as EVIDENCE.
 
-    In `output/` on purpose: that directory already ships whole through the Drive
-    transfer's `allowlist_dirs`, which is the same precedent (and the same reasoning)
-    that kept `DedupSurvivorReport_*.csv` out of the top-level pattern list.  Never
-    raises; returns the path, or None."""
+    MOVED OUT OF `output/` (CEO, 2026-08-10).  The old note here said `output/` was chosen
+    "on purpose: that directory already ships whole through the Drive transfer's
+    `allowlist_dirs`".  That reasoning is what the 2026-08-10 run refuted: `output/` did not
+    arrive at all, so no `FxRates_2026-08-10.csv` ever reached the other machine while every
+    root-level artifact from the same run did.  Directory constant and the full argument:
+    `transfer_utils.EVIDENCE_DIR`.  Never raises; returns the path, or None."""
     try:
+        outdir = _tu.EVIDENCE_DIR if outdir is None else outdir
         run_date = run_date or _dt.date.today().strftime('%Y-%m-%d')
         if not os.path.isdir(outdir):
             os.makedirs(outdir)
@@ -772,7 +776,7 @@ def _announce(rates, prov, verbose=True):
 #
 #      python fx_rates.py --historical --from 2019-01-01 --to 2026-08-08
 #
-#  which writes `output/FxRatesHistorical_<from>_<to>.csv`.
+#  which writes `FxRatesHistorical_<from>_<to>.csv` at the repo root (2026-08-10).
 # --------------------------------------------------------------------------- #
 def fetch_historical_rates(baseurl, api_key, currencies=None, start=None, end=None,
                            _get=None, verbose=True, timeout=60, sleep=None):
@@ -855,7 +859,10 @@ def fetch_historical_rates(baseurl, api_key, currencies=None, start=None, end=No
     return out.sort_values(['currency', 'date']).reset_index(drop=True)
 
 
-def write_historical_csv(df, start, end, outdir='output'):
+def write_historical_csv(df, start, end, outdir=None):
+    #  ROOT, and its READER (`load_pit_rates`) defaults to the same constant -- the two must
+    #  move together or a written table becomes an unfindable one.  See EVIDENCE_DIR.
+    outdir = _tu.EVIDENCE_DIR if outdir is None else outdir
     if not os.path.isdir(outdir):
         os.makedirs(outdir)
     path = os.path.join(outdir, 'FxRatesHistorical_%s_%s.csv' % (start, end))
@@ -942,16 +949,47 @@ class PitFxTable(object):
         return rates[i]
 
 
-def load_pit_rates(path=None, outdir='output'):
+def load_pit_rates(path=None, outdir=None):
     """Load the newest `FxRatesHistorical_*.csv` into a PitFxTable, or None if absent.
 
     Returning None (rather than raising or silently substituting spot) is what lets the
-    caller SAY which basis it used."""
+    caller SAY which basis it used.
+
+    SEARCHES `EVIDENCE_DIR` (the repo root) AND `output/` (CEO, 2026-08-10).  The writer moved
+    to root; the tables ALREADY ON DISK are in `output/` and are historical data that no run
+    reproduces cheaply, so a reader that looked only at the new location would silently answer
+    "no PIT table" and downgrade every dated conversion to spot.
+
+    THE SEARCH ORDER IS EXPLICIT AND TOTAL (reviewer S5, 2026-08-10).  The first version put
+    both directories' hits in a `set` and sorted by BASENAME -- so when the SAME basename
+    existed in both (which the root move makes likely, not hypothetical), the winner was
+    decided by set-iteration order, i.e. by `PYTHONHASHSEED`.  Measured: 2 distinct answers
+    across 12 fresh processes.  A point-in-time FX table chosen at random per process is worse
+    than none, because every dated conversion silently inherits it.
+    So: newest BASENAME wins (the date range is in the name, and that rule is unchanged), and
+    an exact basename TIE is broken by DIRECTORY PRECEDENCE -- `EVIDENCE_DIR` first, because
+    that is where the current writer puts them and a stale `output/` copy must never shadow a
+    fresh root one."""
     import glob as _glob
+    outdir = _tu.EVIDENCE_DIR if outdir is None else outdir
     if path is None:
-        hits = sorted(_glob.glob(os.path.join(outdir, 'FxRatesHistorical_*.csv')))
+        #  ORDERED, not a set: `_SEARCH` is the precedence, and `seen` keeps the FIRST
+        #  directory's copy of a repeated basename.
+        _search = [outdir, 'output']
+        hits, seen = [], set()
+        for _rank, _d in enumerate(_search):
+            for _p in sorted(_glob.glob(os.path.join(_d, 'FxRatesHistorical_*.csv'))):
+                _b = os.path.basename(_p)
+                if _b in seen:
+                    continue
+                seen.add(_b)
+                hits.append((_b, _rank, _p))
         if not hits:
             return None
+        #  Sort key is TOTAL: (basename, directory rank) -- no ties left for iteration order
+        #  to decide.  `hits[-1]` is therefore the newest name, from the highest-precedence
+        #  directory that carries it.
+        hits = [p for _b, _r, p in sorted(hits)]
         path = hits[-1]
     try:
         return PitFxTable(pd.read_csv(path))

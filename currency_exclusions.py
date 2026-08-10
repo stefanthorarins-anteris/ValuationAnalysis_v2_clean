@@ -141,6 +141,7 @@ import os
 
 import numpy as np
 import pandas as pd
+import transfer_utils as _tu   # EVIDENCE_DIR: where the run's evidence CSVs are written
 
 
 #  The column the rule keys on.  It is the STATEMENT currency (the one `marketCap` is
@@ -162,7 +163,7 @@ class CurrencyExclusionRule(object):
 
     def label(self):
         """The `removal_reason` string that travels into
-        `output/removed_data_quality_*.csv`.  It carries the EVIDENCE, not just the verdict:
+        `removed_data_quality_*.csv` (repo root since 2026-08-10).  It carries the EVIDENCE, not just the verdict:
         that CSV is the shipped record of why a name left the universe, and a reason a
         reader has to go looking for is the defect this project spent the week removing."""
         return 'currency_excluded [%s: %s | %s]' % (
@@ -293,7 +294,7 @@ def exclusion_records(df, rules=None, price_col='price', mcap_col='marketCap'):
     `row_mask` covers EVERY row of an excluded source -- including rows that are not
     themselves ARS-labelled -- because the exclusion is source-scoped.  Each record carries
     the rule's evidence AND this source's own currency fraction, so
-    `output/removed_data_quality_*.csv` (which ships whole with `output/`) can never read
+    `removed_data_quality_*.csv` (repo root since 2026-08-10) can never read
     the same for a 1-of-24 stray label as for a genuine 24-of-24 reporter."""
     rules = EXCLUDED_CURRENCIES if rules is None else rules
     hits = excluded_sources(df, rules)
@@ -355,8 +356,15 @@ def status_rows(df, rules=None, applied=None, note=None):
             for src, (rule, n_ccy, n_tot) in sorted(hits.items())]
 
 
-def write_status(rows, outdir='output', run_date=None, run_id=''):
-    """APPEND `rows` to `output/CurrencyExclusionStatus_<date>.csv`.
+def write_status(rows, outdir=None, run_date=None, run_id=''):
+    """APPEND `rows` to `CurrencyExclusionStatus_<date>.csv` at the repo ROOT.
+
+    Written at the REPO ROOT, not in `output/` (CEO, 2026-08-10): every root-level
+    artifact from the 2026-08-10 run reached Drive and `output/` did not, so
+    "output/ ships whole" turned out to be the weaker guarantee, not the stronger
+    one.  The directory is `transfer_utils.EVIDENCE_DIR`, which is where the reasoning
+    and the matching `Sbocker` manifest pattern are recorded.
+
 
     APPEND, not overwrite, and that is load-bearing: `filter_invalid_data` runs TWICE per
     pipeline run and the second pass is correctly idempotent, so an overwriting writer
@@ -367,6 +375,7 @@ def write_status(rows, outdir='output', run_date=None, run_id=''):
     check could not run" are different facts, and the `VendorContaminationFlags_*.csv`
     precedent is to record both.  Never raises."""
     try:
+        outdir = _tu.EVIDENCE_DIR if outdir is None else outdir
         run_date = run_date or _dt.date.today().strftime('%Y-%m-%d')
         if not os.path.isdir(outdir):
             os.makedirs(outdir)

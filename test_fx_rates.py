@@ -886,9 +886,16 @@ def test_the_historical_pull_derives_minor_units_and_never_fetches_them():
     assert set(got[got['currency'] == 'USD']['rate']) == {1.0}
 
 
-def test_load_pit_rates_returns_None_rather_than_guessing(tmp_path):
+def test_load_pit_rates_returns_None_rather_than_guessing(tmp_path, monkeypatch):
     """None is what lets the caller SAY which basis it used, instead of silently
-    substituting spot for a point-in-time number."""
+    substituting spot for a point-in-time number.
+
+    `chdir` into the empty tmp dir since 2026-08-10: the loader searches EVIDENCE_DIR (the
+    repo root) AND `output/`, because the writer moved to root while the already-built
+    historical tables are still in `output/` and are not cheaply reproducible.  Without the
+    chdir this asserted 'no table anywhere' from a CWD that has one, which tests the
+    fixture rather than the function."""
+    monkeypatch.chdir(tmp_path)
     assert fx.load_pit_rates(outdir=str(tmp_path)) is None
 
 
@@ -957,3 +964,35 @@ def test_the_TWO_CURRENCIES_warning_sits_next_to_the_table():
     assert 'SHEL.L' in head
     assert 'volavgdic' in head or 'findAllSectors' in head
     assert 'pbRatio' in head, 'the panel-wide proof that marketCap is in reportedCurrency'
+
+
+def test_load_pit_rates_is_DETERMINISTIC_when_both_directories_hold_the_same_basename(
+        tmp_path, monkeypatch):
+    """*** reviewer S5, 2026-08-10. ***  The root move made this collision likely rather than
+    hypothetical: the writer now writes `FxRatesHistorical_*.csv` at the repo root while the
+    already-built tables sit in `output/`, so both directories can hold the SAME basename.
+
+    The first version unioned the two globs into a `set` and sorted by basename, so an exact
+    basename tie was decided by set-iteration order -- i.e. by `PYTHONHASHSEED`.  Measured
+    then: 2 distinct answers across 12 fresh processes.  A point-in-time FX table chosen at
+    random per process is worse than none, because every dated conversion silently inherits it.
+
+    Pinned BOTH ways: the answer is stable, and it is the ROOT copy -- a stale `output/` table
+    must never shadow a fresh one written where the current writer puts them.
+    """
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / 'output').mkdir()
+    name = 'FxRatesHistorical_2019-01-01_2026-08-08.csv'
+    (tmp_path / name).write_text('currency,date,rate\nGBP,2022-01-03,1.35\n')
+    (tmp_path / 'output' / name).write_text('currency,date,rate\nGBP,2022-01-03,9.99\n')
+    got = {fx.load_pit_rates().rate_for('GBP', '2022-01-03') for _ in range(8)}
+    assert len(got) == 1, (
+        'the answer must not depend on iteration order: %s' % got)
+    assert got.pop() == pytest.approx(1.35), (
+        'the ROOT copy must win a basename tie -- a stale output/ table must never shadow a '
+        'fresh one written where the current writer puts them')
+    #  ...and a NEWER basename in output/ still wins on the date range, which is the rule the
+    #  precedence tiebreak must not have overridden.
+    (tmp_path / 'output' / 'FxRatesHistorical_2019-01-01_2026-08-10.csv').write_text(
+        'currency,date,rate\nGBP,2022-01-03,2.22\n')
+    assert fx.load_pit_rates().rate_for('GBP', '2022-01-03') == pytest.approx(2.22)
