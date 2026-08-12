@@ -500,12 +500,24 @@ def getDataFetchConfiguration(args):
     # Target resolution order when transfer is ON and no explicit -transfer_dir
     # <path> is given:
     #   1. env var VALUATION_TRANSFER_DIR, if set to a real (non-empty) value
-    #   2. documented operator-runbook default: E:\drive\valuationTransfer
+    #   2. documented operator-runbook default (below)
     #
     # configdic carries:
     #   'transfer_dir'             -> resolved target path (str) when ON, else None
     #   'transfer_disabled_reason' -> None when ON; the disabling flag string when OFF
-    DEFAULT_TRANSFER_DIR = r'E:\drive\valuationTransfer'
+    #
+    # THE DEFAULT POINTS AT THE `pipeline` LEAF, NOT THE PARENT (CEO, 2026-08-12).
+    # The transfer root is now split so the program owns one half and the operator
+    # owns the other:
+    #     E:\drive\valuationTransfer\pipeline\      <- the program writes ONLY here
+    #     E:\drive\valuationTransfer\non-pipeline\  <- manual drop zone, never touched
+    # `transfer_utils` REFUSES a target that contains a `non-pipeline/` child, because
+    # that is the signature of the parent having been passed by mistake.  So leaving
+    # this constant at the parent would make the DEFAULT path -- the one taken when no
+    # flag is given, i.e. the common case -- refuse every transfer the moment the split
+    # exists.  The refusal fires at the launch probe rather than after a 12-hour fetch,
+    # but it would still be a break introduced by the very change that added the guard.
+    DEFAULT_TRANSFER_DIR = r'E:\drive\valuationTransfer\pipeline'
     transfer_dir = None
     transfer_disabled_reason = None
 

@@ -26,7 +26,9 @@ thinks it copied" is precisely the claim that was false.
 NO NETWORK, NO KEY FILE, NO REAL DRIVE: every test runs in a tmp_path and chdirs
 into it, because the function resolves its allowlist with `glob.glob()` from CWD.
 """
+import inspect
 import os
+import re
 import shutil
 
 import pytest
@@ -936,3 +938,48 @@ def test_the_incremental_copier_REFUSES_a_directory_loudly(tmp_path):
     # ...and the FILE alongside it still copied -- refusing an input is not aborting:
     assert "postRank.pickle" in os.listdir(transfer_dir)
     assert r["copied"] == 1, r
+
+
+# --------------------------------------------------------------------------------- #
+#  THE DEFAULT TARGET MUST BE THE `pipeline` LEAF, NOT THE PARENT (CEO, 2026-08-12)   #
+# --------------------------------------------------------------------------------- #
+#  This pair exists because the pipeline/non-pipeline guard shipped WITHOUT anyone
+#  checking what the DEFAULT resolved to.  `configuration.DEFAULT_TRANSFER_DIR` was
+#  `E:\drive\valuationTransfer` -- the parent -- so the moment the CEO created the
+#  `non-pipeline` folder, every run that omitted `-transfer_dir` (the common case,
+#  since transfer is opt-OUT) would have been refused by the guard added in the same
+#  change.  Caught by the CEO asking "isn't the -transfer_dir set in the code?".
+#  Nothing pinned the constant before this.
+
+def test_the_DEFAULT_transfer_target_is_the_pipeline_leaf_not_the_parent():
+    import configuration as cfg
+    ns, _ = cfg._build_parser().parse_known_args([])
+    src = inspect.getsource(cfg)
+    m = re.search(r"DEFAULT_TRANSFER_DIR\s*=\s*r?['\"]([^'\"]+)['\"]", src)
+    assert m, "DEFAULT_TRANSFER_DIR not found -- did it move?"
+    default = m.group(1)
+    assert default.rstrip(r'\/').endswith('pipeline'), (
+        "the default transfer target must be the `pipeline` LEAF; %r is the parent, "
+        "which looks_like_transfer_parent() refuses" % (default,))
+    assert not default.rstrip(r'\/').endswith('non-pipeline'), default
+
+
+def test_the_DEFAULT_target_is_NOT_refused_by_the_parent_guard(tmp_path):
+    """The two halves must agree: whatever the default resolves to must survive the
+    guard.  Asserting the string alone would not catch the guard changing under it."""
+    import configuration as cfg
+    src = inspect.getsource(cfg)
+    default = re.search(r"DEFAULT_TRANSFER_DIR\s*=\s*r?['\"]([^'\"]+)['\"]", src).group(1)
+    leaf = os.path.basename(default.rstrip(r'\/'))
+
+    # Rebuild the CEO's real layout under tmp: parent holding `pipeline` + `non-pipeline`.
+    parent = tmp_path / "valuationTransfer"
+    (parent / leaf).mkdir(parents=True)
+    (parent / tu.NON_PIPELINE_DIRNAME).mkdir()
+
+    assert tu.looks_like_transfer_parent(str(parent)), (
+        "the guard must still refuse the PARENT -- if this fails the guard is broken, "
+        "not the default")
+    assert not tu.looks_like_transfer_parent(str(parent / leaf)), (
+        "the guard must ACCEPT the leaf the default points at; a `non-pipeline` SIBLING "
+        "must not disqualify it")
