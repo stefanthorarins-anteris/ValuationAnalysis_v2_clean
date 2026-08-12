@@ -278,11 +278,34 @@ def transfer_outputs_to_drive(transfer_dir, configdic, verbose=True):
         result['message'] = f'Parent directory does not exist; skipping transfer'
         return result
 
+    # THE ONE MISCONFIGURATION THE pipeline/non-pipeline SPLIT MAKES POSSIBLE (CEO,
+    # 2026-08-11).  The destination is being restructured into a `pipeline/` folder the
+    # program owns and a `non-pipeline/` folder it must never touch, with the run
+    # pointed at the `pipeline` leaf.  Nothing in the transfer logic needs to know
+    # that -- it writes wherever it is pointed -- which is exactly why passing the
+    # PARENT by mistake would silently work: run artifacts would land beside the manual
+    # files and the destination-side denylist check would start reporting on them.
+    # Refused, not warned about, and the message names the directory that was meant.
+    misconfig = tu.looks_like_transfer_parent(transfer_path)
+    if misconfig:
+        if verbose:
+            print(f"[TRANSFER] REFUSED: {misconfig}")
+        result['status'] = 'error'
+        result['message'] = f'Refused to transfer: {misconfig}'
+        return result
+
     # Try to create the target directory
+    already_existed = transfer_path.exists()
     try:
         transfer_path.mkdir(parents=False, exist_ok=True)
         if verbose:
             print(f"[TRANSFER] Target directory created/exists: {transfer_path}")
+        # A LABEL FOR WHOEVER OPENS THE FOLDER, written ONCE -- when the pipeline
+        # itself creates the directory -- and never rewritten.  It says what this
+        # folder is, that runs add to and overwrite it, that nothing here is ever
+        # deleted by us, and where manual files belong instead.
+        if not already_existed:
+            tu.write_pipeline_readme(transfer_path, verbose=verbose)
     except Exception as e:
         if verbose:
             print(f"[TRANSFER] WARNING: Could not create target directory: {e}")
@@ -296,6 +319,20 @@ def transfer_outputs_to_drive(transfer_dir, configdic, verbose=True):
     # Copy files matching allowlist patterns
     copied_files = []
     total_size = 0
+
+    # A FILE THAT FAILED TO COPY IS NOT A SUCCESS EITHER (review S4, 2026-08-11).
+    # This loop's `except` printed and continued with no effect on the status, exactly
+    # as the directory loop's did.  It is not a theoretical twin: THREE allowlist
+    # patterns resolve to UNDATED names that are overwritten every run --
+    # `real_prices.csv`, `sectorsdic_fmp.pickle`, `pick_log.csv` -- so when the
+    # destination refuses the overwrite (the same WinError-5 class that broke the
+    # directories), the destination keeps the STALE file, the reconciliation finds a
+    # non-empty file of the right name and reports the group COMPLETE, and the status
+    # stays 'success'.  Reviewer reproduced all three.  That is byte-for-byte the
+    # signature of the bug this change exists to fix, and "an eight-month-old sector
+    # map" is one of the four silent failures the 2026-08-07 post-mortem quoted in the
+    # comments above.  The reconciliation cannot see it -- only the copier knows.
+    file_failures = []
 
     for pattern in allowlist_patterns:
         matched_files = glob.glob(pattern)
@@ -320,35 +357,92 @@ def transfer_outputs_to_drive(transfer_dir, configdic, verbose=True):
                     if verbose:
                         print(f"[TRANSFER] Copied: {fpath} (size tally failed: {se})")
             except Exception as e:
+                file_failures.append(f"{fpath} ({e})")
                 if verbose:
                     print(f"[TRANSFER] ERROR copying {fpath}: {e}")
 
-    # Copy directories (with contents into matching subfolder)
+    # ---- Copy directories (with contents into matching subfolder) -----------------
+    #
+    # THE 2026-08-08..08-11 PRODUCTION FAILURE AND ITS THREE FIXES.  For four
+    # consecutive runs every root-level FILE above reached the Drive and NOT ONE of
+    # these directories did.  The CEO's console:
+    #
+    #   ERROR copying directory logs: [WinError 5] Access is denied:
+    #                                 "E:\drive\valuationTransfer\logs"
+    #
+    # -- and the path in that error is the DESTINATION, so the call that failed was
+    # the `shutil.rmtree(dest_dir)` this loop did BEFORE copying, not the copy.
+    # Google Drive's virtual filesystem refuses the directory delete.  Cost: no
+    # `output/`, no `logs/`, no `run_logs/` at the destination on any of those runs,
+    # i.e. no FX evidence, no dedup detail and no run log available for offline
+    # analysis -- which is why six evidence CSVs were moved to the repo root on
+    # 2026-08-10 as a workaround, and why a file had to be copied across by hand.
+    #
+    # (1) THE DELETE IS GONE.  `dirs_exist_ok=True` (Python >= 3.8; this repo runs
+    #     3.13) merges into the directory that is already there, so the operation
+    #     Drive refuses is never issued.
+    #
+    #     THE CONSEQUENCE, STATED SO IT READS AS A DECISION AND NOT AN OVERSIGHT
+    #     (CEO, 2026-08-11): without the delete, a file deleted LOCALLY now persists
+    #     at the destination.  That is CORRECT here.  The transfer dir is an OUTBOX,
+    #     not a mirror -- its job is to get this run's artifacts onto a machine that
+    #     can read them, not to be a faithful reflection of this machine.  A stale
+    #     artifact at the destination is recoverable (it is dated in its own
+    #     filename, and the reconciliation below states what THIS run put there); an
+    #     artifact deleted from the destination is not.  Given the evidence-loss this
+    #     path has already caused, keeping too much is the safe error.  If a true
+    #     mirror is ever wanted it needs an explicit prune step that can survive a
+    #     filesystem which refuses deletes -- it is NOT recoverable by restoring the
+    #     rmtree, which is the thing that broke.
+    #
+    # (2) DENY THE FILE, NOT THE TREE.  This loop used to walk the tree, and a single
+    #     file matching the denylist set `has_denied` and `continue`d past the WHOLE
+    #     directory -- silently.  FMP's own endpoint family is called `key-metrics`,
+    #     so one cached response named after it would have cost the entire `output/`
+    #     tree, and nothing in the output would have said so.  `copytree(ignore=...)`
+    #     drops the denied FILE and ships its siblings.  The safety property is
+    #     unchanged and is now enforced per-file at every depth: no denied file may
+    #     reach the destination.  `transfer_utils.is_denied` stays the single source
+    #     of truth -- the matching is NOT reimplemented here.  Independently audited
+    #     at the Windows copy primitive (review, 2026-08-11): 7 denied files planted at
+    #     5 depths, 5 files written, ZERO denied ones -- not even transiently.
+    #
+    # (3) A DIRECTORY FAILURE IS NO LONGER A SUCCESS.  Failures are recorded in
+    #     `dir_failures` and fail the overall status (see the result block below).
+    #     Warn-and-continue still holds -- a 12-hour run must not die on a Drive
+    #     hiccup -- but "non-fatal" was implemented as "invisible": three quiet ERROR
+    #     lines scrolled past and the tail of the run reported a clean transfer.
+    dir_failures = []
+
+    def _ignore_denied(src_dir, names):
+        """`shutil.copytree` ignore-callable: drop DENIED FILES, keep everything
+        else.  Directories are never dropped for their own name -- `is_denied`
+        matches a BASENAME and its contract is that a file is denied for its own
+        name, never because a parent directory happens to contain 'key'/'pem'.
+        Sub-directory CONTENTS are still checked: copytree calls this for every
+        directory it descends into."""
+        drop = set()
+        for name in names:
+            full = os.path.join(src_dir, name)
+            if os.path.isdir(full):
+                continue
+            if is_denied(name):
+                drop.add(name)
+                if verbose:
+                    print(f"[TRANSFER] DENIED (denylist): {full}")
+        return drop
+
     for dirpat in allowlist_dirs:
         if not os.path.isdir(dirpat):
             if verbose:
                 print(f"[TRANSFER] Skipped (not found): {dirpat}/")
             continue
 
-        # Check for denylist in directory contents
-        has_denied = False
-        for root, dirs, files in os.walk(dirpat):
-            for fname in files:
-                if is_denied(fname):
-                    if verbose:
-                        print(f"[TRANSFER] DENIED (denylist): {os.path.join(root, fname)}")
-                    has_denied = True
-
-        if has_denied:
-            continue
-
         # Copy the directory
         try:
             dest_dir = transfer_path / dirpat
-            if dest_dir.exists():
-                shutil.rmtree(str(dest_dir))
-
-            shutil.copytree(dirpat, str(dest_dir))
+            shutil.copytree(dirpat, str(dest_dir),
+                            ignore=_ignore_denied, dirs_exist_ok=True)
             copied_files.append(dirpat)
             if verbose:
                 print(f"[TRANSFER] Copied directory: {dirpat}/")
@@ -367,20 +461,65 @@ def transfer_outputs_to_drive(transfer_dir, configdic, verbose=True):
                 if verbose:
                     print(f"[TRANSFER] WARNING: size tally failed for {dirpat}/: {se}")
         except Exception as e:
+            dir_failures.append(f"{dirpat}/ ({e})")
             if verbose:
                 print(f"[TRANSFER] ERROR copying directory {dirpat}: {e}")
 
-    # Assert that the key file was NOT copied (shared post-copy safety net).
-    if not tu.assert_no_key_file(transfer_path, verbose=verbose):
-        result['status'] = 'error'
-        result['message'] = 'Key file was mistakenly copied and could not be removed'
-        return result
+    # ---- DESTINATION-SIDE CHECK, RUN UNCONDITIONALLY, DELETES NOTHING -------------
+    # ONE CHECK OVER THE WHOLE TRANSFER ROOT, OUTSIDE EVERY `try` (review S1/S2).  An
+    # earlier version called this inside the copy loop's `try`, one line after
+    # `copytree`, so ANY copy failure jumped to the `except` and it never ran for that
+    # directory -- weakest in exactly the scenario it was added for.  Here it cannot
+    # be skipped, and it reaches `run_logs/` (only allowlisted under
+    # -ingest_delisted), the `baseline_tools/` parent the copy itself creates, and
+    # top-level names `assert_no_key_file` never knew (it checks the exact filename
+    # `fmpAPIkey.txt` only).
+    #
+    # IT REPORTS; IT DOES NOT DELETE (CEO, 2026-08-11: "Please don't go deleting my
+    # API key").  It used to unlink what it found, as compensation for dropping the
+    # rmtree.  Both legs of that fell over: (a) the thing being compensated for never
+    # happens -- the copy direction never writes a denied file, instrumented at the
+    # Windows copy primitive with 7 denied files planted at 5 depths and 0 written --
+    # so anything found here was put there BY A HUMAN; and (b) `*key*` is a substring
+    # pattern, so the measured deletions on realistic filenames included
+    # `Turkey_exposure_2026.csv`, `Keystone_Corp_thesis.docx` and
+    # `hockey_stick_screen.csv`, with no Recycle Bin.  The destination holds the CEO's
+    # investment research.  A credential-shaped file on a synced folder is an INCIDENT
+    # TO REPORT -- deleting it does not unpublish what Drive already uploaded, it only
+    # removes the evidence that it was there.
+    denied_at_destination = tu.find_denied_files(transfer_path, verbose=verbose)
 
-    result['status'] = 'success'
+    # Report (never remove) a key file at the destination top level -- the shared
+    # safety net, kept because the incremental copier uses it too.  Redundant with the
+    # recursive check above and deliberately so: two independent detectors, no deletes.
+    key_net_clean = tu.assert_no_key_file(transfer_path, verbose=verbose)
+
     result['copied_files'] = len(copied_files)
     result['total_size_mb'] = total_size
     result['files_list'] = copied_files
+    result['dir_failures'] = dir_failures
+    result['file_failures'] = file_failures
+    result['denied_at_destination'] = denied_at_destination
     result['message'] = f"Transferred {len(copied_files)} items ({total_size:.2f} MB) to {transfer_dir}"
+
+    # A COPY THAT FAILED IS NOT A SUCCESS (defect 3).  This assignment used to be
+    # unconditional, eleven lines below an `except` that printed and continued -- so a
+    # total directory failure reported `status = 'success'` and the caller's loud
+    # "DRIVE TRANSFER DID NOT COMPLETE" banner (Sbocker.main) never fired.
+    # Precedence: an unremovable secret outranks a failed copy outranks success.
+    if denied_at_destination or not key_net_clean:
+        result['status'] = 'error'
+        detail = ', '.join(str(p) for p in denied_at_destination) or 'fmpAPIkey.txt'
+        result['message'] += (f" -- DENYLISTED FILE(S) PRESENT AT THE DESTINATION "
+                              f"(NOT removed -- remove by hand): {detail}")
+    elif dir_failures or file_failures:
+        result['status'] = 'warning'
+        if dir_failures:
+            result['message'] += f" -- DIRECTORY COPY FAILED for: {', '.join(dir_failures)}"
+        if file_failures:
+            result['message'] += f" -- FILE COPY FAILED for: {', '.join(file_failures)}"
+    else:
+        result['status'] = 'success'
 
     # ---- POST-TRANSFER RECONCILIATION ---------------------------------------
     # Every copy failure here is warn-and-continue by design (transfer_utils
@@ -399,11 +538,127 @@ def transfer_outputs_to_drive(transfer_dir, configdic, verbose=True):
     result['complete'] = reconciliation.get('complete', False)
     result['message'] += f" -- {reconciliation.get('summary', 'not reconciled')}"
 
+    # ---- THE RECONCILIATION NOW REACHES THE STATUS (defect 3b) --------------------
+    # This block was written after the 2026-08-07 incident (run_logs/ arrived empty and
+    # the console was indistinguishable from a clean transfer), it WORKED, and nothing
+    # ever consumed its verdict: `complete` was set on the result and read by nobody,
+    # so the copier kept grading its own homework.  Wiring it in closes the CLASS, not
+    # just the rmtree instance -- it catches a copy that leaves the destination short
+    # WITHOUT raising, which no `except` can.
+    #
+    # ONLY `incomplete` FAILS THE STATUS, NOT `complete`, AND THE DIFFERENCE MATTERS:
+    #   * `incomplete` -- the artifact existed locally and did not fully land.  That is
+    #     a COPY failure, i.e. this function's fault, and it must fail the status.
+    #   * `missing`    -- nothing was produced locally, so nothing could copy.  In
+    #     reconcile_transfer's own words: "the WRITER for these did not run.  Fixing
+    #     the copier will not help."
+    # `complete` is False when EITHER is non-empty, and on a healthy machine 8 of the
+    # 31 pattern groups legitimately produce nothing (measured 2026-08-11:
+    # real_prices.csv, FxRates_*, FxRatesHistorical_*, CurrencyExclusionStatus_*,
+    # DelistedPrune_*, VendorContaminationFlags_*, removed_data_quality_*,
+    # AdHocPenaltyBucket_*).  Failing the status on `complete` would therefore fire the
+    # loud banner on EVERY run -- alarm fatigue, which is the mechanism that hid this
+    # failure in the first place, so it would be the same bug with a new coat.  The
+    # never-written groups are NOT swallowed: the caller reports them separately and
+    # loudly, and the per-group reconciliation table above names every one of them.
+    partial = reconciliation.get('incomplete') or []
+    if partial and result['status'] == 'success':
+        result['status'] = 'warning'
+        result['message'] += (f" -- INCOMPLETE AT DESTINATION: {', '.join(partial)}")
+
+    # THE TARGET VANISHED BETWEEN THE COPY AND THE CHECK (review R2-3, pre-existing).
+    # If the Drive goes away mid-run, `reconcile_transfer` can verify NOTHING, and it
+    # returns `missing == []` and `incomplete == []` -- so the gate above cannot see
+    # it and the run reported `success` after nothing reached the Drive.  This is a
+    # DIFFERENT flag from `complete` on purpose: the alarm-fatigue argument that
+    # settled the missing-vs-incomplete question does not apply, because an
+    # unavailable target fires on EXACTLY ZERO healthy runs.
+    if reconciliation.get('unreconciled') and result['status'] == 'success':
+        result['status'] = 'warning'
+        result['message'] += " -- TARGET UNAVAILABLE AT RECONCILIATION TIME"
+
     if verbose:
-        print(f"[TRANSFER] Success: {len(copied_files)} items, {total_size:.2f} MB total")
+        # The word here follows the STATUS.  It used to say "Success" unconditionally,
+        # directly underneath the ERROR lines of a directory that had just failed.
+        verdict = 'Success' if result['status'] == 'success' else result['status'].upper()
+        print(f"[TRANSFER] {verdict}: {len(copied_files)} items, {total_size:.2f} MB total")
         print(f"[TRANSFER] Destination: {transfer_dir}")
 
     return result
+
+
+def report_transfer_outcome(result, transfer_dir, emit=print):
+    """Print the end-of-run verdict on the Drive transfer.  Returns True if the LOUD
+    banner fired.
+
+    EXTRACTED FROM `main` (review, 2026-08-11) SO IT CAN BE TESTED AT ALL.  It lived
+    inline in a ~1000-line `main` that cannot be invoked offline, so the only coverage
+    it could have was an AST grep over its own source -- and that grep was satisfied by
+    a COMMENT: neutering the block by replacing `result.get('reconciliation')` with
+    `{}` left the whole suite green.  A reporting path whose entire job is to be
+    noticed deserves better than a string search, and `emit` makes it a pure function
+    of the result dict.
+
+    TWO REGISTERS, DELIBERATELY, because the two conditions mean different things and
+    one banner for both would make the banner meaningless:
+      * a copy failure, an unremovable secret, or a group SHORT at the destination
+        -> our fault, the operator must act now -> the loud banner;
+      * a group NEVER PRODUCED locally -> the writer did not run, re-copying will not
+        help, and it fires on a perfectly healthy run for the 8 of 31 pattern groups
+        this machine legitimately never writes -> a quiet, named NOTE.
+    """
+    result = result if isinstance(result, dict) else {}
+    recon = result.get('reconciliation')
+    recon = recon if isinstance(recon, dict) else {}
+    never_written = recon.get('missing') or []
+    status = result.get('status')
+
+    def _names(seq):
+        # Every producer path builds these from f-strings, but the reporter is the
+        # tail of a 12-hour run: it must not be the thing that raises.
+        return ', '.join(str(x) for x in (seq or []))
+
+    emit(f"Transfer result: {result.get('message')}")
+    emit(f"Transfer reconciled complete: {result.get('complete')}")
+
+    loud = status != 'success'
+    if loud:
+        emit("\n" + "!" * 70)
+        emit("!!! DRIVE TRANSFER DID NOT COMPLETE -- OUTPUTS DID NOT REACH THE DRIVE !!!")
+        emit(f"!!! status = {status}")
+        emit(f"!!! detail = {result.get('message')}")
+        emit(f"!!! target = {transfer_dir}")
+        if result.get('dir_failures'):
+            emit(f"!!! directories that FAILED to copy: {_names(result['dir_failures'])}")
+        if result.get('file_failures'):
+            emit(f"!!! files that FAILED to copy: {_names(result['file_failures'])}")
+        if recon.get('incomplete'):
+            emit(f"!!! present locally but SHORT at the destination: "
+                 f"{_names(recon['incomplete'])}")
+        if recon.get('unreconciled'):
+            emit("!!! the transfer target was UNAVAILABLE when the run tried to verify "
+                 "it -- NOTHING can be confirmed to have reached the Drive.")
+        if result.get('denied_at_destination'):
+            # A SECRET problem, not an evidence problem -- and the run does NOT delete
+            # it: on a synced folder the upload may already have happened, and the
+            # destination holds the CEO's own research, which we do not touch.
+            emit(f"!!! DENYLISTED FILE(S) PRESENT ON THE DRIVE -- NOT removed by the "
+                 f"run; check and remove by hand: "
+                 f"{_names(result['denied_at_destination'])}")
+        emit("!!! ACTION: copy the run outputs to the Drive MANUALLY.")
+        emit("!" * 70 + "\n")
+
+    if never_written:
+        emit("\n" + "-" * 70)
+        emit("NOTE: listed artifacts that were NEVER PRODUCED LOCALLY (so nothing "
+             "could be copied):")
+        emit(f"      {_names(never_written)}")
+        emit("      -> the WRITER did not run; re-copying will not help.  Expected "
+             "for artifacts this run does not emit.")
+        emit("-" * 70 + "\n")
+
+    return loud
+
 
 def print_universe_reconciliation(datandmetricdic, getfunddic, verbose=True):
     """END-OF-FETCH RECONCILIATION: does the universe add up?
@@ -1099,15 +1354,13 @@ def main():
             print("END-OF-RUN TRANSFER TO GOOGLE DRIVE")
             print("="*70)
             transfer_result = transfer_outputs_to_drive(transfer_dir, configdic, verbose=True)
-            print(f"Transfer result: {transfer_result['message']}")
-            if transfer_result['status'] != 'success':
-                print("\n" + "!"*70)
-                print("!!! DRIVE TRANSFER DID NOT COMPLETE -- OUTPUTS DID NOT REACH THE DRIVE !!!")
-                print(f"!!! status = {transfer_result['status']}")
-                print(f"!!! detail = {transfer_result['message']}")
-                print(f"!!! target = {transfer_dir}")
-                print("!!! ACTION: copy the run outputs to the Drive MANUALLY.")
-                print("!"*70 + "\n")
+            # HONOUR THE RECONCILIATION, NOT ONLY THE STATUS (2026-08-11).  This used
+            # to read `status` alone, and `status` used to be set to 'success'
+            # unconditionally -- so on the 2026-08-08..08-11 runs, where EVERY
+            # directory failed to copy, the banner never fired and the tail of a
+            # 12-hour log reported a clean transfer.  The reporting itself lives in
+            # `report_transfer_outcome` so it is testable without invoking `main`.
+            report_transfer_outcome(transfer_result, transfer_dir)
         else:
             # Explicit disabled case -- never a silent skip.
             print(f"\nDrive transfer DISABLED by {disabled_reason or '-transfer_dir none'}")
