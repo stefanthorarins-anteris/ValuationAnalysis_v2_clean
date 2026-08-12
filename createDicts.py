@@ -790,28 +790,36 @@ def getDicts():
 #  from 2026-08-05 (see preReq_dict), so these columns exist only from a fetch made after that
 #  change.  On an older panel `apply_veto` declines the affected POOL with `missing_columns` set
 #  rather than raising.  NOTHING HERE IS BACKTESTABLE -- do not measure these on a saved pickle.
+#
+#  MEASURED COUNTS CAVEAT.  The per-flag counts below are measured on the stock_CUR3K ~3,250-name
+#  CURATED universe (not production): a top-100 cut there represents roughly the top 3.3% of the
+#  pool against roughly 0.9% in production.  Read the BEHAVIOUR, never a pick list, when comparing
+#  against production deployment.
 BoMetric_veto_dict = {
     #  REIT.  `ebitda / interestExpense`, tested `> 1` -- does the rent cover the interest bill.
     #  GUARDED `interestExpense > 0`: FMP reports 0 for a name with no interest expense, and
     #  without the guard the ratio would be +/-inf -> NaN and read as "cannot cover its
     #  interest" on a name with no interest to cover -- the measured
     #  `uInterestCoverage`-on-a-debt-free-name defect (1,668 sources, 21.5% of the universe).
-    #  Its `FIELD_EVIDENCE` ruling is `not_evidence` (BENIGN) for that reason.  18 of 67 abstain.
+    #  Its `FIELD_EVIDENCE` ruling is `not_evidence` (BENIGN) for that reason.  12 of the 79 REIT
+    #  pool members abstain (measured 2026-08-11 on stock_CUR3K universe).
     'reitEbitdaInterestCoverage': {'Guard': 'interest_expense_positive'},
     #  MINING.  The column holds EBITDA; the veto tests `> 0`.  GUARDED `revenue > 0`, so a
     #  PRE-PRODUCTION explorer is refused rather than read as a producer failing to earn on its
-    #  ore.  `not_evidence` (BENIGN); 43 of 218 abstain, and they are precisely the names
-    #  `cashRunwayOneYear` then judges.  11 of 218 fail.
+    #  ore.  `not_evidence` (BENIGN); 59 of the 265 Mining pool members abstain (measured
+    #  2026-08-11 on stock_CUR3K universe), and they are precisely the names `cashRunwayOneYear`
+    #  then judges.  19 of 265 fail.
     'producerEbitdaPositive':     {'Guard': 'revenue_positive'},
     #  MINING.  `cash + CFO x rpy`, tested `> 0`.  THE HORIZON IS STATUTORY, not chosen: IAS 1.25
     #  / ASC 205-40 require a going-concern assessment over at least TWELVE MONTHS, and `rpy` is
     #  what makes it twelve months for a semi-annual filer too.  NO GUARD: both operands measured
-    #  0.00% NaN, so there is no benign refusal channel -- `counts`.  7 of 218 fail, all
-    #  pre-revenue explorers.
+    #  0.00% NaN, so there is no benign refusal channel -- `counts`.  10 of the 265 Mining pool
+    #  members fail (measured 2026-08-11 on stock_CUR3K universe), all pre-revenue explorers.
     'cashRunwayOneYear':          {},
     #  MINING.  `totalStockholdersEquity`, tested `> 0`.  NO GUARD -- always admissible; the
     #  field is never absent and a degenerate one is adverse on any reading (`counts`, same shape
-    #  as `returnOnAssets`).  4 of 218 fail.
+    #  as `returnOnAssets`).  6 of the 265 Mining pool members fail (measured 2026-08-11 on
+    #  stock_CUR3K universe).
     'equityPositive':             {},
 }
 

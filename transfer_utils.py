@@ -33,6 +33,7 @@ destination and checks what actually IS, then prints a per-group verdict loudly.
 Warn-and-continue still holds -- the run does not die -- but the operator reading
 the tail of a run can now tell whether the transfer was COMPLETE.
 """
+import fnmatch
 import os
 import shutil
 from pathlib import Path
@@ -75,22 +76,53 @@ def is_denied(filename):
     """True if the BASENAME of <filename> matches any denylist pattern
     (case-insensitive).  Matching on the basename (not the full path) means a file
     is denied for its OWN name, never merely because a parent directory happens to
-    contain 'key'/'pem'."""
+    contain 'key'/'pem'.
+
+    REAL GLOB SEMANTICS (fixed 2026-08-11).  This used to do
+    `prefix = pattern.replace('*', ''); if prefix in fname_lower`, i.e. it turned
+    EVERY pattern into a SUBSTRING test -- so `'*pem'`, which as a glob means "ends
+    with pem" (a `.pem` certificate), actually meant "contains pem" and denied
+    `Pemex_bond_notes.md` and `PEMBINA_pipeline_dcf.xlsx`.  That is a plain bug
+    against the patterns' own meaning, and it is not cosmetic: this same predicate
+    governs the COPY direction, so a research file whose name merely contained "pem"
+    sitting in `output/` was SILENTLY NOT TRANSFERRED -- a transfer gap of exactly
+    the class this module's 2026-08-11 work exists to end.  `fnmatch` gives the
+    patterns the meaning they are written in.
+
+    WHAT THIS DELIBERATELY DOES NOT CHANGE: `'*key*'` has wildcards on BOTH sides, so
+    it is a substring test BY DESIGN and still denies `Turkey_exposure_2026.csv`,
+    `monkey_basket.csv` and `hockey_stick_screen.csv`.  That is a real remaining
+    transfer gap; narrowing it is a denylist-policy decision (it is also what catches
+    FMP's `key-metrics_*` cache files), not a bug fix, and is deliberately NOT made
+    here.  The credential match is unchanged: `fmpAPIkey.txt` still denies by exact
+    name AND by `*key*`, and `*.pem` still denies."""
     fname_lower = os.path.basename(str(filename).rstrip('/\\')).lower()
     for pattern in DENYLIST_PATTERNS:
-        if '*' in pattern:
-            prefix = pattern.replace('*', '')
-            if prefix in fname_lower:
-                return True
-        else:
-            if fname_lower == pattern.lower():
-                return True
+        if fnmatch.fnmatchcase(fname_lower, pattern.lower()):
+            return True
     return False
 
 
 def assert_no_key_file(transfer_path, verbose=True):
-    """Post-copy safety net: if a key file somehow reached <transfer_path>, delete
-    it.  Returns True if the destination is clean (no key file present)."""
+    """Post-copy safety net: REPORT whether a key file is sitting at the top level of
+    <transfer_path>.  Returns True if the destination is clean.
+
+    REPORT-ONLY SINCE 2026-08-11 (CEO: "Please don't go deleting my API key").  This
+    used to `unlink()` what it found.  It no longer deletes anything, for two reasons
+    that both point the same way:
+
+      * THE COPY DIRECTION NEVER WRITES A DENIED FILE -- independently instrumented at
+        the Windows copy primitive (7 denied files planted at 5 depths: 5 files
+        written, 0 denied, none even transiently).  So a key file AT the destination
+        did not get there by us; it was put there by a human, and deleting a human's
+        file was never this module's business.
+      * ON A SYNCED FOLDER, DELETING IS NOT CONTAINMENT.  `os.remove` does not
+        unpublish what Drive already uploaded, and there is no Recycle Bin on this
+        path.  A credential-shaped file on a synced destination is an INCIDENT TO
+        REPORT, not a mess to tidy -- and quietly tidying it is precisely how it would
+        stop being reported.
+
+    The caller escalates: finding one fails the run's transfer status loudly."""
     transfer_path = Path(transfer_path)
     clean = True
     for name in KEY_FILENAMES:
@@ -99,14 +131,138 @@ def assert_no_key_file(transfer_path, verbose=True):
             if target.exists():
                 clean = False
                 if verbose:
-                    print(f"[TRANSFER] CRITICAL: {name} found in transfer dir -- removing it.")
-                target.unlink()
-                clean = True
+                    print(f"[TRANSFER] CRITICAL: {name} found in transfer dir -- "
+                          f"NOT removed (report-only); remove it by hand.")
         except Exception as e:
             clean = False
             if verbose:
-                print(f"[TRANSFER] ERROR removing key file {name}: {e}")
+                print(f"[TRANSFER] ERROR checking for key file {name}: {e}")
     return clean
+
+
+def find_denied_files(dest_root, verbose=True):
+    """RECURSIVE destination-side CHECK: return the paths of every file under
+    <dest_root> whose own basename matches the denylist.  **Deletes nothing.**
+
+    WHY IT ONLY REPORTS (CEO, 2026-08-11: "Please don't go deleting my API key").
+    The first version of this function DELETED what it found, as compensation for
+    dropping the `shutil.rmtree` of the destination that Google Drive refuses.  Two
+    findings killed that:
+
+      * THE THING IT COMPENSATED FOR IS NOT NEEDED.  The copy direction never writes
+        a denied file -- instrumented at the Windows copy primitive, 7 denied files
+        planted at 5 depths, 5 written, 0 denied, none even transiently.  A denied
+        file at the destination can therefore only have been put there BY A HUMAN.
+      * DELETING WAS DESTROYING RESEARCH.  `'*key*'` is a substring pattern, so the
+        measured deletions on realistic filenames included `Turkey_exposure_2026.csv`,
+        `Keystone_Corp_thesis.docx`, `hockey_stick_screen.csv` and (before the
+        `is_denied` glob fix) `Pemex_bond_notes.md` and `PEMBINA_pipeline_dcf.xlsx` --
+        with NO Windows Recycle Bin on this path (`os.remove` -> `DeleteFileW`).  The
+        destination holds the CEO's investment research.  That is unacceptable, and
+        narrowing the predicate would not have made deleting a human's files our
+        business in the first place.
+
+    So this is a DETECTOR.  A credential-shaped file on a cloud-synced folder is an
+    incident to report -- deleting it does not unpublish what Drive already uploaded,
+    it only removes the evidence that it was there.  The caller escalates: any hit
+    fails the run's transfer status loudly and names every path.
+
+    `is_denied` is the single source of truth for what counts as denied; the matching
+    is not restated here.  NEVER raises, and NEVER writes."""
+    found = []
+    try:
+        root = Path(dest_root)
+        if not root.exists():
+            return found
+        for dirpath, _dirs, files in os.walk(str(root)):
+            for fname in files:
+                if not is_denied(fname):
+                    continue
+                full = os.path.join(dirpath, fname)
+                found.append(full)
+                if verbose:
+                    print(f"[TRANSFER] CRITICAL: denylisted file present at the "
+                          f"destination (NOT removed): {full}")
+    except Exception as e:
+        if verbose:
+            print(f"[TRANSFER] WARNING: destination denylist check failed: {e}")
+    return found
+
+
+# --- THE PIPELINE / NON-PIPELINE SPLIT (CEO, 2026-08-11) -----------------------------
+# The transfer destination is being restructured into
+#     <drive>\valuationTransfer\pipeline\       <- the program writes ONLY here
+#     <drive>\valuationTransfer\non-pipeline\   <- the CEO's manual drop zone, never touched
+# and the run is pointed at the `pipeline` leaf.  The transfer logic needs no change for
+# that -- it already writes wherever `-transfer_dir` points -- but the new shape makes
+# exactly ONE new misconfiguration possible: passing the PARENT.  That would put run
+# artifacts beside the manual files and bring the manual files inside the destination-side
+# denylist check, so it is refused rather than warned about.
+NON_PIPELINE_DIRNAME = 'non-pipeline'
+PIPELINE_DIRNAME = 'pipeline'
+
+
+def looks_like_transfer_parent(transfer_dir):
+    """If <transfer_dir> CONTAINS a `non-pipeline` directory it is the PARENT of the
+    split, not the pipeline leaf.  Returns a specific operator-facing message naming
+    the directory that should have been passed, or None if the target looks right.
+
+    Detection is by the presence of the sibling, not by the path's spelling: the CEO
+    creates `non-pipeline/`, so its presence one level down is the fact that
+    distinguishes the parent from the leaf.  NEVER raises."""
+    try:
+        if not transfer_dir:
+            return None
+        path = Path(transfer_dir)
+        if not (path / NON_PIPELINE_DIRNAME).is_dir():
+            return None
+        return (f"target looks like the PARENT of the pipeline/non-pipeline split: "
+                f"it contains a '{NON_PIPELINE_DIRNAME}/' directory. Point "
+                f"-transfer_dir at '{path / PIPELINE_DIRNAME}' instead -- writing run "
+                f"artifacts here would mix them with the manual drop zone.")
+    except Exception:
+        # A target we cannot even inspect is not our business to veto.
+        return None
+
+
+_README_NAME = 'README-pipeline-managed.txt'
+_README_TEXT = """This folder is written by the ValuationAnalysis pipeline.
+
+  * Every run ADDS files here and OVERWRITES files of the same name.
+  * Nothing here is ever DELETED by the pipeline -- it is an OUTBOX, not a mirror, so
+    a file that no longer exists on the run machine still stays here.
+  * Put manual files in the sibling '{non_pipeline}' folder instead. The pipeline never
+    reads, writes or touches that folder.
+  * If a file whose name looks like a credential (matching {patterns}) turns up in
+    here, the run REPORTS it loudly and does NOT delete it -- remove it by hand.
+
+This file is a label, not a lock: it is written once, when the pipeline first creates
+this folder, and is never rewritten.
+"""
+
+
+def write_pipeline_readme(transfer_path, verbose=True):
+    """Drop a one-time label into a transfer directory the pipeline just created.
+    Returns the path written, or None (already present / could not write).
+
+    NOT rewritten on every run: it is a note to a human opening the folder, and
+    rewriting it would be one more thing a run does to a synced directory for no
+    reason.  NEVER raises -- a missing label must never affect a 12-hour run."""
+    try:
+        target = Path(transfer_path) / _README_NAME
+        if target.exists():
+            return None
+        text = _README_TEXT.format(non_pipeline=NON_PIPELINE_DIRNAME,
+                                   patterns=', '.join(DENYLIST_PATTERNS))
+        with open(target, 'w', encoding='utf-8') as fh:
+            fh.write(text)
+        if verbose:
+            print(f"[TRANSFER] Wrote {_README_NAME} into {transfer_path}")
+        return str(target)
+    except Exception as e:
+        if verbose:
+            print(f"[TRANSFER] WARNING: could not write {_README_NAME}: {e}")
+        return None
 
 
 def probe_transfer_target(transfer_dir):
@@ -132,6 +288,12 @@ def probe_transfer_target(transfer_dir):
         parent = transfer_path.parent
         if not parent.exists():
             info['detail'] = f'parent dir missing ({parent}) -- Drive not mounted?'
+            return info
+        # Catch the pipeline/non-pipeline mix-up BEFORE the ~12h fetch, which is the
+        # entire reason this probe exists.
+        misconfig = looks_like_transfer_parent(transfer_path)
+        if misconfig:
+            info['detail'] = misconfig
             return info
         try:
             transfer_path.mkdir(parents=False, exist_ok=True)
@@ -213,11 +375,22 @@ def reconcile_transfer(transfer_dir, groups, verbose=True):
     counter), so a swallowed exception cannot report itself as a success.
     """
     res = {'complete': True, 'groups_total': 0, 'groups_complete': 0,
-           'missing': [], 'incomplete': [], 'detail': {}, 'summary': ''}
+           'missing': [], 'incomplete': [], 'detail': {}, 'summary': '',
+           'unreconciled': False}
     try:
         transfer_path = Path(transfer_dir) if transfer_dir else None
         if transfer_path is None or not transfer_path.exists():
             res['complete'] = False
+            # THE TARGET VANISHED BETWEEN THE COPY AND THIS CHECK (2026-08-11).  This
+            # branch leaves `missing` AND `incomplete` both empty, so a status gate
+            # built on those two -- which is the right gate, because 8 of the 31
+            # pattern groups are legitimately empty on a healthy run -- cannot see it,
+            # and the run reported `success` after nothing reached the Drive.  Same
+            # signature as the bug this module's 2026-08-11 work exists to close.
+            # A separate flag, because this one fires on EXACTLY ZERO healthy runs:
+            # there is no alarm-fatigue cost, so the reasoning that settled the
+            # missing-vs-incomplete question does not extend here.
+            res['unreconciled'] = True
             res['summary'] = 'transfer target unavailable -- nothing could be reconciled'
             if verbose:
                 print(f"[TRANSFER] RECONCILE: target unavailable ({transfer_dir})")
@@ -310,7 +483,8 @@ def copy_artifacts_to_transfer_dir(transfer_dir, artifacts, verbose=True):
 
     Returns a small result dict {status, copied, denied, errors, files}.
     """
-    result = {'status': 'skipped', 'copied': 0, 'denied': 0, 'errors': 0, 'files': []}
+    result = {'status': 'skipped', 'copied': 0, 'denied': 0, 'errors': 0, 'files': [],
+              'refused': [], 'key_file_at_destination': False}
     if not transfer_dir:
         return result
     try:
@@ -334,26 +508,26 @@ def copy_artifacts_to_transfer_dir(transfer_dir, artifacts, verbose=True):
                     continue
 
                 if os.path.isdir(src):
-                    # Named-directory copy: skip the WHOLE dir if it contains any
-                    # denied file (matches end-of-run behaviour).
-                    denied_inside = False
-                    for root, _dirs, files in os.walk(src):
-                        for fn in files:
-                            if is_denied(fn):
-                                denied_inside = True
-                                result['denied'] += 1
-                                if verbose:
-                                    print(f"[TRANSFER] DENIED (denylist): {os.path.join(root, fn)}")
-                    if denied_inside:
-                        continue
-                    dest_dir = transfer_path / base
-                    if dest_dir.exists():
-                        shutil.rmtree(str(dest_dir))
-                    shutil.copytree(src, str(dest_dir))
-                    result['copied'] += 1
-                    result['files'].append(src)
+                    # DIRECTORIES ARE NOT SUPPORTED HERE (closed by DELETION, CEO
+                    # approved 2026-08-11).  This branch used to do
+                    # rmtree-then-copytree with WHOLE-TREE denial -- both of the
+                    # defects that cost four production runs every `logs/`,
+                    # `output/` and `run_logs/` on the Drive, still sitting here in
+                    # the incremental copier.  It is DORMANT: all six call sites
+                    # (Sbocker 972/1046/1086/1115, delisted_ingest._flush_boundary at
+                    # 958/977/999/1037) pass file paths only, verified twice
+                    # independently.  So rather than repair a path nothing uses -- and
+                    # carry two copies of the same subtle fix -- the input is refused.
+                    # A directory here is a programming error, and it is now a LOUD
+                    # one instead of a silent evidence-loss the day someone tries it.
+                    result['errors'] += 1
+                    result['refused'].append(src)
                     if verbose:
-                        print(f"[TRANSFER] Copied dir: {src}/ -> {dest_dir}")
+                        print(f"[TRANSFER] ERROR: directories are not supported by "
+                              f"copy_artifacts_to_transfer_dir -- refusing {src!r}. "
+                              f"Pass explicit file paths, or use "
+                              f"Sbocker.transfer_outputs_to_drive for directories.")
+                    continue
                 elif os.path.isfile(src):
                     dest = transfer_path / base
                     shutil.copy2(src, str(dest))
@@ -372,9 +546,16 @@ def copy_artifacts_to_transfer_dir(transfer_dir, artifacts, verbose=True):
                     print(f"[TRANSFER] WARNING: failed to copy {artifact}: {e}")
                 # continue -- a single copy hiccup must never kill the run.
 
-        # Safety net: ensure no key file slipped into the destination top level.
-        assert_no_key_file(transfer_path, verbose=verbose)
-        result['status'] = 'success'
+        # Safety net: REPORT (never delete -- see assert_no_key_file) a key file at
+        # the destination top level.  A copy hiccup stays 'success' as it always has
+        # (contract 2: warn and continue); a refused DIRECTORY or a key file sitting
+        # on the synced folder is an error, because neither is something a run should
+        # be allowed to scroll past.
+        result['key_file_at_destination'] = not assert_no_key_file(transfer_path,
+                                                                  verbose=verbose)
+        result['status'] = ('error' if (result['refused']
+                                        or result['key_file_at_destination'])
+                            else 'success')
     except Exception as e:
         # Absolute backstop -- the helper must NEVER propagate to the run.
         result['status'] = 'error'

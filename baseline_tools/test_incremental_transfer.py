@@ -138,21 +138,43 @@ def test_denylist_never_copies_key():
         assert "server.pem" not in names, "secret LEAKED via *pem"
         assert r["denied"] == 3 and r["copied"] == 1, r
 
-        # a denied file INSIDE a passed directory blocks the whole-dir copy.
+        # A DIRECTORY IS NOW REFUSED OUTRIGHT (CEO approved 2026-08-11).
+        #
+        # THIS ASSERTION USED TO PIN A DEFECT, WHICH IS WHY IT CHANGED.  It read "a dir
+        # containing a key file must NOT be copied" and asserted the whole-tree denial
+        # -- i.e. it documented as a specification the exact behaviour that, in
+        # `Sbocker.transfer_outputs_to_drive`, cost four production runs every `logs/`,
+        # `output/` and `run_logs/` on the Drive: ONE file matching `*key*` silently
+        # dropped an entire tree, and FMP's own endpoint family is called `key-metrics`.
+        # (That is the fourth time in this area a test was found pinning the defect it
+        # covered.)  The end-of-run copier was fixed to deny the FILE and ship its
+        # siblings; this incremental copier's directory branch was DORMANT -- all six
+        # call sites pass file paths only -- and also still did rmtree-then-copytree,
+        # the operation Google Drive refuses.  Rather than carry a second copy of the
+        # same subtle fix, the input is refused: a directory here is a programming
+        # error, and now a loud one.
         subdir = os.path.join(src, "run_logs")
         os.makedirs(subdir)
         _write(os.path.join(subdir, "run_events.jsonl"))
         _write(os.path.join(subdir, "fmpAPIkey.txt"), "SECRET")
-        tu.copy_artifacts_to_transfer_dir(transfer_dir, [subdir], verbose=False)
+        rd = tu.copy_artifacts_to_transfer_dir(transfer_dir, [subdir], verbose=False)
         assert "run_logs" not in _names_in(transfer_dir), \
-            "a dir containing a key file must NOT be copied"
+            "a directory must not be copied by this helper at all"
+        assert rd["status"] == "error" and rd["refused"] == [subdir], \
+            f"a directory argument must be a LOUD refusal, not a silent skip: {rd}"
 
-        # post-copy safety net actively removes a key file that somehow lands there.
+        # Post-copy safety net: it REPORTS a key file at the destination and does NOT
+        # delete it (CEO, 2026-08-11: "Please don't go deleting my API key").  The
+        # destination is a Drive-synced folder holding investment research; unlinking
+        # does not unpublish what Drive already uploaded, it only removes the evidence.
         planted = _write(os.path.join(transfer_dir, "fmpAPIkey.txt"), "SECRET")
-        assert os.path.exists(planted)
+        assert tu.assert_no_key_file(transfer_dir, verbose=False) is False, \
+            "a key file at the destination must be REPORTED as not-clean"
+        assert os.path.exists(planted), "the safety net must NOT delete it"
+        os.remove(planted)          # the test cleans up its own plant
         assert tu.assert_no_key_file(transfer_dir, verbose=False) is True
-        assert not os.path.exists(planted), "safety net must delete a planted key file"
-        print("PASS denylist: key never copied (exact/*key*/*pem/nested dir) + safety net removes it")
+        print("PASS denylist: key never copied (exact/*key*/*pem); dirs refused loudly; "
+              "safety net REPORTS and does not delete")
     finally:
         shutil.rmtree(src, ignore_errors=True)
         shutil.rmtree(parent, ignore_errors=True)
@@ -213,8 +235,14 @@ def test_unset_is_strict_noop():
         f = _write(os.path.join(src, "postRank.pickle"))
         for falsy in (None, "", 0):
             r = tu.copy_artifacts_to_transfer_dir(falsy, [f], verbose=False)
+            # Exact equality on purpose: a falsy transfer_dir must touch NOTHING and
+            # report a zeroed result, so a new field appearing here is a deliberate
+            # decision rather than a drift.  `refused` / `key_file_at_destination`
+            # were added 2026-08-11 when a directory argument became a loud error and
+            # the key-file net became report-only.
             assert r == {'status': 'skipped', 'copied': 0, 'denied': 0,
-                         'errors': 0, 'files': []}, (falsy, r)
+                         'errors': 0, 'files': [], 'refused': [],
+                         'key_file_at_destination': False}, (falsy, r)
         print("PASS transfer_dir unset/falsy -> strict no-op (no dirs touched)")
     finally:
         shutil.rmtree(src, ignore_errors=True)
