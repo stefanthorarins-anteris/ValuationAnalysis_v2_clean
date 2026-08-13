@@ -1277,6 +1277,18 @@ def _latest_raw(cdx_df, cols):
     return df.groupby('source')[have].last()
 
 
+def _latest_period(cdx_df):
+    """Per-source date of the row `_latest_raw` lands on -- the SAME sort and the SAME
+    groupby-last, so the date this returns is the date of the values that function
+    returns. Deliberately a second small pass rather than a column threaded through
+    `_latest_raw`: that function ffills its value columns, and ffilling a DATE would
+    report a period the line has no statement for."""
+    df = cdx_df[['source', 'date']].copy()
+    df['date'] = pd.to_datetime(df['date'], errors='coerce')
+    df = df.sort_values(['source', 'date'])
+    return df.groupby('source')['date'].last()
+
+
 #  K1 -- STATEMENT IDENTITY. FMP serves the ISSUER's own statements to every line it
 #  lists, so these three together are an issuer identity. This is the old edge A MINUS
 #  the listing-dependent share count, and that subtraction is the entire fix: for every
@@ -1297,20 +1309,90 @@ _K1_COLS = ('revenue', 'netIncome', 'totalAssets')
 #  collide into one bogus mega-group -- out of the key.
 _K2_MARKETCAP_FLOOR = 1e6
 
+#  ...AND MARKETCAP ALONE IS NOT AN IDENTITY. CORROBORATION IS REQUIRED (2026-08-13,
+#  register N-1). The docstring below used to claim ZERO chance collisions on the
+#  2026-01-09 panel. That claim did not survive contact with the CUR3K panels: on BOTH
+#  the 2026-08-11 and 2026-08-13 runs, `ASY.PA` / `0OA7.L` (Assystem S.A., ISIN
+#  FR0000074148) and `ELIOR.PA` (Elior Group S.A., ISIN FR0011950732) both carry
+#  marketCap 640,500,000.0 TO THE EURO and were merged into one issuer. Nothing else
+#  about them matches -- revenue 330.2M vs 3,179M, totalAssets 629.5M vs 3,763M, shares
+#  15.0M vs 262.5M, price EUR47.41 vs EUR2.23 (21.2x apart) -- and ELIOR.PA won the
+#  survivor pick, so BOTH Assystem lines were dropped and a ~EUR700M French engineering
+#  firm became UNSELECTABLE by the screen. That is the expensive error this whole
+#  section is built to avoid: a false merge DELETES A REAL COMPANY, while a missed merge
+#  only costs a duplicate slot.
+#
+#  WHY IT HAPPENS, AND WHY IT WILL HAPPEN MORE. The naive "two 64-bit floats will never
+#  collide" intuition is wrong here because FMP's marketCap IS HEAVILY QUANTIZED: on the
+#  2026-08-13 panel 204 of 2,618 capped lines end in 5 or more zeros (640,500,000 is one
+#  of them), so the effective key space around any given size band is small and shrinks
+#  further the rounder the number. Collision count grows with the PAIR count, so a
+#  ~9,000-name production universe is order 8x this panel's -- roughly 8 false merges,
+#  i.e. 8 deleted companies -- which is why this is fixed before the next fetch rather
+#  than lived with at 1.
+#
+#  THE RULE: marketCap must be corroborated by ONE non-quote field. K2 fires only when
+#  the caps are exactly equal AND at least one of these ALSO matches exactly:
+#
+#      the normalised issuer name  |  the latest statement date  |  revenue
+#                       |  netIncome  |  totalAssets
+#
+#  Expressed as FIVE hash buckets rather than a pairwise test, so the architectural
+#  invariant at the top of `_issuer_components` is untouched: every key is still a pure
+#  function of ONE LINE'S OWN FIELDS, and two lines still meet only by landing in the
+#  same bucket. Because each new bucket REFINES the old marketCap bucket, the change is
+#  monotone -- K2 can now only SPLIT what it used to merge, never merge more.
+#
+#  THE DISJUNCTION IS MEASURED, NOT ASSUMED, AND A SINGLE CORROBORATOR WAS REFUTED.
+#  Every K2-ONLY pair (a pair K1 and K3 do not also hold) on all three real panels was
+#  enumerated and asked which non-quote fields its two lines agree on:
+#      PANEL-JAN 2026-01-09  129 K2-only pairs -- ALL 129 agree on at least one
+#      CUR3K     2026-08-13   62 K2-only pairs --  60 agree; the 2 that agree on
+#                                                  NOTHING are the Assystem/Elior pair
+#      CUR3K     2026-08-11   64 K2-only pairs --  62 agree; same 2 exceptions
+#  So the disjunction loses NOTHING on 13,359 lines of real panel and separates exactly
+#  the defect. Each single-field version does NOT, and both were tried:
+#    * date alone breaks Analog Devices (ADI / 0HFN.L / ANL.DE), GSK / GSK.L and
+#      QIPT / QIPT.TO -- the FX-shifted, fiscally-misaligned cross-listings are the very
+#      pairs K1 cannot see and K2 exists to catch, so keying on the date is
+#      anti-correlated with K2's purpose;
+#    * name alone breaks 15 pairs on PANEL-JAN and 6 on CUR3K -- Comcast Holdings vs
+#      Comcast Corporation, EIDP vs Corteva, Aegon Ltd. vs Aegon N.V., MDA Space Ltd vs
+#      MDA Ltd., the Prudential and DTE preferred lines -- because a vendor happily
+#      serves one issuer's lines under several different name strings.
+#  `date` in particular EARNS its place and is not filler: Carnival Corporation & plc
+#  (CCL / CCL.L / 0EV1.L / POH1.DE), Cintas (CTAS / CIT.DE / 0HYJ.L) and Restaurant
+#  Brands (QSR.TO / QSP-UN.TO / 0VFA.L) agree on the date and on NOTHING ELSE.
+#
+#  WHAT THIS DOES NOT DO, STATED PLAINLY. It is a corroboration requirement, not a
+#  collision-proof identity. Two unrelated lines never share a name or an exact
+#  revenue/netIncome/totalAssets, so the operative disjunct for a CHANCE collision is
+#  the date -- and two random lines on the 2026-08-13 panel share a latest statement
+#  date with probability 0.39 (0.65 on PANEL-JAN, whose dates are more concentrated).
+#  So this removes on the order of 60% of future chance collisions, NOT all of them.
+#  Eliminating them outright needs an identity key (K4, below, or a common-fiscal-period
+#  K1), not a stronger corroborator.
+_K2_CORROBORATORS = ('name', 'date') + _K1_COLS
 
-def _issuer_components(syms, cdx_df, names):
-    """Union-find grouping of same-issuer lines. THREE EXACT KEYS, NO TOLERANCE.
+
+def _issuer_components(syms, cdx_df, names, isin_map=None):
+    """Union-find grouping of same-issuer lines. FOUR EXACT KEYS, NO TOLERANCE.
 
     Each key is a HASH BUCKET COMPUTED FROM ONE LINE'S OWN FIELDS -- no pairwise
     comparison, no tolerance, no threshold anywhere in the grouping:
 
       K1  exact (revenue, netIncome, totalAssets), all three present   [_K1_COLS]
-      K2  exact marketCap, present and > _K2_MARKETCAP_FLOOR
+      K2  exact marketCap (present, > _K2_MARKETCAP_FLOOR) CORROBORATED by an exact
+          match on at least one of `_K2_CORROBORATORS` -- see the long note above that
+          constant for the Assystem/Elior false merge that forced the corroboration and
+          for why no SINGLE corroborator survives the panels.
       K3  exact (normalised name incl. `Holding`, weightedAverageShsOut), both present
           -- the old edge B, RETAINED UNCHANGED except for the `Holding` token. It is
           the only key that catches 32 real pairs (Manulife's six lines, Southern's
           five, Chimera's six, PennyMac's five, ACRI-A.ST/ACRI-B.ST), so dropping it
           would be a regression.
+      K4  exact ISIN, from the profile map (`isin_map`; None -> `_isin_map_cached()`,
+          `{}` -> the key is inert). Wired 2026-08-13, register N-2; see below.
 
     MEASURED on the 2026-01-09 panel (8,106 lines):
       grouping          components  multi-groups  lines dropped  new pairs  REGRESSIONS
@@ -1327,7 +1409,19 @@ def _issuer_components(syms, cdx_df, names):
     subsidiary bond lines: AFGB/C/D/E). Of the 55 K1 groups spanning >1 distinct
     normalised name, ALL 55 are the same issuer (MicroStrategy->Strategy, Barrick
     Gold->Barrick Mining, Bed Bath & Beyond->Beyond, the FMP-truncated "Babcock &
-    Wilcox Enterprises, I"). ZERO chance collisions in either. The shell-collision worry
+    Wilcox Enterprises, I").
+
+    *** "ZERO CHANCE COLLISIONS IN EITHER" WAS TRUE OF THAT PANEL AND IS FALSE IN
+    GENERAL -- REFUTED 2026-08-13, register N-1. *** The sentence used to end here and it
+    was load-bearing: it is the reason K2 was allowed to key on marketCap ALONE. One
+    chance collision has now occurred, on BOTH the 2026-08-11 and 2026-08-13 CUR3K runs
+    -- Assystem S.A. merged into Elior Group S.A. on an exact 640,500,000.0 marketCap and
+    was deleted from the universe. The claim is left standing above as the record of what
+    was measured on 8,106 January lines (1 in 342 multi-line groups is genuinely below
+    what one panel can resolve), NOT reconciled away: the inference drawn FROM it was the
+    defect, and K2 now requires corroboration. Read `_K2_CORROBORATORS`.
+
+    The shell-collision worry
     does not materialise: 42 K1 groups have revenue == 0 and all 42 are true
     LSE-depositary/common pairs -- a 4-decimal (netIncome, totalAssets) pair is
     effectively unique. And where names collide but the issuers DIFFER, the fundamentals
@@ -1350,15 +1444,49 @@ def _issuer_components(syms, cdx_df, names):
     in the pool has nothing better to choose -- which is why the share-class filter
     stays; see the note above filter_non_common_instruments.
 
-    K4 (exact ISIN) is the natural fourth key and is NOT wired: profile ISIN is fetched
-    (findAllSectors._fetch_profiles_batched) but not plumbed into cdx_df. Exact-ISIN
-    equality is safe and was never the Heineken problem -- that belongs to the
-    same-name-DIFFERENT-isin rule, which we are not adopting. It is worth the plumbing:
-    the ONE case no marker in `_non_canonical_tag` can see is the Samsung PREFERRED GDR
-    SMSD.L -- FMP gives it the common's name verbatim, it has no -P suffix, it is not a
-    symbol extension of SMSN.L, and it is not a .KS symbol -- so in a two-member group
-    {SMSD.L, SMSN.L} the PREFERRED wins on the alphabetical tail. ISIN is the only
-    discriminator available for it.
+    K4 (exact ISIN) IS NOW WIRED (2026-08-13, register N-2). The note here used to say it
+    was not, because "profile ISIN is fetched but not plumbed into cdx_df" -- and that
+    blocker was STALE: nothing needs to reach cdx_df. `_isin_map_cached()` is already
+    loaded on this path and already consumed by `_isin_plurality_term`, so K4 is a
+    union-find pass over a map dedup was ALREADY READING to order survivors. It was
+    ordering with an identifier it refused to group with.
+
+    WHAT IT BOUGHT, MEASURED on the real runs (pairs, incl. transitive closure):
+      2026-08-13  +11 pairs, 0 lost   |   2026-08-11  +12 pairs, 0 lost
+    and every one is a genuine same-issuer pair: the LSE depositary/common families
+    (0HPW.L/BR, 0I0X.L/CDXS, 0QCV.L/ABBV, 0R18.L/BBY, 0J4V.L/HRTX, 0KCC.L/IMDX), the
+    US/TSX cross-listings (AG/AG.TO, HUT/HUT.TO, KEEL/KEEL.TO) and Samsung.
+
+    SAMSUNG IS THE CASE IT WAS WIRED FOR, and note it is a DIFFERENT defect from the one
+    the old note described. The old note worried about the survivor PICK inside a group
+    {SMSD.L, SMSN.L}. The actual live defect was in the GROUPING: `SMSN.L` was in a group
+    OF ITS OWN, so the 2026-08-13 shortlist billed as 100 issuers was 98 -- Samsung
+    Electronics occupied two slots. K2 missed it (SMSN.L's marketCap is
+    1,129,161,624,800,000 against the Korean lines' 1,343,738,780,000,000, because its
+    statements sit one fiscal quarter behind) and K3 missed it (the depositary line has
+    its own share count, 270,134,000 vs 4,023,170,000). K4 catches it: SMSN.L and BC94.L
+    both carry ISIN US7960508882.
+
+    SK HYNIX IS NOT FIXED, AND THAT IS A DECISION RATHER THAN AN OVERSIGHT.
+    `000660.KS` and `SKHY` are the same issuer and remain two groups, so the shortlist is
+    99, not 100. K4 cannot reach it: SKHY's ADR ISIN `US78392B2060` is held by no other
+    line on the panel. The ONLY key that reaches it is a NAME-ONLY key, and a name-only
+    key was measured and REJECTED -- on the 2026-08-13 panel it buys SK hynix and merges
+    THREE pairs of genuinely different companies:
+        TORO (Toro Corp., shipping) + TTC (The Toro Company, mowers)
+        TEAM.L (TEAM plc) + TISI (Team, Inc.)
+        001800.KS (ORION Holdings Corp.) + ORN (Orion Group Holdings, Inc.)
+    TORO/TTC is one of the must-not-merge pairs pinned four paragraphs above. Trading one
+    recovered duplicate for three deleted companies is the wrong side of this section's
+    whole asymmetry, so SK hynix stays split.
+    THE KEY THAT WOULD FIX IT PROPERLY is the COMMON-FISCAL-PERIOD K1 already named under
+    RESIDUAL RECALL MISS above -- bucket on (date, revenue, netIncome, totalAssets) for
+    EVERY row rather than on the latest row only, which stays a pure per-line hash bucket.
+    Measured, it catches SK hynix AND Samsung AND the 0SAY.L/DWS.DE miss; it also merged
+    CRML (Critical Metals) with SZZL (Sizzle Acquisition Corp. II) on one shared row --
+    a shell collision, i.e. it reopens exactly the risk the latest-row-only K1 avoids by
+    accident. NOT taken in this pass: it is a wider change than the two defects being
+    fixed here and deserves its own measurement and review.
 
     POINT-IN-TIME CAVEAT (a property to test, not a defect). K2 keys on `marketCap`, which
     is QUOTE-derived, so group membership is date-dependent in a way the statement keys are
@@ -1376,6 +1504,12 @@ def _issuer_components(syms, cdx_df, names):
     # trail can show the CEO what each collapsed line was quoted at (dedup_to_issuers).
     latest = _latest_raw(cdx_df, list(_K1_COLS)
                          + ['weightedAverageShsOut', 'marketCap', 'price'])
+    #  The date `latest`'s values came from -- a K2 corroborator, never a key of its own.
+    period = _latest_period(cdx_df)
+    #  `None` means "use the process-wide profile map", `{}` means "no ISIN data". SAME
+    #  CONVENTION AS `_investability_key`, deliberately: the pick and the grouping must
+    #  resolve ISIN from the same place or they can disagree about what one issuer is.
+    imap = _isin_map_cached() if isin_map is None else isin_map
 
     parent = {s: s for s in syms}
     def find(x):
@@ -1394,24 +1528,46 @@ def _issuer_components(syms, cdx_df, names):
                 return round(float(v), 4)
         return None
 
-    # ONE pass over the pool, three keys, all in ONE bucket dict -- each key is tagged
-    # ('K1'/'K2'/'K3') so the three namespaces cannot collide with each other, and the
+    # ONE pass over the pool, four keys, all in ONE bucket dict -- each key is tagged
+    # ('K1'/'K2'/'K3'/'K4') so the namespaces cannot collide with each other, and the
     # shape makes the important property self-evident: a line's keys are functions of
     # THAT LINE ALONE. Two lines meet only by landing in the same bucket.
     buckets = {}
     for s in syms:
+        nm = _norm_issuer_name(names.get(s, ''), keep_holding=True) if names else ''
+
         k1 = tuple(_val(s, c) for c in _K1_COLS)
         if all(v is not None for v in k1):
             buckets.setdefault(('K1',) + k1, []).append(s)
 
         mc = _val(s, 'marketCap')
         if mc is not None and mc > _K2_MARKETCAP_FLOOR:
-            buckets.setdefault(('K2', mc), []).append(s)
+            #  ONE BUCKET PER CORROBORATOR, which is how a DISJUNCTION ("cap plus ANY
+            #  one of these") stays a set of per-line hash buckets instead of becoming a
+            #  pairwise test. Two lines meet under K2 iff their caps match AND at least
+            #  one corroborator matches -- exactly one shared bucket is enough.
+            #  A corroborator the line LACKS emits no bucket, so a missing field can
+            #  never merge two lines by both being absent.
+            _corr = {'name': nm or None, 'date': period.get(s)}
+            for c in _K1_COLS:
+                _corr[c] = _val(s, c)
+            for tag in _K2_CORROBORATORS:
+                v = _corr.get(tag)
+                #  `pd.isna` covers the one case `is None` does not: a NaT period on a
+                #  line whose every statement row has an unparseable date.
+                if v is not None and not pd.isna(v):
+                    buckets.setdefault(('K2', mc, tag, v), []).append(s)
 
-        nm = _norm_issuer_name(names.get(s, ''), keep_holding=True) if names else ''
         sh = _val(s, 'weightedAverageShsOut')
         if nm and sh is not None:
             buckets.setdefault(('K3', nm, sh), []).append(s)
+
+        #  K4 -- EXACT ISIN. `_clean_isin` returns '' for anything unusable, and '' is
+        #  falsy, so a line without a usable ISIN emits no bucket and cannot group with
+        #  another line that also lacks one.
+        isin = _clean_isin(imap.get(s)) if imap else ''
+        if isin:
+            buckets.setdefault(('K4', isin), []).append(s)
 
     for grp in buckets.values():
         for s in grp[1:]:
@@ -2292,7 +2448,8 @@ def _deciding_term(surv_key, other_key):
     return ''
 
 
-def dedup_ranked(ranked_sources, cdx_df, names, scores=None, sector_map=None):
+def dedup_ranked(ranked_sources, cdx_df, names, scores=None, sector_map=None,
+                 isin_map=None):
     """Collapse same-issuer lines in a RANK-ORDERED source list to ONE line per issuer.
 
     The issuer is represented at its BEST RANK POSITION; the surviving TICKER is the
@@ -2366,27 +2523,40 @@ def dedup_ranked(ranked_sources, cdx_df, names, scores=None, sector_map=None):
     or share-class must not occupy two slots (the TFPM / TFPM.TO case). This is the
     SELECTION-TIME dedup: apply it to the full ranked list BEFORE taking head(N), so the
     emitted top-N contains N DISTINCT issuers. It reuses the EXACT issuer grouping
-    (_issuer_components, keys K1/K2/K3) the carve-out uses, so "same issuer" means the
+    (_issuer_components, keys K1/K2/K3/K4) the carve-out uses, so "same issuer" means the
     same thing across the pipeline -- and both sites now also share the SAME survivor
     rule, which they did not before.
+
+    `isin_map` -- None (the default) means the process-wide profile map, so production
+    behaviour is unchanged and this site groups on the SAME ISINs `dedup_to_issuers` does.
+    Pass `{}` to run with K4 inert.  IT IS AN ARGUMENT RATHER THAN A GLOBAL FOR A REASON
+    THAT COST A TEST: since K4 was wired, the DEFAULT reads whichever
+    `isindic_fmp_*.pickle` is sitting in the repo root, so any caller that builds a
+    synthetic frame out of REAL ticker symbols silently inherits those symbols' real
+    ISINs.  `baseline_tools/test_live_dedup` did exactly that and its TFPM / TFPM.TO pair
+    started merging -- correctly, they are one issuer -- on a run artifact that had
+    nothing to do with the fixture.  A caller that wants a closed world must now say so.
 
     Returns (kept, dropped):
       kept    : deduped rank-ordered source list (>= 1 line per distinct issuer)
       dropped : list of (dropped_symbol, kept_survivor) in rank order (audit trail)
     """
     ranked = list(ranked_sources)
-    comps, _latest, _val = _issuer_components(ranked, cdx_df, names)
+    imap = _isin_map_cached() if isin_map is None else isin_map
+    comps, _latest, _val = _issuer_components(ranked, cdx_df, names, imap)
     root_of = {s: r for r, members in comps.items() for s in members}
 
     # --- pick the CANONICAL line in each multi-line group ------------------------
     # Unconditional, not tie-gated: canonicity overrides rank (see above).
+    #  The SAME `imap` reaches the sort key, so the grouping and the pick cannot resolve
+    #  one issuer's ISINs from two different maps.
     chosen = {}
     for r, members in comps.items():
         if len(members) < 2:
             continue
         chosen[r] = sorted(
             members,
-            key=lambda m: _investability_key(m, _val, None, names, members))[0]
+            key=lambda m: _investability_key(m, _val, None, names, members, imap))[0]
 
     kept, dropped, done = [], [], {}
     for s in ranked:
@@ -2601,15 +2771,18 @@ def dedup_to_issuers(BoScore_df, cdx_df, sector_map, names):
     entry counts so the state is a number an operator can see rather than an inference from a
     column of zeros.
     """
-    syms = list(BoScore_df['source'])
-    comps, latest, _val = _issuer_components(syms, cdx_df, names)
-
     from collections import Counter
 
     #  Loaded ONCE here and passed EXPLICITLY, where `_investability_key` would otherwise
     #  fetch the same memoised objects itself -- same values, so the pick is untouched; the
     #  reason to hoist them is that THIS site has to report whether each term had any data.
+    #  HOISTED ABOVE THE GROUPING since 2026-08-13: K4 groups on ISIN and the survivor key
+    #  orders on ISIN, so both now read the SAME map object rather than two lookups that
+    #  could in principle disagree.
     imap, vmap = _isin_map_cached(), _volavg_map_cached()
+
+    syms = list(BoScore_df['source'])
+    comps, latest, _val = _issuer_components(syms, cdx_df, names, imap)
     _vol_col = (lambda t: t) if vmap else (lambda t: None)
     _isin_col = (lambda t: t) if imap else (lambda t: None)
 

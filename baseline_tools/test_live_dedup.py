@@ -83,16 +83,24 @@ def test_K3_name_plus_shares_when_every_issuer_level_field_is_FX_shifted():
     falls to -marketCap -- and this FIXTURE deliberately inflates the CAD line's market cap
     by 1.35x, which real data does not do (marketCap is an issuer-level number, identical
     across an issuer's lines in 1,250 of 1,282 real groups).  The assertion is therefore on
-    ONE-LINE-PER-ISSUER, not on which of two commons wins a synthetic currency mismatch."""
+    ONE-LINE-PER-ISSUER, not on which of two commons wins a synthetic currency mismatch.
+
+    `isin_map={}` IS LOAD-BEARING HERE (added 2026-08-13, when K4 was wired).  This
+    fixture is built from REAL symbols, and K4's default map is whichever
+    `isindic_fmp_*.pickle` sits in the repo root -- which knows that TFPM and TFPM.TO are
+    one issuer and merges them on ISIN alone.  That merge is CORRECT, and it is precisely
+    what would make this test stop testing K3: the no-names branch below would collapse
+    for a reason that has nothing to do with names or shares.  So the ISIN key is switched
+    off explicitly, and this test means what its name says."""
     tfpm_to_fx = ("TFPM.TO", 195_000_000.0, 155_000_000.0, 3_000_000_000.0,
                   206573855.0, 9.6e9)   # ~1.35x FX on rev/NI/TA AND on marketCap
     cdx = _cdx([AAA, TFPM_US, tfpm_to_fx, CRUS])
     ranked = ["AAA", "TFPM", "TFPM.TO", "CRUS"]
     # without names, nothing can group them: K1 and K2 both differ by the FX shift
-    kept_noname, _ = co.dedup_ranked(ranked, cdx, names={})
+    kept_noname, _ = co.dedup_ranked(ranked, cdx, names={}, isin_map={})
     assert "TFPM.TO" in kept_noname and "TFPM" in kept_noname, kept_noname
     # WITH names, K3 (name + shares) collapses it to ONE line at the group's best rank
-    kept, dropped = co.dedup_ranked(ranked, cdx, NAMES)
+    kept, dropped = co.dedup_ranked(ranked, cdx, NAMES, isin_map={})
     assert len(kept) == 3 and len([s for s in kept if s.startswith("TFPM")]) == 1, kept
     assert kept.index([s for s in kept if s.startswith("TFPM")][0]) == 1, (
         "the issuer must occupy its BEST rank position (index 1)", kept)

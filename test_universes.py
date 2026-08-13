@@ -532,7 +532,7 @@ def test_the_test_universe_states_both_its_listed_and_its_effective_size():
 
 @pytest.mark.skipif(vtu.newest_panel() is None,
                     reason='no saved Bometric panel on this machine (gitignored, ~140MB)')
-def test_the_test_universe_covers_every_required_category_MEASURED_not_asserted():
+def test_the_test_universe_covers_every_required_category_MEASURED_not_asserted(_isolated_absent_map_state):
     """The coverage claim, MEASURED against the repo's own classifiers.
 
     `gaps()` returns the categories that are NOT populated, so a decayed slot (a
@@ -1225,13 +1225,22 @@ def test_a_CURATED_panel_can_never_stand_in_as_the_production_pool():
         'Bometric_dic-fmp_stock_NA1_EU1_all_2026-01-08_len9012.pickle') == 'stock_NA1_EU1'
     assert vtu.panel_universe(
         'Bometric_dic-fmp_stock_NA1_all_2026-01-08_len9012.pickle') == 'stock_NA1'
-    #  every universe with an explicit ticker list is treated as curated, by construction
+    #  The two properties are now separated.  The original proxy conflated them:
+    #    - is_explicit_list_panel: True iff defined by an explicit ticker list
+    #    - is_production_panel: True iff this is the production universe
+    #  The proxy was insufficient because stock_CUR3K is curated by a SAMPLING RULE,
+    #  not a list, so un.symbols('stock_CUR3K') returns None and it read as production.
     for name in un.names():
         path = 'Bometric_dic-fmp_%s_all_2026-01-08_len1.pickle' % name
+        # Both properties must hold independently
         assert vtu.is_explicit_list_panel(path) == (un.symbols(name) is not None), name
+        assert vtu.is_production_panel(path) == (name == un.DEFAULT_UNIVERSE), name
     prod = vtu.newest_panel(production_only=True)
     if prod is not None:
+        # Production panel must NOT be explicit-list-curated
         assert not vtu.is_explicit_list_panel(prod)
+        # And it MUST be the production universe
+        assert vtu.is_production_panel(prod)
 
 
 #  PRODUCTION-ONLY panel, matching what `derive_divergent` now selects (fix, 2026-08-04).
@@ -1243,7 +1252,7 @@ def test_a_CURATED_panel_can_never_stand_in_as_the_production_pool():
                     reason='no saved PRODUCTION Bometric panel on this machine '
                            '(gitignored, ~140MB; a curated test-universe panel cannot '
                            'stand in -- see verify_test_universe.derive_divergent)')
-def test_the_declared_open_groups_RECONCILE_with_a_fresh_derivation_both_ways():
+def test_the_declared_open_groups_RECONCILE_with_a_fresh_derivation_both_ways(_isolated_absent_map_state):
     """THE GUARD THAT REPLACES THE NO-OP.
 
     Re-derives the divergent set with `carveOut._issuer_components` -- the function the

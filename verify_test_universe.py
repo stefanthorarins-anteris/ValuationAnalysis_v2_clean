@@ -84,12 +84,33 @@ def panel_universe(path):
 def is_explicit_list_panel(path):
     """True when this panel came from a CURATED, EXPLICIT-TICKER-LIST universe.
 
-    The discriminator is the registry's own (`universes.symbols(name) is not None`) -- the
-    same field `universes.run_banner` keys its TEST-UNIVERSE warning off -- rather than a
-    hard-coded 'TEST1'.  A second curated universe added later is covered automatically.
+    The discriminator is the registry's own (`universes.symbols(name) is not None`) --
+    the same field `universes.run_banner` keys its TEST-UNIVERSE warning off -- rather
+    than a hard-coded 'TEST1'. Answers the question: "does this universe define
+    membership by an explicit list of tickers?" (True for TEST1, False for production
+    and rule-curated universes like CUR3K).
     """
     u = panel_universe(path)
     return u is not None and un.symbols(u) is not None
+
+
+def is_production_panel(path):
+    """True when this panel came from the PRODUCTION universe.
+
+    Tests the panel's universe against the production default POSITIVELY.
+    This separates the two properties that were conflated by the proxy:
+      - is_explicit_list_panel: True for explicit-ticker-list universes (TEST1)
+      - is_production_panel: True ONLY for the production universe (stock_NA1_EU1)
+
+    The proxy was insufficient because stock_CUR3K is curated by a SAMPLING RULE
+    rather than an explicit list — un.symbols('stock_CUR3K') returns None, so it
+    read as "not curated" and passed the old filter. The old docstring's claim that
+    "a second curated universe added later is covered automatically" was false: CUR3K
+    is the counterexample. With the split, both properties are now tested explicitly
+    and future curated universes cannot silently pass (lineage: register R-7, 2026-08-13).
+    """
+    u = panel_universe(path)
+    return u == un.DEFAULT_UNIVERSE
 
 
 def newest_panel(pattern='Bometric_dic-*.pickle', production_only=False):
@@ -119,7 +140,7 @@ def newest_panel(pattern='Bometric_dic-*.pickle', production_only=False):
     here = os.path.dirname(os.path.abspath(__file__))
     cands = glob.glob(os.path.join(here, pattern))
     if production_only:
-        cands = [p for p in cands if not is_explicit_list_panel(p)]
+        cands = [p for p in cands if is_production_panel(p)]
     if not cands:
         return None
     return max(cands, key=lambda p: (_panel_date(p), os.path.getmtime(p)))
@@ -179,7 +200,19 @@ def collect(panel_path=None, verbose=True):
         'unclassified': (),
     }
 
-    panel_path = panel_path or newest_panel()
+    #  PRODUCTION-ONLY, for the same reason `reconcile_open_groups` is (2026-08-13).
+    #  This measures how well the TEST universe covers each cohort, which requires a panel
+    #  that CONTAINS the test universe's names.  A curated panel does not: handed the
+    #  `stock_CUR3K` panel sitting in the repo root after a run, every cohort collapses --
+    #  measured REIT 13 -> 2, Mining 14 -> 5, FinManager 13 -> 4, BalanceSheetFin 15 -> 2,
+    #  InvestmentVehicle 16 -> 2 -- and the >= MIN_PER_COHORT assertion reads as
+    #  "re-curate the test universe" when the test universe is fine and the PANEL is wrong.
+    #  That misreading was made twice while diagnosing this, which is the argument for
+    #  stating the requirement here rather than leaving it to the caller.
+    #  The sibling call site was already `production_only=True`; this one was not, so the
+    #  fix landed one door along from the defect. Same class as the `is_explicit_list_panel`
+    #  proxy it sits beside.
+    panel_path = panel_path or newest_panel(production_only=True)
     if panel_path is None:
         if verbose:
             print('NO saved Bometric_dic-*.pickle found -- reporting MANIFEST-DECLARED '

@@ -66,6 +66,15 @@ def panel(raw_capture):
     (type=='stock'), so expect the production figure to be the 6,330-flavoured one.  The
     ZERO-REGRESSION property below holds on either basis -- it compares old and new under
     the SAME names.
+
+    K4 IS DISABLED HERE WITH AN EXPLICIT `{}`, WHICH IS NOT THE SAME AS "K4 IS OFF".
+    Since 2026-08-13 `_issuer_components` takes an ISIN map and defaults it to the
+    PROCESS-WIDE `_isin_map_cached()`, which globs the repo root -- so leaving it to
+    default would make every number pinned below depend on which `isindic_fmp_*.pickle`
+    happens to be sitting in the working directory, i.e. on a run artifact rather than on
+    the code.  PANEL-JAN is a January panel and no ISIN map of that vintage exists, so the
+    honest fixture is "no ISIN data" and the pins are pure K1+K2+K3.  K4 has its OWN
+    tests, against the panels whose ISIN maps we actually hold.
     """
     if not os.path.exists(PANEL):
         pytest.skip('PANEL-JAN absent: %s' % os.path.basename(PANEL))
@@ -73,7 +82,7 @@ def panel(raw_capture):
     syms = list(d['moatdf']['source'])
     nm = dict(zip(raw_capture['symbol'], raw_capture['name']))
     names = {s: nm.get(s, '') for s in syms}
-    comps, latest, val = co._issuer_components(syms, d['cdx_df'], names)
+    comps, latest, val = co._issuer_components(syms, d['cdx_df'], names, {})
     root = {s: r for r, m in comps.items() for s in m}
     return {'d': d, 'cdx': d['cdx_df'], 'syms': syms, 'names': names,
             'comps': comps, 'root': root, 'val': val,
@@ -96,12 +105,18 @@ def _same_group(panel, *symbols):
 #  must NOT be judged by whether the top-20 improves).  The numbers are pinned as   #
 #  DATA so a future edit that quietly loses merges cannot pass.                     #
 # --------------------------------------------------------------------------- #
+#  MOVED 2026-08-13 (register N-1), and the previous values are kept in the comment
+#  because the DELTA is the whole evidence.  Requiring K2's marketCap to be corroborated
+#  costs this panel exactly ONE pair -- 6,328 -> 6,329 components, 2,842 -> 2,841 pairs --
+#  and `test_the_K2_corroborator_costs_exactly_one_known_pair` names it (QIPT / QIPT.TO)
+#  rather than letting a pin quietly absorb it.  The STRICT-SUPERSET property is
+#  unaffected: that pair was never in the old A/B/C edge set either.
 PANEL_JAN_GROUPING = {
     'lines': 8106,
-    'components': 6328,
-    'multi_line_groups': 1282,
-    'lines_dropped': 1778,
-    'pairs': 2842,
+    'components': 6329,             # was 6328 before the K2 corroborator
+    'multi_line_groups': 1281,      # was 1282
+    'lines_dropped': 1777,          # was 1778
+    'pairs': 2841,                  # was 2842
     #  The pre-change A/B/C edge set, measured on the same panel before the rewrite.
     'previous_components': 6437,
     'previous_multi_line_groups': 1236,
@@ -218,7 +233,7 @@ def test_grouping_is_SCOPE_INVARIANT(panel):
     is verified rather than restated."""
     ranked = panel['ranked']
     sub_names = {s: panel['names'].get(s, '') for s in ranked}
-    sub, _l, _v = co._issuer_components(ranked, panel['cdx'], sub_names)
+    sub, _l, _v = co._issuer_components(ranked, panel['cdx'], sub_names, {})
     projected = {}
     for s in ranked:
         projected.setdefault(panel['root'][s], []).append(s)
@@ -226,6 +241,213 @@ def test_grouping_is_SCOPE_INVARIANT(panel):
             == {frozenset(m) for m in projected.values()})
     assert sum(1 for m in sub.values() if len(m) > 1) == 19
     assert len(sub) == 65
+
+
+# --------------------------------------------------------------------------- #
+#  K2 CORROBORATION (register N-1) and K4 / EXACT ISIN (register N-2), 2026-08-13. #
+#                                                                               #
+#  Both defects were RECALL LOSSES that silently shrank the candidate set, and     #
+#  both were found in shipped output rather than in a test -- so the gates below    #
+#  are written to fail against the pre-change code.  The synthetic ones run           #
+#  everywhere; the panel ones skip loudly when the run artifact is not present.        #
+# --------------------------------------------------------------------------- #
+def _k2_cdx(rows):
+    """cdx frame from (source, date, revenue, netIncome, totalAssets, marketCap) rows."""
+    return pd.DataFrame(rows, columns=['source', 'date', 'revenue', 'netIncome',
+                                       'totalAssets', 'marketCap'])
+
+
+def test_K2_REFUSES_an_uncorroborated_marketCap_collision():
+    """THE ASSYSTEM / ELIOR SHAPE, reduced to two lines.  Identical marketCap and nothing
+    else in common must NOT be one issuer: before this gate existed, that merge deleted
+    Assystem S.A. from the universe outright."""
+    cdx = _k2_cdx([
+        ('ASY.X',   '2025-10-01',  330200000.0,  2700000.0,  629500000.0, 640500000.0),
+        ('ELIOR.X', '2026-01-01', 3179000000.0, 21000000.0, 3763000000.0, 640500000.0),
+    ])
+    names = {'ASY.X': 'Assystem S.A.', 'ELIOR.X': 'Elior Group S.A.'}
+    comps, _l, _v = co._issuer_components(['ASY.X', 'ELIOR.X'], cdx, names, {})
+    assert len(comps) == 2, (
+        'an exact marketCap match with NO corroborating field merged two unrelated '
+        'issuers -- that is register N-1, and it deletes a real company: %s' % comps)
+
+
+@pytest.mark.parametrize('corroborator,row', [
+    ('date',        ('2025-10-01', 1.0, 2.0, 3.0)),
+    ('revenue',     ('2026-01-01', 330200000.0, 2.0, 3.0)),
+    ('netIncome',   ('2026-01-01', 1.0, 2700000.0, 3.0)),
+    ('totalAssets', ('2026-01-01', 1.0, 2.0, 629500000.0)),
+])
+def test_K2_STILL_MERGES_when_any_single_corroborator_agrees(corroborator, row):
+    """The corroboration must not become a second identity test.  ONE agreeing non-quote
+    field is the documented bar, and each of the four non-name corroborators is exercised
+    on its own -- with the OTHER three deliberately disagreeing -- so a future edit that
+    silently ANDs them together fails here rather than in a run."""
+    date, rev, ni, ta = row
+    cdx = _k2_cdx([
+        ('A.X', '2025-10-01', 330200000.0, 2700000.0, 629500000.0, 640500000.0),
+        ('B.X', date,         rev,         ni,        ta,          640500000.0),
+    ])
+    #  Names deliberately DIFFERENT, so the `name` corroborator cannot be what merges them.
+    names = {'A.X': 'Alpha Industries S.A.', 'B.X': 'Beta Catering Group S.A.'}
+    comps, _l, _v = co._issuer_components(['A.X', 'B.X'], cdx, names, {})
+    assert len(comps) == 1, (
+        'K2 refused a marketCap match corroborated by %s -- the corroborator set has '
+        'become a conjunction, which breaks the FX-shifted cross-listings K2 exists for'
+        % corroborator)
+
+
+def test_K2_MERGES_on_the_name_corroborator_alone():
+    """GSK / GSK.L and Analog Devices are this shape: same issuer, same cap, statements a
+    fiscal quarter apart, so the NAME is the only thing that agrees."""
+    cdx = _k2_cdx([
+        ('GSK.X', '2025-10-01', 1.0, 2.0, 3.0, 63515330000.0),
+        ('GSK.Y', '2025-07-01', 4.0, 5.0, 6.0, 63515330000.0),
+    ])
+    names = {'GSK.X': 'GSK plc', 'GSK.Y': 'GSK plc'}
+    comps, _l, _v = co._issuer_components(['GSK.X', 'GSK.Y'], cdx, names, {})
+    assert len(comps) == 1
+
+
+def test_a_MISSING_corroborator_never_corroborates():
+    """Two lines that both LACK a field must not meet on that absence.  The bucket is only
+    emitted when the value is present, so `None == None` can never be a merge."""
+    cdx = _k2_cdx([
+        ('A.X', None, None, None, None, 640500000.0),
+        ('B.X', None, None, None, None, 640500000.0),
+    ])
+    comps, _l, _v = co._issuer_components(['A.X', 'B.X'], cdx, {'A.X': '', 'B.X': ''}, {})
+    assert len(comps) == 2, (
+        'two lines with no name, no date and no statements merged on an exact marketCap '
+        '-- absence corroborated absence: %s' % comps)
+
+
+def test_K4_merges_on_exact_ISIN_and_ABSTAINS_without_a_map():
+    """K4 is an IDENTITY key, so it must merge two lines that agree on nothing else -- and
+    it must be completely inert when no ISIN map is supplied, which is the state of every
+    caller that passes `{}`."""
+    cdx = _k2_cdx([
+        ('SMSN.L', '2026-01-01', 133873444000000.0, 47225272000000.0,
+         633339604000000.0, 1129161624800000.0),
+        ('BC94.L', '2026-04-01', 175253740934000.0, 71300000000000.0,
+         759480500000000.0, 1343738780000000.0),
+    ])
+    names = {'SMSN.L': 'Samsung Electronics Co., Ltd.',
+             'BC94.L': 'Samsung Electronics Co., Ltd.'}
+    syms = ['SMSN.L', 'BC94.L']
+    imap = {'SMSN.L': 'US7960508882', 'BC94.L': 'US7960508882'}
+    assert len(co._issuer_components(syms, cdx, names, {})[0]) == 2, (
+        'these two lines share no statement, no cap and no share count -- if they merge '
+        'without an ISIN map the test is not exercising K4')
+    assert len(co._issuer_components(syms, cdx, names, imap)[0]) == 1, (
+        'K4 did not merge two lines carrying the SAME ISIN -- register N-2')
+
+
+def test_an_UNUSABLE_ISIN_never_groups():
+    """`_clean_isin` rejects short/None/non-alnum values, and a rejected value must emit
+    no bucket at all -- otherwise every unmapped line joins one bogus mega-group."""
+    cdx = _k2_cdx([('A.X', '2026-01-01', 1.0, 2.0, 3.0, 5e9),
+                   ('B.X', '2026-04-01', 4.0, 5.0, 6.0, 7e9)])
+    for bad in ({'A.X': None, 'B.X': None}, {'A.X': '', 'B.X': ''},
+                {'A.X': 'US-1', 'B.X': 'US-1'}):
+        comps, _l, _v = co._issuer_components(
+            ['A.X', 'B.X'], cdx, {'A.X': 'Alpha', 'B.X': 'Beta'}, bad)
+        assert len(comps) == 2, 'an unusable ISIN %r grouped two lines' % bad
+
+
+#  The CUR3K panel is a RUN ARTIFACT, not a committed fixture, so these gates skip when
+#  it is absent -- and they are declared in UNVERIFIED_GATES so "we never ran it" cannot
+#  decay into "it passed".  They are worth having anyway: the synthetic gates above pin
+#  the MECHANISM, and only these pin the two defects AS THEY ACTUALLY SHIPPED.
+CUR3K = os.path.join(_HERE, 'postRank_2026-08-11_fmp_stock_CUR3K.pickle')
+CUR3K_ISIN = os.path.join(_HERE, 'isindic_fmp_2026-08-11.pickle')
+
+
+@pytest.fixture(scope='module')
+def cur3k(raw_capture):
+    """The 2026-08-11 production panel with the ISIN map THAT RUN used, loaded by name --
+    never through the cached glob, which would silently pick a different date's map."""
+    for p in (CUR3K, CUR3K_ISIN):
+        if not os.path.exists(p):
+            pytest.skip('CUR3K run artifact absent: %s' % os.path.basename(p))
+    d = pd.read_pickle(CUR3K)
+    syms = list(d['moatdf']['source'])
+    nm = dict(zip(raw_capture['symbol'], raw_capture['name']))
+    imap = co._load_isin_map(CUR3K_ISIN)
+    names = {s: nm.get(s, '') for s in syms}
+    comps, _l, _v = co._issuer_components(syms, d['cdx_df'], names, imap)
+    return {'syms': syms, 'names': names, 'cdx': d['cdx_df'], 'isin': imap,
+            'root': {s: r for r, m in comps.items() for s in m}}
+
+
+def test_ASSYSTEM_is_not_swallowed_by_ELIOR_on_the_real_panel(cur3k):
+    """REGISTER N-1, as it shipped.  ASY.PA / 0OA7.L (Assystem, FR0000074148) and ELIOR.PA
+    (Elior, FR0011950732) carry marketCap 640,500,000.0 to the euro and NOTHING else in
+    common; before the corroborator they were one issuer, Elior won the pick, and a
+    ~EUR700M engineering firm could not be selected by the screen at all."""
+    root = cur3k['root']
+    for s in ('ASY.PA', '0OA7.L', 'ELIOR.PA'):
+        assert s in root, '%s is not in the panel; this gate is not testing what it says' % s
+    assert root['ASY.PA'] == root['0OA7.L'], (
+        'the two REAL Assystem lines must still be one issuer -- the corroborator was '
+        'supposed to split Assystem from Elior, not split Assystem from itself')
+    assert root['ASY.PA'] != root['ELIOR.PA'], (
+        'Assystem and Elior are still one issuer: an exact marketCap tie is merging two '
+        'unrelated companies and deleting one of them (register N-1)')
+
+
+def test_SAMSUNG_is_ONE_issuer_on_the_real_panel(cur3k):
+    """REGISTER N-2.  `SMSN.L` sat in a group of its own -- K2 misses it (its statements
+    are a quarter behind, so its marketCap differs) and K3 misses it (a depositary line
+    has its own share count) -- so the shortlist billed as 100 issuers was not.  K4 joins
+    it to `BC94.L` on the shared ISIN US7960508882."""
+    root = cur3k['root']
+    fam = [s for s in ('005930.KS', '005935.KS', 'SMSN.L', 'SMSD.L', 'BC94.L')
+           if s in root]
+    assert len(fam) >= 2, 'no Samsung family in this panel: %s' % fam
+    assert len({root[s] for s in fam}) == 1, (
+        'Samsung Electronics still occupies more than one issuer slot: %s'
+        % {s: root[s] for s in fam})
+
+
+def test_SK_HYNIX_IS_STILL_SPLIT_and_that_is_a_DECISION(cur3k):
+    """NOT AN ASPIRATION -- A DECLARED OPEN ITEM, pinned so it cannot drift either way.
+
+    `000660.KS` and `SKHY` are one issuer and are NOT merged.  K4 cannot reach them
+    (SKHY's ADR ISIN US78392B2060 is held by no other line on the panel) and the only key
+    that can is a NAME-ONLY key, which on this same panel also merges TORO with TTC,
+    TEAM.L with TISI and 001800.KS with ORN -- three pairs of genuinely different
+    companies, and TORO/TTC is a pinned must-not-merge.  Three deleted companies to
+    recover one duplicate is the wrong side of this section's asymmetry.
+
+    IF THIS TEST STARTS FAILING, that is not necessarily a regression: it means something
+    merged them, and the question to ask is WHICH KEY did it and what else that key
+    merged.  Update this gate deliberately; do not delete it."""
+    root = cur3k['root']
+    if not ('000660.KS' in root and 'SKHY' in root):
+        pytest.skip('UNVERIFIED GATE -- SK hynix pair not both in this panel')
+    assert root['000660.KS'] != root['SKHY'], (
+        'SK hynix is now merged -- see the docstring: confirm WHICH key did it and that '
+        'it did not also merge TORO/TTC, TEAM.L/TISI or 001800.KS/ORN')
+
+
+def test_the_K2_corroborator_costs_exactly_one_known_pair(panel):
+    """THE PRICE OF THE FIX, NAMED RATHER THAN ABSORBED INTO A PIN.  Requiring
+    corroboration costs PANEL-JAN exactly one real pair: QIPT / QIPT.TO (Quipt Home
+    Medical, a US/TSX cross-listing).  It has no name in the August capture, its two lines
+    report different fiscal periods, and its statements are FX-shifted -- so no
+    corroborator agrees.  In production both lines carry a name, so the `name`
+    corroborator would hold them; this is partly an artifact of pinning a January panel
+    against an August name table (see the `panel` fixture).
+
+    A SECOND lost pair would mean the corroborator is biting more than it was measured
+    to, which is the whole reason this is asserted as an exact set."""
+    root = panel['root']
+    if 'QIPT' not in root or 'QIPT.TO' not in root:
+        pytest.skip('UNVERIFIED GATE -- QIPT pair absent from PANEL-JAN')
+    assert root['QIPT'] != root['QIPT.TO'], (
+        'QIPT/QIPT.TO merged again -- good news, but the pinned pair counts below were '
+        'measured with it split; re-measure rather than loosening the pin')
 
 
 def test_no_grouping_key_uses_a_tolerance():
@@ -785,6 +1007,18 @@ UNVERIFIED_GATES = {
         'names verified for all five pairs; grouping needs AMS/PAR/OSL fundamentals.',
     'test_KOREA_MUST_MERGE_the_196_symbols_collapse_to_91_issuers':
         'needs a Korea fetch. Blocks trusting any Korean name in the ranking.',
+    #  Added 2026-08-13 (registers N-1 / N-2). These skip on the ARTIFACT, not on the
+    #  data: the CUR3K panel and its ISIN map are run outputs, not committed fixtures, so
+    #  a clean checkout cannot exercise them. The mechanism they guard is also covered by
+    #  the synthetic K2/K4 gates, which always run.
+    'test_ASSYSTEM_is_not_swallowed_by_ELIOR_on_the_real_panel':
+        'needs the CUR3K run artifact + its ISIN map in the repo root.',
+    'test_SAMSUNG_is_ONE_issuer_on_the_real_panel':
+        'needs the CUR3K run artifact + its ISIN map in the repo root.',
+    'test_SK_HYNIX_IS_STILL_SPLIT_and_that_is_a_DECISION':
+        'needs the CUR3K run artifact; pins a DECLARED OPEN item, not a target state.',
+    'test_the_K2_corroborator_costs_exactly_one_known_pair':
+        'needs PANEL-JAN; names the one real pair the K2 corroborator costs.',
 }
 
 
@@ -822,7 +1056,7 @@ def _pre_isin_key(sym, val_fn, names=None, group=()):
     return (noncanon, -sh, -mc, digitpfx, punct, len(sym), sym)
 
 
-def test_isin_absent_is_bit_identical(panel):
+def test_isin_absent_is_bit_identical(panel, _isolated_absent_map_state):
     """*** THE PROPERTY THAT MATTERS MOST.  No isindic_fmp_*.pickle exists yet, so the
     CEO may run the pipeline before the next profile build; on that path the survivor of
     EVERY group must be the one the pre-ISIN rule picked. ***
@@ -845,7 +1079,7 @@ def test_isin_absent_is_bit_identical(panel):
     assert n_groups > 100, 'panel produced too few multi-line groups to be evidence'
 
 
-def test_isin_absent_means_absent_not_silently_populated():
+def test_isin_absent_means_absent_not_silently_populated(_isolated_absent_map_state):
     """The bit-identity above is only reassuring if the map really is empty today.  If a
     profile build has landed and this fails, that is INFORMATION, not a defect -- but it
     must not pass unnoticed, because the no-op claim stops holding at that moment."""
@@ -872,7 +1106,7 @@ def test_isin_plurality_decides_the_multi_venue_common():
         'ISIN plurality did not lift the two-venue common over the singleton line')
 
 
-def test_isin_ABSTAINS_on_a_two_member_group_with_two_isins():
+def test_isin_ABSTAINS_on_a_two_member_group_with_two_isins(_isolated_absent_map_state):
     """*** THE HONEST NEGATIVE.  This is the shape of ALL THREE known-wrong groups
     (CBE.PA/RBT.PA certificat, PREVA.AS/VALUE.AS preference, SMSD.L/SMSN.L preferred
     GDR): two members, two distinct ISINs, plurality 1-1.  An ISIN carries no
@@ -1037,7 +1271,7 @@ def _pre_volavg_key(sym, val_fn, names=None, group=(), isin_map=None):
             co._isin_plurality_term(sym, group, imap), sym)
 
 
-def test_volavg_absent_is_bit_identical(panel):
+def test_volavg_absent_is_bit_identical(panel, _isolated_absent_map_state):
     """*** THE PROPERTY THAT MATTERS MOST, AND THE ONE THE BRIEF ASKED TO BE ASSERTED.
     No volavgdic_fmp_*.pickle exists yet, so every saved pickle and every run before the
     next profile build must produce the survivor -- and the whole ORDERING -- that the
@@ -1063,7 +1297,7 @@ def test_volavg_absent_is_bit_identical(panel):
     assert n_groups > 100, 'panel produced too few multi-line groups to be evidence'
 
 
-def test_volavg_absent_means_absent_not_silently_populated():
+def test_volavg_absent_means_absent_not_silently_populated(_isolated_absent_map_state):
     """The bit-identity above is only reassuring if the map really is empty today.  If a
     profile build has landed and this fails, that is INFORMATION, not a defect -- but it
     must not pass unnoticed, because the no-op claim stops holding at that moment."""
