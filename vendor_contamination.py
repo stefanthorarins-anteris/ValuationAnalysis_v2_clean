@@ -334,6 +334,74 @@ def detect_shared_fundamentals(cdx_df, names=None, min_shared=MIN_SHARED_TRIPLES
     return out
 
 
+#  Markers appended to a per-line report field for a source this check has paired with
+#  another.  The two verdicts mean DIFFERENT things and are kept apart deliberately:
+#    clone-suspect         `name_match` -- the SAME company on two listing lines (a GDR/ADR,
+#                          a dual listing).  This is the one that corrupts a PER-LINE vendor
+#                          field: FMP can serve the home line's share volume against the
+#                          depositary line's price.
+#    contamination-suspect `NAME_MISMATCH` -- two DIFFERENT companies sharing fundamentals
+#                          (the 058820.KQ / Chipotle shape).  A statement-level defect, with
+#                          its own loud banner at fetch time; marked here too because a line
+#                          whose STATEMENTS are crossed can have its quote fields crossed as
+#                          well, and a reader of one field should not have to know that.
+CLONE_MARKER = 'clone-suspect:%s'
+CONTAMINATION_MARKER = 'contamination-suspect:%s'
+
+
+def clone_counterparts(run_date=None, path=None, outdir=None, flags=None):
+    """{source: 'marker'} for every source this run's contamination check paired with another.
+
+    READS THE ARTIFACT THE SAME RUN ALREADY WROTE (`VendorContaminationFlags_<date>.csv`)
+    rather than re-running `detect_shared_fundamentals`.  Two reasons, and the second is the
+    load-bearing one:
+      * the detector is a whole-panel pass and the consumers of this map hold only the
+        top-100 slice, so re-running it there would be both slower AND narrower;
+      * a clone's COUNTERPART is frequently NOT in the top-100.  On 2026-08-13 `SMSN.L` is at
+        rank 88 while its partners `005930.KS`, `005935.KS`, `BC94.L` and `SMSD.L` are not in
+        the shortlist at all -- so a detector run over the shortlist would have found nothing
+        for exactly the name that needs the marker most.
+
+    SYMMETRIC: the CSV records each pair once (a, b), and both members are marked.
+
+    Returns {} on any failure, including "no such file" -- which is the correct answer for a
+    run that predates the check, and keeps this out of the blast radius of anything it feeds.
+    """
+    try:
+        if flags is None:
+            if path is None:
+                outdir = _tu.EVIDENCE_DIR if outdir is None else outdir
+                run_date = run_date or _dt.date.today().strftime('%Y-%m-%d')
+                path = os.path.join(outdir,
+                                    'VendorContaminationFlags_%s.csv' % run_date)
+            if not os.path.exists(path):
+                return {}
+            flags = pd.read_csv(path)
+        cols = getattr(flags, 'columns', [])
+        if flags is None or not len(flags) or 'source_a' not in cols or 'source_b' not in cols:
+            return {}
+        pairs = {}
+        for _, r in flags.iterrows():
+            a, b, v = r.get('source_a'), r.get('source_b'), str(r.get('verdict') or '')
+            if not isinstance(a, str) or not isinstance(b, str):
+                continue
+            marker = (CLONE_MARKER if v == 'name_match' else CONTAMINATION_MARKER)
+            for x, y in ((a, b), (b, a)):
+                pairs.setdefault(x, (marker, set()))
+                #  A source can be paired with several lines (SMSN.L has four on the
+                #  2026-08-13 panel).  The STRONGER verdict wins the label: a name mixed up
+                #  with a different company is the more serious finding, so it must not be
+                #  overwritten by a benign cross-listing pairing found later in the file.
+                if pairs[x][0] == CLONE_MARKER and marker == CONTAMINATION_MARKER:
+                    pairs[x] = (marker, pairs[x][1])
+                pairs[x][1].add(y)
+        return {s: (m % '+'.join(sorted(cs)[:3])) for s, (m, cs) in pairs.items()}
+    except Exception as _e:
+        print('[contamination] WARNING: counterpart map unavailable (%s: %s); per-line '
+              'clone markers will be absent this run.' % (type(_e).__name__, _e), flush=True)
+        return {}
+
+
 def run_detector_stage(cdx_df, names=None, run_date=None, outdir=None, verbose=True):
     """The standing POST-FETCH check.  Never raises; returns the flag frame (possibly
     empty) and writes `VendorContaminationFlags_<date>.csv` at the repo ROOT.

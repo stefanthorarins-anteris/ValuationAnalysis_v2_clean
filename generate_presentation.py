@@ -211,6 +211,223 @@ def ratio_format(v, decimals=2):
     return f"{v:.{decimals}f}"
 
 
+# =========================================================================== #
+#  REPORTING EXPANSION -- CURRENCY, TRADED VALUE, DATA COVERAGE (CEO 2026-08-13) #
+# =========================================================================== #
+#  THE PRESENTATION RULE THIS BLOCK OBEYS, in the CEO's own words: "it needs to be
+#  correctly presented, i.e. the correct suggestive nature of how it is presented (putting
+#  a red flag next to high quality earning indicator is, for example, the exact opposite of
+#  what I mean)."  Read as a design rule with teeth: A MARKER'S VISUAL WEIGHT AND VALENCE
+#  MUST MATCH THE DIRECTION OF THE THING IT MARKS.  A marker pointing the wrong way is
+#  WORSE than no marker, because the reader trusts the marker over the number.
+#
+#  So every field added here was assigned a valence BEFORE it was styled, and three of the
+#  four turned out NOT to be simple good/bad axes:
+#
+#   FIELD                 VALENCE           HOW IT IS PRESENTED, AND WHY
+#   -------------------   ---------------   ------------------------------------------------
+#   priceCurrency         NONE (a unit)     Plain text beside the price, same weight as the
+#                                           price.  A currency is neither good nor bad.  The
+#                                           thing being FIXED is that the page printed
+#                                           `${price}` unconditionally, which is not a
+#                                           neutral rendering -- it is a false assertion for
+#                                           every non-USD line.
+#   market cap            NONE (a size)     Rendered from `marketCap_usd` and LABELLED USD.
+#                                           `marketCap` is a reportedCurrency quantity, so
+#                                           the page was rendering 000660.KS as
+#                                           "$1,890,724.65B".  No marker: size is not merit.
+#   dollarVolume_usd      NOT MONOTONE      Number shown NEUTRALLY, with a ONE-SIDED amber
+#                                           caution at the THIN end only.  High traded value
+#                                           earns NO positive marker: liquidity says nothing
+#                                           about value, and this filter's thesis is
+#                                           NEGLECTED small caps -- rewarding liquidity here
+#                                           would suggest the opposite of the strategy.  The
+#                                           thin-end caution is about the READER'S ability to
+#                                           build and exit a position, and the wording says
+#                                           so; it is not a claim about the business.
+#   imputed_weight_share  MONOTONE, BAD     Amber >=20%, red >=50%, and worded as EPISTEMIC
+#                                           ("how much of this score is measured") rather
+#                                           than as quality.  It must read "we know little
+#                                           about this name", never "this is a bad company".
+#                                           It sits beside `forensicTag`, which can say
+#                                           `clean` on a 93%-imputed name -- the tag is not
+#                                           lying (it describes the FORENSIC checks) but the
+#                                           two are orthogonal and the label says so.
+#   veto ejection         HARD EXCLUSION    A run-level NEUTRAL card, not a per-name warning.
+#                                           Ejected names are not on any page (they were
+#                                           removed before ranking), so it is a statement
+#                                           about the SCOPE of what the reader is looking at
+#                                           -- the filter working as designed -- and it is
+#                                           styled like the industry counter, not like the
+#                                           red `.basis-warning`.
+#
+#  EVERY FIELD DEGRADES TO "—" WHEN ITS COLUMN IS ABSENT, and absence is never rendered as
+#  zero.  Runs before 2026-08-13 carry no `priceCurrency` / `dollarVolume_usd` /
+#  `imputed_weight_share`, and a 0 in any of them would be a confident false statement.
+
+#  ~$25k/day is the CEO's own reference line (2026-08-13).  On the shipped 2026-08-13 run it
+#  separates 529 of 3,145 universe names (16.8%) from the rest, and reaches only 3 of the
+#  top-100 -- so it marks a genuine tail rather than colouring the page.
+THIN_LIQUIDITY_USD_PER_DAY = 25_000.0
+#  Imputation bands.  0.20 is `missing_data_fill_report`'s OWN "scored >=20% on fills"
+#  reporting threshold, reused rather than re-invented so the run log and the deck agree.
+#  0.50 is where the majority of the score is guesswork.
+IMPUTED_SHARE_AMBER = 0.20
+IMPUTED_SHARE_RED = 0.50
+
+
+def money_format(v, decimals=2):
+    """Compact magnitude for a USD amount: $1.43T / $1.23B / $45.6M / $12.3k / $987.
+
+    `T` is not decoration: the top of this universe is a trillion-dollar name and the deck's
+    old `f"${mktcap/1e9:.2f}B"` rendered META as "$1432.45B", which a reader has to count
+    digits to size.  The whole point of the column is a magnitude read at a glance.
+    """
+    v = safe_float(v)
+    if np.isnan(v):
+        return "—"
+    a = abs(v)
+    for div, suf in ((1e12, 'T'), (1e9, 'B'), (1e6, 'M'), (1e3, 'k')):
+        if a >= div:
+            return f"${v/div:,.{decimals}f}{suf}"
+    return f"${v:,.0f}"
+
+
+def price_with_currency(price, currency):
+    """The quoted price LABELLED with the currency it is quoted in.
+
+    THE DEFECT THIS REPLACES: the page rendered `f"${price:.2f}"` unconditionally.  A `$` in
+    front of a GBp or KRW number is not a neutral formatting choice -- it is a false
+    statement, and it is the same class of defect as the AggScore CSV's FX-mixed
+    `GrahamNumberToPrice` (register N-3).  An unknown currency yields a BARE number with an
+    explicit "currency unknown" note rather than a guessed symbol: the exchange suffix does
+    NOT determine the currency (SHEL.L quotes GBp and reports USD), so guessing is exactly
+    the reasoning this pipeline has already been burned by.
+    """
+    p = safe_float(price)
+    if np.isnan(p):
+        return "—"
+    cur = currency if isinstance(currency, str) and currency.strip() else None
+    num = f"{p:,.2f}" if abs(p) < 1e4 else f"{p:,.0f}"
+    if cur is None:
+        return (f'{num} <span class="pctile" title="This run did not record the trading '
+                f'currency of this listing. It is deliberately NOT guessed from the exchange '
+                f'suffix -- SHEL.L quotes in pence and reports USD.">(currency unknown)</span>')
+    return f'{escape(cur)}&nbsp;{num}'
+
+
+def dollar_volume_cell(v):
+    """Traded value per day, NEUTRAL, with a one-sided thin-liquidity caution.
+
+    NO POSITIVE MARKER AT THE HIGH END, deliberately -- see the valence table above.  The
+    caution fires only below ~$25k/day and is worded as a constraint on the READER (position
+    sizing and exit), because that is the only thing the number supports; it is not a
+    statement about the company.  Amber, not red: it does not disqualify a name, and this
+    pipeline's standing ruling on volume is REPORT, NEVER SCREEN (register J-1).
+
+    KNOWN LIMIT, carried into the tooltip rather than silently corrected: on a depositary
+    (GDR/ADR) line FMP can report the HOME line's share volume against the DEPOSITARY line's
+    price, which inflates the product by the depositary ratio.
+    """
+    f = safe_float(v)
+    if np.isnan(f):
+        return '—'
+    title = ('Average daily traded VALUE = average share volume x quoted price x the run\'s '
+             'live FX. Shown for comparability -- average VOLUME alone is a share count and '
+             'is not comparable across listings. REPORT ONLY: nothing is screened, ranked or '
+             'excluded on it. Caveat: on a GDR/ADR line the vendor can report the home '
+             'line\'s volume against the depositary price, which overstates this.')
+    cell = f'<span title="{escape(title)}">{money_format(f)}/day</span>'
+    if f < THIN_LIQUIDITY_USD_PER_DAY:
+        thin = ('Thin: below ~$25k of value traded per day. This constrains YOUR ability to '
+                'build and exit a position at a sane price -- it is NOT a judgement on the '
+                'business, and nothing was excluded on it.')
+        cell += f' <span class="flag AMBER" title="{escape(thin)}">thin market</span>'
+    return cell
+
+
+def data_coverage_cell(imputed_share):
+    """How much of this name's score was MEASURED rather than imputed.
+
+    STATED AS COVERAGE, NOT AS A VERDICT.  The underlying number is
+    `imputed_weight_share` -- the fraction of the scoring WEIGHT (not the count of columns;
+    the weights span ~20x) that `normalizeAndDropNA` filled in at the pool median because the
+    metric was missing.  A name at 0.93 was ranked almost entirely on fills.
+    Rendered as the complement so the reader sees a coverage percentage falling, which is the
+    direction the eye reads as worse, and worded epistemically: the risk is that we know
+    little about this name, NOT that the name is bad.
+
+    IT DOES NOT CONTRADICT `forensicTag`, and the tooltip says so explicitly -- on the shipped
+    2026-08-13 top-100, STRT (93.2% imputed) and PET.TO (90.0%) are both tagged `clean`.  That
+    tag describes the FORENSIC checks and is orthogonal to coverage; a reader who takes
+    `clean` as "well-understood" is making an inference the tag never offered.
+    """
+    s = safe_float(imputed_share)
+    if np.isnan(s):
+        return '—'
+    measured = max(0.0, min(1.0, 1.0 - s))
+    title = ('Share of this name\'s SCORING WEIGHT that came from real measured metrics. The '
+             'remainder was imputed at the pool median by the missing-data fill, so the rank '
+             'rests on it. Independent of `forensicTag`: a name can be forensically `clean` '
+             'and still be ~90% imputed -- the tag describes the forensic checks only. '
+             'Source: MissingDataFillReport (imputed_weight_share).')
+    cell = (f'<span title="{escape(title)}">{measured*100:.1f}% measured</span>')
+    if s >= IMPUTED_SHARE_RED:
+        cell += (f' <span class="flag RED" title="{escape(title)}">'
+                 f'{s*100:.0f}% imputed — thin evidence</span>')
+    elif s >= IMPUTED_SHARE_AMBER:
+        cell += (f' <span class="flag AMBER" title="{escape(title)}">'
+                 f'{s*100:.0f}% imputed</span>')
+    return cell
+
+
+def veto_scope_banner(veto_reports):
+    """Run-level card naming what the Stage-1 veto removed BEFORE ranking; '' when unusable.
+
+    A SCOPE STATEMENT, NOT A WARNING, and styled accordingly (the neutral `.industry-counter`
+    card, not the red `.basis-warning`).  The veto is the filter working as designed; what
+    the reader needs is that the shortlist below was drawn from a pool that had already lost
+    a large fraction of its members, and from which one.  Measured on the shipped 2026-08-13
+    run: 573 of 1,404 general-pool names (40.8%) were ejected before the head(100).
+
+    NAMES ARE NOT LISTED HERE -- there can be hundreds and they are not on any page.  The
+    card points at `Stage1VetoEjections_<date>.csv`, which the run now ships (register N-5).
+
+    "EJECTED NOBODY" AND "DID NOT RUN" ARE KEPT DISTINCT, because that distinction is the
+    whole reason `stage1_veto` reports per pool at all.
+    """
+    if not isinstance(veto_reports, dict):
+        return ''
+    if not veto_reports:
+        return ('<div class="industry-counter"><span class="ic-head">Stage-1 veto</span> '
+                'DID NOT RUN this run — every pool below is UN-VETOED. This is not the same '
+                'as a veto that ran and ejected nobody.</div>')
+    gen = veto_reports.get('general') or {}
+    if not gen.get('enabled', True):
+        return ('<div class="industry-counter"><span class="ic-head">Stage-1 veto</span> '
+                'was OFF this run — no name was removed by it.</div>')
+    parts = []
+    for lab, r in sorted(veto_reports.items()):
+        r = r or {}
+        n_in, n_ej = r.get('n_in'), r.get('n_ejected')
+        if not r.get('applies', True):
+            parts.append(f'{escape(str(lab))}: not applicable')
+        elif isinstance(n_in, int) and n_in > 0:
+            parts.append(f'{escape(str(lab))}: {n_ej} of {n_in} '
+                         f'({100.0*(n_ej or 0)/n_in:.1f}%)')
+    if not parts:
+        return ''
+    return ('<div class="industry-counter">'
+            '<span class="ic-head">Stage-1 veto</span> removed these names from each pool '
+            '<em>before</em> ranking, so the shortlist below is drawn from what remained. '
+            'Ejection is a hard exclusion on persistent solvency / earnings-reality flags — '
+            'not a warning to weigh. '
+            '<div class="ic-list">' + ' · '.join(parts) + '</div>'
+            '<div class="leg-note">The ejected names themselves are in '
+            '<code>Stage1VetoEjections_&lt;date&gt;.csv</code> beside this run\'s other '
+            'artifacts.</div></div>')
+
+
 # --------------------------------------------------------------------------- #
 #  Reporting-frequency awareness for the TTM helpers  (reviewer R-N2)           #
 # --------------------------------------------------------------------------- #
@@ -1433,6 +1650,12 @@ def load_run_data(run_dir, valuation_repo, run_date=None):
     carveout_sidelists = boresults_dic.get('carveout_sidelists')
     carveout_labels = boresults_dic.get('carveout_labels')
     carveout_diagnostics = boresults_dic.get('carveout_diagnostics')
+    #  The per-pool Stage-1 veto report (register N-5).  Already in every Boresults pickle --
+    #  it was simply never read here, so the deck said nothing about the largest edit the
+    #  pipeline makes to the pool it ranks.  `None` (key absent, i.e. a pre-veto pickle) and
+    #  `{}` (the guarded block raised, so the pools are UN-VETOED) mean different things and
+    #  are both passed through unchanged for `veto_scope_banner` to distinguish.
+    stage1_veto = boresults_dic.get('stage1_veto')
 
     # Load CSVs
     aggscore_df = None
@@ -1441,6 +1664,111 @@ def load_run_data(run_dir, valuation_repo, run_date=None):
         aggscore_df = pd.read_csv(aggscore_file)
     if forensic_file and os.path.exists(forensic_file):
         forensic_df = pd.read_csv(forensic_file)
+
+    # ------------------------------------------------------------------------------ #
+    #  THE OFF-CSV FALLBACK'S INPUTS (reviewer H-1) -- all SAME-DATE, all optional.     #
+    # ------------------------------------------------------------------------------ #
+    #  SAME-DATE OR NOTHING, matching `resolve_run_artifacts`: mixing a 08-13 shortlist with
+    #  a 08-11 imputation table or a 08-11 FX quote is the cross-run mixing that function
+    #  exists to refuse, and it would be undetectable here because every value would still
+    #  look plausible.  Each of these is OPTIONAL -- a run that predates it simply gets the
+    #  em-dash it gets today.
+    def _same_date(*names):
+        for n in names:
+            f = os.path.join(str(run_dir), n.format(d=run_date))
+            if os.path.exists(f):
+                return f
+        return None
+
+    #  THE PROFILE CAPTURE MUST COME FROM **THIS RUN**, EXPLICITLY.
+    #  carveOut's cached default globs the REPO ROOT for the newest capture, which is right
+    #  for the pipeline (it runs in the repo root and writes the run it is reading) and WRONG
+    #  here: the deck is handed an arbitrary `--run-dir`, so the default would silently pair a
+    #  2026-08-13 shortlist with whatever capture happens to sit in the repo.  Caught in
+    #  testing exactly that way -- the deck rendered `price_asof 2026-08-11` on an 08-13 run,
+    #  blanked CBSM.PA (absent from the older map) and gave ORIA.PA $7,337/day against this
+    #  run's $5,915.
+    #  NO CROSS-RUN FALLBACK.  If this run has no capture, the fields stay blank: a price and
+    #  a traded value from a DIFFERENT day are worse than an em-dash, and `resolve_run_artifacts`
+    #  refuses the same substitution for the same reason.
+    #  ASKED FOR BY RUN, NOT BY FILENAME.  `carveOut.profile_map_for_run` owns the naming
+    #  convention because `test_universes.test_the_volavg_pickle_still_has_exactly_ONE_reading_seam`
+    #  pins the set of modules allowed to NAME that artifact at all -- a fourth module knowing
+    #  the filename is one step from doing its own `read_pickle` and reading raw entries,
+    #  which is how the single-seam guarantee lapses without anyone noticing.  That guard
+    #  caught THIS file when the fix was first written the other way round, so the filename
+    #  is deliberately absent from this module -- including from these comments.
+    profile_map = {}
+    try:
+        sys.path.insert(0, str(valuation_repo))
+        import carveOut as _co_pm
+        profile_map = _co_pm.profile_map_for_run(run_dir, run_date)
+    except Exception as _e:
+        log.info(f'profile map unavailable: {type(_e).__name__}: {_e}')
+    if profile_map:
+        log.info(f"    profile capture: {len(profile_map)} entries for {run_date}")
+    else:
+        log.info(f'    profile capture: NONE for {run_date} in the run dir -- price, traded '
+                 f'value and trading currency stay blank for names outside the AggScore CSV. '
+                 f"Deliberately NOT falling back to another run's capture.")
+
+    fill_by_name = {}
+    _fill_f = _same_date('MissingDataFillReport_{d}.csv')
+    if _fill_f:
+        try:
+            _fdf = pd.read_csv(_fill_f)
+            _fdf = _fdf[_fdf['section'] == 'per_name']
+            #  A source appears under exactly ONE pool (verified on 2026-08-13: 0 of 222
+            #  sources carry more than one per_name row), so a flat map is unambiguous --
+            #  which matters, because the cohort names this fallback serves are in their
+            #  cohort's rows, not in `general`.
+            fill_by_name = {r['source']: r['imputed_weight_share']
+                            for _, r in _fdf.iterrows() if isinstance(r['source'], str)}
+            log.info(f"    MissingDataFill: {os.path.basename(_fill_f)} "
+                     f"({len(fill_by_name)} names)")
+        except Exception as _e:
+            log.info(f'missing-data fill map unavailable: {type(_e).__name__}: {_e}')
+
+    clone_map = {}
+    _cont_f = _same_date('VendorContaminationFlags_{d}.csv',
+                         os.path.join('output', 'VendorContaminationFlags_{d}.csv'))
+    if _cont_f:
+        try:
+            sys.path.insert(0, str(valuation_repo))
+            import vendor_contamination as _vc
+            clone_map = _vc.clone_counterparts(path=_cont_f)
+            log.info(f"    Contamination: {os.path.basename(_cont_f)} "
+                     f"({len(clone_map)} paired sources)")
+        except Exception as _e:
+            log.info(f'clone map unavailable: {type(_e).__name__}: {_e}')
+
+    #  THE RUN'S OWN FX, NOT THE SANITY ANCHORS.  The deck never calls
+    #  `fx_rates.install_for_run`, so `carveOut`'s module FX state is 'unset' here and an
+    #  unqualified conversion would silently use the hardcoded anchors -- which are a UNITS
+    #  check, not a rate source, and were measured ~7% off live (SHEL.L: $391.9M on anchors
+    #  vs $416.6M live).  Worse, the two produce IDENTICAL basis strings.  So: prefer the
+    #  run's dated table; if it is absent, still convert (a rough number beats no number for
+    #  a display column) but LABEL every cell `fx=anchors` so the reader can see it.
+    fx_table, fx_label = None, None
+    _fx_f = _same_date(os.path.join('output', 'FxRates_{d}.csv'), 'FxRates_{d}.csv')
+    if _fx_f:
+        try:
+            _fx = pd.read_csv(_fx_f)
+            fx_table = {r.currency: float(r.rate) for r in _fx.itertuples()
+                        if getattr(r, 'usable', True) and str(r.currency).strip()}
+            log.info(f"    FxRates: {os.path.basename(_fx_f)} ({len(fx_table)} usable)")
+        except Exception as _e:
+            log.info(f'run FX table unavailable: {type(_e).__name__}: {_e}')
+    if not fx_table:
+        try:
+            sys.path.insert(0, str(valuation_repo))
+            import carveOut as _co_fx
+            fx_table = dict(_co_fx.FX_TO_USD)
+            fx_label = 'fx=anchors'
+            log.info('    FxRates: NOT FOUND for this run date -- traded value is converted '
+                     'with the sanity ANCHORS and every cell is labelled `fx=anchors`.')
+        except Exception:
+            fx_table = None
 
     # Load industry dict
     industrydic_file = find_latest_pickle(str(valuation_repo), "industrydic_*.pickle")
@@ -1479,6 +1807,13 @@ def load_run_data(run_dir, valuation_repo, run_date=None):
         'carveout_sidelists': carveout_sidelists,
         'carveout_labels': carveout_labels,
         'carveout_diagnostics': carveout_diagnostics,
+        'stage1_veto': stage1_veto,
+        #  Inputs to the off-CSV fallback (reviewer H-1); each may be empty/None.
+        'fill_by_name': fill_by_name,
+        'clone_map': clone_map,
+        'profile_map': profile_map,
+        'fx_table': fx_table,
+        'fx_label': fx_label,
         'aggscore_df': aggscore_df,
         'forensic_df': forensic_df,
         'get_industry': get_industry,
@@ -1644,7 +1979,91 @@ class PresentationBuilder:
         # gated + fin-suppressed. Separate from the 16-playbook machinery above.
         self.ext_per_src, self.ext_stats, self.ext_membership = build_extended_pools(data)
         self._eval_cache = {}   # (ticker,cohort) -> per-page verdict/flag evaluation
+        #  OFF-CSV FALLBACK for the reporting-expansion fields (reviewer H-1).  Resolved
+        #  lazily per ticker, because the AggScore CSV covers only the general top-100 while
+        #  the deck renders cohort, side-list and market-cap-band names too.  See
+        #  `offline_field`.
+        self._offline_cache = {}
         self.html_parts = []
+
+    #  ------------------------------------------------------------------------------- #
+    #  THE DECK RENDERS MORE NAMES THAN THE AggScore CSV CONTAINS  (reviewer H-1)        #
+    #  ------------------------------------------------------------------------------- #
+    #  THE DEFECT.  `agg_val` looks a ticker up in `AggScoreTop100`, which is the general
+    #  top-100.  The deck renders the general top-20 PLUS the top-5 of each of five cohorts --
+    #  56 pages on the 2026-08-13 run, of which only 31 are in that CSV.  For the other 25,
+    #  `Price`, `Traded/day` and `Score coverage` all rendered an em-dash.
+    #
+    #  AND IT FAILED IN THE ONE DIRECTION THAT MIS-SUGGESTS.  Four of the 25 sit BELOW the
+    #  $25k/day thin line -- ESOZ.L $1,692, CBSM.PA $2,361, ORIA.PA $5,915, GDC.TO $6,136 --
+    #  and every one showed a blank instead of the caution.  The deck fired the thin marker
+    #  twice and swallowed it four times, on cohort pages whose median traded value ($796k) is
+    #  ~19x thinner than the top-100's ($14.8M).  A blank where a caution belongs reads as "no
+    #  concern", which is precisely the silence-as-approval failure the legend was written to
+    #  prevent -- so this was the one place the reporting expansion made the deck WORSE.
+    #
+    #  Secondarily it made N-4 inert on this run: the maximum `imputed_weight_share` among the
+    #  31 in-CSV names is 0.1155, under the 0.20 amber line, and all three >=90% names (STRT,
+    #  ENS, PET.TO) are outside the top-20 and so have no page.  The marker never rendered.
+    #
+    #  NOTHING NEW IS FETCHED OR GUESSED.  Every input already ships with the run and resolves
+    #  for 25 of 25: `volavgdic_*.pickle` (price, trading currency, volume),
+    #  `MissingDataFillReport_<date>.csv` (per-name imputation for the cohort pools as well as
+    #  general) and `FxRates_<date>.csv`.  The CSV still WINS wherever it has the name, so no
+    #  in-CSV cell changes value.
+
+    def offline_field(self, ticker, column):
+        """One reporting-expansion field for `ticker`, from the run's own saved artifacts.
+
+        RESOLVED LAZILY, PER TICKER, and that is a correctness choice rather than a
+        performance one.  The obvious implementation -- build the table once over
+        `_page_tickers()` -- is WRONG, and was: `_page_tickers` is the YAHOO FETCH set
+        (general top-20 + top-5 per cohort = 45 names), while the banded layout renders the
+        general top-20 PLUS Mid/Small/Micro top-5 each PLUS the cohorts = 56.  Eleven rendered
+        pages were therefore absent from the table and blanked for a second, entirely
+        different reason than the one this fallback was written to fix.  Keying off the
+        ticker being rendered cannot drift from the layout, so the bug class is gone rather
+        than fixed.
+
+        THE PRICE HERE IS A DIFFERENT SNAPSHOT from the AggScore CSV's, which is why the CSV
+        always wins and why this carries its own `price_asof`: the CSV price is the
+        deliverables-stage profile call (03:36 on 2026-08-13), this is the map-building
+        capture (00:17).  Same vendor endpoint, same run -- fine for a display price, NOT fine
+        to leave unlabelled, so the page prints the capture date beside a fallback price.
+        """
+        cache = self._offline_cache
+        if ticker not in cache:
+            cache[ticker] = self._resolve_offline(ticker)
+        return cache[ticker].get(column)
+
+    def _resolve_offline(self, ticker):
+        try:
+            import carveOut as _co
+            #  THIS RUN'S map, passed explicitly -- never carveOut's repo-root glob; see the
+            #  `profile_map` block in `load_run_data`.  Empty map -> every field None -> the
+            #  page renders the em-dash it renders today.
+            pmap = self.data.get('profile_map') or {}
+            if ticker not in pmap:
+                return {'imputed_weight_share':
+                        (self.data.get('fill_by_name') or {}).get(ticker)}
+            e = pmap.get(ticker) or {}
+            dv = _co.dollar_volume_frame([ticker], profile_map=pmap,
+                                         fx=self.data.get('fx_table'),
+                                         clone_map=self.data.get('clone_map'),
+                                         fx_label=self.data.get('fx_label'))
+            return {
+                'price': e.get('price'),
+                'price_asof': e.get('asof'),
+                'priceCurrency': _co.trading_currency(ticker, profile_map=pmap),
+                'dollarVolume_usd': dv['dollarVolume_usd'].iloc[0],
+                'dollarVolume_basis': dv['dollarVolume_basis'].iloc[0],
+                'imputed_weight_share': (self.data.get('fill_by_name') or {}).get(ticker),
+            }
+        except Exception as _e:
+            #  A fallback that cannot be resolved costs the off-CSV pages their new fields --
+            #  i.e. exactly the pre-fix behaviour -- and must never cost the deck.
+            log.info(f'offline fields unavailable for {ticker}: {type(_e).__name__}: {_e}')
+            return {}
 
     def ext_val(self, ticker, metric):
         """Raw extended-metric value for a ticker (marker for its own bar)."""
@@ -2064,6 +2483,42 @@ class PresentationBuilder:
 
         return None
 
+    def agg_val(self, ticker, column, default=None):
+        """One reporting-expansion field for `ticker`: the AggScore CSV if it has the name,
+        otherwise the run's own saved artifacts, otherwise `default`.
+
+        THE CSV WINS WHEREVER IT HAS THE NAME, so adding the fallback changed no in-CSV cell.
+        The fallback exists because the deck renders 56 pages against a 100-name CSV that
+        covers only the general pool -- see `_build_offline_fields` for the measured cost of
+        not having it.
+
+        THE ABSENT-COLUMN CASE IS STILL NORMAL, not an error: `priceCurrency`,
+        `dollarVolume_usd` and `imputed_weight_share` first exist from the 2026-08-13
+        reporting expansion, and the deck must still render an older run.  Returning
+        `default` (None -> "—" at every call site) keeps absence reading as absence; the one
+        thing that must never happen is a 0 standing in for "we did not record this".
+        """
+        return self._field(ticker, column, default)[0]
+
+    def _field(self, ticker, column, default=None):
+        """`(value, origin)` where origin is 'aggscore' | 'offline' | None.
+
+        The origin is not decoration: a fallback PRICE is a different capture from the CSV's
+        and the page has to say so, which it cannot do if the two are indistinguishable.
+        """
+        df = self.data.get('aggscore_df')
+        if df is not None and not getattr(df, 'empty', True) and column in df.columns:
+            r = df[df['source'] == ticker]
+            if not r.empty:
+                v = r.iloc[0].get(column, None)
+                if v is not None and not (isinstance(v, float) and np.isnan(v)):
+                    return v, 'aggscore'
+        if getattr(self, '_offline_cache', None) is not None:
+            v = self.offline_field(ticker, column)
+            if v is not None and not (isinstance(v, float) and np.isnan(v)):
+                return v, 'offline'
+        return default, None
+
     def get_cdx_for_ticker(self, ticker):
         """Get the cdx_df rows for a ticker, sorted newest-first."""
         cdx_df = self.data.get('cdx_df')
@@ -2095,13 +2550,47 @@ class PresentationBuilder:
             return ""
 
         agg_score = row.get('AggScore', '—')
-        price = row.get('price')
-        price_str = f"${price:.2f}" if price and not np.isnan(safe_float(price)) else "—"
 
-        # Market cap from latest cdx
+        # PRICE -- SOURCED FROM THE AggScore CSV AND LABELLED WITH ITS CURRENCY.
+        # It used to read `row.get('price')` off postRank, WHICH HAS NO SUCH COLUMN, so this
+        # field rendered "—" on every name of every run; the `f"${price:.2f}"` it fell through
+        # to was a latent currency defect (register N-3) waiting for the column to appear.
+        # Both halves now come from the same CSV row, so the number and its label cannot
+        # disagree. `priceCurrency` is absent on pre-2026-08-13 runs -> "(currency unknown)",
+        # never a guessed `$`.
+        _px, _px_origin = self._field(ticker, 'price')
+        price_str = price_with_currency(_px, self.agg_val(ticker, 'priceCurrency'))
+        if _px_origin == 'offline':
+            #  A FALLBACK PRICE IS A DIFFERENT CAPTURE and says so (reviewer H-1): the CSV's
+            #  price is the deliverables-stage profile call, this one is the earlier
+            #  map-building capture of the same endpoint on the same day.  Small enough not to
+            #  matter to a reader, big enough that an unlabelled mix would be exactly the kind
+            #  of silent two-basis column this whole change exists to remove.
+            _asof = self.offline_field(ticker, 'price_asof')
+            price_str += (f' <span class="pctile" title="This name is outside the general '
+                          f'top-100, so its price comes from the run\'s profile capture '
+                          f'rather than the AggScore CSV. Same vendor field, same run, '
+                          f'earlier in the run.">(capture {escape(str(_asof))})</span>'
+                          if _asof else '')
+
+        # MARKET CAP -- FROM `marketCap_usd`, NOT `marketCap` (register N-3, same class).
+        # `cdx_df['marketCap']` is denominated in each company's own reportedCurrency, so
+        # `f"${mktcap/1e9:.2f}B"` printed 000660.KS as "$1890724.65B" (KRW 1.89e15 wearing a
+        # dollar sign) and SKHY as "$568935.00B". `marketCap_usd` is the pipeline's own
+        # converted column -- the SAME one the market-cap bands partition on -- so the deck,
+        # the banding and the grading now agree instead of the deck being alone in raw units.
+        # NO FALLBACK TO THE RAW FIELD: a wrong number wearing a right label is the failure
+        # mode here, so an unconverted name reads "—".
         cdx = self.get_cdx_for_ticker(ticker)
-        mktcap = latest_row_value(cdx, 'marketCap')
-        mktcap_str = f"${mktcap/1e9:.2f}B" if mktcap and not np.isnan(mktcap) else "—"
+        mktcap_usd = latest_row_value(cdx, 'marketCap_usd')
+        mktcap_str = (f'<span title="Converted to USD from the company&#39;s reportedCurrency '
+                      f'with the run&#39;s FX (carveOut.marketcap_usd_series) — the same '
+                      f'conversion the market-cap bands use.">{money_format(mktcap_usd)}</span>'
+                      if not np.isnan(safe_float(mktcap_usd)) else "—")
+
+        # TRADED VALUE PER DAY (CEO 2026-08-13). Neutral number; one-sided thin-market
+        # caution only -- see the valence table beside `dollar_volume_cell`.
+        dollarvol_str = dollar_volume_cell(self.agg_val(ticker, 'dollarVolume_usd'))
 
         rating = "—"
         if aggscore_df is not None:
@@ -2131,6 +2620,7 @@ class PresentationBuilder:
                 <span><strong>Sector:</strong> {sector}</span>
                 <span><strong>Price:</strong> {price_str}</span>
                 <span><strong>Market Cap:</strong> {mktcap_str}</span>
+                <span><strong>Traded/day:</strong> {dollarvol_str}</span>
                 <span title="{escape(freq_title)}"><strong>Reporting:</strong> {escape(freq_label)}{freq_tag}</span>
             </div>
             <div class="meta-row">
@@ -2164,12 +2654,21 @@ class PresentationBuilder:
             if not ag_row.empty:
                 forensic_tag = ag_row.iloc[0].get('forensicTag', '—')
 
+        # HOW MUCH OF THIS SCORE IS MEASURED (register N-4, CEO 2026-08-13).
+        # Placed IMMEDIATELY BESIDE `Forensic`, deliberately and not anywhere else: the exact
+        # misread this closes is a reader seeing `forensicTag = clean` on a name whose score
+        # is 93% imputed and concluding the name is well-understood. The two facts have to be
+        # adjacent for the reader to see they are different facts. NOT styled like the
+        # forensic tag (which is red-on-white by class) -- see `data_coverage_cell`.
+        coverage = data_coverage_cell(self.agg_val(ticker, 'imputed_weight_share'))
+
         html = f"""
         <div class="section-b banner">
             <div class="score-banner">
                 <span class="score-item"><strong>AggScore:</strong> {ratio_format(agg_score, 1)} {orient_chip('AggScore')}</span>
                 <span class="score-item"><strong>MoatScore:</strong> {ratio_format(moat_score, 1)} {orient_chip('moatScore')}</span>
                 <span class="score-item forensic"><strong>Forensic:</strong> {forensic_tag}</span>
+                <span class="score-item"><strong>Score coverage:</strong> {coverage}</span>
             </div>
             <div class="flags">
                 [computed flags will appear here]
@@ -2763,6 +3262,10 @@ class PresentationBuilder:
                    + industry_counter_banner(postrank_df, general_top20,
                                              self.data.get('industrydic'),
                                              self.data.get('cdx_df'))
+                   #  WHAT WAS REMOVED BEFORE THIS SHORTLIST WAS DRAWN (register N-5).
+                   #  Placed with the industry counter, not with the warnings: both are
+                   #  composition facts about the pool the reader is looking at.
+                   + veto_scope_banner(self.data.get('stage1_veto'))
                    + self._icon_legend())
         if banded:
             # PRIMARY: banded partition. Each general-pool name renders once, under its
@@ -2888,6 +3391,20 @@ class PresentationBuilder:
             '<div class="leg-note">The 🚩 is independent of the verdict icon — a 🟢🚩 or ⚪🚩 '
             'is valid (a good/no-rule number can still be flagged). Hover any icon for the rule '
             'and, for a flag, the mechanism + offending metric + values + tier + rule id.</div>'
+            #  THE VALENCE OF THE FIELDS ADDED 2026-08-13, STATED ON THE PAGE.  A marker whose
+            #  direction the reader has to infer is a marker that can be inferred backwards,
+            #  which is the exact failure the CEO named.  Two of these three are deliberately
+            #  ONE-SIDED and the legend says so, so their SILENCE is not read as approval.
+            '<div class="leg-note"><strong>Price / Market Cap / Traded per day / Score '
+            'coverage —</strong> <em>Price</em> is quoted in the listing’s OWN currency and '
+            'the code is printed beside it (no <code>$</code> is assumed). <em>Market Cap</em> '
+            'is converted to USD. <em>Traded/day</em> is average traded VALUE, shown NEUTRALLY: '
+            'a high figure earns no positive marker — liquidity is not merit, and this filter '
+            'deliberately looks for neglected names — but an amber <span class="flag AMBER">'
+            'thin market</span> marks a name you may not be able to size or exit. '
+            '<em>Score coverage</em> is how much of the rank rests on MEASURED metrics rather '
+            'than imputed fills; low coverage means we know little about the name, and is '
+            'independent of the forensic tag.</div>'
             '</div>')
 
     def _build_nav_banded(self, band_tickers, cohort_tickers):

@@ -44,6 +44,68 @@ import reporting_period as rp
 NA1_EXCHANGES = ["NYSE", "NASDAQ", "TSX"]
 DROP_METRICS = ["DcfToPrice"]  # not reconstructable PIT offline
 
+#  Escape hatch for the coverage guard below.  Comma-separated metric names, e.g.
+#  ALLOW_OFFLINE_ALL_NAN_METRICS=interestCoverage.  It exists for the one legitimate
+#  case -- a pool so thin or so specialised that a metric is genuinely uncomputable for
+#  EVERY member (a handful of debt-free names makes `interestCoverage` all-NaN by its own
+#  refusal rule, not by a bug).  Same posture as ALLOW_MERGE_CONTENT_MISMATCH: the run
+#  proceeds only on a DECLARED, visible override, never silently.
+_ALLOW_ALL_NAN_ENV = "ALLOW_OFFLINE_ALL_NAN_METRICS"
+
+
+def _assert_offline_metric_coverage(out, assigned):
+    """REFUSE a metric frame that silently leaves a live-path column empty.
+
+    THIS IS THE CHECK WHOSE ABSENCE LET `interestCoverage` SIT UNDETECTED (N-8).  The
+    rule was already written, three lines above the loop -- "A column the live path fills
+    and this one leaves all-NaN is a divergence whether or not it currently scores" -- and
+    nothing enforced it, so `interestCoverage` (w = 0.0588, 5.9% of the general vector,
+    12% NaN live) and `navPerShareGrowth` were 100% NaN in EVERY offline arm ever run.
+    Weight is deliberately NOT consulted: a 0-weight column that the live path fills is
+    still a divergence, and "it scores 0 today" is exactly the reasoning that hid this.
+
+    Two failure modes, because they are distinguishable and only one is data-dependent:
+
+      (1) NEVER ASSIGNED -- the loop has no `setv` for a column the weight vector
+          declares.  Structural, deterministic, independent of the data: this is what
+          fires the moment a metric is added to the live scorer (hence to getPostDict,
+          hence to `cols`) and not to this loop.  It cannot false-positive.
+
+      (2) ASSIGNED BUT 100% NaN across the pool -- computed, yet every name refused.  On
+          a real ~100-name pool that is a broken input column, not a coincidence.  It CAN
+          false-positive on a thin/specialised pool, which is what the env override is for.
+    """
+    if out.empty:
+        return
+    expected = [c for c in out.columns if c != "source" and c not in DROP_METRICS]
+    allowed = {m.strip() for m in os.environ.get(_ALLOW_ALL_NAN_ENV, "").split(",")
+               if m.strip()}
+
+    never = [c for c in expected if c not in assigned and c not in allowed]
+    if never:
+        raise RuntimeError(
+            "stage2_pit: the offline Stage-2 metric loop NEVER ASSIGNS %d column(s) that "
+            "the live scorer fills: %r.  They are declared in createDicts.getPostDict (so "
+            "they carry a weight and are summed into AggScore) and are NOT listed in "
+            "stage2_pit.DROP_METRICS, so every offline reproduction would score them as "
+            "100%% missing -- silently dead weight in the vector and +1 to every name's "
+            "n_missing.  Either compute the metric here in lockstep with its live call "
+            "site in postBoRank._compute_ticker_metrics, or add it to DROP_METRICS with "
+            "the reason it cannot be reconstructed offline." % (len(never), never))
+
+    all_nan = [c for c in expected
+               if c in assigned and c not in allowed
+               and pd.to_numeric(out[c], errors="coerce").isna().all()]
+    if all_nan:
+        raise RuntimeError(
+            "stage2_pit: %d Stage-2 column(s) came out 100%% NaN over the whole %d-name "
+            "pool: %r.  They ARE computed here, so this is an input/data failure rather "
+            "than a missing call -- the metric contributes nothing to AggScore and adds 1 "
+            "to every name's n_missing, which is the same silent contamination as a "
+            "missing call site.  Fix the input, add the metric to DROP_METRICS, or -- if "
+            "this pool genuinely cannot support it -- re-run with %s=%s."
+            % (len(all_nan), len(out), all_nan, _ALLOW_ALL_NAN_ENV, ",".join(all_nan)))
+
 
 def na1_symbols(tickers_df):
     return set(tickers_df.loc[
@@ -81,6 +143,10 @@ def _stage2_metric_loop_offline(bstop, cdxtop, nq=16):
     # charter PRIMARY >=60% beat-rate criterion.
     freq_map = rp.frequency_by_source(cdxtop)
 
+    #  Every column this loop actually writes.  Read by _assert_offline_metric_coverage
+    #  to tell "no call site" (structural) from "computed but all refused" (data).
+    assigned = set()
+
     for ticker in bstop["source"]:
         tempcdx = cdxtop.loc[cdxtop["source"] == ticker]
         if tempcdx.empty:
@@ -91,6 +157,7 @@ def _stage2_metric_loop_offline(bstop, cdxtop, nq=16):
         tempmcapQuants = tempcdx.mcapQuants.iloc[0]
 
         def setv(col, val):
+            assigned.add(col)
             out.loc[out["source"] == ticker, col] = val
 
         # ---- postBmRankingDict metrics ----
@@ -126,6 +193,16 @@ def _stage2_metric_loop_offline(bstop, cdxtop, nq=16):
         # currently scores.
         setv("shareCountChange", sm.share_count_change(tempcdx, rpy=_rpy))
         setv("longTermDebtChange", sm.long_term_debt_change(tempcdx, rpy=_rpy))
+        # LOCKSTEP with postBoRank._compute_ticker_metrics (N-8, 2026-08-13).  Both
+        # were missing here from the day they were added live (2026-08-06), so they were
+        # 100% NaN offline while live runs them at 12% / 3% NaN -- and `interestCoverage`
+        # carries w = 0.0588, i.e. 5.9% of the general vector, so EVERY offline arm built
+        # on this loop scored with that share of the weight vector dead and n_missing
+        # inflated by 2 for every name.  Both legs of each are in `cdx_df`
+        # (operatingIncome / interestExpense / bookValuePerShare), so neither needs an
+        # approximation: same shared function, same nq, same rpy as the live call.
+        setv("interestCoverage", sm.interest_coverage(tempcdx, nq, rpy=_rpy))
+        setv("navPerShareGrowth", sm.nav_per_share_growth(tempcdx, nq, rpy=_rpy))
         # CycleHeat: the SAME shared function the live scorer uses.  Its canonical
         # EPS prep (stage2_metrics.prepare_eps_series) collapses duplicate-dated
         # (restated) quarters to the last-ingested figure, so the live and offline
@@ -136,6 +213,8 @@ def _stage2_metric_loop_offline(bstop, cdxtop, nq=16):
         # 2x-calendar-span divergence for semi-annual filers in the offline path.
         setv("CycleHeat", sm.cycleheat(tempcdx, rpy=_rpy))
 
+    #  Enforce the rule stated in the comment block above rather than trusting it.
+    _assert_offline_metric_coverage(out, assigned)
     return out
 
 

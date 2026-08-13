@@ -1085,3 +1085,86 @@ def test_NO_comment_in_the_scoring_files_cites_a_LINE_NUMBER():
         if hits:
             offenders[base] = hits
     assert not offenders, ("line-number citations (use a SYMBOL name instead): %s" % offenders)
+
+
+# --------------------------------------------------------------------------- #
+#  5  OFFLINE/LIVE METRIC COVERAGE (N-8, 2026-08-13)                           #
+#                                                                              #
+#  The fifth structural cause, and the purest instance of the family: the rule #
+#  WAS WRITTEN DOWN, in stage2_pit's own metric loop -- "A column the live path #
+#  fills and this one leaves all-NaN is a divergence whether or not it          #
+#  currently scores" -- and nothing enforced it.  `interestCoverage` (w=0.0588, #
+#  5.9% of the general vector) and `navPerShareGrowth` shipped live on          #
+#  2026-08-06 with no offline call site, so every offline backtest / IC arm ran #
+#  with that share of the weight vector dead and n_missing inflated by 2 for    #
+#  every name.  A comment is not a guard.                                       #
+# --------------------------------------------------------------------------- #
+def _psm_stub(cols, all_nan=(), n=8):
+    df = pd.DataFrame({"source": ["S%d" % i for i in range(n)]})
+    for c in cols:
+        df[c] = np.nan if c in all_nan else np.arange(n, dtype=float)
+    return df
+
+
+def test_EVERY_live_stage2_metric_HAS_an_offline_call_site():
+    """The instance that set the class.  The offline loop's column set comes from
+    getPostDict, so a metric added to the live scorer appears here automatically -- and
+    must be COMPUTED here too, or explicitly declared in DROP_METRICS."""
+    import inspect
+    import stage2_pit as s2
+    postBm, postNew = cdic.getPostDict()
+    src = inspect.getsource(s2._stage2_metric_loop_offline)
+    missing = [m for m in list(postBm) + list(postNew)
+               if m not in s2.DROP_METRICS
+               and ('setv("%s"' % m) not in src
+               and ("setv('%s'" % m) not in src
+               and ("for key1 in postBm" not in src or m not in postBm)]
+    assert not missing, (
+        "Stage-2 metric(s) the live scorer fills have NO offline call site and are not in "
+        "DROP_METRICS: %r" % (missing,))
+
+
+def test_the_coverage_guard_FIRES_on_a_metric_with_NO_call_site():
+    """Re-break #1: the exact pre-fix state -- the column exists in the schema and the
+    loop never assigns it.  Structural, so it fires on ANY data."""
+    import stage2_pit as s2
+    cols = ["interestCoverage", "Altman-Z"]
+    out = _psm_stub(cols, all_nan=["interestCoverage"])
+    with pytest.raises(RuntimeError, match="NEVER ASSIGNS"):
+        s2._assert_offline_metric_coverage(out, assigned={"Altman-Z"})
+
+
+def test_the_coverage_guard_FIRES_on_a_computed_but_ALL_NaN_metric():
+    """Re-break #2: the call site exists but every row was refused.  Same contamination
+    (dead weight + inflated n_missing), different cause, so it is reported differently."""
+    import stage2_pit as s2
+    cols = ["interestCoverage", "Altman-Z"]
+    out = _psm_stub(cols, all_nan=["interestCoverage"])
+    with pytest.raises(RuntimeError, match="100% NaN"):
+        s2._assert_offline_metric_coverage(out, assigned=set(cols))
+
+
+def test_the_coverage_guard_is_SILENT_on_a_healthy_frame_and_on_DROP_METRICS():
+    """No false alarm: a declared-dropped column may be all-NaN (DcfToPrice has no PIT
+    reconstruction), and partial NaN is normal -- 12% for interestCoverage live."""
+    import stage2_pit as s2
+    cols = ["interestCoverage", "DcfToPrice"]
+    out = _psm_stub(cols, all_nan=["DcfToPrice"])
+    out.loc[0, "interestCoverage"] = np.nan          # partial NaN is fine
+    assert "DcfToPrice" in s2.DROP_METRICS
+    s2._assert_offline_metric_coverage(out, assigned={"interestCoverage"})
+    s2._assert_offline_metric_coverage(pd.DataFrame(), assigned=set())   # empty pool
+
+
+def test_the_all_NaN_refusal_is_OVERRIDABLE_only_by_a_DECLARED_env_list():
+    """A thin/specialised pool can make a metric genuinely uncomputable for every member.
+    That proceeds only on a visible, named override -- never silently."""
+    import stage2_pit as s2
+    out = _psm_stub(["interestCoverage"], all_nan=["interestCoverage"])
+    os.environ[s2._ALLOW_ALL_NAN_ENV] = "interestCoverage"
+    try:
+        s2._assert_offline_metric_coverage(out, assigned={"interestCoverage"})
+    finally:
+        del os.environ[s2._ALLOW_ALL_NAN_ENV]
+    with pytest.raises(RuntimeError):
+        s2._assert_offline_metric_coverage(out, assigned={"interestCoverage"})

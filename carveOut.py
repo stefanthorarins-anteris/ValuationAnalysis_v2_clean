@@ -904,16 +904,25 @@ def _load_volavg_map(volavg_pickle=None):
         version wrote. Returned with asof None.
     Both are normalised to (value, asof) here so no consumer has to branch.
 
-    EVERY OTHER KEY IN A DATED ENTRY IS IGNORED, ON PURPOSE.  findAllSectors folds the
-    capture-only profile fields into the SAME entry so they share the one `asof` --
-    `price` and `currency` from 2026-08-08, and `isActivelyTrading`, `exchange`,
-    `exchangeShortName`, `country`, `beta` from 2026-08-09.  None of them is wired, and
-    this loader is the single seam through which the pickle reaches every consumer, so
-    two `.get()`s here are what make "capture changes nothing" a PROPERTY rather than an
-    intention.  Note the corollary for anyone who later wires one of those fields: this
-    map merges NEVER-OVERWRITE at the ENTRY level, so an entry carried forward from an
-    older run has an older KEY SET as well as an older `asof` -- a missing key means "not
-    captured at that asof", never False/0.
+    EVERY OTHER KEY IN A DATED ENTRY IS IGNORED BY **THIS** LOADER, ON PURPOSE.
+    findAllSectors folds the capture-only profile fields into the SAME entry so they share the
+    one `asof` -- `price` and `currency` from 2026-08-08, and `isActivelyTrading`, `exchange`,
+    `exchangeShortName`, `country`, `beta` from 2026-08-09.  The two `.get()`s here are what
+    keep "a new captured field cannot move a dedup decision" a PROPERTY rather than an
+    intention, and that property is INTACT: every consumer of THIS function still sees a
+    2-tuple.
+
+    THE BLANKET CLAIM "NONE OF THEM IS WIRED" WAS TRUE UNTIL 2026-08-13 AND IS NOT ANY MORE.
+    `price` and `currency` are now READ -- by `_load_volavg_profile_map`, a SEPARATE accessor
+    over the same file, for the traded-value report column (`dollar_volume_frame`).  Nothing
+    reaches this loader's callers from there; the two views are deliberately distinct so the
+    dedup path keeps its guarantee.  The remaining five fields are still unwired.  This
+    paragraph is updated rather than left standing because a docstring that asserts a
+    property the code no longer has is the defect, not the documentation of one.
+
+    THE COROLLARY FOR ANYONE WIRING ANOTHER FIELD: this map merges NEVER-OVERWRITE at the
+    ENTRY level, so an entry carried forward from an older run has an older KEY SET as well as
+    an older `asof` -- a missing key means "not captured at that asof", never False/0.
 
     WHY DATING WAS REQUIRED BEFORE WIRING.  Unlike a sector, an industry or an ISIN,
     AVERAGE VOLUME IS TIME-VARYING, and findAllSectors merges MERGE-NEVER-OVERWRITE --
@@ -1835,6 +1844,228 @@ def volavg_report_frame(symbols, volavg_map=None):
         vals.append(f)
         dates.append(asof)
     return pd.DataFrame({'volAvg_report': vals, 'volAvg_asof': dates})
+
+
+# --------------------------------------------------------------------------------- #
+#  TRADED VALUE PER DAY (CEO, 2026-08-13) -- the SECOND consumer of the volavgdic     #
+#  entry, and the FIRST one that needs the profile fields the loader above drops.     #
+# --------------------------------------------------------------------------------- #
+#  `volAvg` is a SHARE count, so it is not comparable across listings: 45.7M shares of a
+#  $154 line and 45.7M shares of a KRW 1.5M line are four orders of magnitude apart in
+#  money.  The CEO's own named example is traded VALUE, which is the comparable quantity:
+#
+#      dollarVolume_usd = volAvg  x  profile price  x  FX(profile currency -> USD)
+#
+#  ALL THREE FACTORS COME FROM THE SAME volavgdic ENTRY, which is what makes the product
+#  meaningful: findAllSectors folds `price` and `currency` into the entry that carries
+#  `volAvg` and they share the ONE `asof`, so this is one instant's reading rather than
+#  three snapshots multiplied together.  The AggScore CSV's own `price` column is a
+#  SEPARATE, LATER profile call (measured on the 2026-08-13 run: 000660.KS is 1,504,000 in
+#  the 00:17 capture and 1,616,000 in the 03:36 CSV), so it is deliberately NOT used here.
+#
+#  ############# WHICH CURRENCY CONVERTS THIS ONE -- AND WHY IT IS THE OTHER ONE #######
+#  ## Read the two-currency block at the top of this file first.  `marketcap_usd_series` ##
+#  ## converts with `reportedCurrency` and MUST NOT be changed to the profile currency.  ##
+#  ## THIS function converts with the PROFILE (trading) currency, and that is not an     ##
+#  ## inconsistency -- it is the same rule applied to a different quantity.  `volAvg` and ##
+#  ## the profile `price` are properties of a LISTING LINE and are denominated in the    ##
+#  ## line's TRADING currency (SHEL.L quotes in pence and reports USD; its traded value  ##
+#  ## is a pence quantity, not a USD-statement quantity).  Converting a trading quantity  ##
+#  ## with the STATEMENT currency would be the same unit mismatch, in the mirror.        ##
+#  ##                                                                                    ##
+#  ## THIS IS THE FIRST LIVE USE OF THE PENCE MINOR-UNIT PATH (the 2026-08-09 note at the ##
+#  ## top of this file predicted exactly this): zero sources REPORT in GBp, so `GBp`/`GBX` ##
+#  ## have never been looked up in production before.  VERIFIED on the 2026-08-13 run --  ##
+#  ## SHEL.L 9,288,640 sh x 3322.5 GBp x 0.0134987 = $416.6M/day, which is the right      ##
+#  ## order for Shell's London line; the GBP (not GBp) rate would have given $41.6bn.     ##
+#  #####################################################################################
+#
+#  REPORT, NEVER SCREEN -- the same standing ruling as `volavg_report_frame` (register
+#  J-1, CEO 2026-08-06).  Nothing here filters, sorts or scores; it is appended to
+#  already-selected, already-ordered frames.  A liquidity FLOOR remains a decision nobody
+#  has taken, and this function must not become one by the back door.
+#
+#  ABSENCE IS NOT ZERO, and the KIND of absence is named, exactly as `volAvg_asof` does
+#  it -- a name we could not price and a name that trades $0 must not look alike.
+DOLLARVOL_STATUS_NO_PRICE = 'no-price'                 # entry has no usable profile price
+DOLLARVOL_STATUS_NO_CURRENCY = 'no-currency'           # entry predates the currency capture
+DOLLARVOL_STATUS_FX_UNRESOLVED = 'fx-unresolved:%s'    # currency known, rate refused/absent
+
+
+def _load_volavg_profile_map(volavg_pickle=None):
+    """{sym: {'volAvg', 'asof', 'price', 'currency'}} from the same pickle `_load_volavg_map`
+    reads -- a SECOND, WIDER view of the same file.
+
+    DELIBERATELY NOT A WIDENING OF `_load_volavg_map`.  That loader documents itself as the
+    single seam that makes "capture changes nothing" a PROPERTY: it drops every profile field
+    so the dedup survivor tie-breaks cannot start reading one by accident.  Adding keys to it
+    would retire that guarantee for every existing consumer in order to serve one new report
+    column.  A separate accessor keeps the guarantee and makes the new dependency explicit.
+
+    The UNDATED (pre-2026-08-06) entry shape carries no profile fields at all, so it yields
+    price/currency None -> the reading is refused, which is the correct answer for a pickle
+    that predates the capture.
+    """
+    import glob
+    path = volavg_pickle
+    if not path:
+        #  Globs the REPO ROOT first, then the CWD -- the same order and the same reason as
+        #  `_load_volavg_map`.
+        cands = sorted(glob.glob(os.path.join(_MODULE_DIR, 'volavgdic_fmp_*.pickle')))
+        if not cands:
+            cands = sorted(glob.glob('volavgdic_fmp_*.pickle'))
+        path = cands[-1] if cands else None
+    else:
+        path = _resolve_repo_data(path)
+    if not path or not os.path.exists(path):
+        return {}
+    d = pd.read_pickle(path)
+    if not isinstance(d, dict):
+        return {}
+    out = {}
+    for sym, v in d.items():
+        if isinstance(v, dict):
+            out[sym] = {'volAvg': v.get('volAvg'), 'asof': v.get('asof'),
+                        'price': v.get('price'), 'currency': v.get('currency')}
+        else:
+            out[sym] = {'volAvg': v, 'asof': None, 'price': None, 'currency': None}
+    return out
+
+
+def profile_map_for_run(run_dir, run_date):
+    """The profile map belonging to ONE named run, or {} if that run has no capture.
+
+    THE FILENAME CONVENTION STAYS INSIDE THIS MODULE, and that is the point rather than a
+    tidiness preference.  `test_universes.test_the_volavg_pickle_still_has_exactly_ONE_reading_seam`
+    pins the set of modules that so much as NAME this artifact to {findAllSectors (writes),
+    carveOut (loads), Sbocker (ships)} -- because the moment a fourth module knows the
+    filename, it is one step from doing its own `read_pickle` and reading raw entries, and the
+    single-seam argument lapses silently.  The presentation generator needs THIS RUN's capture
+    (it is handed an arbitrary `--run-dir`, so the newest-in-repo-root default would pair a
+    2026-08-13 shortlist with an 08-11 capture -- observed).  It asks for it by run, here,
+    instead of constructing the path itself.
+
+    NO CROSS-RUN FALLBACK BY CONSTRUCTION: an absent capture returns {}, never the newest
+    file lying around.
+    """
+    try:
+        path = os.path.join(str(run_dir), 'volavgdic_fmp_%s.pickle' % run_date)
+        if not os.path.exists(path):
+            return {}
+        return _load_volavg_profile_map(path)
+    except Exception:
+        return {}
+
+
+_VOLAVG_PROFILE_CACHE = None
+
+
+def _volavg_profile_map_cached():
+    global _VOLAVG_PROFILE_CACHE
+    if _VOLAVG_PROFILE_CACHE is None:
+        try:
+            _VOLAVG_PROFILE_CACHE = _load_volavg_profile_map()
+        except Exception:
+            #  Same degradation as `_volavg_map_cached`: an unreadable pickle costs the
+            #  report column, never the run.
+            _VOLAVG_PROFILE_CACHE = {}
+    return _VOLAVG_PROFILE_CACHE
+
+
+def trading_currency(sym, profile_map=None):
+    """The TRADING currency of a listing line, or None.
+
+    Exposed separately from the dollar-volume frame because the AggScore CSV needs to LABEL
+    its `price` column and that label must never be guessed from the exchange suffix (see
+    `SUFFIX_TO_CURRENCY`: the suffix does not determine the currency -- SHEL.L reports USD
+    and quotes GBp, and the LSE IOB lines are foreign issuers wearing a `.L`).
+    """
+    pmap = _volavg_profile_map_cached() if profile_map is None else profile_map
+    e = pmap.get(sym)
+    c = e.get('currency') if isinstance(e, dict) else None
+    return c if isinstance(c, str) and c.strip() else None
+
+
+def dollar_volume_frame(symbols, profile_map=None, fx=None, clone_map=None, fx_label=None):
+    """REPORT-ONLY traded value per day in USD: a 2-column frame (`dollarVolume_usd`,
+    `dollarVolume_basis`) aligned to `symbols`.
+
+    `clone_map`  {source: marker} from `vendor_contamination.clone_counterparts`.  Appended to
+                 the basis of any name the run's own contamination check paired with another
+                 line -- see the KNOWN LIMIT below, which used to be documented in prose only.
+    `fx_label`   appended to the basis of every COMPUTED row, for a caller converting with
+                 something other than the run's live table.  The deck passes it when it has to
+                 fall back to the sanity anchors, because otherwise an anchor-converted value
+                 and a live-converted one produce byte-identical basis strings.
+
+    `dollarVolume_basis` is `'<asof>|<CCY>'` when the value computed -- so the reader sees
+    BOTH how old the reading is and which currency it came out of -- and one of the
+    `DOLLARVOL_STATUS_*` markers otherwise.  `volAvg`'s own three absence markers
+    (`not-captured` / `no-reading` / `undated-capture`) are reused verbatim via
+    `_volavg_reading`, so the two volume columns cannot disagree about whether a name has a
+    volume reading at all.
+
+    KNOWN LIMIT, and it is the vendor's, not ours: on a CLONE LINE (a GDR/ADR of a foreign
+    issuer) FMP can report the HOME line's share volume against the DEPOSITARY line's price.
+    Measured on 2026-08-13: SKHY (SK Hynix's Nasdaq line) computes $7.06bn/day, essentially
+    the same as 000660.KS's $6.48bn -- a Nasdaq OTC line does not trade that, and it puts SKHY
+    THIRD in the top-100 by traded value, above TSM.  The number is then wrong by the
+    depositary ratio.  It is NOT silently corrected: we have no depositary ratio, and a
+    guessed one would be an invented number wearing a computed label.
+
+    BUT IT IS NO LONGER FLAGGED IN PROSE ONLY (reviewer H-5).  A docstring and a tooltip do
+    not travel with a CSV cell, and the cell said `2026-08-13|USD` -- unqualified -- for the
+    third-largest traded value in the shortlist.  The run ALREADY computes the pairing
+    (`VendorContaminationFlags_<date>.csv` pairs 000660.KS<->SKHY and 005930.KS<->SMSN.L), so
+    `clone_map` puts it in the basis string.  This invents nothing and adds no fetch: it
+    reuses an artifact of the same run, and it covers SMSN.L for free.
+    """
+    pmap = _volavg_profile_map_cached() if profile_map is None else profile_map
+    #  The volume half goes through the SHARED reading helper, so `not-captured` /
+    #  `no-reading` / `undated-capture` mean here exactly what they mean in the volAvg
+    #  column beside it.
+    vmap = {s: (e.get('volAvg'), e.get('asof')) for s, e in pmap.items()
+            if isinstance(e, dict)}
+    vals, basis = [], []
+    for sym in symbols:
+        vol, asof = _volavg_reading(sym, vmap)
+        if not (isinstance(vol, float) and math.isfinite(vol)):
+            vals.append(float('nan'))
+            basis.append(asof)                     # one of the three volAvg absence markers
+            continue
+        e = pmap.get(sym) or {}
+        try:
+            px = float(e.get('price'))
+        except (TypeError, ValueError):
+            px = float('nan')
+        if not math.isfinite(px) or px <= 0:
+            vals.append(float('nan'))
+            basis.append(DOLLARVOL_STATUS_NO_PRICE)
+            continue
+        cur = e.get('currency')
+        if not isinstance(cur, str) or not cur.strip():
+            vals.append(float('nan'))
+            basis.append(DOLLARVOL_STATUS_NO_CURRENCY)
+            continue
+        rate = _fx_to_usd(cur.strip(), fx=fx)
+        if rate is None:
+            #  A refused/stale live rate lands here, and that is deliberate: it must be
+            #  indistinguishable from a currency we never knew (the `_fx_to_usd` contract).
+            vals.append(float('nan'))
+            basis.append(DOLLARVOL_STATUS_FX_UNRESOLVED % cur.strip())
+            continue
+        vals.append(vol * px * float(rate))
+        #  The QUALIFIERS ride with the number, in the field a CSV reader actually sees.
+        #  Order is fixed (asof|currency, then FX source, then the clone marker) so the
+        #  string stays greppable.
+        _b = '%s|%s' % (asof, cur.strip())
+        if fx_label:
+            _b += '|%s' % fx_label
+        _cm = (clone_map or {}).get(sym)
+        if _cm:
+            _b += '|%s' % _cm
+        basis.append(_b)
+    return pd.DataFrame({'dollarVolume_usd': vals, 'dollarVolume_basis': basis})
 
 
 def _non_canonical_tag(sym, name='', group=()):

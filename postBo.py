@@ -445,6 +445,26 @@ def postBoWrapper(dmdic, as_of=None):
           % (len(penalty_book), len(penalty_book.sources), _pen_csv or '<not written>'),
           flush=True)
 
+    #  SHIP THE EJECTION LIST TOO (register N-5, CEO 2026-08-13), beside the bucket and for
+    #  the same reason: the veto is the single biggest edit this pipeline makes to the pool
+    #  and it shipped no record of WHICH names it removed.  Written HERE rather than in
+    #  `writeResWrapper` so the record survives a later Stage-2 failure -- the same placement
+    #  argument as the bucket CSV one line up -- and written even when `veto_reports` is empty
+    #  (the file's presence is the evidence the layer was reached).  Guarded twice over: the
+    #  writer cannot raise, and the call is a plain statement in a function whose deliverables
+    #  must not depend on it.
+    _ej_csv = None
+    try:
+        import stage1_veto as _sv_csv
+        _ej_csv = _sv_csv.write_ejection_csv(veto_reports)
+        _n_ej = sum(int(r.get('n_ejected') or 0) for r in (veto_reports or {}).values())
+        print('STAGE-1 VETO EJECTION LIST: %d name(s) across %d pool(s); evidence -> %s'
+              % (_n_ej, len(veto_reports or {}), _ej_csv or '<not written>'), flush=True)
+    except Exception as _ee:
+        print('WARNING: Stage-1 veto ejection CSV not written (%s: %s); the run is '
+              'unaffected, but this run ships NO list of the names the veto removed.'
+              % (type(_ee).__name__, _ee), flush=True)
+
     # --- SHORT-POOL RE-CHECK, AFTER THE VETO (reviewer, 2026-08-05) -------------
     # THE DEFECT THIS CLOSES: the carve-out's `<100` warning above fires on the PRE-veto
     # count and was never re-checked, so with the flag ON the veto could drop the general
@@ -827,6 +847,8 @@ def writeResWrapper(resdic):
                                   fname_AggScoretop, flag_df,
                                   raw_df=resdic.get('postScoreMetric_raw'),
                                   cdx_df=resdic.get('cdx_dftop100'),
+                                  missing_fill_df=resdic.get('missing_fill_by_name'),
+                                  run_date=fidag,
                                   universe_stamp={
                                       'universe': resdic.get('universe'),
                                       'universe_fingerprint':
@@ -1130,15 +1152,218 @@ def _pe_ratio_from_panel(table, symb):
         return None
 
 
+# =========================================================================== #
+#  THE DISPLAY COLUMNS THAT MIXED TWO CURRENCIES  (register N-3, CEO 2026-08-13) #
+# =========================================================================== #
+#  THE DEFECT.  `GrahamNumberToPrice` was `v3/key-metrics.grahamNumber / v3/profile.price`
+#  -- a STATEMENT-currency numerator over a TRADING-currency denominator, with no FX
+#  anywhere.  Every cross-listed name in the shortlist therefore published a ratio off by
+#  its own exchange rate.  MEASURED on the shipped 2026-08-13 top-100:
+#
+#      SKHY        6763.0518     (KRW graham / USD price)     true, panel-computed: 3.99
+#      SMSN.L        51.7596     (KRW graham / USD price)     true:                 0.23
+#      SHEL.L         0.0113     (USD graham / GBp price)     true:                 1.47
+#      column median  0.5275                                  true median:        0.9545
+#
+#  and the direction matters as much as the size: SKHY read as a 6,763x Graham bargain and
+#  SHEL.L as 88x overvalued, from the same bug.  The RANKING WAS NEVER AFFECTED -- Stage-2
+#  builds `grahamNumberToPrice` from the panel, where numerator and denominator are both in
+#  `reportedCurrency` (`createDicts`: Upper='grahamNumber', Lower='price', and panel `price`
+#  IS `marketCap / weightedAverageShsOut`, i.e. a statement-currency quantity).  This was a
+#  DISPLAY defect only -- but the display is what the shortlist is read from.
+#
+#  THE FIX IS THE HOUSE RULE, NOT AN FX PATCH.  We could have multiplied by the run's live
+#  rate; instead the column is now sourced from the metric the pipeline ALREADY COMPUTED for
+#  the score.  The vendor supplies raw inputs; we compute the derived quantity.  An FX patch
+#  would have left two definitions of one ratio in the codebase, and the whole class of
+#  defect this repo keeps finding is two definitions drifting apart.
+#
+#  A SECOND CURRENCY DEFECT IS **NOT** FIXED HERE AND MUST NOT BE READ AS FIXED: the `price`
+#  column itself is a raw quote in the LINE'S OWN currency (000660.KS = 1,616,000 KRW next
+#  to TNK = 76.21 USD).  Converting it would be wrong -- the CEO reads it as the price he
+#  would pay -- so it is LABELLED instead, by the new `priceCurrency` column beside it.
+GRAHAM_BASIS_SCORED = 'scored'          # the Stage-2 metric that ranked this name
+GRAHAM_BASIS_PANEL = 'panel-latest'     # newest panel row, for a name Stage-2 could not score
+
+
+def _graham_to_price_panel_latest(cdx_df):
+    """{source: grahamNumber / price} from the NEWEST panel row per source.
+
+    FX-FREE BY CONSTRUCTION, which is the entire point: both columns are `reportedCurrency`
+    quantities off the same row of the same panel (`grahamNumber` is stamped in-pipeline by
+    `getData_fmp.stamp_frequency_and_graham`; `price` is `marketCap / weightedAverageShsOut`),
+    so their ratio has no currency in it at all and no rate can be stale or wrong.
+
+    This is the FALLBACK basis, not the primary -- see `_graham_to_price_published`.  Newest
+    row taken by DATE, not by arrival order, for the same reason `_pe_panel_table` does it.
+    Returns {} on any failure: this feeds a report column and must not cost the CSV.
+    """
+    try:
+        cols = getattr(cdx_df, 'columns', [])
+        if cdx_df is None or 'grahamNumber' not in cols or 'price' not in cols:
+            return {}
+        df = cdx_df.copy()
+        df['date'] = pd.to_datetime(df['date'], errors='coerce')
+        df = df.sort_values(['source', 'date'], ascending=[True, False])
+        newest = df.groupby('source', sort=False).head(1)
+        gn = pd.to_numeric(newest['grahamNumber'], errors='coerce')
+        px = pd.to_numeric(newest['price'], errors='coerce')
+        ratio = (gn / px.where(px > 0)).replace([np.inf, -np.inf], np.nan)
+        return {s: float(v) for s, v in zip(newest['source'], ratio) if np.isfinite(v)}
+    except Exception:
+        return {}
+
+
+def _graham_to_price_published(raw_df, cdx_df):
+    """({source: value}, {source: basis}) for the published `GrahamNumberToPrice`.
+
+    PRIMARY = THE SCORED METRIC (`resdic['postScoreMetric_raw']['grahamNumberToPrice']`).
+    Deliberately the literal number that ranked the name rather than a fresh point-in-time
+    reading, because publishing a DIFFERENT number under a scored metric's own name is how
+    `CycleHeat` came to ship a column whose correlation with the truth was -1.0000.  One name,
+    one number.
+
+    FALLBACK = the newest panel row, used ONLY where the scored value is NaN -- i.e. where
+    Stage-2's window could not compute the metric and `normalizeAndDropNA` imputed it.  On
+    the 2026-08-13 top-100 that is exactly THREE names -- STRT, ENS and PET.TO -- and for all
+    three the newest row DOES compute (1.2613 / 0.5086 / 0.3024).  Publishing that is more
+    informative than a blank.
+    (An earlier version of this note said "exactly two names (STRT, PET.TO)" and UNDERSTATED
+    its own evidence, reviewer L-1: the fallback set is EXACTLY the >=90%-imputed set found by
+    register N-4 -- all three names, no more and no fewer.  That coincidence is not decoration,
+    it is the mechanism: Stage-2 imputes the metric precisely when its window cannot compute
+    it, which is the same condition that drives `imputed_weight_share` up.)
+
+    THE MIX IS NAMED, NOT SILENT -- and from 2026-08-13 it is a COLUMN, not just a log line
+    (`GrahamNumberToPrice_basis`, reviewer H-2).  The basis map is returned so the caller can
+    publish and log which names fell back, as `_pe_vendor_fallback` does for the P/E.  A column
+    that quietly carries two bases is a column that has stopped meaning one thing.
+
+    NO VENDOR FALLBACK AT ALL, unlike the P/E.  The vendor's value here IS the defect: it is
+    the FX-mixed ratio this whole block exists to remove, so falling back to it would restore
+    the bug for precisely the names we know least about.
+    """
+    vals, basis = {}, {}
+    try:
+        cols = getattr(raw_df, 'columns', [])
+        if raw_df is not None and 'source' in cols and 'grahamNumberToPrice' in cols:
+            v = pd.to_numeric(raw_df['grahamNumberToPrice'], errors='coerce')
+            for s, x in zip(raw_df['source'], v):
+                if np.isfinite(x):
+                    vals[s] = float(x)
+                    basis[s] = GRAHAM_BASIS_SCORED
+    except Exception:
+        pass
+    for s, x in _graham_to_price_panel_latest(cdx_df).items():
+        if s not in vals:
+            vals[s] = x
+            basis[s] = GRAHAM_BASIS_PANEL
+    return vals, basis
+
+
+def _dividend_yield_ttm_from_panel(cdx_df):
+    """{source: TRAILING-TWELVE-MONTH dividend yield, in PERCENT} from the run's own panel.
+
+    THE DEFECT THIS REPLACES, AND IT IS NOT THE ONE THE BRIEF NAMED.  The column was
+    `v3/key-metrics?period=quarter.dividendYield * 100`, and the brief that raised it read
+    `TCL-A.TO = 259.87%` as a vendor fraction that was already a percent being multiplied by
+    100 again.  IT IS NOT.  Our OWN panel, computed independently, puts TCL-A.TO's trailing
+    yield at 272.6%: its newest row pays CAD 1.1536bn of dividends against a CAD 444m market
+    cap after the price fell 23.10 -> 5.31 in one quarter.  That is a real distribution (or
+    real broken vendor data about one), not a unit error, and `*100` is arithmetically
+    correct.  The prescription was wrong and is recorded here so the next reader does not
+    "fix" a scaling bug that never existed.
+
+    THE DEFECT THAT IS REAL: `period=quarter` makes it a SINGLE QUARTER's yield published
+    under a name every reader takes as ANNUAL.  Across the shipped 2026-08-13 top-100 the
+    median ratio of the true trailing-twelve-month yield to the published number is 3.09
+    across the 57 names that pay anything at all -- i.e. the column understated income by
+    roughly the number of periods in a year, for every dividend payer in the shortlist.  SHEL.L shipped 0.9957% against a real trailing 3.87%; TNK shipped 1.9184%
+    against 3.07%.  A 4x understatement of yield is not cosmetic on a value screen.
+
+    THE BASIS: `-sum(dividendsPaid over rpy rows) / marketCap(newest row) * 100`.
+      * `dividendsPaid` is a cash OUTFLOW and therefore negative in FMP's cash-flow
+        statement, hence the leading minus; a POSITIVE reported value is refused rather than
+        sign-flipped, because we do not know what it would mean.
+      * `rpy` is the source's own rows-per-year, so a semi-annual filer sums 2 rows for a
+        real twelve months instead of 4 rows for twenty-four -- the same treatment
+        `stamp_frequency_and_graham` gives EPS.
+      * numerator and denominator are BOTH `reportedCurrency`, so this is FX-free by
+        construction -- the same property that makes the Graham ratio above safe.
+      * the window must be COMPLETE (all `rpy` rows present and numeric).  A 3-of-4 sum
+        masquerading as a year is the failure mode `ttm_aligned_sums` exists to refuse, and
+        it would UNDERSTATE the yield, which is the direction that reads as safe.
+    Returns {} on any failure.
+    """
+    try:
+        cols = getattr(cdx_df, 'columns', [])
+        if cdx_df is None or 'dividendsPaid' not in cols or 'marketCap' not in cols:
+            return {}
+        import reporting_period as _rp
+        df = cdx_df.copy()
+        df['date'] = pd.to_datetime(df['date'], errors='coerce')
+        df = df.sort_values(['source', 'date'], ascending=[True, False])
+        try:
+            freq = _rp.frequency_by_source(df, verbose=False)
+        except Exception:
+            freq = None
+        out = {}
+        for s, g in df.groupby('source', sort=False):
+            try:
+                rpy = int(_rp.rows_per_year(freq, s) if freq is not None
+                          else _rp.DEFAULT_ROWS_PER_YEAR)
+            except Exception:
+                rpy = int(_rp.DEFAULT_ROWS_PER_YEAR)
+            dp = pd.to_numeric(g['dividendsPaid'], errors='coerce').head(rpy)
+            mc = pd.to_numeric(g['marketCap'], errors='coerce').iloc[0]
+            if len(dp) < rpy or not dp.notna().all() or not np.isfinite(mc) or mc <= 0:
+                continue
+            total = float(dp.sum())
+            if total > 0:
+                continue                    # sign convention violated -- refuse, never flip
+            #  `+ 0.0` NORMALISES NEGATIVE ZERO, and it is not a cosmetic (reviewer H-3).
+            #  A non-payer sums `dividendsPaid` to exactly 0.0, and IEEE-754 makes `-0.0 / mc`
+            #  a NEGATIVE zero, which `_fmt4` renders as `'-0.0000'`.  That hit 20 of the 100
+            #  names on the shipped 2026-08-13 top-100 -- a fifth of the shortlist showing a
+            #  negative-signed dividend yield -- and it was a REGRESSION against the vendor
+            #  column this replaced, which printed a plain `0.0`.  `-0.0 + 0.0` is `+0.0` by
+            #  the standard, and no other value is touched.
+            out[s] = -total / float(mc) * 100.0 + 0.0
+        return out
+    except Exception:
+        return {}
+
+
+#  A TRAILING YIELD THIS LARGE IS A FINDING, NOT AN INCOME OPPORTUNITY, and the display layer
+#  has to say so without inventing a verdict.  25% is the "no ordinary dividend policy pays
+#  this" line: on the 2026-08-13 top-100 exactly one name (TCL-A.TO, 272.6%) is past it and
+#  the 75th percentile is 3.87%.  Consumed by the HTML report to mark the value NEUTRALLY
+#  (verify-this), never as a positive.
+DIVIDEND_YIELD_IMPLAUSIBLE_PCT = 25.0
+
+
 def writeBoAggToCSV(fb_df, mscore, cscore, baseurl, api_key, ntopagg, fname_AggScoretop,
-                    flag_df=None, raw_df=None, universe_stamp=None, cdx_df=None):
+                    flag_df=None, raw_df=None, universe_stamp=None, cdx_df=None,
+                    missing_fill_df=None, run_date=None):
     """raw_df : resdic['postScoreMetric_raw'] -- the UNWEIGHTED, UN-NORMALISED metric
     frame.  Required to publish any metric under its own name: `fb_df` is postRank,
-    whose metric columns are all `z x w` (see the CycleHeat note below).
+    whose metric columns are all `z x w` (see the CycleHeat note below).  ALSO the primary
+    source of the published `GrahamNumberToPrice` (register N-3).
 
     cdx_df : resdic['cdx_dftop100'] -- the run's OWN fundamentals panel for these names.
-    Used to COMPUTE the published `PE-ratio` instead of consuming FMP's, see
-    `_pe_ratio_from_panel`."""
+    Used to COMPUTE the published `PE-ratio`, `dividendYield` and the fallback
+    `GrahamNumberToPrice` instead of consuming FMP's -- see `_pe_ratio_from_panel`,
+    `_dividend_yield_ttm_from_panel` and `_graham_to_price_published`.
+
+    missing_fill_df : resdic['missing_fill_by_name'] -- the run's own per-name imputation
+    audit (postBoRank.missing_data_fill_report).  Supplies `imputed_weight_share`, so a
+    reader can see that a name was scored almost entirely on fills (register N-4).
+
+    run_date : the run's date stamp.  Used ONLY to find THIS run's
+    `VendorContaminationFlags_<date>.csv`, so the clone markers on `dollarVolume_basis` come
+    from the same run as the numbers they qualify -- never from whichever dated file happens
+    to be newest on disk, which is the cross-run mixing the deck's `resolve_run_artifacts`
+    refuses for the same reason."""
     fbdf_tocsv = fb_df.head(ntopagg)
     symblist = list(fbdf_tocsv['source'])
     #BoComp_tocsv = pd.DataFrame(columns=['source','currentRatio','dividendYield','grahamNumberToPrice','price','beta',
@@ -1147,8 +1372,6 @@ def writeBoAggToCSV(fb_df, mscore, cscore, baseurl, api_key, ntopagg, fname_AggS
     BoComp_tocsv['source'] = symblist
     #quote_full = pd.DataFrame(requests.get(f'{baseurl}v3/quote/{symblist}?&apikey={api_key}').json())
     crVec = []
-    dyVec = []
-    GNtPVec = []
     priceVec = []
     margin = []
     dcf2p = []
@@ -1158,11 +1381,35 @@ def writeBoAggToCSV(fb_df, mscore, cscore, baseurl, api_key, ntopagg, fname_AggS
     pEratioVec = []
     mscoreVec = []
     cscoreVec = []
+    #  THE TRADING CURRENCY OF THE `price` COLUMN (register N-3).  Captured from the SAME
+    #  profile response the price comes out of, so the label and the number cannot disagree
+    #  -- an exchange suffix is NOT a substitute (SHEL.L quotes GBp and reports USD; the LSE
+    #  IOB `0*.L` lines are foreign issuers).  `carveOut.trading_currency` is the offline
+    #  fallback for a name whose profile call degraded.
+    ccyVec = []
     #  The published P/E is COMPUTED from this table, not read off the vendor -- see
     #  `_pe_ratio_from_panel`.  Built ONCE for the whole CSV rather than per name: it is a
     #  groupby over the panel, and doing it inside the loop would be 100 passes over it.
     _pe_panel = _pe_panel_table(cdx_df)
     _pe_vendor_fallback = []
+    #  COMPUTED, NOT CONSUMED -- both built once, for the same reason as the P/E table.  See
+    #  the register N-3 block above `_graham_to_price_panel_latest` for what these replace and
+    #  why an FX patch on the vendor's numbers was the wrong fix.
+    _gtp_vals, _gtp_basis = _graham_to_price_published(raw_df, cdx_df)
+    _gtp_panel_fallback = sorted(s for s, b in _gtp_basis.items()
+                                 if b == GRAHAM_BASIS_PANEL and s in set(symblist))
+    _div_ttm = _dividend_yield_ttm_from_panel(cdx_df)
+    #  Resolved ONCE, offline, from the run's volavgdic capture -- it is only the FALLBACK
+    #  for a name whose live profile response degraded, so a per-row lookup would re-read the
+    #  pickle 100 times for a value the loop usually does not need.
+    try:
+        import carveOut as _co_ccy
+        _trading_ccy = {s: _co_ccy.trading_currency(s) for s in symblist}
+    except Exception as _ce:
+        print('WARNING: offline trading-currency fallback unavailable (%s: %s); the '
+              '`priceCurrency` column falls back to NaN for any name whose profile call '
+              'degrades.' % (type(_ce).__name__, _ce), flush=True)
+        _trading_ccy = {}
     # Note: Bulk endpoints require higher subscription tier, using individual API calls only
     profile_bulk_dict = {}
     rating_bulk_dict = {}
@@ -1184,9 +1431,9 @@ def writeBoAggToCSV(fb_df, mscore, cscore, baseurl, api_key, ntopagg, fname_AggS
     # `try/except: continue` leaves them RAGGED and the assignment raises "Length of values does
     # not match length of index" -- a one-name fault becoming total loss.  Padding in `finally`
     # to a per-row target length cannot ragged them, which is what makes the guard workable.
-    _row_vectors = (priceVec, pEratioVec, betaVec, sectorVec, ratingVec_fmp, crVec,
-                    dyVec, GNtPVec, margin, dcf2p, mscoreVec, cscoreVec)
-    assert len(_row_vectors) == 12, len(_row_vectors)
+    _row_vectors = (priceVec, ccyVec, pEratioVec, betaVec, sectorVec, ratingVec_fmp, crVec,
+                    margin, dcf2p, mscoreVec, cscoreVec)
+    assert len(_row_vectors) == 11, len(_row_vectors)
     _rows_degraded = []
     # TOTAL TAKEN FROM THE FRAME THE LOOP ITERATES, not from the REQUESTED count: `fb_df` can
     # be shorter than `ntopagg` (a small universe, or a carve-out cohort with fewer members
@@ -1198,7 +1445,8 @@ def writeBoAggToCSV(fb_df, mscore, cscore, baseurl, api_key, ntopagg, fname_AggS
     for _row_i, row in enumerate(BoComp_tocsv.itertuples(), start=1):
         # PAD-TO-LENGTH GUARD (review item 5, 2026-07-31).  My earlier reasoning that a
         # per-row guard was impossible here was wrong: only the NAIVE form is defeated by
-        # the twelve parallel vectors.  A `finally` that pads every vector to this row's
+        # the parallel per-row vectors (eleven of them since 2026-08-13; it was twelve when
+        # this note was written).  A `finally` that pads every vector to this row's
         # target length CANNOT ragged them, so the column assignment after the loop can
         # never hit 'Length of values does not match length of index'.  A partially-
         # appended row is completed with the 'NaN' sentinel the columns already use.
@@ -1294,28 +1542,19 @@ def writeBoAggToCSV(fb_df, mscore, cscore, baseurl, api_key, ntopagg, fname_AggS
             else:
                 crVec.append('NaN')
             
-            # Check dividendYield
-            if len(temp_resp_km) == 0 or 'dividendYield' not in temp_resp_km[0]:
-                dyVec.append('NaN')
-            elif type(temp_resp_km[0]['dividendYield']) == int or type(temp_resp_km[0]['dividendYield']) == float:
-                dyVec.append("{:.4f}".format(temp_resp_km[0]['dividendYield']*100))
-            else:
-                dyVec.append('NaN')
-            
-            # Check grahamNumberToPrice
-            if len(temp_resp_km) == 0 or len(temp_resp_pr) == 0:
-                GNtPVec.append('NaN')
-            elif 'grahamNumber' not in temp_resp_km[0] or 'price' not in temp_resp_pr[0]:
-                GNtPVec.append('NaN')
-            elif temp_resp_km[0]['grahamNumber'] is None or temp_resp_pr[0]['price'] is None:
-                GNtPVec.append('NaN')
-            else:
-                gtp = (temp_resp_km[0]['grahamNumber']/temp_resp_pr[0]['price'])
-                if type(gtp) == int or type(gtp) == float:
-                    GNtPVec.append("{:.4f}".format(gtp))
-                else:
-                    GNtPVec.append('NaN')
-                
+            #  `dividendYield` and `GrahamNumberToPrice` USED TO BE APPENDED HERE and are
+            #  now assigned AFTER the loop -- see the block above their column assignments.
+            #  They no longer need a vendor response, so they must not sit inside the row
+            #  guard that nulls a row when one does.
+
+            # The TRADING CURRENCY of the price on this same row -- from THIS response, so a
+            # 1,616,000 (KRW) and a 76.21 (USD) can no longer sit in one column unlabelled.
+            _cur = temp_resp_pr[0].get('currency') if len(temp_resp_pr) else None
+            if not isinstance(_cur, str) or not _cur.strip():
+                _cur = _trading_ccy.get(symb)             # offline fallback (volavgdic)
+            ccyVec.append(_cur.strip() if isinstance(_cur, str) and _cur.strip() else 'NaN')
+
+
             # Check price -- _fmt4, because these two checked key PRESENCE but not None and
             # FMP returns `"price": null` / `"beta": null` on many non-US listings, so
             # `"{:.4f}".format(None)` raised TypeError here and cost the whole stage
@@ -1452,14 +1691,75 @@ def writeBoAggToCSV(fb_df, mscore, cscore, baseurl, api_key, ntopagg, fname_AggS
             "panel -- see postBo._pe_ratio_from_panel."
             % (len(_pe_vendor_fallback), len(BoComp_tocsv),
                ', '.join(map(str, _pe_vendor_fallback[:20]))))
+    #  SAY WHICH CELLS CAME OFF THE FALLBACK BASIS, exactly as the P/E line above does.  A
+    #  column carrying two bases must name the rows, or it is a silently-mixed column.
+    if _gtp_panel_fallback:
+        gdg.bar_print(
+            "GrahamNumberToPrice: %d of %d name(s) could not be published from the SCORED "
+            "metric (Stage-2's window imputed it) and fall back to the newest panel row's "
+            "grahamNumber/price: %s. Both bases are FX-free (statement currency over "
+            "statement currency); neither is the vendor's FX-mixed ratio. These names also "
+            "carry a high `imputed_weight_share` in this same CSV."
+            % (len(_gtp_panel_fallback), len(BoComp_tocsv),
+               ', '.join(map(str, _gtp_panel_fallback[:20]))))
+    #  THE SYMMETRIC LINE, AND IT IS THE ONE THAT MATTERS MORE (reviewer L-2).  The block
+    #  above reports the FALLBACK; this reports ABSENCE.  Both helpers behind
+    #  `_graham_to_price_published` return `{}` on any exception, so a wholesale failure --
+    #  a renamed panel column, a bad frame -- writes an ALL-NaN column and, without this,
+    #  says nothing at all.  A silently empty column is worse than the wrong one it replaced,
+    #  because nobody goes looking for a number that was never there.
+    _gtp_missing = [s for s in symblist if s not in _gtp_vals]
+    if _gtp_missing:
+        gdg.bar_print(
+            "GrahamNumberToPrice: %d of %d name(s) have NO published value -- neither the "
+            "scored metric nor the newest panel row could answer: %s.%s"
+            % (len(_gtp_missing), len(BoComp_tocsv),
+               ', '.join(map(str, _gtp_missing[:20])),
+               ("  THE WHOLE COLUMN IS EMPTY: this is a FAILURE of the computation, not a "
+                "property of these companies -- check postBo._graham_to_price_published."
+                if len(_gtp_missing) == len(symblist) else '')))
+    _dy_missing = [s for s in symblist if s not in _div_ttm]
+    if _dy_missing:
+        gdg.bar_print(
+            "dividendYield: %d of %d name(s) have NO trailing-twelve-month yield -- the panel "
+            "does not hold a COMPLETE rpy-row dividend window for them, and a partial sum "
+            "would understate the yield while looking like a real number: %s."
+            % (len(_dy_missing), len(BoComp_tocsv), ', '.join(map(str, _dy_missing[:20]))))
     BoComp_tocsv['price'] = priceVec
+    #  IMMEDIATELY BESIDE `price`, deliberately: column order is what a human reads, and the
+    #  defect was that 1,443,000 and 76.21 sat in one column with nothing to distinguish them.
+    BoComp_tocsv['priceCurrency'] = ccyVec
     BoComp_tocsv['PE-ratio'] = pEratioVec
     BoComp_tocsv['beta'] = betaVec
     BoComp_tocsv['sector'] = sectorVec
     BoComp_tocsv['rating_fmp'] = ratingVec_fmp
     BoComp_tocsv['currentRatio'] = crVec
-    BoComp_tocsv['dividendYield'] = dyVec
-    BoComp_tocsv['GrahamNumberToPrice'] = GNtPVec
+    #  THESE TWO ARE ASSIGNED FROM THE PANEL, OUTSIDE THE ROW GUARD (2026-08-13).
+    #  They were per-row vectors while they were vendor fields, and they had to be: the value
+    #  arrived with the API response for that name.  Now that both are COMPUTED from the run's
+    #  own panel they need no response at all, and leaving them inside the loop would keep
+    #  them in the blast radius of the pad-to-length guard -- so a throttled `key-metrics`
+    #  call on one name would blank a number we already held offline.  A degraded row must
+    #  cost only what actually came from the vendor, which is what the DEGRADED-ROW SUMMARY
+    #  above claims it costs.
+    #  POSITIONAL over `symblist` is safe HERE and only here: this runs before the flag_df
+    #  merge, so the frame is still exactly one row per requested name in order (the same
+    #  reason the CycleHeat block below can do it, and the reason the volAvg block further
+    #  down maps on `source` instead).
+    BoComp_tocsv['dividendYield'] = [_fmt4(_div_ttm.get(s)) for s in symblist]
+    BoComp_tocsv['GrahamNumberToPrice'] = [_fmt4(_gtp_vals.get(s)) for s in symblist]
+    #  WHICH BASIS EACH CELL CAME FROM (reviewer H-2).  The column carries two -- the Stage-2
+    #  scored metric for 97 of the 2026-08-13 top-100, the newest panel row for 3 -- and until
+    #  now that was stated only in the run log.  It is published as a COLUMN because this same
+    #  change added `dollarVolume_basis` for exactly this reason and `volAvg_asof` already sat
+    #  beside `volAvg_report`: leaving Graham as the one two-basis column with no basis field
+    #  is an inconsistency inside one diff, not a considered difference.
+    #  An earlier version of this argued the mix was self-evident because the fallback names
+    #  carry a high `imputed_weight_share` in the row beside it.  That is TRUE -- the fallback
+    #  set is exactly the >=90%-imputed set -- but it asks the reader to cross-reference two
+    #  columns AND know the rule connecting them.  A basis column just says it.
+    BoComp_tocsv['GrahamNumberToPrice_basis'] = [
+        _gtp_basis.get(s, 'unavailable') for s in symblist]
     BoComp_tocsv['GrossProfitMargin_ttm'] = margin
     BoComp_tocsv['DCF-to-Price'] = dcf2p
     BoComp_tocsv['M-Score'] = mscoreVec
@@ -1561,6 +1861,73 @@ def writeBoAggToCSV(fb_df, mscore, cscore, baseurl, api_key, ntopagg, fname_AggS
         gdg.bar_print(f'WARNING: volAvg report columns not added to {fname_AggScoretop} '
                       f'({type(_ve).__name__}: {_ve}); CSV otherwise unaffected. The columns are '
                       f'REPORT-ONLY, so nothing selected or ranked is affected either.')
+
+    # TRADED VALUE PER DAY -- the CEO's own named example (2026-08-13).  REPORT-ONLY on
+    # exactly the same terms as `volAvg_report` above: appended to a frame whose membership
+    # and order are already settled, no floor, no exclusion, no effect on ranking.
+    # WHY IT IS ADDED AT ALL when `volAvg_report` is already here: `volAvg` is a SHARE count
+    # and is therefore not comparable across listings -- 45.7M shares of a $154 line and 45.7M
+    # shares of a KRW 1.5M line differ by four orders of magnitude in money.  Traded VALUE is
+    # the comparable quantity, and it is now computable for 100% of the universe offline
+    # (measured 2026-08-13: 3,144 of 3,145 names, the one gap being a name with no volume
+    # reading at all).  See carveOut.dollar_volume_frame for the currency contract -- it
+    # converts with the TRADING currency, which is the opposite of `marketcap_usd_series` and
+    # correct for the same reason.
+    # ZERO API CALLS: volAvg, price and currency all come from one volavgdic entry sharing
+    # one `asof`, and the rate comes from the run's live FX table.
+    try:
+        import carveOut as _co_dv
+        _uniq = list(dict.fromkeys(BoComp_tocsv['source']))
+        #  THE CLONE MARKERS, from this run's own contamination artifact (reviewer H-5).
+        #  Guarded separately from the frame itself: a missing/unreadable flags CSV must cost
+        #  the QUALIFIER, never the number -- an unmarked traded value is a smaller loss than
+        #  no traded value, and `clone_counterparts` already returns {} rather than raising.
+        try:
+            import vendor_contamination as _vc
+            _clone = _vc.clone_counterparts(run_date=run_date)
+        except Exception:
+            _clone = {}
+        _dv = _co_dv.dollar_volume_frame(_uniq, clone_map=_clone)
+        _dv.index = _uniq
+        BoComp_tocsv['dollarVolume_usd'] = BoComp_tocsv['source'].map(_dv['dollarVolume_usd'])
+        BoComp_tocsv['dollarVolume_basis'] = BoComp_tocsv['source'].map(_dv['dollarVolume_basis'])
+    except Exception as _de:
+        gdg.bar_print(f'WARNING: dollarVolume columns not added to {fname_AggScoretop} '
+                      f'({type(_de).__name__}: {_de}); CSV otherwise unaffected. REPORT-ONLY, '
+                      f'so nothing selected or ranked is affected either.')
+
+    # HOW MUCH OF THIS NAME'S SCORE IS FILL (register N-4, CEO 2026-08-13).
+    # The run ALREADY computes this -- `postBoRank.missing_data_fill_report` writes it to
+    # `MissingDataFillReport_<date>.csv` -- and it reached no artifact a shortlist reader
+    # opens.  MEASURED on the shipped 2026-08-13 top-100: STRT (rank 55) is 93.2% fill, ENS
+    # (rank 64) 93.2%, PET.TO (rank 71) 90.0%.  STRT and PET.TO carry `forensicTag = clean`;
+    # ENS is tagged `data-incomplete: dig-deeper`, so the forensic layer caught one of the
+    # three and not the other two -- which is the point, the two tags measure different things.  That tag is
+    # not lying -- it describes the FORENSIC checks and nothing else -- but nothing in the CSV
+    # told a reader the score was almost entirely imputed.  Top-100 MEDIAN is 0.0000, so this
+    # is a three-name tail, not a systemic problem, and it is surfaced rather than acted on:
+    # nothing here drops or re-orders a name.
+    # A FRACTION OF WEIGHT, NOT A COUNT OF COLUMNS: the columns carry weights spanning ~20x,
+    # so "16 of 19 columns" and "90% of the weight" are different statements and only the
+    # second one says how much of the score is guesswork.
+    try:
+        if missing_fill_df is not None and not missing_fill_df.empty \
+                and 'source' in missing_fill_df.columns:
+            _imp = missing_fill_df.drop_duplicates('source').set_index('source')
+            BoComp_tocsv['imputed_weight_share'] = BoComp_tocsv['source'].map(
+                pd.to_numeric(_imp['imputed_weight_share'], errors='coerce'))
+        else:
+            #  ABSENCE READS AS ABSENCE.  A pre-2026-08-13 resdic carries no per-name fill
+            #  table, and an all-zero column would assert "nothing was imputed" -- which is
+            #  the one thing this column exists to stop anyone believing by default.
+            gdg.bar_print(
+                'NOTE: `imputed_weight_share` not added to %s -- this run carries no per-name '
+                'missing-data fill table (resdic["missing_fill_by_name"]). The column is '
+                'OMITTED rather than written as zeros, because a zero here would assert that '
+                'nothing was imputed.' % fname_AggScoretop)
+    except Exception as _ie:
+        gdg.bar_print(f'WARNING: imputed_weight_share not added to {fname_AggScoretop} '
+                      f'({type(_ie).__name__}: {_ie}); CSV otherwise unaffected.')
 
     # UNIVERSE STAMP IN THE RANKED CSV ITSELF (2026-08-03), not only in the sidecar.
     # This is the artifact most often read standalone, and its FILENAME carries only a

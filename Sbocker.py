@@ -140,6 +140,13 @@ def transfer_outputs_to_drive(transfer_dir, configdic, verbose=True):
         #  on-disk record of that decision, so it ships by the rule stated above, and it is
         #  written at root for the reason stated above.
         'AdHocPenaltyBucket_*.csv',
+        #  The STAGE-1 VETO EJECTION LIST (CEO, 2026-08-13) -- the names the veto removed
+        #  from each pool and the flags that removed them.  It ships by exactly the rule
+        #  stated above: it is the SOLE on-disk record of a decision that removed members of
+        #  the universe (the largest such decision the pipeline makes), and `report['ejected']`
+        #  reaches neither the RunProvenance sidecar (which carries counts, not names) nor the
+        #  postRank pickle.  Written at root for the reason stated above.
+        'Stage1VetoEjections_*.csv',
         #  The mean-bar calibration (added 2026-08-09).  It is the run's own watchdog on the
         #  Stage-1 bars -- WRITTEN ALWAYS, even with no breach, because its PRESENCE is the
         #  evidence the check ran -- and it matched no pattern here, so it reached the other

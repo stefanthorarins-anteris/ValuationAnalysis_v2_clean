@@ -1002,6 +1002,93 @@ def _evaluate(bm_df, flags=None, cdx_df=None):
     return out, abstained, gaps
 
 
+EJECTION_CSV = 'Stage1VetoEjections_%s.csv'
+#  What a blank `flags` cell MEANS -- "we did not record it", never "there were none".  A
+#  name reaches the EJECTED rows only by failing at least `EJECT_MIN_FLAGS` of them.
+_NO_FLAG_DETAIL = ('flag detail not recorded by the run that produced this report '
+                   '(pre-2026-08-13 veto report); the name WAS ejected, on at least '
+                   '%d flag(s) -- the reason is unrecorded, not absent')
+
+
+def write_ejection_csv(veto_reports, path=None, run_date=None):
+    """Ship the veto's EJECTION LIST as evidence: one dated CSV, one row per ejected source,
+    naming its pool and every flag that ejected it.
+
+    THE GAP THIS CLOSES (register N-5, CEO 2026-08-13).  `apply_veto` has always built
+    `report['ejected']`, and it landed ONLY in the in-memory `veto_reports` dict.  It is not
+    in the postRank pickle either -- `postBo._veto_provenance` deliberately strips it from the
+    RunProvenance sidecar (that sidecar publishes counts and by-flag totals, not names).  So
+    the single biggest edit the pipeline makes to the pool shipped NO list of what it removed,
+    and measuring the veto's effect on the top-100 required a full offline re-score.  That is
+    not a reconstruction anyone should have to do to answer "which names did the gate take
+    out".
+
+    ONE ROW PER EJECTED SOURCE, not one per (source, flag): a name is ejected once and its
+    flags are the reason, so `flags` is a joined list and `n_flags` is the count that met
+    `EJECT_MIN_FLAGS`.  A per-flag shape would make the file's row count mean something other
+    than "names removed", which is the number a reader comes here for.
+
+    WRITTEN AT THE REPO ROOT for the reason `adhoc_penalty.write_evidence_csv` records: the
+    root-level artifacts demonstrably travel to the other machine and `output/` demonstrably
+    did not.  `Sbocker.allowlist_patterns` carries the matching glob.
+
+    WRITTEN EVEN WHEN NOTHING WAS EJECTED -- the file's PRESENCE is the evidence the gate ran,
+    and "the veto ejected nobody" versus "the veto did not run" is the distinction this whole
+    module keeps insisting must survive.  A pool that did not apply the veto contributes a
+    status row carrying its `not_applicable_reason` instead of a name.
+
+    Returns the path written, or None.  Never raises: an evidence file must not be able to
+    cost a scored run.
+    """
+    try:
+        if path is None:
+            stamp = run_date or pd.Timestamp.today().strftime('%Y-%m-%d')
+            path = EJECTION_CSV % stamp
+        rows = []
+        for pool, rep in sorted((veto_reports or {}).items()):
+            rep = rep or {}
+            by_source = rep.get('ejected_flags') or {}
+            #  A REPORT THAT PREDATES `ejected_flags` MUST NOT BE WRITTEN UP AS "0 FLAGS"
+            #  (reviewer H-4).  `ejected_flags` was added 2026-08-13; every report produced
+            #  before it -- and this function is reachable from four `baseline_tools` callers
+            #  and from the `-loadboresults` path, which rebuild resdic from a SAVED pickle --
+            #  has the `ejected` list and nothing else.  Emitting `n_flags = 0` there is an
+            #  AFFIRMATIVE FALSE CLAIM: it says 617 names were ejected on zero flags, which
+            #  contradicts `EJECT_MIN_FLAGS >= 1` and this function's own docstring, and the
+            #  file is allowlisted for transfer so the false zero would ship.
+            #  Verified on the real 2026-08-13 report: 618 rows, 617 EJECTED, all `n_flags=0`.
+            #  ABSENCE IS NOT ZERO -- the same rule this change already applies to
+            #  `imputed_weight_share` (omitted, not zeroed) and `priceCurrency` (NaN, not
+            #  guessed).  The ejection itself is still reported; only the REASON is blank,
+            #  and the note says why it is blank.
+            _detail = bool(by_source)
+            for src in rep.get('ejected') or []:
+                fl = sorted(by_source.get(src) or [])
+                rows.append({'pool': pool, 'source': src,
+                             'n_flags': (len(fl) if _detail else ''),
+                             'flags': ', '.join(fl),
+                             'status': 'EJECTED',
+                             'note': ('' if _detail
+                                      else _NO_FLAG_DETAIL % EJECT_MIN_FLAGS)})
+            if not rep.get('ejected'):
+                if not rep.get('enabled', True):
+                    note = 'veto flag OFF for this run -- NOTHING was ejected anywhere'
+                elif not rep.get('applies', True):
+                    note = rep.get('not_applicable_reason') or 'not applicable to this pool'
+                else:
+                    note = ('veto APPLIED and ejected nobody (%s name(s) in)'
+                            % rep.get('n_in', '?'))
+                rows.append({'pool': pool, 'source': '', 'n_flags': '', 'flags': '',
+                             'status': 'NO_EJECTIONS', 'note': note})
+        pd.DataFrame(rows, columns=['pool', 'source', 'n_flags', 'flags', 'status',
+                                    'note']).to_csv(path, index=False)
+        return path
+    except Exception as _e:
+        print('WARNING: could not write the Stage-1 veto ejection CSV (%s: %s)'
+              % (type(_e).__name__, _e), flush=True)
+        return None
+
+
 def pool_flags(pool_label):
     """The flag set ruled for `pool_label` -- `FLAGS` for any pool without its own entry.
 
@@ -1156,6 +1243,13 @@ def apply_veto(scores_df, bm_df, pool_label='general', enabled=None, verbose=Tru
     kept = scores_df[~scores_df['source'].isin(set(ejected))]
     report.update(n_ejected=len(ejected), n_out=len(kept),
                   by_flag=dict(sorted(by_flag.items())), ejected=sorted(ejected),
+                  #  WHICH flags ejected WHICH name (register N-5).  `by_flag` above counts
+                  #  ejections per flag and `ejected` lists the names; neither can answer
+                  #  "why was THIS name removed", which is the question the shipped ejection
+                  #  CSV exists to answer.  Kept beside them rather than derived later,
+                  #  because `bad` is local to this call and cannot be recovered from the
+                  #  report afterwards.
+                  ejected_flags={s: sorted(bad[s]) for s in sorted(ejected)},
                   n_short_window=dict(sorted(n_short_by_flag.items())),
                   short_window={s: dict(sorted(f.items()))
                                 for s, f in sorted(pool_short.items())},

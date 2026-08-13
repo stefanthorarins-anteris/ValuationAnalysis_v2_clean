@@ -187,8 +187,16 @@ def postBoScoreRanking(bmtop, bstop, cdxtop, baseurl, api_key, period='quarter',
     # the part nobody has measured -- a cohort concentrating most of its weight on two columns
     # makes a single fill far more consequential per cell than the same fill in the general
     # pool.  Read-only on both frames; nothing is assigned back.
-    _safe_diagnose(missing_data_fill_report, postScoreMetric_raw, postScoreMetric_df,
-                   weight_series, pool=(pool_label or 'general'))
+    #  THE PER-NAME HALF IS NOW KEPT, not only printed and CSV'd (register N-4, 2026-08-13).
+    #  `imputed_weight_share` is the one number that says how much of a name's score is fill,
+    #  and it reached only `MissingDataFillReport_<date>.csv` -- a file nobody opens beside a
+    #  shortlist.  Carrying the frame in rankdic lets `writeBoAggToCSV` join it onto the
+    #  ranked CSV the CEO actually reads, without re-reading a dated file off disk (which
+    #  would be a second source of truth, and would break on a re-run under a different date).
+    #  STILL EMIT-ONLY: nothing is assigned back into any scored frame.
+    _fill_col_df, _fill_name_df = (
+        _safe_diagnose(missing_data_fill_report, postScoreMetric_raw, postScoreMetric_df,
+                       weight_series, pool=(pool_label or 'general')) or (None, None))
 
     # WHY each cell was NaN in the first place, as a per-rule COUNT for this pool.  The fill
     # report above says WHERE the imputation lands; this says WHICH RULE created the cell it
@@ -285,7 +293,11 @@ def postBoScoreRanking(bmtop, bstop, cdxtop, baseurl, api_key, period='quarter',
     rankdic = {'postRank': postRank, 'postScoreMetric': postScoreMetric_df,
                'postScoreMetric_raw': postScoreMetric_raw,
                'psmdf_normalized': psmdf_normalized, 'BoAggCorr': BoAggCorr, 'outlierlist': outlierlist,
-               'postRank_predupe': postRank_predupe, 'issuer_dupes_dropped': issuer_dupes_dropped}
+               'postRank_predupe': postRank_predupe, 'issuer_dupes_dropped': issuer_dupes_dropped,
+               #  The per-name imputation audit for THIS pool (register N-4). `None` when the
+               #  diagnostic failed or found no weighted column -- which is why the CSV writer
+               #  OMITS the column rather than writing zeros in that case.
+               'missing_fill_by_name': _fill_name_df}
 
     return rankdic
 

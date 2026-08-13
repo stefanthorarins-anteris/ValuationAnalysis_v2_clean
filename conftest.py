@@ -23,7 +23,23 @@ network calls in place.
 The script itself is UNCHANGED and still runs the way it is documented to:
 `python test_pipeline_prereqs.py`.
 """
-collect_ignore = ["test_pipeline_prereqs.py"]
+#  `test_cycleheat.py` ADDED 2026-08-13 — SAME DEFECT, MISSED FOR THE SAME REASON.
+#  It is a SCRIPT wearing a test_ prefix: zero test functions, `api_key =
+#  open('fmpAPIkey.txt').read()` at MODULE level (line 15), and three module-level
+#  `for` loops that fire live paid `v3/profile` and `v4/*` calls at IMPORT time
+#  (lines 75, 122, 147).  Collection imports it, so the calls ran on EVERY
+#  `pytest .` from the repo root.
+#
+#  The blast radius is the part worth recording: the house has been running the full
+#  suite as its standard verification for weeks, and repeatedly told the CEO that a
+#  directory-scoped run is offline-safe.  It was not.  Roughly eight paid calls fired
+#  per full-suite invocation.  Found 2026-08-13 by a reviewer who noticed the cost,
+#  fired the calls itself before realising, and DISCLOSED it rather than burying it.
+#
+#  This list is the whole defence and it was one entry long while a second file with
+#  the identical shape sat beside it.  Anything named `test_*.py` that is really a
+#  script belongs here — or, better, gets renamed so it cannot be collected at all.
+collect_ignore = ["test_pipeline_prereqs.py", "test_cycleheat.py"]
 
 
 # --------------------------------------------------------------------------------- #
