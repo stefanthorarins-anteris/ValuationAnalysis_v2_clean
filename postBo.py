@@ -2368,18 +2368,57 @@ def moatIdentifier(symblist, cdx_df, n=20, freq_map=None):
             # SGAtoGP, DeptoGP, NetMargin, CapExtoEarnings, TLtoEquity.
             af = rp.annualize_factor(_rpy)
             tempdf['source'] = symb
-            fcfmask = cdx_temp['pfcfRatio'] != 0
-            fcfyield_filter = cdx_temp['pfcfRatio'][fcfmask]
+            #  ---- THE WINDOW IS POSITIONAL: MASK TO NaN, NEVER FILTER BEFORE head(n) -------
+            #  (fetch-depth audit, 2026-08-14.)  Four of the eleven comparators used to DROP
+            #  their inadmissible rows and THEN take head(n) -- `series[mask].head(n)`.  A
+            #  filtered-then-windowed series has NO CALENDAR BOUND: head(20) over a series
+            #  with the loss-making / zero-denominator rows removed reaches back until it has
+            #  found 20 SURVIVING rows, however far that is.  So the window's calendar span
+            #  was a function of the FETCH DEPTH for exactly the names most likely to have
+            #  inadmissible rows -- and at `-nrperiods 80` it could reach back TWENTY YEARS to
+            #  fill a window whose own comment calls it "5 years of quarters".
+            #  MEASURED: on the 2026-08-13 CUR3K panel, re-deepening 24 -> 80 moved moatScore
+            #  by a full point on 5 of 1,884 quarterly names with nothing else changed
+            #  (baseline_tools/depth_sensitivity.py) -- and it is display-only but the CEO
+            #  reads it as an absolute 0-11 count.
+            #
+            #  THE ON-PANEL COST OF THE FIX ITSELF, AT TODAY'S DEPTH, WITH THE COUNTING RULE
+            #  STATED (2,629 sources; review item M-6 asked for exactly this, because a single
+            #  "flip count" merges three different events and two readers got two answers).
+            #  moatScore is `sum(criterion > 0)` and `NaN > 0` is False, so what moves the
+            #  score is a change in the `> 0` BOOLEAN:
+            #        value -> value sign flips ....... 47
+            #        NaN   -> pass  (score +1) ......   0
+            #        pass  -> NaN   (score -1) ......  24
+            #        NaN transitions moving nothing ..  25   (not counted)
+            #        --------------------------------------
+            #        SCORE-RELEVANT flips ...........  71   of 10,516 evaluations
+            #  The VALUES move far more often than the verdicts: CapExtoEarnings moves on
+            #  54.2% of sources (loss quarters are common, and the old window reached PAST
+            #  them), FCFyield 4.4%, SGAtoGP 4.0%, DeptoGP 3.4%.
+            #  WHAT THE CEO ACTUALLY SEES: 68 of 2,629 names (2.59%) change their 0-11 count,
+            #  by -1 on 33, +1 on 33, +2 on 1 and -3 on 1.  Max movement 3 points.
+            #  THE FIX IS THE PIPELINE'S OWN CONVENTION, not a new one: every other window
+            #  here -- `nan_policy.window_verdict`, `calcScore.calcByTier` -- keeps an
+            #  inadmissible row IN PLACE as NaN and windows POSITIONALLY, then lets `.mean()`
+            #  skip it.  The value becomes "the mean over the computable rows INSIDE the
+            #  newest n", which is the honest reading and is fetch-depth invariant.
+            #  BEHAVIOUR CHANGE, on this panel too, for any name with an inadmissible row
+            #  inside its window -- declared, not silent.  It only ever moves the window
+            #  NEWER.
+            _pfcf = pd.to_numeric(cdx_temp['pfcfRatio'], errors='coerce')
+            fcfyield_filter = _pfcf.where(_pfcf != 0)
             tempdf['FCFyield'] = (1/fcfyield_filter).head(n).mean()*af-0.1
             tempdf['GrossMargin'] = cdx_temp['grossProfitMargin'].head(n).mean()-0.3
             tempdf['RevtoASS'] = (cdx_temp['revenue']/cdx_temp['totalAssets']).head(n).mean()*af-0.75
             tempdf['RoE'] = cdx_temp['returnOnEquity'].head(n).mean()*af-0.15
             tempdf['RoA'] = cdx_temp['returnOnAssets'].head(n).mean()*af-0.1
             tempdf['ROIC'] = cdx_temp['returnOnCapitalEmployed'].head(n).mean()*af - 0.15
-            gpmask = cdx_temp['grossProfit'] != 0
-            gp_filter = cdx_temp['grossProfit'][gpmask]
-            tempdf['SGAtoGP'] = 0.15-(cdx_temp['sellingGeneralAndAdministrativeExpenses'][gpmask]/gp_filter).head(n).mean()
-            tempdf['DeptoGP'] = 0.1 - (cdx_temp['depreciationAndAmortization'][gpmask]/gp_filter).head(n).mean()
+            #  Masked to NaN IN PLACE, not filtered out -- see the FCFyield note above.
+            _gp = pd.to_numeric(cdx_temp['grossProfit'], errors='coerce')
+            gp_filter = _gp.where(_gp != 0)
+            tempdf['SGAtoGP'] = 0.15-(cdx_temp['sellingGeneralAndAdministrativeExpenses']/gp_filter).head(n).mean()
+            tempdf['DeptoGP'] = 0.1 - (cdx_temp['depreciationAndAmortization']/gp_filter).head(n).mean()
             #tempdf['InteresttoOI'] = 0.15 - (cdx_df['interestExpense']/cdx_df['operatingIncome']).head(n).mean()
             tempdf['NetMargin'] = cdx_temp['netProfitMargin'].head(n).mean() - 0.2
             # CapEx/Earnings: |capex| / |NI| < 0.20, GATED ON NI > 0 (domain review S8, fixed
@@ -2393,11 +2432,14 @@ def moatIdentifier(symblist, cdx_df, n=20, freq_map=None):
             # "Capex is a small share of earnings" is UNDEFINED when there are no earnings, so a
             # loss-making period is NOT-COMPUTABLE (NaN), not a pass: NaN > 0 is False, so it
             # neither ticks the box nor counts against the other ten comparators.
+            #  `_prof` is applied with `.where`, NOT as a row filter -- see the FCFyield note
+            #  above.  The gate itself (NI > 0 is required for the ratio to mean anything) is
+            #  UNCHANGED; only the window stops sliding backwards to replace the gated rows.
             _ni_ps = pd.to_numeric(cdx_temp['netIncomePerShare'], errors='coerce')
             _cx_ps = pd.to_numeric(cdx_temp['capexPerShare'], errors='coerce')
             _prof = _ni_ps > 0
-            tempdf['CapExtoEarnings'] = (0.2 - (_cx_ps[_prof].abs()
-                                                / _ni_ps[_prof].abs()).head(n).mean())
+            tempdf['CapExtoEarnings'] = (0.2 - (_cx_ps.abs() / _ni_ps.abs())
+                                         .where(_prof).head(n).mean())
             tempdf['TLtoEquity'] = 0.8 - (cdx_temp['totalLiabilities']/cdx_temp['totalStockholdersEquity']).head(n).mean()
             # Count ONLY the 11 criteria -- never moatScore itself, and never any column that
             # happens to be numeric.  NaN > 0 is False, so a non-computable criterion does not

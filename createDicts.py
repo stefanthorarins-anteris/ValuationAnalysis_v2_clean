@@ -194,7 +194,38 @@ def getDicts():
                           # once these columns exist -- which is why only the CAPTURE half rides
                           # this fetch.  THE SCORING HALF (what `longTermDebtChange` should do
                           # once the cross-check is available) IS DELIBERATELY NOT IN THIS BUILD.
-                          'shortTermDebt'],
+                          'shortTermDebt',
+                          # --- CAPTURE ONLY, NOT WIRED (CEO-approved 2026-08-14) ------------
+                          # Sixth wave, identical argument to every one before it: all four are
+                          # ALREADY IN the paid v3/balance-sheet-statement response (confirmed
+                          # PRESENT on a live probe, 2026-08-13, recorded in
+                          # APIcallsDocs/endpoint_fields.json) and were discarded at ingest, so
+                          # capturing them costs ZERO extra API calls.  A SAVED PICKLE CAN NEVER
+                          # GAIN A COLUMN -- the fetch is the only chance.
+                          #
+                          # `retainedEarnings` IS THE ONE WITH A NAMED CONSUMER ALREADY WAITING.
+                          # Altman-Z's x2 term is defined as RETAINED EARNINGS / totalAssets and
+                          # `stage2_metrics.altman_z` SUBSTITUTES `totalStockholdersEquity /
+                          # totalAssets` for it, because the published term was not on the panel.
+                          # Equity is retained earnings PLUS paid-in capital, so the substitute
+                          # reads HIGH for any company that has raised equity and the two agree
+                          # only for a firm that never issued stock above par.  CAPTURING IT IS
+                          # NOT REWIRING IT: whether Altman should move to the published term is
+                          # a SEPARATE decision with a real behaviour change behind it (Altman-Z
+                          # carries weight), and it is explicitly NOT taken here.  Do not "finish
+                          # the job" without a ruling and a measured before/after.
+                          'retainedEarnings',
+                          # SECOND TIER -- no named consumer today, captured because they are on
+                          # a payload we are already paying for and the alternative is another
+                          # 12-hour fetch to get them.  `netReceivables` + `accountPayables` are
+                          # the two working-capital legs the Beneish DSRI and the Sloan accrual
+                          # decomposition are built from and that we currently take on trust from
+                          # the vendor's own ratio; `goodwillAndIntangibleAssets` is the gap
+                          # between `bVpRatio` and `tbVpRatio` made explicit rather than inferred;
+                          # `minorityInterest` is the leg that makes a consolidated equity figure
+                          # not the parent's equity, which is exactly the FIN-cohort case.
+                          'netReceivables', 'accountPayables',
+                          'goodwillAndIntangibleAssets', 'minorityInterest'],
                    'inc': ['netIncome', 'grossProfit', 'revenue', 'weightedAverageShsOut', 'weightedAverageShsOutDil', 'depreciationAndAmortization',
                            'sellingGeneralAndAdministrativeExpenses', 'operatingIncome','interestExpense',
                            # eps / epsdiluted: ALREADY IN the paid v3/income-statement response and
@@ -260,9 +291,62 @@ def getDicts():
                            #              otherwise -- do not treat it as availability truth blindly.
                            # acceptedDate timestamp the filing was accepted; the discriminator for the
                            #              fillingDate-placeholder test above.
-                           'period', 'calendarYear', 'fillingDate', 'acceptedDate'],
+                           'period', 'calendarYear', 'fillingDate', 'acceptedDate',
+                           # --- CAPTURE ONLY, NOT WIRED (CEO-approved 2026-08-14) ------------
+                           # `incomeTaxExpense` + `incomeBeforeTax` ARE THE TWO OPERANDS THIS
+                           # FILE ALREADY NAMES AS MISSING.  Read the `effectiveTaxRate` entry in
+                           # BoMetric_diff_dict below: "NEITHER operand (incomeTaxExpense,
+                           # incomeBeforeTax) is in preReq_dict, so they are not on cdx_df and
+                           # the OPERAND signs cannot be recovered -- only the ratio's own sign.
+                           # So the both-operands-negative case (a tax CREDIT on a PRE-TAX LOSS,
+                           # which yields a NORMAL-LOOKING POSITIVE rate) is NOT detectable here
+                           # and is NOT fixed."  Both are on the paid v3/income-statement
+                           # response (live probe 2026-08-13) and were being discarded, so
+                           # closing that channel costs ZERO extra API calls.
+                           # WHAT IS *NOT* DONE HERE: the criterion is Tier 'N' (w = 0) by CEO
+                           # decision, so there is nothing to repair today -- and repairing it
+                           # would be a scoring change, which this wave does not make.  These
+                           # exist so the channel becomes MEASURABLE offline from the panel.
+                           'incomeTaxExpense', 'incomeBeforeTax',
+                           # SECOND TIER, no consumer today.  `costOfRevenue` is the leg
+                           # `grossProfitMargin` is built from (revenue - costOfRevenue), so
+                           # carrying it makes the vendor's margin checkable against its own
+                           # operands rather than trusted; `researchAndDevelopmentExpenses` is the
+                           # one large operating line the panel has no view of at all, and it is
+                           # the one that separates a capitalising issuer from an expensing one.
+                           'researchAndDevelopmentExpenses', 'costOfRevenue'],
                    'cf': ['freeCashFlow', 'netCashProvidedByOperatingActivities','netCashUsedProvidedByFinancingActivities',
-                          'dividendsPaid'],
+                          'dividendsPaid',
+                          # --- CAPTURE ONLY, NOT WIRED (CEO-approved 2026-08-14) -------------
+                          # All four are on the paid v3/cash-flow-statement response (live probe
+                          # 2026-08-13) and were discarded at ingest -- ZERO extra API calls.
+                          #
+                          # `capitalExpenditure` IS THE RAW OPERAND BEHIND TWO THINGS WE CURRENTLY
+                          # TAKE FROM THE VENDOR: `capexPerShare` (key-metrics) and
+                          # `capitalExpenditureCoverageRatio` (ratios), the latter a SCORED Tier-C
+                          # special.  With the raw line and `netCashProvidedByOperatingActivities`
+                          # -- already captured -- that ratio is reconstructible from operands
+                          # instead of consumed, which is the CEO's standing "compute what we can"
+                          # preference.  NOT rewired here: `calc_special`'s
+                          # `capitalExpenditureCoverageRatio` branch still reads the vendor field,
+                          # and its known `fillna(0)` defect (D10) is a separate open item.
+                          #
+                          # `commonStockRepurchased` + `commonStockIssued` ARE A PAIR AND ARE
+                          # CAPTURED AS ONE.  Stage-1 scores `dSharesOutstanding` (Tier B, Sign
+                          # -1) and Stage-2 scores `shareCountChange` -- both read the NET share
+                          # count, which cannot tell a buyback from a company that issued into a
+                          # buyback and finished flat.  Capturing only the repurchase leg would
+                          # invite exactly that error, so both ride together or neither does.
+                          #
+                          # `stockBasedCompensation` is the non-cash add-back inside
+                          # `netCashProvidedByOperatingActivities` and therefore inside
+                          # `freeCashFlow` -- so it sits inside `freeCashFlowYield` (w > 0),
+                          # `freeCashFlowToMarketCap` (Tier S) and `CFOlessEarnings` (Tier S)
+                          # today, unobserved.  Capturing it makes an SBC-adjusted FCF a
+                          # MEASURABLE question rather than an unanswerable one.  NOTHING is
+                          # adjusted here.
+                          'capitalExpenditure', 'commonStockRepurchased', 'commonStockIssued',
+                          'stockBasedCompensation'],
                    'km': ['netIncomePerShare', 'pbRatio', 'earningsYield', 'pfcfRatio', 'grahamNumber', 'grahamNetNet',
                           'marketCap', 'returnOnTangibleAssets', 'incomeQuality', 'bookValuePerShare', 'netDebtToEBITDA',
                           'daysSalesOutstanding', 'capexPerShare', 'tangibleBookValuePerShare',

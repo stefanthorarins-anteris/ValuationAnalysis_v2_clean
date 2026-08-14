@@ -731,7 +731,21 @@ def test_TWO_PROCESSES_WITH_DIFFERENT_HASH_SEEDS_now_score_IDENTICALLY():
         env.pop("VA_OFFLINE_NO_DCF", None)
         r = subprocess.run([sys.executable, "-c", prog], capture_output=True, text=True,
                            env=env, timeout=300)
-        assert r.returncode == 0, r.stderr[-2000:]
+        #  THE RETURN CODE IS IN THE MESSAGE, AND THAT IS THE POINT (review L-10, 2026-08-14).
+        #  This guard fired once in a full-suite run with an EMPTY stderr and could not be
+        #  diagnosed, because `r.stderr[-2000:]` alone yields the empty string when the CHILD
+        #  IS KILLED -- and a killed child is a different fact from a determinism failure (that
+        #  would fail the digest compare below, not this line).  The one datum that separates
+        #  them is the return code, and it was the one datum being discarded.  On Windows a
+        #  large positive rc names the fault directly (e.g. 3221225477 = access violation) and
+        #  a negative rc names a signal; either settles it in one run.  Not reproduced in 185
+        #  attempts across 13 hash seeds, so this exists to catch it the NEXT time rather than
+        #  to fix a known cause.
+        assert r.returncode == 0, (
+            'seed=%s rc=%r (0 expected; a large positive rc on Windows is a fault code, a '
+            'negative one is a signal -- either means the CHILD WAS KILLED and this is NOT a '
+            'determinism failure) stdout=%r stderr=%r'
+            % (seed, r.returncode, r.stdout[-500:], r.stderr[-1500:]))
         digests.append(json.loads(r.stdout.strip().splitlines()[-1]))
     assert digests[0]["agg"] == digests[1]["agg"], \
         ("AggScore still differs across hash seeds: %s vs %s"

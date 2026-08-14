@@ -15,6 +15,83 @@ HISTORY_BONUS_MAX = 0.05             # bonus at saturation; HALF the smallest cr
                                      # difference (a Tier-D criterion over a full window)
 HISTORY_BONUS_SATURATION_ROWS = 40   # ROWS available to the source, not the head(n) window
 
+
+def history_bonus_censored_by(panel_rows):
+    """`None` when a panel `panel_rows` deep can SATURATE the history bonus; otherwise the
+    largest bonus it can reach.  The one place the depth condition is stated.
+
+    WHY THIS EXISTS (fetch-depth audit, 2026-08-14).  The bonus reads the source's ROW COUNT,
+    which is `min(fetch depth - the rpy history trim, the company's own history)`.  So the
+    bonus is a function of `-nrperiods` UNTIL the fetch is deep enough for the saturation
+    point to be REACHABLE, and only then does it measure what the CEO's 2026-08-05 ruling
+    asked for -- listing history up to 40 quarters.
+
+    AT `-nrperiods 24` IT WAS CENSORED, and that is the whole finding.  `build_bometric_rows`
+    trims the oldest `rpy` rows, so a fetch-capped QUARTERLY filer carried 20 BoMetric rows and a
+    SEMI-ANNUAL one carried 22 (the trim is `rpy`, not 4).  The largest attainable bonus was
+    therefore 0.05*sqrt(20/40) = 0.035355 for a quarterly filer and 0.05*sqrt(22/40) = 0.037081
+    for a semi-annual one, against a 0.050000 maximum.  Every such name was scored on "how deep
+    was the fetch", not on how long it has been listed.
+
+    AT `-nrperiods 80` IT IS NOT.  76 rows clears the 40-row saturation point outright, so
+    every name listed 10+ years reaches the full 0.050000 and every shorter name is measured on
+    its OWN history -- fetch-depth invariant at any depth >= 44 rows.  So the deep fetch does
+    not break this metric; it is the first fetch on which it works as ruled.
+
+    ===================================================================================
+    THE ONE-OFF CONSEQUENCE -- **NOT A UNIFORM SHIFT**.  READ THIS BEFORE COMPARING A
+    DEEP RUN'S SCORES AGAINST A PRIOR PANEL'S.
+    ===================================================================================
+    AN EARLIER VERSION OF THIS NOTE SAID THE DEEP FETCH RAISES "EVERY fetch-capped name by
+    exactly 0.014645" and that "a COMMON shift over that whole cohort cannot re-rank it
+    internally".  THAT WAS WRONG, in two independent ways, and it was wrong in the direction
+    that matters -- it promised flatness in the one place the bonus is designed to
+    discriminate.  Both errors are recorded here rather than deleted, because this is the
+    statement the deep run will be compared against.
+
+      (a) THE TRIM IS `rpy`, SO THE CEILING IS FREQUENCY-DEPENDENT.  Measured on the
+          2026-08-13 CUR3K panel (2,629 sources):
+              20 rows  1,772 sources (1,760 quarterly)  ceiling 0.035355  ->  +0.014645
+              21 rows     10 sources (semi-annual)      ceiling 0.036228  ->  +0.013772
+              22 rows    583 sources (all semi-annual)  ceiling 0.037081  ->  +0.012919
+          583 names -- 22.2% of the panel -- move by 0.012919, not 0.014645.
+
+      (b) A REAL FETCH RETURNS `min(80, own history)`, AND THIS IS THE BIGGER HALF.  The
+          harness that produced the "uniform" figure (`baseline_tools/depth_sensitivity.py`
+          `extend_history`) pads every eligible source to EXACTLY `target_rows`, i.e. it models
+          a universe in which every name capped at 24 has >= 80 quarters of real history.  It
+          does not.  The realised bump is a continuous function of LISTING AGE:
+              own history 24q ->  +0.000000      (nothing more to fetch)
+              own history 28q ->  +0.003374
+              own history 32q ->  +0.006478
+              own history 36q ->  +0.009366
+              own history 40q ->  +0.012079
+              own history 44q+ -> +0.014645      SATURATED (quarterly; 0.012919 semi-annual)
+          So EVERY NAME LISTED BETWEEN ~6 AND ~11 YEARS GETS A DIFFERENT BUMP, spanning the
+          full bonus range, inside a cohort that is perfectly flat today.
+
+    WHAT THAT MEANS FOR READING THE DEEP RUN.  The deep fetch RE-RANKS ON LISTING HISTORY
+    across the whole 24-43-quarter band -- it does not merely re-rank long-history names
+    against short-history ones.  That is the discrimination the bonus EXISTS for and which
+    depth 24 suppressed, so it is the metric starting to work rather than a defect; but it is
+    NOT a common offset that cancels out of a comparison.  It is also decisive by this
+    module's own scale argument: 90.9% of names share their score with another name and break
+    alphabetically, and a spread of up to 0.0146 resolves those ties.  It remains a TIEBREAK
+    and nothing more -- `HISTORY_BONUS_MAX` is unchanged, so the bonus still cannot outweigh
+    one full Tier-D criterion differing.
+
+    THE ROW COUNT AT DEPTH 24 DOES NOT DETERMINE THE BUMP, which is the trap in reading (a)
+    without (b).  The 264 panel sources sitting BELOW 20 rows are limited by their own history
+    or by a `data_quality` truncation, NOT by the fetch, so a deeper fetch gives them NOTHING
+    and their bump is 0 -- even though their ceiling is the lowest of all.
+    """
+    if int(panel_rows) >= HISTORY_BONUS_SATURATION_ROWS:
+        return None
+    #  The SAME expression the bonus itself uses at the single use site below -- if these two
+    #  ever diverge the watchdog would report a ceiling no name is actually held to.
+    return HISTORY_BONUS_MAX * math.sqrt(max(0, int(panel_rows))
+                                         / HISTORY_BONUS_SATURATION_ROWS)
+
 def simpleScore_fromDict(bm_df,bm_ave,bm_da,n=8,as_of=None,freq_map=None):
     """Stage-1 per-symbol scoring.
 
@@ -210,6 +287,51 @@ def simpleScore_fromDict(bm_df,bm_ave,bm_da,n=8,as_of=None,freq_map=None):
         pbar.update(n=1)
 
     pbar.close()
+    # --- HISTORY-BONUS CENSORSHIP WATCHDOG (fetch-depth audit, 2026-08-14) ---------------
+    # ZERO IS REPORTED AS A RESULT, NOT AS SILENCE -- the same standard as the
+    # reporting-frequency watchdog and the mean-bar band, and for the same reason: the bonus
+    # reading "how deep was the fetch" instead of "how long has this been listed" is INVISIBLE
+    # in the score, and it was invisible for the whole life of `-nrperiods 24`.  The DEEPEST
+    # source in the panel is the right statistic: a shallow individual name is a young company
+    # (correct), while a panel whose deepest name cannot reach saturation is a FETCH that is
+    # too shallow for this criterion to mean what it says.  See `history_bonus_censored_by`.
+    try:
+        _sz = bm_df.groupby('source').size() if len(bm_df) else pd.Series(dtype='int64')
+        _deepest = int(_sz.max()) if len(_sz) else 0
+        _cap = history_bonus_censored_by(_deepest)
+        if _cap is None:
+            print('HISTORY BONUS: uncensored -- the deepest source carries %d row(s), at or '
+                  'past the %d-row saturation point, so the bonus measures LISTING HISTORY '
+                  'and is invariant to `-nrperiods`.'
+                  % (_deepest, HISTORY_BONUS_SATURATION_ROWS), flush=True)
+        else:
+            #  THE CEILING IS PER-SOURCE, NOT PER-PANEL, so the banner reports the CEILING
+            #  BAND rather than one number.  The trim is `rpy`, so a semi-annual filer keeps 22
+            #  rows where a quarterly one keeps 20 and its ceiling is HIGHER (0.037081 vs
+            #  0.035355) -- quoting only the deepest source's ceiling would print the
+            #  semi-annual figure under a sentence about the whole panel, which is exactly the
+            #  false-uniformity defect this banner was corrected for.
+            _n_capped = int((_sz >= _deepest).sum())
+            _lo = history_bonus_censored_by(int(_sz.min())) or HISTORY_BONUS_MAX
+            print('HISTORY BONUS IS CENSORED BY FETCH DEPTH: the deepest source carries only '
+                  '%d row(s) against a %d-row saturation point, so NO name reaches the %.6f '
+                  'maximum -- per-source ceilings span %.6f (%d rows) to %.6f (%d rows), and '
+                  'the bonus is partly measuring the FETCH rather than the company. Deepen '
+                  'the fetch (>= %d rows must survive the rpy history trim) to make it mean '
+                  'what its ruling says.'
+                  % (_deepest, HISTORY_BONUS_SATURATION_ROWS, HISTORY_BONUS_MAX,
+                     _lo, int(_sz.min()), _cap, _deepest, HISTORY_BONUS_SATURATION_ROWS),
+                  flush=True)
+            print('  WHEN THIS UNCENSORS, THE SCORE SHIFT IS **NOT UNIFORM** -- it is a '
+                  'continuous function of each company\'s own LISTING AGE (a real fetch '
+                  'returns min(depth, own history)), so the deep run RE-RANKS across the '
+                  'whole band that is flat today. Only names with >= %d rows of real history '
+                  'take the full step. Do NOT read a deep run\'s scores against a shallow '
+                  'panel\'s as a common offset -- see history_bonus_censored_by.'
+                  % (HISTORY_BONUS_SATURATION_ROWS,), flush=True)
+    except Exception as _e:                 # a watchdog must never cost a 12-hour run
+        print('WARNING: history-bonus censorship check skipped (%s: %s)'
+              % (type(_e).__name__, _e), flush=True)
     # NaN-WEIGHT READOUT (ruling Q1.5).  For every source, how many Stage-1 criteria were
     # scored on an entirely non-computable window, and what tier weight that adds up to.
     # This is what makes the Stage-2 missingness coupling visible, and it is the precondition

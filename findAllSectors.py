@@ -1,9 +1,144 @@
+import hashlib
+import json
 import os
 import glob
 import requests
 import pandas as pd
 from tqdm import tqdm
 from datetime import datetime
+
+
+# =========================================================================== #
+#  WHAT THE PROFILE MAPS CAPTURE -- DECLARED ONCE, AND THE GATE READS IT       #
+#  (2026-08-14)                                                               #
+# =========================================================================== #
+#  THE DEFECT THIS CLOSES, and it has already cost one run.  The rebuild gate
+#  (`ensure_sector_industry_maps`) decides whether to re-fetch the profile payload from
+#  PRESENCE, AGE and COVERAGE.  None of the three can see a CODE change to WHICH FIELDS the
+#  maps capture -- so on 2026-08-10 all four maps existed, none was 60 days stale and coverage
+#  was above the floor, the gate skipped (correctly, by its own rules), and TWO ALREADY-SHIPPED
+#  CAPTURE CHANGES NEVER LANDED.  Every 2026-08-10 pick carried `volAvg_asof = 2026-08-07`, and
+#  nothing would have forced a rebuild until 2026-10-06.  `-force_rebuild_maps` was added as
+#  the manual answer, and it works -- but it is an OPERATOR REMEMBERING, which is exactly the
+#  mechanism that failed.
+#
+#  THE FIX IS THE SAME LESSON THE PRESENCE CHECK ALREADY LEARNED, ONE LEVEL UP.  That check was
+#  wrong because it was frozen at a past revision instead of derived from what the writer
+#  WRITES; the gate's own note says "A presence gate must be derived from what the writer
+#  WRITES, never from a subset of it".  A FRESHNESS gate must be too.  So the captured FIELD SET
+#  is declared here, the writer builds its entries FROM this tuple (it cannot capture a field
+#  that is not in it, and cannot omit one that is), the fingerprint is written beside the maps,
+#  and the gate rebuilds when the fingerprint on disk differs from the code's.
+#
+#  A CAPTURE CHANGE NOW TRIGGERS ITS OWN REBUILD, with no flag and nobody remembering.
+#  `-force_rebuild_maps` is KEPT and is unchanged -- the two are independent, and it remains
+#  the answer for "rebuild for some reason the code cannot see".
+#
+#  THE FIELDS BELOW ARE THE ONES WITH NAMED CONSUMERS OR PENDING QUESTIONS.  Every one is
+#  CAPTURE-ONLY: nothing in the pipeline reads them.  See the long note at the capture site.
+PROFILE_EXTRA_CAPTURE_FIELDS = (
+    'mktCap',            # the TRADED LINE's own market cap -- the depositary handle
+    'ipoDate',           # activates universe_pit.py:97-100, which has never fired live
+    'companyName',       # today fetched from Yahoo, one name at a time, at 0.6s spacing
+    'isAdr', 'isEtf', 'isFund',
+    'cik', 'cusip',      # issuer / instrument identifiers, for the K-1 dedup tiebreak
+    'fullTimeEmployees',
+)
+
+#  EVERY profile key the writer pulls off the payload, in ONE place.  The earlier waves are
+#  listed explicitly because they are read into individually-named dicts (kept that way: they
+#  have consumers and comments attached, and renaming them would be a refactor riding a capture
+#  change).  The fingerprint covers ALL of them, so removing an old field triggers a rebuild
+#  just as adding a new one does.
+PROFILE_CAPTURE_FIELDS = tuple(sorted({
+    'symbol', 'sector', 'industry', 'isin', 'volAvg',
+    'price', 'currency',
+    'isActivelyTrading', 'exchange', 'exchangeShortName', 'country', 'beta',
+} | set(PROFILE_EXTRA_CAPTURE_FIELDS)))
+
+#  The stamp file.  A SEPARATE artifact rather than a key inside `volavgdic_fmp_*.pickle`,
+#  deliberately and for the reason the ISIN map already gives: that pickle is a
+#  symbol -> entry map and a non-symbol key in it would be read as a symbol by any consumer
+#  that iterates it.  A new file cannot change the schema of an artifact something already
+#  consumes.
+PROFILE_CAPTURE_SCHEMA_FILE = 'profile_capture_schema.json'
+
+
+def profile_capture_fingerprint(fields=None):
+    """A short, stable fingerprint of the captured profile FIELD SET.
+
+    Order-independent (the tuple is sorted) so re-ordering the declaration cannot trigger a
+    spurious rebuild, and content-sensitive so adding OR removing a field does.
+    """
+    fields = PROFILE_CAPTURE_FIELDS if fields is None else fields
+    payload = '\n'.join(sorted(str(f) for f in fields))
+    return hashlib.sha256(payload.encode('utf-8')).hexdigest()[:16]
+
+
+def read_capture_schema(directory='.'):
+    """The field set + fingerprint recorded beside the maps on disk, or None.
+
+    None means UNKNOWN -- never "unchanged".  Every machine is in that state the first time
+    this ships, and the gate must treat it as CHANGED: a missing stamp means we cannot prove
+    the maps on disk carry today's fields, and the safe direction for a gate whose only cost is
+    ~30 batched profile calls is to rebuild.
+    """
+    try:
+        path = os.path.join(directory, PROFILE_CAPTURE_SCHEMA_FILE)
+        if not os.path.exists(path):
+            return None
+        with open(path, 'r', encoding='utf-8') as fh:
+            d = json.load(fh)
+        return d if isinstance(d, dict) and d.get('fingerprint') else None
+    except Exception:
+        return None
+
+
+def write_capture_schema(directory='.', asof=None, verbose=True):
+    """Record the field set the maps were just built with.  Best-effort and fully swallowed,
+    like every other artifact writer on this path: a stamp must never be able to cost a fetch
+    that has already spent its API calls."""
+    try:
+        payload = {'fingerprint': profile_capture_fingerprint(),
+                   'fields': list(PROFILE_CAPTURE_FIELDS),
+                   'asof': asof or datetime.today().strftime('%Y-%m-%d')}
+        path = os.path.join(directory, PROFILE_CAPTURE_SCHEMA_FILE)
+        with open(path, 'w', encoding='utf-8') as fh:
+            json.dump(payload, fh, indent=2, sort_keys=True)
+        if verbose:
+            print('[maps] capture-schema stamp written to %s (fingerprint %s, %d field(s))'
+                  % (path, payload['fingerprint'], len(PROFILE_CAPTURE_FIELDS)), flush=True)
+        return payload
+    except Exception as _e:
+        if verbose:
+            print('[maps] WARNING: capture-schema stamp not written (%s: %s) -- the next run '
+                  'will treat the schema as UNKNOWN and rebuild, which is the safe direction.'
+                  % (type(_e).__name__, _e), flush=True)
+        return None
+
+
+def capture_schema_changed(directory='.'):
+    """(changed, why) -- whether the maps on disk were built with TODAY's captured field set.
+
+    Returns `changed=True` when the stamp is absent (unknown != unchanged) or when the
+    fingerprint differs, with a `why` string naming the added/removed fields so the run log
+    says WHAT changed rather than only THAT something did.
+    """
+    stamp = read_capture_schema(directory)
+    want = profile_capture_fingerprint()
+    if stamp is None:
+        return True, ('no %s on disk -- the captured field set of the existing maps is UNKNOWN '
+                      '(this is the expected state the first time this ships)'
+                      % PROFILE_CAPTURE_SCHEMA_FILE)
+    if str(stamp.get('fingerprint')) == want:
+        return False, ''
+    had = set(stamp.get('fields') or [])
+    now = set(PROFILE_CAPTURE_FIELDS)
+    added, removed = sorted(now - had), sorted(had - now)
+    return True, ('captured field set CHANGED since the maps were built (%s -> %s)%s%s'
+                  % (stamp.get('fingerprint'), want,
+                     '; added: %s' % ', '.join(added) if added else '',
+                     '; removed: %s' % ', '.join(removed) if removed else ''))
 
 
 def _mask_key(api_key):
@@ -146,6 +281,11 @@ def buildSectorIndustryMaps(symbols, baseurl, api_key, batch_size=100, pace=None
     pricedic, currencydic = {}, {}
     #  Four more capture-only profile fields (2026-08-09), same entry, same as-of date.
     activedic, exchangedic, exchangeshortdic, countrydic, betadic = {}, {}, {}, {}, {}
+    #  NINE more (2026-08-14).  Accumulated generically from PROFILE_EXTRA_CAPTURE_FIELDS
+    #  rather than as nine named dicts, because the naming pattern above is what made the
+    #  capture SET impossible to compare against what is on disk -- see PROFILE_CAPTURE_FIELDS
+    #  and `profile_capture_fingerprint`.
+    extradic = {f: {} for f in PROFILE_EXTRA_CAPTURE_FIELDS}
     for prof in profiles:
         sym = prof.get('symbol') if isinstance(prof, dict) else None
         if not sym:
@@ -290,6 +430,72 @@ def buildSectorIndustryMaps(symbols, baseurl, api_key, batch_size=100, pace=None
         exchangeshortdic[sym] = prof.get('exchangeShortName')
         countrydic[sym] = prof.get('country')
         betadic[sym] = prof.get('beta')
+        #  ---- THE 2026-08-14 WAVE: mktCap + identity/PIT + fullTimeEmployees ------------
+        #  CAPTURE ONLY, NOT WIRED (CEO-approved).  Fifth wave on this payload, same
+        #  argument: every field is ALREADY IN the v3/profile response this loop is reading
+        #  and was being dropped on the lines above, so capturing costs ZERO extra API calls.
+        #  Presence CONFIRMED on a live probe 2026-08-13 and recorded in
+        #  APIcallsDocs/endpoint_fields.json -- not inferred from vendor docs.
+        #
+        #  *** `mktCap` IS THE ONE THAT MATTERS, and it is not a duplicate of anything.
+        #  `cdx_df['marketCap']` comes from v3/key-metrics and is a STATEMENT-side figure in
+        #  the STATEMENT currency; profile `mktCap` is THIS TRADED LINE's market cap, in the
+        #  same terms as profile `price` (captured 2026-08-08) and profile `currency` beside
+        #  it.  Having all three from ONE payload at ONE as-of gives an IMPLIED UNIT COUNT
+        #  for the line -- `mktCap / price` -- which is INDEPENDENT of the statement's
+        #  `weightedAverageShsOut`.  That independence is the whole point: it is the only
+        #  handle we have on the DEPOSITARY problem, where a GDR/ADR line's traded units are
+        #  a fixed ratio of the ordinary shares the statements count.  MEASURED CASES this
+        #  is aimed at: SKHY computes $7.06bn/day of traded value -- 3rd in the top-100 --
+        #  on what is essentially SK hynix's HOME line's volume; SMSN.L's profile currency
+        #  reads USD at 4,640 and is probably GBp.  Neither is decidable from the panel.
+        #  IT IS NOT A FIX FOR EITHER, and must not be described as one -- it is the
+        #  MEASUREMENT that makes them decidable, and the decision is a later, separate one.
+        #
+        #  *** `ipoDate` ACTIVATES A BRANCH THAT HAS NEVER FIRED.  `universe_pit.py:97-100`
+        #  already has the code to hold a name out of a point-in-time universe before it was
+        #  listed, and it is unreachable for a live name because no artifact carries a
+        #  listing date.  Capturing it is the precondition; WIRING IT IS NOT DONE HERE, and
+        #  the reason is the standing one -- it is absent from every existing artifact, so
+        #  anything built on it is untestable until a fetch has run with this in place.
+        #
+        #  *** `companyName` REPLACES A YAHOO CALL, EVENTUALLY.  We currently fetch company
+        #  names from Yahoo ONE NAME AT A TIME at 0.6s spacing; this field is free here, in
+        #  a 100-symbol batch.  Capture now, retire the Yahoo path in a separate change (it
+        #  has its own callers and its own failure modes, and folding the two together would
+        #  make a capture wave into a refactor).
+        #
+        #  *** `isAdr` / `isEtf` / `isFund` ARE CAPTURED WITH `isActivelyTrading`'S LESSON
+        #  ATTACHED.  That field was captured 2026-08-09 and measured True on 100/100 of a
+        #  deliberately ADVERSE sample -- including all 39 names that had FAILED the previous
+        #  fetch -- so it discriminates NOTHING on this population and must never be wired as
+        #  a liveness filter.  These three are captured WITHOUT a discrimination measurement,
+        #  because none exists: no saved artifact carries them, so the only way to measure
+        #  their base rates is to capture them and look.  THAT IS THE STATED STATUS -- do not
+        #  wire any of the three until its rate has been read off a real panel, and if it
+        #  comes back constant, it is an `isActivelyTrading` and gets retired, not used.
+        #  `isAdr` is the one with a live question already waiting for it (the depositary
+        #  problem above), which is why it is in this wave rather than a later one.
+        #
+        #  *** `cik` / `cusip` are IDENTIFIERS, and they matter for the SAME reason `isin`
+        #  did (register K-1, captured 2026-08-05): issuer-level dedup currently resolves 19
+        #  groups on an alphabetical last resort.  `cik` is the SEC issuer key -- exact for
+        #  US filers, absent elsewhere -- and `cusip` is instrument-level for North America.
+        #  NOTE `cik` IS ALSO ON THE THREE STATEMENT ENDPOINTS; if the two are ever joined,
+        #  a disagreement is a FINDING, not a merge conflict to resolve by preference (the
+        #  same warning `exchangeShortName` already carries).
+        #
+        #  *** `fullTimeEmployees` has no consumer and no pending question.  It is here
+        #  because it is free, it is the only headcount the pipeline could ever see, and
+        #  revenue- or profit-per-employee is a real quality axis we cannot currently ask
+        #  about at all.
+        #
+        #  NOT WIRED.  No consumer reads any of the nine.  They ride the SAME volavgdic
+        #  entry under the SAME asof as every earlier wave (`carveOut._load_volavg_map`
+        #  normalises to (volAvg, asof) and IGNORES other keys), so no consumer today
+        #  changes by a byte.
+        for _f in PROFILE_EXTRA_CAPTURE_FIELDS:
+            extradic[_f][sym] = prof.get(_f)
         sec = prof.get('sector')
         sectordic.setdefault(sec, []).append(sym)
 
@@ -351,16 +557,27 @@ def buildSectorIndustryMaps(symbols, baseurl, api_key, batch_size=100, pace=None
     #  set (no beta, no country) alongside its old asof.  A consumer must therefore treat a
     #  MISSING KEY and a null value as the same thing -- "not captured at that asof" -- and
     #  must never read an absent key as a meaningful False/0.
-    volavg_dated = {s: {'volAvg': v, 'asof': fidag,
-                        'price': pricedic.get(s), 'currency': currencydic.get(s),
-                        'isActivelyTrading': activedic.get(s),
-                        'exchange': exchangedic.get(s),
-                        'exchangeShortName': exchangeshortdic.get(s),
-                        'country': countrydic.get(s), 'beta': betadic.get(s)}
+    #  NINE MORE FIELDS RIDE THE SAME ENTRY (2026-08-14, capture-only) -- see
+    #  PROFILE_EXTRA_CAPTURE_FIELDS and the long note at the capture site.  They are spread
+    #  from `extradic` rather than named one by one BECAUSE the naming pattern is what let the
+    #  capture set drift out of sight of the rebuild gate: the writer can now only ever write
+    #  exactly the declared tuple, which is what makes the fingerprint honest.
+    volavg_dated = {s: dict({'volAvg': v, 'asof': fidag,
+                             'price': pricedic.get(s), 'currency': currencydic.get(s),
+                             'isActivelyTrading': activedic.get(s),
+                             'exchange': exchangedic.get(s),
+                             'exchangeShortName': exchangeshortdic.get(s),
+                             'country': countrydic.get(s), 'beta': betadic.get(s)},
+                            **{f: extradic[f].get(s) for f in PROFILE_EXTRA_CAPTURE_FIELDS})
                     for s, v in volavgdic.items()}
     merged_volavg, n_kept_v = _merge_industry_dics(
         _read_pickle_or_none(_prev_volavg) if _prev_volavg else None, volavg_dated)
     pd.to_pickle(merged_volavg, f'volavgdic_fmp_{fidag}.pickle')
+    #  THE CAPTURE-SCHEMA STAMP, written LAST -- only after every artifact this payload
+    #  produces is on disk.  Writing it earlier would let a crash mid-write leave a stamp
+    #  asserting a field set the maps do not actually carry, which is worse than no stamp:
+    #  the gate would then SKIP the rebuild that would have fixed them.
+    write_capture_schema(asof=fidag)
     print(f'[sector/industry build] volAvg captured for '
           f'{sum(1 for v in volavgdic.values() if v is not None)} of {len(volavgdic)} symbols -> '
           f'volavgdic_fmp_{fidag}.pickle, each entry stamped asof={fidag} (kept {n_kept_v} '
@@ -391,6 +608,23 @@ def buildSectorIndustryMaps(symbols, baseurl, api_key, batch_size=100, pace=None
           f'and must not be wired as one; (2) `currency` here is the TRADING currency -- '
           f'LSE lines quote in GBp while ZERO sources REPORT in GBp, so routing it into an '
           f'FX-consuming path takes the GBp minor-unit path live for the first time.')
+    _extra_counts = ', '.join(
+        '%s %d' % (f, sum(1 for v in extradic[f].values() if v is not None and v != ''))
+        for f in PROFILE_EXTRA_CAPTURE_FIELDS)
+    print(f'[sector/industry build] 2026-08-14 WAVE captured into the SAME '
+          f'volavgdic_fmp_{fidag}.pickle entry under the SAME asof, of {_n_sym} symbols: '
+          f'{_extra_counts}. CAPTURE ONLY -- NOTHING reads any of them, and three carry a '
+          f'status that must survive this run: (1) `mktCap` is THIS LINE\'s market cap in '
+          f'the line\'s own terms, NOT cdx_df[marketCap] (a statement-side figure in the '
+          f'STATEMENT currency) -- with profile `price` beside it, mktCap/price is an '
+          f'implied unit count independent of weightedAverageShsOut, which is the only '
+          f'handle on the depositary problem (SKHY, SMSN.L) and is a MEASUREMENT, not a '
+          f'fix; (2) `isAdr`/`isEtf`/`isFund` are captured WITHOUT a discrimination '
+          f'measurement because none exists -- read their base rates off this panel before '
+          f'wiring any of them, and if one comes back constant it is an `isActivelyTrading` '
+          f'and gets retired, not used; (3) `ipoDate` is the precondition for '
+          f'universe_pit.py:97-100, a branch that has NEVER fired for a live name -- wiring '
+          f'it is a separate change on a panel that actually carries the field.')
     print(f'[sector/industry build] ISIN captured for {sum(1 for v in isindic.values() if v)} '
           f'of {len(isindic)} symbols -> isindic_fmp_{fidag}.pickle (kept {n_kept_x} '
           f'pre-existing entr(ies)). CAPTURE ONLY -- register K-1 is NOT wired.')
@@ -675,6 +909,12 @@ def ensure_sector_industry_maps(symbols, baseurl, api_key, batch_size=100, pace=
     any_stale = any(s['stale'] for s in map_status.values())
     low_coverage = cov_pct is not None and cov_pct < MIN_SECTOR_COVERAGE_PCT
     all_present = sector_present and industry_present and isin_present and volavg_present
+    #  A CODE CHANGE TO *WHICH FIELDS* THE MAPS CAPTURE IS NOW A SKIP CONDITION IN ITS OWN
+    #  RIGHT (2026-08-14).  Presence, age and coverage are all properties of the artifacts;
+    #  none of them can see that the WRITER now pulls a field it did not pull before, which is
+    #  how two shipped capture changes silently failed to land on 2026-08-10.  See
+    #  PROFILE_CAPTURE_FIELDS.  An ABSENT stamp counts as CHANGED -- unknown is not unchanged.
+    schema_changed, schema_why = capture_schema_changed()
 
     #  --- THE EXPLICIT OVERRIDE: `-force_rebuild_maps` (CEO, 2026-08-10) -----------------
     #  BYPASSES the three skip conditions above; it does NOT change any of them.  The 60-day
@@ -691,22 +931,31 @@ def ensure_sector_industry_maps(symbols, baseurl, api_key, batch_size=100, pace=
     #  Every 2026-08-10 pick carries `volAvg_asof = 2026-08-07`, and nothing would have forced
     #  a rebuild until 2026-10-06.  A CODE change to what the maps CAPTURE has no
     #  representation in a freshness rule that only looks at their AGE.
-    if force_rebuild and all_present and not any_stale and not low_coverage:
+    if force_rebuild and all_present and not any_stale and not low_coverage and not schema_changed:
         print('[maps] REBUILD **FORCED** by -force_rebuild_maps -- the skip conditions were '
               'ALL SATISFIED (all four maps present, none over the %d-day staleness bar, '
-              'sector coverage %s above the %.0f%% floor), so this run would have reused the '
-              'cached pickles and spent no API calls. The operator overrode that explicitly.'
+              'sector coverage %s above the %.0f%% floor, captured field set unchanged), so '
+              'this run would have reused the cached pickles and spent no API calls. The '
+              'operator overrode that explicitly.'
               % (MAP_STALE_DAYS,
                  ('%.1f%%' % cov_pct) if cov_pct is not None else 'UNKNOWN',
                  MIN_SECTOR_COVERAGE_PCT), flush=True)
-    elif all_present and not any_stale and not low_coverage:
+    elif all_present and not any_stale and not low_coverage and not schema_changed:
         # Idempotent skip -- reuse cached pickles, no rebuild, no API calls.
         # SAY SO.  This branch used to `return False` in total silence.
-        print('[maps] all four profile-derived maps present, fresh and above the '
-              '%.0f%% coverage floor -- reusing cached pickles (no rebuild, no API '
-              'calls). Pass -force_rebuild_maps to rebuild anyway (e.g. after a change '
-              'to WHICH FIELDS the maps capture, which no freshness rule can see).'
-              % MIN_SECTOR_COVERAGE_PCT, flush=True)
+        #  THE ADVICE THIS USED TO GIVE IS NOW OBSOLETE AND HAS BEEN REMOVED (2026-08-14).  It
+        #  said "pass -force_rebuild_maps ... after a change to WHICH FIELDS the maps capture,
+        #  which no freshness rule can see".  THE GATE NOW SEES THAT -- the capture-schema
+        #  fingerprint is a skip condition, so reaching this branch means the field set on disk
+        #  MATCHES the code.  Leaving the old sentence would build a standing
+        #  `-force_rebuild_maps` habit around a gate that no longer needs one, and a reflex flag
+        #  is how an operator stops reading the gate's verdict at all.
+        print('[maps] all four profile-derived maps present, fresh, above the %.0f%% coverage '
+              'floor AND built with the current captured field set (fingerprint %s) -- '
+              'reusing cached pickles (no rebuild, no API calls). A change to WHICH FIELDS '
+              'are captured rebuilds on its own; -force_rebuild_maps is only for a reason the '
+              'code cannot see.'
+              % (MIN_SECTOR_COVERAGE_PCT, profile_capture_fingerprint()), flush=True)
         return False
 
     # Otherwise a build is WARRANTED.  State WHY -- FORCED vs TRIGGERED must be
@@ -722,6 +971,10 @@ def ensure_sector_industry_maps(symbols, baseurl, api_key, batch_size=100, pace=
     if low_coverage:
         triggers.append('sector coverage %.1f%% < %.0f%% floor'
                         % (cov_pct, MIN_SECTOR_COVERAGE_PCT))
+    if schema_changed:
+        triggers.append('CAPTURE SCHEMA: %s -- the maps on disk cannot carry fields the '
+                        'writer only started pulling after they were built, and no freshness '
+                        'rule can see that' % schema_why)
     if triggers:
         print('[maps] REBUILD WARRANTED (TRIGGERED by the gate\'s own conditions) -- %s%s'
               % ('; '.join(triggers),

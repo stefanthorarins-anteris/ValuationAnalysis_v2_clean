@@ -216,6 +216,59 @@ _PEG_EPS_FIELD = 'netIncomePerShare'
 #  returns the median it used and the run prints it, so a ranking can never be read without it.
 PEG_CROSSING_SUBSTITUTION = 'pool_median_growth'
 
+#  =========================================================================== #
+#  THE POOL WINDOW -- WHY THE MEDIAN IS NOT TAKEN OVER THE WHOLE PANEL          #
+#  (fetch-depth audit, 2026-08-14)                                              #
+#  =========================================================================== #
+#  `peg_pool_median_growth` used to pool growth rates over EVERY ROW OF EVERY SOURCE in the
+#  panel, so the bar a crossing row faces was a function of HOW MANY QUARTERS WE FETCHED.
+#  That is the defect `meanBars` (register C-12) removed from the Stage-1 `mean` family, in
+#  the one place it survived, and the deep fetch is what makes it bite:
+#
+#    * MEASURED, on the 2026-08-13 CUR3K panel (baseline_tools/depth_sensitivity.py, arm A):
+#      re-scoring the SAME panel deepened from 24 to 80 rows MOVED THE POOLED MEDIAN, and it
+#      moved a SCORED criterion -- `PEG` is Tier C (w = 0.30), so one flipped row inside the
+#      head(8) window is worth 0.0375 of BoScore.  7.0% of sources changed score through this
+#      channel alone once the history bonus was held fixed, by up to 0.15 (four flipped rows).
+#      It is the ONLY channel through which a windowed Stage-1 criterion moved with depth.
+#    * AND IT IS A REGIME-MIXING CHANNEL INDEPENDENT OF THE DEPTH QUESTION.  At `-nrperiods 80`
+#      the panel reaches back to 2006, so a 2026 crossing row would have been judged against a
+#      median blended out of the GFC and the 2021 boom.  "The typical growth rate" is a
+#      statement about NOW; a two-decade pool is not that statement.
+#
+#  THE WINDOW IS STAGE-1'S OWN SCORING WINDOW, AND THAT CHOICE IS THE ARGUMENT.  The criterion
+#  is scored as `calcByTier`'s head(n) mean over the newest n rows, so the population the bar
+#  should describe is the population the criterion is actually confronted with -- exactly the
+#  reasoning `meanBars._newest_window` states for the mean-bar pass rates ("the SAME population
+#  Stage-1 scores over").  Any longer window would put rows into the RULER that never reach the
+#  SCORE.
+#
+#  IT IS `rp.scale_window`-SCALED, WHICH STAGE-1's OWN head(n) DELIBERATELY IS NOT, and the
+#  divergence is intentional rather than an oversight.  Ruling Q2 (2026-07-26) leaves Stage-1's
+#  window unscaled because there it counts BERNOULLI TRIALS behind one company's pass rate --
+#  a property of that company, which halving n only makes noisier.  This median is a
+#  CROSS-SECTIONAL quantity pooled ACROSS companies, so an unscaled window would put TWICE the
+#  calendar span of the semi-annual cohort (~14% of the universe) into a bar the quarterly
+#  cohort also faces.  That is precisely the defect CYCLEHEAT_BASE_NQ exists to prevent, and it
+#  is why the two windows are scaled differently.
+#
+#  BIT-IDENTICAL AT NO DEPTH -- this CHANGES the shipped number, and that is the point: the old
+#  number was a function of `-nrperiods`.  The run prints both the median and the row count it
+#  was taken over (see `substitute_peg_crossing`), so the change is visible in the log.
+#
+#  THE ON-PANEL COST, MEASURED AT TODAY'S DEPTH (2026-08-13 CUR3K, 2,629 sources, nothing else
+#  varied).  Pool median 6.4718% -> 7.4457% (over 10,150 in-domain rows instead of 26,471 --
+#  a slightly STRICTER bar, because the recent window is growthier than the 2020-2026 pool):
+#      44 sources (1.67%) move BoScore; max |delta| 0.075000, median 0.037500 (= 0.30/8, i.e.
+#      exactly one PEG row flipping inside the head(8) window)
+#      top-20  : membership IDENTICAL **and order identical**
+#      top-100 : membership IDENTICAL, **ORDER CHANGED on 4 of 100 positions** -- a local
+#                rotation at ranks 47-50 (DDI 50->47, 0HQU.L 47->48, CF 48->49, PEY.TO 49->50)
+#  THE ORDER CHANGE IS STATED BECAUSE THE CEO READS THE TOP-100 AS RANKED.  "Membership
+#  unchanged" is the weaker claim and quoting it alone would imply the list is untouched; it is
+#  not -- four adjacent names rotate.  Nothing enters or leaves either list.
+PEG_POOL_WINDOW_NQ = 8
+
 
 def peg_criterion(peg):
     """`1/PEG - 1`, the scored Stage-1 quantity, from a PEG Series.  ONE expression, shared by the
@@ -355,7 +408,7 @@ def _peg_row_key(df, date_col='date'):
                         index=df.index)
 
 
-def peg_pool_median_growth(cdx_df, freq_map=None, years=None):
+def peg_pool_median_growth(cdx_df, freq_map=None, years=None, window_nq=None):
     """The POOL's median annual growth rate, over the rows the PEG criterion can actually score.
 
     THE POPULATION IS THE IN-DOMAIN ROWS -- positive trailing EPS now AND a positive prior
@@ -365,17 +418,24 @@ def peg_pool_median_growth(cdx_df, freq_map=None, years=None):
     are excluded BY CONSTRUCTION -- they are the rows being substituted, so including them would
     let the artifact define its own replacement.
 
+    ...AND THEY ARE RESTRICTED TO EACH SOURCE'S NEWEST `window_nq` ROWS, rp.scale_window-scaled
+    (`PEG_POOL_WINDOW_NQ`, 8 quarters = 2 years either frequency).  Without that restriction the
+    bar is a function of `-nrperiods`, which is the whole reason the constant exists -- the full
+    reasoning, the measurement and why this window is scaled where Stage-1's is not are at
+    PEG_POOL_WINDOW_NQ.  `window_nq=0` restores the whole-panel pool; it exists for the
+    depth-sensitivity experiment and for nothing else, and it is NOT a production option.
+
     Returns (median, n_rows).  `median` is NaN when the pool has no in-domain row, in which case
     `substitute_peg_crossing` leaves every crossing row NaN -- i.e. refused, which is the honest
     answer and is what the criterion did before this change.
     """
     if freq_map is None:
         freq_map = rp.frequency_by_source(cdx_df)
+    window_nq = PEG_POOL_WINDOW_NQ if window_nq is None else int(window_nq)
     vals = []
     for src, g in cdx_df.groupby('source', sort=False):
         rpy = rp.rows_per_year(freq_map, src)
         tf = g.iloc[::-1] if _is_oldest_first(g) else g
-        _peg, now, prev = peg_local(tf, rpy=rpy, years=years)
         e = pd.to_numeric(tf[_PEG_EPS_FIELD], errors='coerce')
         ttm = e.iloc[::-1].rolling(int(rpy)).sum().iloc[::-1]
         lag = int(rpy) * int(PEG_GROWTH_YEARS if years is None else years)
@@ -383,6 +443,12 @@ def peg_pool_median_growth(cdx_df, freq_map=None, years=None):
         gr = (100.0 * (ttm - base) / base.abs()
               / float(PEG_GROWTH_YEARS if years is None else years))
         gr = gr.replace([np.inf, -np.inf], np.nan).where((ttm > 0) & (base > 0))
+        #  `tf` is NEWEST-FIRST, so head(w) is the RECENT window.  Taken on the ROW series
+        #  BEFORE the dropna -- a dropna'd series would reach back past the window to find w
+        #  computable rows, which is the same uncapped-window shape this restriction removes
+        #  (`stage2_metrics.cycleheat` states the identical distinction for its own gate).
+        if window_nq > 0:
+            gr = gr.head(rp.scale_window(window_nq, rpy))
         vals.append(gr.dropna())
     if not vals:
         return float('nan'), 0
@@ -466,9 +532,11 @@ def substitute_peg_crossing(bm_df, cdx_df, freq_map=None, verbose=True):
     out['PEG'] = vals
     if verbose:
         print('PEG CROSSING SUBSTITUTION: pool median annual growth = %.4f%% over %d in-domain '
-              'row(s); %d sign-crossing row(s) found, %d filled, %d unmatched.'
-              % (med, n_pool, stats['n_crossing_rows'], stats['n_filled'],
-                 stats['n_unmatched']), flush=True)
+              'row(s) [pooled over each source\'s NEWEST %d quarter(s), rpy-scaled -- '
+              'PEG_POOL_WINDOW_NQ, so the bar does NOT move with `-nrperiods`]; %d '
+              'sign-crossing row(s) found, %d filled, %d unmatched.'
+              % (med, n_pool, PEG_POOL_WINDOW_NQ, stats['n_crossing_rows'],
+                 stats['n_filled'], stats['n_unmatched']), flush=True)
         if stats['n_unmatched']:
             print('  NOTE %d substitution row(s) had no counterpart in BoMetric_df -- expected '
                   'for the oldest `rpy` rows, which build_bometric_rows trims.'

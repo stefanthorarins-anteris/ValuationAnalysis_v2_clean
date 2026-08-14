@@ -10,6 +10,7 @@ intersected, `type == 'stock'`, counted by `exchangeShortName`); the counts in
 `_VERIFIED_COUNTS` are what to diff against.
 """
 
+import json
 import os
 import re
 from datetime import datetime, timedelta
@@ -698,6 +699,14 @@ def test_ALL_FOUR_maps_present_and_fresh_is_an_idempotent_no_op(tmp_path, monkey
     shipped `isin_map_n: 0` / `volavg_map_n: 0` and sent 19 issuer groups to the
     alphabetical tiebreak.  It now seeds all four, DATED TODAY so the freshness
     trigger does not fire, and the skip is asserted on that state.
+
+    A FIFTH CONDITION JOINED THE GATE ON 2026-08-14: the CAPTURE SCHEMA.  Presence, age and
+    coverage are all properties of the ARTIFACTS; none of them can see a code change to WHICH
+    FIELDS the writer pulls, which is how two shipped capture changes silently failed to land
+    on 2026-08-10.  So the skip now also requires the stamp on disk to match today's declared
+    field set -- and this test seeds it, because "all four maps are present and fresh" is no
+    longer the whole statement of "there is nothing to do".  An ABSENT stamp is CHANGED, not
+    unchanged, so the un-stamped case is asserted separately below.
     """
     monkeypatch.chdir(tmp_path)
     today = datetime.now().strftime('%Y-%m-%d')
@@ -705,11 +714,43 @@ def test_ALL_FOUR_maps_present_and_fresh_is_an_idempotent_no_op(tmp_path, monkey
     pd.to_pickle({'A': 'Software'}, f'industrydic_fmp_{today}.pickle')
     pd.to_pickle({'A': 'US0000000001'}, f'isindic_fmp_{today}.pickle')
     pd.to_pickle({'A': {'volAvg': 1000, 'asof': today}}, f'volavgdic_fmp_{today}.pickle')
+    fas.write_capture_schema(str(tmp_path), verbose=False)
     monkeypatch.setattr(fas, 'buildSectorIndustryMaps',
                         lambda *a, **k: pytest.fail('must not rebuild when all four present'))
     assert fas.ensure_sector_industry_maps(['A'], 'https://x/', 'KEY') is False
     assert fas.ensure_sector_industry_maps(['A'], 'https://x/', 'KEY',
                                            universe_is_subset=True) is False
+
+
+def test_a_CAPTURE_SCHEMA_CHANGE_rebuilds_even_when_every_other_condition_says_skip(
+        tmp_path, monkeypatch, capsys):
+    """THE REGRESSION GUARD FOR THE 2026-08-10 LOSS, at the GATE (not the helper) level.
+
+    Same state as the test above -- all four maps present, fresh, coverage fine -- but the
+    stamp on disk records a DIFFERENT captured field set.  That is exactly the 2026-08-10
+    machine after a capture change shipped, and the gate must now rebuild ON ITS OWN, with no
+    `-force_rebuild_maps` and nobody remembering.  The banner must say TRIGGERED (the gate's
+    own judgement), not FORCED.
+    """
+    monkeypatch.chdir(tmp_path)
+    today = datetime.now().strftime('%Y-%m-%d')
+    pd.to_pickle({'Technology': ['A']}, 'sectorsdic_fmp.pickle')
+    pd.to_pickle({'A': 'Software'}, f'industrydic_fmp_{today}.pickle')
+    pd.to_pickle({'A': 'US0000000001'}, f'isindic_fmp_{today}.pickle')
+    pd.to_pickle({'A': {'volAvg': 1000, 'asof': today}}, f'volavgdic_fmp_{today}.pickle')
+    stale_fields = [f for f in fas.PROFILE_CAPTURE_FIELDS if f != 'mktCap']
+    with open(tmp_path / fas.PROFILE_CAPTURE_SCHEMA_FILE, 'w', encoding='utf-8') as fh:
+        json.dump({'fingerprint': fas.profile_capture_fingerprint(stale_fields),
+                   'fields': stale_fields, 'asof': today}, fh)
+    built = []
+    monkeypatch.setattr(fas, 'buildSectorIndustryMaps',
+                        lambda *a, **k: built.append(True) or ({}, {}))
+    assert fas.ensure_sector_industry_maps(['A'], 'https://x/', 'KEY') is True
+    out = capsys.readouterr().out
+    assert built, 'a capture-schema change must rebuild by itself'
+    assert 'CAPTURE SCHEMA' in out and 'mktCap' in out, (
+        'the log must name WHICH field changed, not merely that something did')
+    assert 'TRIGGERED' in out and 'FORCED by' not in out
 
 
 def test_a_MISSING_isin_or_volavg_map_does_NOT_count_as_cached(tmp_path, monkeypatch):
@@ -892,16 +933,29 @@ _PROFILE_ROWS = [
     {'symbol': 'AAA.L', 'sector': 'Technology', 'industry': 'Software',
      'isin': 'GB00AAA00001', 'volAvg': 123456, 'price': 412.5, 'currency': 'GBp',
      'isActivelyTrading': True, 'exchange': 'London Stock Exchange',
-     'exchangeShortName': 'LSE', 'country': 'GB', 'beta': 1.234},
+     'exchangeShortName': 'LSE', 'country': 'GB', 'beta': 1.234,
+     #  the 2026-08-14 wave.  `mktCap` deliberately does NOT equal price x any round share
+     #  count: it is the TRADED LINE's own cap, and the whole reason to capture it is that
+     #  mktCap/price need not agree with the statement's weightedAverageShsOut.
+     'mktCap': 1236789000, 'ipoDate': '1998-06-19', 'companyName': 'AAA Holdings plc',
+     'isAdr': False, 'isEtf': False, 'isFund': False,
+     'cik': '0000012345', 'cusip': 'G0000A101', 'fullTimeEmployees': '4321'},
     {'symbol': 'BBB', 'sector': 'Technology', 'industry': 'Software',
      'isin': 'US00BBB00001', 'volAvg': 987654, 'price': 31.2, 'currency': 'USD',
      'isActivelyTrading': True, 'exchange': 'NASDAQ Global Select',
-     'exchangeShortName': 'NASDAQ', 'country': 'US', 'beta': -0.965},
+     'exchangeShortName': 'NASDAQ', 'country': 'US', 'beta': -0.965,
+     'mktCap': 8400000000, 'ipoDate': '2012-01-31', 'companyName': 'BBB Inc.',
+     'isAdr': False, 'isEtf': False, 'isFund': False,
+     'cik': '0000054321', 'cusip': '00BBB0101', 'fullTimeEmployees': '150'},
     {'symbol': 'CCC', 'sector': 'Technology', 'industry': 'Software',
      'isin': 'US00CCC00001', 'volAvg': 10},
 ]
-_EXTRA_KEYS = ('price', 'currency', 'isActivelyTrading', 'exchange',
-               'exchangeShortName', 'country', 'beta')
+#  DERIVED FROM THE DECLARATION, never hand-listed alongside it (2026-08-14).  A hand-listed
+#  copy is how the rebuild gate came to be checking a SUBSET of what the writer writes, and a
+#  test that carries its own stale copy of the field set stops testing the field set.
+_EXTRA_KEYS = (('price', 'currency', 'isActivelyTrading', 'exchange',
+                'exchangeShortName', 'country', 'beta')
+               + tuple(fas.PROFILE_EXTRA_CAPTURE_FIELDS))
 
 
 def _build_with_profiles(tmp_path, monkeypatch, rows):
@@ -925,6 +979,14 @@ def test_the_capture_only_profile_fields_LAND_under_the_SAME_asof(tmp_path, monk
     assert e['exchange'] == 'London Stock Exchange'
     assert e['exchangeShortName'] == 'LSE'      # a SEPARATE field from `exchange`
     assert e['country'] == 'GB' and e['beta'] == 1.234
+    #  the 2026-08-14 wave, in the SAME entry under the SAME asof for the same reason.
+    assert e['mktCap'] == 1236789000 and e['ipoDate'] == '1998-06-19'
+    assert e['companyName'] == 'AAA Holdings plc'
+    assert e['isAdr'] is False and e['isEtf'] is False and e['isFund'] is False, (
+        'a FALSE boolean must survive as False -- an absent key and a False value are '
+        'different facts and a consumer must be able to tell them apart')
+    assert e['cik'] == '0000012345' and e['cusip'] == 'G0000A101'
+    assert e['fullTimeEmployees'] == '4321'
     #  ONE date for all of them -- the property that makes sharing the entry the point.
     assert set(e) == {'asof'} | {'volAvg'} | set(_EXTRA_KEYS)
     assert e['asof'] == on_disk['BBB']['asof'] == on_disk['CCC']['asof']
@@ -2398,6 +2460,12 @@ def test_force_rebuild_maps_BYPASSES_the_skip_conditions_and_SAYS_it_was_forced(
                  'isindic_fmp_2026-08-10.pickle', 'volavgdic_fmp_2026-08-10.pickle'):
         pd.to_pickle({'Technology': ['A']} if name.startswith('sectors') else {'A': 'x'},
                      tmp_path / name)
+    #  The CAPTURE-SCHEMA condition (2026-08-14) is the FIFTH skip condition, and this test is
+    #  about the FLAG, so the schema is seeded as CURRENT to isolate it.  The schema trigger
+    #  has its own test above -- and note it makes the flag less load-bearing than it was: the
+    #  case this test's docstring describes now rebuilds on its own.  The flag stays for the
+    #  reasons the code cannot see.
+    fas.write_capture_schema(str(tmp_path), verbose=False)
     built = []
     monkeypatch.setattr(fas, 'buildSectorIndustryMaps',
                         lambda *a, **k: built.append(True) or ({}, {}))
@@ -2408,6 +2476,14 @@ def test_force_rebuild_maps_BYPASSES_the_skip_conditions_and_SAYS_it_was_forced(
     assert not built and 'no rebuild, no API calls' in out
     assert '-force_rebuild_maps' in out, (
         'the skip banner must name the override, or an operator who needs it cannot find it')
+    #  ...but it must NOT still offer the flag for the case the gate now handles ITSELF
+    #  (review L-7, 2026-08-14).  A stale "pass the flag after a capture change" line builds a
+    #  reflex flag around a gate that no longer needs one, and a reflex flag is how an operator
+    #  stops reading the verdict.
+    assert 'which no freshness rule can see' not in out, (
+        'the skip banner still advises -force_rebuild_maps for a CAPTURE-SCHEMA change, which '
+        'is now a skip condition the gate evaluates on its own')
+    assert 'rebuilds on its own' in out
 
     #  WITH the flag: built, and the banner says FORCED rather than triggered.
     assert fas.ensure_sector_industry_maps(['A'], 'https://x/', 'KEY',
