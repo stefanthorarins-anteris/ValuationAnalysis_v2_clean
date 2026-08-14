@@ -237,7 +237,7 @@ def test_build_bometric_rows_trims_the_oldest_rpy_rows():
         tmp = pd.DataFrame(columns=["date", "source"])
         tmp["date"] = tf["date"].values
         tmp["source"] = "X"
-        out = gdf.build_bometric_rows(tf.copy(), tmp.copy(), rpy, n=1, dicts=packed)
+        out = gdf.build_bometric_rows(tf.copy(), tmp.copy(), rpy, dicts=packed)
         assert len(out) == n - rpy, "must drop exactly rpy rows, got %d" % (n - len(out))
         # the dropped rows are the OLDEST (the frame is newest-first, so the tail)
         assert out["date"].min() == dates[n - rpy - 1]

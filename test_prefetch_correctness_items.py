@@ -16,6 +16,7 @@ Each of these is cheap, but each concerns something that is READ and RELIED ON:
   C4  three bare `return` bail-outs made ship-gate tests report PASS having asserted nothing.
 """
 
+import inspect
 import os
 import subprocess
 import sys
@@ -857,3 +858,90 @@ def test_the_PE_vendor_FALLBACK_takes_the_SAME_sign_test_as_the_computed_value()
         'gets a negative P/E on the CEO\'s sheet')
     #  and the computed side refuses the same population, so the two agree on the promise
     assert pb._pe_ratio_from_panel({'NEXN': (-0.013804, 4.0)}, 'NEXN') is None
+
+
+# =========================================================================== #
+#  -fsMAnumber IS RETIRED, AND RETIRES AUDIBLY  (CEO, 2026-08-14)              #
+# =========================================================================== #
+#  The flag set a moving-average width applied in `calcMetrics.calc_diff` before the Stage-1
+#  d* columns were built.  Production only ever ran its default of 1, at which
+#  `rp.scale_window(1, rpy)` is 1 for BOTH admitted frequencies -- the identity -- so the
+#  smoothing never did anything, and it was deleted.  Proven bit-identical first: the full
+#  2026-08-13 CUR3K panel (61,354 rows / 2,629 sources) rebuilt through
+#  `getData_fmp.build_bometric_rows` with and without it differs on 0 of 43 BoMetric columns
+#  (18 of them d*) and 0 Stage-1 score columns, while at n = 2 all 18 d* columns move.
+
+def test_fsMAnumber_RAISES_rather_than_being_silently_ignored():
+    """THE POINT OF THE WHOLE RETIREMENT SHAPE.  This parser uses `parse_known_args` and
+    DISCARDS unknown tokens, so simply deleting the flag would make `-fsMAnumber 4` parse
+    silently and smooth nothing -- a request accepted and ignored, which is worse than the
+    dead flag it replaces.  So the flag stays registered and the handler raises."""
+    with pytest.raises(Exception) as ei:
+        cfg.getDataFetchConfiguration(['x', '-fsMAnumber', '4'])
+    msg = str(ei.value)
+    assert 'fsMAnumber' in msg and 'RETIRED' in msg, msg
+    #  the message must say WHERE it went and that nothing shipped changed, or the operator
+    #  cannot tell a retirement from a regression
+    assert 'calc_diff' in msg
+
+
+def test_fsMAnumber_is_gone_from_the_config_dict():
+    """Nothing may still read a smoothing width off the config: `Sbocker` passed this
+    POSITIONALLY into `get_fundamentals_fmp`, so a surviving key would be an invitation to
+    re-thread it into the argument slot that now belongs to `nrTaT`."""
+    cd = cfg.getDataFetchConfiguration(['x'])
+    assert 'fsMAnumber' not in cd, sorted(cd)
+    #  and the unrelated scoring window, whose name is one letter away in usage, is untouched
+    assert 'nrScorePeriods' in cd
+
+
+def test_calc_diff_carries_NO_smoothing_and_NO_window_parameter():
+    """Structural, because a behavioural test cannot distinguish "no smoothing" from
+    "smoothing with a window of 1" -- which is exactly the condition that let this sit here
+    doing nothing for the pipeline's whole life."""
+    import calcMetrics as cm
+    src = inspect.getsource(cm.calc_diff)
+    body = '\n'.join(l for l in src.splitlines()
+                     if not l.strip().startswith('#'))
+    #  strip the docstring, which QUOTES the removed code on purpose
+    if '"""' in body:
+        a = body.index('"""'); b = body.index('"""', a + 3)
+        body = body[:a] + body[b + 3:]
+    assert '.rolling(' not in body, 'the smoothing came back into calc_diff'
+    assert 'scale_window' not in body
+    assert 'iloc[::-1]' not in body, (
+        'the double reversal existed ONLY to run the rolling mean oldest-first; with no '
+        'rolling mean it is two no-ops that invite a reader to think orientation matters here')
+    sig = inspect.signature(cm.calc_diff)
+    assert 'n' not in sig.parameters, sig
+    assert 'rpy' in sig.parameters, (
+        'rpy is kept deliberately -- every sibling builder takes it and the caller passes it '
+        'positionally alongside them')
+
+
+def test_calc_diff_is_the_RAW_single_period_change():
+    """The behaviour that replaces the smoothing, asserted on a hand-computable series.
+    `shift(-1)` is one period OLDER on a newest-first frame, so d = newest - previous."""
+    import calcMetrics as cm
+    df = pd.DataFrame({'m': [10.0, 7.0, 3.0, 2.0]})     # newest-first
+    for rpy in (2, 4):
+        out = cm.calc_diff(df, 'm', rpy=rpy)
+        got = pd.to_numeric(out['dM'], errors='coerce').tolist()
+        assert got[:3] == [3.0, 4.0, 1.0], (rpy, got)
+        assert np.isnan(got[3]), got                     # oldest row has no predecessor
+    #  and the SEMI-ANNUAL path is now identical to the quarterly one, which is the H1 defect
+    #  (scale_window(1, 2) once returned 2) made unreachable rather than merely fixed
+    a = cm.calc_diff(df, 'm', rpy=2)['dM'].tolist()
+    b = cm.calc_diff(df, 'm', rpy=4)['dM'].tolist()
+    assert np.array_equal(np.asarray(a, dtype='float64'),
+                          np.asarray(b, dtype='float64'), equal_nan=True)
+
+
+def test_calc_special_no_longer_takes_the_dead_window_parameter():
+    """It accepted `n` and never read it -- the only two appearances in the body were inside
+    commented-out blocks -- so every caller had to supply a number that did nothing."""
+    import calcMetrics as cm
+    import getData_fmp as gdf
+    assert 'n' not in inspect.signature(cm.calc_special).parameters
+    assert 'n' not in inspect.signature(gdf.build_bometric_rows).parameters
+    assert 'n' not in inspect.signature(gdf.get_fundamentals_fmp).parameters

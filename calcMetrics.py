@@ -849,18 +849,48 @@ def calc_compRatio(df,strUp,strDn,metstr,n,rpy=rp.DEFAULT_ROWS_PER_YEAR):
 
     return res.tolist()
 
-def calc_diff(df,metstr,n,rpy=rp.DEFAULT_ROWS_PER_YEAR):
+def calc_diff(df, metstr, rpy=rp.DEFAULT_ROWS_PER_YEAR):
+    """The RAW single-period change in `metstr`, newest-first.
+
+    THE `fsMAnumber` MOVING AVERAGE THAT USED TO SIT HERE IS DELETED (CEO, 2026-08-14):
+    "the rebuilding of the smoothing is completely unnecessary. Might as well just delete
+    that function tbh, it would take a very short time to rebuild it later if we wanted to
+    smooth some data before calculating metrics."
+
+    It was:
+        res = res.iloc[::-1]
+        res[dstr] = res[dstr].rolling(rp.scale_window(n, rpy)).mean()
+        res = res.iloc[::-1]
+    with `n = fsMAnumber`, whose production value is 1 (its default in
+    `configuration.getDataFetchConfiguration`, and the flag was never passed).  At n = 1
+    `rp.scale_window(1, rpy)` is 1 for BOTH admitted frequencies, so the window was
+    `rolling(1).mean()` -- the identity -- and the double reversal around it was a no-op on
+    top of a no-op.  So every d* column has always been a raw single-period change and this
+    deletion changes nothing that has ever shipped.
+
+    PROVEN INERT BEFORE REMOVAL, not assumed.  Rebuilt the full 2026-08-13 CUR3K panel
+    (61,354 rows / 2,629 sources, both quarterly and semi-annual filers) through
+    `getData_fmp.build_bometric_rows` with and without the smoothing and compared BIT-FOR-BIT
+    including NaN positions: 0 of 43 BoMetric columns differ (18 of them d*), and 0 of the
+    Stage-1 score columns from `calcScore.simpleScore_fromDict` differ.  The check is not
+    vacuous -- at fsMAnumber = 2 all 18 d* columns move.
+
+    THIS ALSO DISPOSES OF THE `_rebuild_bometric` DIVERGENCE.  `baseline_tools/
+    depth_sensitivity._rebuild_bometric` took its own `n` and threaded `nrScorePeriods` but
+    never `fsMAnumber`, so passing the flag once would have made the offline harness score a
+    DIFFERENT smoothing while claiming to reproduce the production path.  With no smoothing
+    to diverge on, that class of defect cannot exist rather than being fixed.
+
+    `shift(-1)` is ONE REPORTING PERIOD on a newest-first frame, so it is already
+    frequency-relative and needs no rescaling -- which is why `rpy` is now unused for the
+    arithmetic.  IT IS KEPT IN THE SIGNATURE DELIBERATELY: every sibling builder
+    (`calc_simpleRatio`, `calc_special`, `calc_veto`) takes it, the caller passes it
+    positionally alongside them, and a builder that silently did not accept the frequency
+    would be the odd one out in a file whose whole hazard class is per-frequency scaling.
+    """
     res = pd.DataFrame()
-
     dstr = "d" + metstr[0].upper() + metstr[1:]
-    # shift(-1) is ONE REPORTING PERIOD, already frequency-relative -- it needs no
-    # rescaling.  Only the smoothing window does, so the average covers the same
-    # calendar span for a semi-annual filer as for a quarterly one.
     res[dstr] = df[metstr] - df[metstr].shift(-1)
-    res = res.iloc[::-1]
-    res[dstr] = res[dstr].rolling(rp.scale_window(n, rpy)).mean()
-    res = res.iloc[::-1]
-
     return res
 
 #  Stage-1 keys this function knows how to compute.  It MUST stay in step with
@@ -877,8 +907,14 @@ _SPECIAL_KEYS = ('CFOlessEarnings', 'PEG', 'returnOnEquity',
                  'capitalExpenditureCoverageRatio', 'netDebtToEBITDA')
 
 
-def calc_special(df,metstr,n,rpy=rp.DEFAULT_ROWS_PER_YEAR,guard=None):
+def calc_special(df,metstr,rpy=rp.DEFAULT_ROWS_PER_YEAR,guard=None):
     """`guard`: optional STAGE1_DOMAIN_GUARDS name, applied to the computed column.
+
+    THE `n` (fsMAnumber) PARAMETER IS GONE (2026-08-14) and it never did anything: this
+    function accepted it, and the only two places it appeared in the body were inside
+    commented-out blocks.  It was removed with the smoothing path in `calc_diff` -- a
+    parameter that every caller has to supply and no branch reads is a standing invitation to
+    believe the smoothing applies here too.
 
     The special criteria are FORMULAS rather than Upper/Lower ratio specs, so they never pass
     through build_bometric_rows's ratio loop where the declared `Guard` is applied.  The caller

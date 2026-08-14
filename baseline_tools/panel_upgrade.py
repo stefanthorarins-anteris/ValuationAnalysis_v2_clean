@@ -181,7 +181,7 @@ def upgrade_cdx(cdx_df, verbose=True):
 # --------------------------------------------------------------------------- #
 #  3 : BoMetric_df rebuild                                                    #
 # --------------------------------------------------------------------------- #
-def rebuild_bometric(cdx_up, n=1, verbose=True):
+def rebuild_bometric(cdx_up, verbose=True):
     """Rebuild `BoMetric_df` from an UPGRADED cdx_df using the live Stage-1 construction.
 
     `cdx_up` must already carry the `reportingFrequency` stamp (run `upgrade_cdx` first):
@@ -204,7 +204,7 @@ def rebuild_bometric(cdx_up, n=1, verbose=True):
         tmp["source"] = src
         tmp = utils.setDatesToQuarterly(tmp)     # idempotent on already-snapped dates
         _rpy = rp.rows_per_year(tf[rp.FREQ_COLUMN].iloc[0])
-        frames.append(gdf.build_bometric_rows(tf, tmp, _rpy, n=n, dicts=packed))
+        frames.append(gdf.build_bometric_rows(tf, tmp, _rpy, dicts=packed))
     bm = pd.concat(frames, ignore_index=True)
 
     # The SAME post-ingest fixup production applies once at the end of the fetch loop

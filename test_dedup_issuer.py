@@ -20,6 +20,7 @@ than passing vacuously, and `test_the_unverified_gates_are_declared` asserts tha
 skip list is DECLARED -- so "we never ran it" cannot decay into "it passed".
 """
 
+import inspect
 import os
 
 import numpy as np
@@ -111,9 +112,19 @@ def _same_group(panel, *symbols):
 #  and `test_the_K2_corroborator_costs_exactly_one_known_pair` names it (QIPT / QIPT.TO)
 #  rather than letting a pin quietly absorb it.  The STRICT-SUPERSET property is
 #  unaffected: that pair was never in the old A/B/C edge set either.
+#  ...AND THE 2026-08-14 `date` STATEMENT-CONSISTENCY GUARD DOES **NOT** MOVE IT.  An
+#  intermediate version of that guard took a plain max/min of the three statement ratios and
+#  did move it -- by two components and seven pairs, all of them the Carnival Corporation & plc
+#  dual-listed structure (CCL / CCL.L / CUK / 0EV1.L / POH1.DE).  The shipped statistic
+#  DISCARDS THE MOST DEVIANT RATIO first (see `carveOut._statement_spread`), which takes
+#  CCL/CCL.L from `inf` -- a SIGN disagreement on revenue, $6.33bn vs -$52.3M -- to 1.0070 and
+#  CCL/POH1.DE from 1.9507 to 1.0070.  Both merge, so these pins are UNCHANGED from the K2
+#  corroborator's values and the Carnival question no longer rests on a name-map argument.
+#  On the three CUR3K panels (2026-08-07 / 08-11 / 08-13) the guard changes exactly one group
+#  on each: it stops deleting Altareit.
 PANEL_JAN_GROUPING = {
     'lines': 8106,
-    'components': 6329,             # was 6328 before the K2 corroborator
+    'components': 6329,             # 6328 before the K2 corroborator; UNMOVED by the date guard
     'multi_line_groups': 1281,      # was 1282
     'lines_dropped': 1777,          # was 1778
     'pairs': 2841,                  # was 2842
@@ -222,6 +233,11 @@ def test_the_new_grouping_is_a_STRICT_SUPERSET_of_the_old_one(panel):
     assert not regressions, (
         'NOT A SUPERSET: %d pair(s) the previous edge set merged are now split, e.g. %s'
         % (len(regressions), regressions[:10]))
+    #  `pairs` and `previous_pairs` both move with the fixture's grouping, so this stays the
+    #  same identity it always was; both numbers are recorded in PANEL_JAN_GROUPING with the
+    #  reason each one last moved.  THE `regressions` ASSERTION ABOVE IS THE REAL GATE and it
+    #  is untouched by the 2026-08-14 date guard: not one pair the previous A/B/C edge set
+    #  merged is split by it.
     assert len(new_pairs - old_pairs) == f['pairs'] - f['previous_pairs']
 
 
@@ -273,15 +289,26 @@ def test_K2_REFUSES_an_uncorroborated_marketCap_collision():
 
 
 @pytest.mark.parametrize('corroborator,row', [
-    ('date',        ('2025-10-01', 1.0, 2.0, 3.0)),
+    #  `date` IS DELIBERATELY NO LONGER IN THIS LIST (ruling 2026-08-14).  It used to be, with
+    #  the row ('2025-10-01', 1.0, 2.0, 3.0) -- a line agreeing on marketCap and the statement
+    #  date and on NOTHING ELSE -- and this test PINNED that merge as correct.  That is exactly
+    #  the shape that deleted Altareit SCA from the shipped 2026-08-13 run, so the ruling
+    #  changed rather than the test being worked around: the date disjunct now additionally
+    #  requires the two lines' statements to be PROPORTIONAL.  See
+    #  `carveOut._K2_DATE_MAX_STATEMENT_SPREAD` for the measurement, and the two tests below
+    #  for both directions of the new rule.
+    #  THE OTHER THREE ARE UNCHANGED and still assert the disjunction, which is what this test
+    #  exists for: a future edit that ANDs revenue/netIncome/totalAssets together still fails
+    #  here.  Narrowing ONE disjunct on measured evidence is not the same as collapsing the set
+    #  into a conjunction.
     ('revenue',     ('2026-01-01', 330200000.0, 2.0, 3.0)),
     ('netIncome',   ('2026-01-01', 1.0, 2700000.0, 3.0)),
     ('totalAssets', ('2026-01-01', 1.0, 2.0, 629500000.0)),
 ])
 def test_K2_STILL_MERGES_when_any_single_corroborator_agrees(corroborator, row):
     """The corroboration must not become a second identity test.  ONE agreeing non-quote
-    field is the documented bar, and each of the four non-name corroborators is exercised
-    on its own -- with the OTHER three deliberately disagreeing -- so a future edit that
+    field is the documented bar, and each of the three STATEMENT corroborators is exercised
+    on its own -- with the others deliberately disagreeing -- so a future edit that
     silently ANDs them together fails here rather than in a run."""
     date, rev, ni, ta = row
     cdx = _k2_cdx([
@@ -2227,3 +2254,278 @@ def test_an_UNCONFLICTED_issuer_is_untouched():
         {'M1': co.MINING_SECTOR, 'M1-B': co.MINING_SECTOR})
     assert not conflicts
     assert set(override.values()) == {co.MINING_SECTOR}
+
+
+# =========================================================================== #
+#  THE K2 `date` DISJUNCT NEEDS STATEMENT CONSISTENCY  (2026-08-14)            #
+# =========================================================================== #
+#  Altarea SCA (ALTA.PA, FR0000033219) and its listed subsidiary Altareit SCA (AREIT.PA,
+#  FR0000039216) agree on a marketCap of 1,022,830,380.0 to the euro and on a latest statement
+#  date, and on NOTHING else -- revenue EUR875.9M vs 738.9M, totalAssets EUR7.69bn vs 2.99bn.
+#  The `date` disjunct merged them and AREIT.PA was DELETED on the shipped 2026-08-13 run
+#  (`decided_by=shares`).  A false merge deletes a real company; a missed merge costs a slot.
+#
+#  These fixtures are SYNTHETIC and carry the real relationships, so they run without a panel.
+#  The panel-measured numbers behind the threshold live at `_K2_DATE_MAX_STATEMENT_SPREAD`.
+
+def _pair_cdx(rows, date='2026-04-01'):
+    """rows: (source, revenue, netIncome, totalAssets, shares, marketCap)."""
+    return pd.DataFrame([{'source': s, 'date': date, 'revenue': r, 'netIncome': ni,
+                          'totalAssets': ta, 'weightedAverageShsOut': sh, 'marketCap': mc}
+                         for s, r, ni, ta, sh, mc in rows])
+
+
+#  Altarea / Altareit, real figures.  Same cap, same date, disproportionate statements.
+_ALTAREA = ('ALTA.PA', 875.9e6, 120.0e6, 7.69e9, 23358009.0, 1022830380.0)
+_ALTAREIT = ('AREIT.PA', 738.9e6, 69.9e6, 2.99e9, 1748428.0, 1022830380.0)
+#  A cross-listing of ONE issuer reported in a second currency: every statement line scaled
+#  by the SAME constant.  This is the case the date disjunct exists for.
+_HOME = ('AAA.PA', 500.0e6, 40.0e6, 3.0e9, 10.0e6, 900000000.0)
+_FX = ('AAA.L', 500.0e6 * 1.17, 40.0e6 * 1.17, 3.0e9 * 1.17, 10.0e6, 900000000.0)
+
+
+def test_a_parent_and_its_subsidiary_do_NOT_merge_on_cap_plus_date():
+    """The live defect.  Nothing but marketCap and the statement date agree, and the three
+    statement lines move by DIFFERENT factors (1.19x / 1.72x / 2.57x) -- which is what
+    consolidation looks like and what a currency conversion never looks like."""
+    cdx = _pair_cdx([_ALTAREA, _ALTAREIT])
+    names = {'ALTA.PA': 'Altarea SCA', 'AREIT.PA': 'Altareit SCA'}
+    comps, _l, _v = co._issuer_components(sorted(cdx['source']), cdx, names, isin_map={})
+    groups = {frozenset(v) for v in comps.values()}
+    assert groups == {frozenset({'ALTA.PA'}), frozenset({'AREIT.PA'})}, groups
+
+
+def test_a_currency_shifted_cross_listing_STILL_merges_on_cap_plus_date():
+    """The guard must not cost the date disjunct its purpose.  One issuer in two currencies
+    scales all three lines by ONE factor, so the spread is exactly 1.0 however large the FX
+    rate is -- which is why the test is on the ratios' CONSISTENCY and not on their size."""
+    cdx = _pair_cdx([_HOME, _FX])
+    comps, _l, _v = co._issuer_components(sorted(cdx['source']), cdx,
+                                          {'AAA.PA': 'Aaa S.A.', 'AAA.L': 'Aaa SA ADR'},
+                                          isin_map={})
+    assert {frozenset(v) for v in comps.values()} == {frozenset({'AAA.PA', 'AAA.L'})}
+
+
+def test_the_guard_is_MONOTONE_it_can_only_split_never_merge_more():
+    """The safety property the whole change rests on: this rule only ever REMOVES a
+    date-disjunct union, so no pair that is separate today can become merged by it.  Asserted
+    by construction over a mixed fixture rather than argued."""
+    cdx = _pair_cdx([_ALTAREA, _ALTAREIT, _HOME, _FX])
+    names = {'ALTA.PA': 'Altarea SCA', 'AREIT.PA': 'Altareit SCA',
+             'AAA.PA': 'Aaa S.A.', 'AAA.L': 'Aaa SA ADR'}
+    syms = sorted(cdx['source'])
+    saved = co._K2_DATE_MAX_STATEMENT_SPREAD
+    try:
+        co._K2_DATE_MAX_STATEMENT_SPREAD = float('inf')       # guard disabled == old code
+        off, _l, _v = co._issuer_components(syms, cdx, names, isin_map={})
+        co._K2_DATE_MAX_STATEMENT_SPREAD = saved
+        on, _l, _v = co._issuer_components(syms, cdx, names, isin_map={})
+    finally:
+        co._K2_DATE_MAX_STATEMENT_SPREAD = saved
+    r_off = {m: r for r, mem in off.items() for m in mem}
+    r_on = {m: r for r, mem in on.items() for m in mem}
+    for a in syms:
+        for b in syms:
+            if r_on[a] == r_on[b]:
+                assert r_off[a] == r_off[b], (
+                    'the guard MERGED %s and %s, which it must never be able to do' % (a, b))
+    #  and it did actually split something here, so the test is not vacuous
+    assert len(on) > len(off)
+
+
+def test_an_UNKNOWABLE_statement_relationship_does_not_corroborate():
+    """Fewer than two computable ratios means "cannot tell", and a missing statement may never
+    be read as agreement -- the same asymmetry the corroborator buckets already use when a
+    line that LACKS a field emits no bucket."""
+    assert co._statement_spread('X', 'Y', lambda s, c: None) is None
+    #  opposite signs are POSITIVE evidence of two issuers, not missing evidence: no currency
+    #  conversion flips the sign of a statement line.
+    vals = {('X', 'revenue'): 100.0, ('Y', 'revenue'): 100.0,
+            ('X', 'netIncome'): 5.0, ('Y', 'netIncome'): -5.0,
+            ('X', 'totalAssets'): 900.0, ('Y', 'totalAssets'): 900.0}
+    #  ONE sign disagreement is now ABSORBED, not fatal: it is simply the most deviant ratio
+    #  and is the one discarded.  That is what rescues Carnival's DLC (`CCL.L` revenue is
+    #  NEGATIVE against `CCL`'s +$6.33bn) -- see `_statement_spread`.  TWO sign disagreements
+    #  are still positive evidence of two issuers.
+    assert co._statement_spread('X', 'Y', lambda s, c: vals.get((s, c))) == 1.0
+    vals[('Y', 'totalAssets')] = -900.0
+    assert co._statement_spread('X', 'Y', lambda s, c: vals.get((s, c))) == float('inf')
+    #  a clean proportional pair
+    k = 1.17
+    vals2 = {('X', c): v for c, v in (('revenue', 100.0), ('netIncome', 5.0),
+                                      ('totalAssets', 900.0))}
+    vals2.update({('Y', c): v / k for c, v in (('revenue', 100.0), ('netIncome', 5.0),
+                                               ('totalAssets', 900.0))})
+    got = co._statement_spread('X', 'Y', lambda s, c: vals2.get((s, c)))
+    assert abs(got - 1.0) < 1e-12, got
+
+
+def test_the_date_disjunct_is_the_ONLY_key_resolved_pairwise():
+    """Every other key must stay a pure per-line hash. A previous attempt at this fix tried to
+    express "these two lines are on different exchanges" as a hash bucket, which is not a
+    property of one line and measured as a complete no-op (0 groups moved on three panels).
+    This pins that only the `date` branch is pairwise, so the architectural invariant in
+    `_issuer_components`'s docstring still describes K1/K3/K4 and the other corroborators."""
+    src = inspect.getsource(co._issuer_components)
+    assert "key[2] == 'date'" in src
+    assert '_statement_spread' in src
+    #  the pairwise branch must be guarded to the date bucket, not applied to K2 generally
+    assert "key[0] == 'K2' and key[2] == 'date'" in src
+
+
+def test_K2_date_MERGES_when_the_statements_are_PROPORTIONAL():
+    """The replacement for the retired `date` case above.  The date disjunct keeps its
+    purpose -- the FX-shifted cross-listing K1 cannot see -- because one issuer reported in
+    two currencies scales all three statement lines by ONE factor."""
+    k = 1.17
+    cdx = _k2_cdx([
+        ('A.X', '2025-10-01', 330200000.0,     2700000.0,     629500000.0,     640500000.0),
+        ('B.X', '2025-10-01', 330200000.0 * k, 2700000.0 * k, 629500000.0 * k, 640500000.0),
+    ])
+    names = {'A.X': 'Alpha Industries S.A.', 'B.X': 'Alpha Industries ADR'}
+    comps, _l, _v = co._issuer_components(['A.X', 'B.X'], cdx, names, {})
+    assert len(comps) == 1, (
+        'the date disjunct must still merge a currency-shifted cross-listing -- that is the '
+        'case it exists for: %s' % comps)
+
+
+def test_K2_date_REFUSES_when_the_statements_are_DISPROPORTIONATE():
+    """The Altareit case in the abstract, and the direction that changed.  cap + date agree,
+    the three statement lines move by different factors -- a consolidation, not a currency."""
+    cdx = _k2_cdx([
+        ('A.X', '2025-10-01', 875900000.0, 120000000.0, 7690000000.0, 1022830380.0),
+        ('B.X', '2025-10-01', 738900000.0,  69900000.0, 2990000000.0, 1022830380.0),
+    ])
+    names = {'A.X': 'Altarea SCA', 'B.X': 'Altareit SCA'}
+    comps, _l, _v = co._issuer_components(['A.X', 'B.X'], cdx, names, {})
+    assert len(comps) == 2, (
+        'a parent and its listed subsidiary merged on marketCap + date alone -- this deletes '
+        'a real company (AREIT.PA on the shipped 2026-08-13 run): %s' % comps)
+
+
+def test_the_date_guard_does_NOT_touch_a_pair_held_by_another_corroborator():
+    """SCOPE.  The guard is on ONE disjunct.  Two lines that share a NAME (or revenue, or an
+    ISIN) merge regardless of how disproportionate their statements are -- which is why
+    Carnival's DLC survives in production and why the Heineken-class MUST-NOT-MERGE case,
+    which K1 handles on exact netIncome, is not reopened here."""
+    cdx = _k2_cdx([
+        ('A.X', '2025-10-01', 875900000.0, 120000000.0, 7690000000.0, 1022830380.0),
+        ('B.X', '2025-10-01', 738900000.0,  69900000.0, 2990000000.0, 1022830380.0),
+    ])
+    same = {'A.X': 'Carnival Corporation & plc', 'B.X': 'Carnival Corporation & plc'}
+    comps, _l, _v = co._issuer_components(['A.X', 'B.X'], cdx, same, {})
+    assert len(comps) == 1, ('the name corroborator must be untouched by the date guard: %s'
+                             % comps)
+
+
+def test_the_carnival_DLC_survives_the_date_guard(panel):
+    """Carnival Corporation & plc is a genuine DUAL-LISTED COMPANY: two legal entities, so FMP
+    serves the lines DIFFERENT statements -- `CCL` revenue $6.33bn against `CCL.L` -$52.3M, a
+    SIGN disagreement.  Under a plain max/min of the three ratios that pair scored `inf` and
+    the guard split the group; the shipped statistic discards the most deviant ratio first,
+    which takes it to 1.0070, and the group survives whole.
+
+    THE SIGN CASE IS THE POINT.  It is the one shape no magnitude threshold could ever have
+    rescued, so it is the strongest available check that the trim is doing real work rather
+    than just loosening the constant."""
+    syms, cdx, names = panel['syms'], panel['cdx'], panel['names']
+    fam = ['CCL', 'CCL.L', 'CUK', '0EV1.L', 'POH1.DE']
+    if not all(x in syms for x in fam):
+        pytest.skip('Carnival family not present: %s' % [x for x in fam if x not in syms])
+    comps, _l, _val = co._issuer_components(syms, cdx, names, {})
+    root = {m: r for r, mem in comps.items() for m in mem}
+    assert len({root[x] for x in fam}) == 1, (
+        'the Carnival DLC must not be split by the date guard; group(CCL)=%s'
+        % sorted(comps[root['CCL']]))
+    #  non-vacuous: the pair really is sign-disagreeing, which is what the trim has to absorb
+    rev = (_val('CCL', 'revenue'), _val('CCL.L', 'revenue'))
+    assert rev[0] > 0 > rev[1], rev
+    sp = co._statement_spread('CCL', 'CCL.L', _val)
+    assert sp is not None and sp < co._K2_DATE_MAX_STATEMENT_SPREAD, sp
+
+
+def test_the_date_guard_leaves_PANEL_JAN_grouping_completely_unchanged(panel):
+    """SCOPE CHECK on the whole 8,106-line panel: the guard must move nothing here.
+
+    An intermediate version of the statistic moved 2 components / 7 pairs (all Carnival) and
+    the pins in PANEL_JAN_GROUPING were edited to match.  They were edited BACK when the
+    statistic was corrected.  This test exists so that a future change which quietly starts
+    splitting real groups on this panel fails HERE, naming them, instead of showing up only as
+    two counts drifting in a fixture dict."""
+    syms, cdx, names = panel['syms'], panel['cdx'], panel['names']
+    saved = co._K2_DATE_MAX_STATEMENT_SPREAD
+    try:
+        co._K2_DATE_MAX_STATEMENT_SPREAD = float('inf')      # guard disabled
+        off, _l, _v = co._issuer_components(syms, cdx, names, {})
+        co._K2_DATE_MAX_STATEMENT_SPREAD = saved
+        on, _l, _v = co._issuer_components(syms, cdx, names, {})
+    finally:
+        co._K2_DATE_MAX_STATEMENT_SPREAD = saved
+    assert _pairs(off) == _pairs(on), (
+        'the date guard changed PANEL-JAN grouping; lost %s'
+        % sorted(_pairs(off) - _pairs(on))[:10])
+
+
+#  ---- WHAT IS *NOT* ESTABLISHED, recorded so it is not read as settled (review D-5) --------
+#  The guard's safety for cross-listings rests in part on the `name` corroborator reaching EVERY
+#  line of a group, and that is an UNVERIFIED PREMISE ABOUT PRODUCTION, not a measured fact.
+#  What IS verified locally: `CCL.L`, `CUK` and `POH1.DE` have ZERO rows in
+#  `available_traded_raw_2026-08-04.pickle` -- no name at all.  No CUR3K panel contains those
+#  three lines, so whether a production name map covers them cannot be checked on any data
+#  available here.  The residual risk concentrates exactly where vendor name coverage is
+#  thinnest -- LSE and Deutsche depositary lines, i.e. the same population as `0EV1.L` /
+#  `POH1.DE`.  The shipped statistic makes this much less load-bearing than it was (Carnival
+#  now survives on its STATEMENTS, not on its names), but it is not eliminated.
+
+
+def _sp3(rev, ni, ta):
+    """`_statement_spread` for a synthetic pair whose three ratios are (rev, ni, ta)."""
+    v = {('A', 'revenue'): 100.0, ('A', 'netIncome'): 10.0, ('A', 'totalAssets'): 900.0,
+         ('B', 'revenue'): 100.0 / rev, ('B', 'netIncome'): 10.0 / ni,
+         ('B', 'totalAssets'): 900.0 / ta}
+    return co._statement_spread('A', 'B', lambda s, c: v.get((s, c)))
+
+
+def test_the_threshold_is_pinned_by_the_NEAREST_REAL_OBSERVATIONS():
+    """`_K2_DATE_MAX_STATEMENT_SPREAD` was pinned by NOTHING (review D-4): every other fixture
+    scores either 1.0000 or 1.4478, so any threshold in (1.06, 1.44] passed the whole suite on
+    a constant fitted to a handful of points.
+
+    Pinned here from BOTH sides at the closest real observations measured on the three panels:
+      lower   OTEX / OTEX.TO    1.0622  -- the largest KNOWN-TRUE spread that must MERGE
+      upper   SSRM / SSRM.TO    1.3135  -- the nearest KNOWN-TRUE spread that is deliberately
+                                           REFUSED (an accepted cost; see the constant's block)
+    so the admissible band is (1.0622, 1.3135).  The constant is asserted outright as well,
+    because it is a judgement call that must move only on purpose."""
+    assert co._K2_DATE_MAX_STATEMENT_SPREAD == 1.25
+    #  The REAL measured ratio triples from the 2026-08-13 panel, not shapes reverse-fitted to
+    #  the answer -- both are cases where the vendor puts ONE line on a different scale
+    #  entirely (OpenText's totalAssets in one currency, SSR Mining's in another).
+    lo = _sp3(3.889029, 4.130860, 1.000000)   # OTEX / OTEX.TO   -> 1.0622, must MERGE
+    assert abs(lo - 1.0622) < 1e-3, lo
+    assert lo <= co._K2_DATE_MAX_STATEMENT_SPREAD, lo
+    hi = _sp3(1.000000, 1.313488, 0.001000)   # SSRM / SSRM.TO   -> 1.3135, deliberately REFUSED
+    assert abs(hi - 1.3135) < 1e-3, hi
+    assert hi > co._K2_DATE_MAX_STATEMENT_SPREAD, hi
+    alt = _sp3(1.1854, 1.7163, 2.5729)      # Altarea / Altareit on the shipped statistic
+    assert abs(alt - 1.4478) < 1e-3, alt
+    assert alt > co._K2_DATE_MAX_STATEMENT_SPREAD, alt
+
+
+def test_the_trim_absorbs_ONE_deviant_line_but_not_TWO():
+    """The mechanism in one test, and the boundary of what it tolerates.
+
+    RESTATEMENT LAG is the counterexample class it exists for: `QSR.TO`/`QSP-UN.TO` reads an
+    ni-ratio of 0.7621 on the 2026-08-11 vintage and 0.9996 on 2026-08-13, purely because FMP
+    restated `QSP-UN.TO` netIncome from 665,000,000 to 507,000,000 for the same period.  One
+    restated line must not condemn the pair; two disagreeing lines still must."""
+    one = _sp3(0.9996, 0.7621, 0.9996)      # the real RBI-08-11 shape
+    assert abs(one - 1.0) < 1e-3, ('a single restated line must be absorbed; got %r' % one)
+    two = _sp3(1.0, 1.7163, 2.5729)         # two lines moving = a different company
+    assert two > co._K2_DATE_MAX_STATEMENT_SPREAD, two
+    #  ONE sign disagreement is absorbed (Carnival); TWO is positive evidence -> inf
+    v = {('A', 'revenue'): 100.0, ('A', 'netIncome'): 10.0, ('A', 'totalAssets'): 900.0,
+         ('B', 'revenue'): -100.0, ('B', 'netIncome'): 10.0, ('B', 'totalAssets'): 900.0}
+    assert co._statement_spread('A', 'B', lambda s, c: v.get((s, c))) == 1.0
+    v[('B', 'netIncome')] = -10.0
+    assert co._statement_spread('A', 'B', lambda s, c: v.get((s, c))) == float('inf')

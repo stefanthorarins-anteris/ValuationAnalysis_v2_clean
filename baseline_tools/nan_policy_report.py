@@ -113,7 +113,7 @@ def _legacy_peg_growth_defined(df):
 _ORIG_CALC_SPECIAL = cm.calc_special
 
 
-def _legacy_calc_special(df, metstr, n, rpy=rp.DEFAULT_ROWS_PER_YEAR, guard=None):
+def _legacy_calc_special(df, metstr, rpy=rp.DEFAULT_ROWS_PER_YEAR, guard=None):
     """`calc_special` with PEG back on the VENDOR field (the pre-2026-08-05 line)."""
     if metstr != "PEG":
         return _ORIG_CALC_SPECIAL(df, metstr, n, rpy=rpy, guard=guard)
@@ -183,7 +183,7 @@ def build_panel(cdx_up, dicts, subset=None, label=""):
         tmp["source"] = src
         tmp = utils.setDatesToQuarterly(tmp)
         _rpy = rp.rows_per_year(tf[rp.FREQ_COLUMN].iloc[0])
-        frames.append(gdf.build_bometric_rows(tf, tmp, _rpy, n=1, dicts=packed))
+        frames.append(gdf.build_bometric_rows(tf, tmp, _rpy, dicts=packed))
         srcs += 1
         if subset and srcs >= subset:
             break

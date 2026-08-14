@@ -194,7 +194,7 @@ def truncate_history(cdx_df, keep_rows, verbose=True):
 # --------------------------------------------------------------------------- #
 #  2.  THE SCORING ARM -- production functions only                           #
 # --------------------------------------------------------------------------- #
-def _rebuild_bometric(cdx, n=1, verbose=False):
+def _rebuild_bometric(cdx, verbose=False):
     """Stage-1 panel rebuilt from `cdx` with the LIVE construction
     (`getData_fmp.build_bometric_rows` + `getData_gen.fixAfterGetData`).
 
@@ -221,7 +221,7 @@ def _rebuild_bometric(cdx, n=1, verbose=False):
         tmp['source'] = src
         tmp = utils.setDatesToQuarterly(tmp)
         _rpy = rp.rows_per_year(str(tf[rp.FREQ_COLUMN].iloc[0]))
-        frames.append(gdf.build_bometric_rows(tf, tmp, _rpy, n=n, dicts=packed))
+        frames.append(gdf.build_bometric_rows(tf, tmp, _rpy, dicts=packed))
     bm = pd.concat(frames, ignore_index=True)
     bm, _ = gdg.fixAfterGetData(bm, cdx.copy())
     if verbose:

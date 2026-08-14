@@ -544,11 +544,16 @@ def scale_window(n, rpy, minimum=1):
     CONTRACT: the result is NEVER LARGER than `n`.  A `minimum=2` floor used to violate
     exactly that (review H1, 2026-07-25): scale_window(1, rpy=2) returned 2 -- a window
     TWICE the quarterly one, on the metric family with the smallest window in the
-    pipeline.  Production runs `fsMAnumber = 1` (its default in
+    pipeline.  Production ran `fsMAnumber = 1` (its default in
     configuration.getDataFetchConfiguration), so every
     semi-annual name's calc_diff ran `rolling(2).mean()` -- a 12-month smoothing -- where
     a quarterly name ran `rolling(1)`, i.e. no smoothing at all.  That silently altered
     all 18 d* columns (44.5% of Stage-1 summed weight) for 14.4% of the universe.
+    THAT CALLER NO LONGER EXISTS -- the fsMAnumber smoothing was deleted from
+    `calcMetrics.calc_diff` on 2026-08-14 (CEO) after being proven inert at n = 1, and
+    `-fsMAnumber` now raises.  The H1 case is kept above because it is the CONTRACT's
+    motivating example and the contract still binds every OTHER caller (the Stage-2 windows,
+    the forensic M/C windows, the calendar-gap window); it is history, not a live path.
 
     Rounding is HALF-UP (floor(x + 0.5)) rather than Python's bankers' rounding, so
     n=1, rpy=2 -> 1 row instead of 0, and n=3, rpy=2 -> 2 rather than 1.  A 0.5-row

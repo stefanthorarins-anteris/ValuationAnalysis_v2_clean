@@ -836,3 +836,73 @@ def test_H1_a_fallback_PRICE_is_labelled_with_its_capture_date():
     src = _code_only(gp.PresentationBuilder.section_a_identity)
     assert "_px_origin == 'offline'" in src
     assert 'price_asof' in src and 'capture' in src
+
+
+# =========================================================================== #
+#  THE TTM WINDOW IS POSITIONAL AND ABSTAINS  (fix 2026-08-14)                 #
+# =========================================================================== #
+#  `ttm_sum` / `ttm_aligned_sums` were `df[col].dropna().head(rpy)` -- a window over the newest
+#  rpy PRESENT VALUES, not over the newest rpy PERIODS.  Two limbs, both of which make
+#  "trailing twelve months" a claim the number does not own:
+#    LIMB 1  fewer than rpy values -> it summed whatever it found and labelled it TTM.
+#    LIMB 2  a hole inside the window -> `dropna` walked older, so the sum spanned MORE than
+#            twelve months while still being divided into twelve-month quantities.
+#  MEASURED on the shipped 2026-08-13 CUR3K panel, over the 15,774 (source, column) pairs
+#  these helpers read: LIMB 1 fires 0 times (latent on this data, not active); LIMB 2 fires
+#  21 times (0.133%), median span 1.00 years and worst 1.50, and 0 times on the 600 shortlist
+#  pairs.  Driving the real 2026-08-13 presentation build, 10 of 22,516 helper invocations
+#  change, at four sites, every one from a number to an abstention.
+#  BOTH LIMBS ARE PINNED HERE.  A test for the live one only would let the latent one come
+#  back the first time a panel arrives with a short column.
+
+def test_ttm_sum_ABSTAINS_when_the_window_cannot_be_filled():
+    """LIMB 1: fewer than `rpy` periods is not a shorter year, it is no year."""
+    df = pd.DataFrame({'freeCashFlow': [10.0, 20.0, np.nan, np.nan, np.nan, np.nan]})
+    assert np.isnan(gp.ttm_sum(df, 'freeCashFlow', rpy=4)), (
+        'two populated quarters must not be published as a trailing YEAR')
+    #  ...and a semi-annual filer reading the SAME frame has a real, full window of 2.
+    assert gp.ttm_sum(df, 'freeCashFlow', rpy=2) == 30.0
+    #  a frame SHORTER than the window abstains for the same reason
+    assert np.isnan(gp.ttm_sum(pd.DataFrame({'x': [1.0, 2.0]}), 'x', rpy=4))
+    #  and the all-absent case is unchanged (it already returned NaN)
+    assert np.isnan(gp.ttm_sum(pd.DataFrame({'x': [np.nan] * 8}), 'x', rpy=4))
+
+
+def test_ttm_sum_does_NOT_reach_PAST_the_window_to_fill_it():
+    """LIMB 2 -- the limb that actually fires on the shipped panel.
+
+    A hole at row 1 used to make the sum span FIVE quarters (rows 0,2,3,4) while every
+    consumer divides it into, and compares it against, twelve-month quantities.  It is not a
+    smaller measurement of the same thing; it is a different quantity in the same units."""
+    df = pd.DataFrame({'revenue': [100.0, np.nan, 100.0, 100.0, 100.0, 100.0]})
+    assert np.isnan(gp.ttm_sum(df, 'revenue', rpy=4)), (
+        'the newest four PERIODS are not all present, so there is no TTM; the old code '
+        'returned 400.0 by reaching to row 4 -- a fifteen-month "year"')
+    #  no hole -> unchanged, and this is the case that must NOT regress
+    clean = pd.DataFrame({'revenue': [100.0, 110.0, 120.0, 130.0, 140.0]})
+    assert gp.ttm_sum(clean, 'revenue', rpy=4) == 460.0
+
+
+def test_ttm_aligned_sums_window_is_positional_for_every_column_at_once():
+    """The old form kept the columns aligned WITH EACH OTHER but let the shared window slide
+    older, so a paired ratio could be internally consistent and still not be a year."""
+    df = pd.DataFrame({'netIncome': [10.0, np.nan, 10.0, 10.0, 10.0],
+                       'netCashProvidedByOperatingActivities': [8.0, 8.0, 8.0, 8.0, 8.0]})
+    got = gp.ttm_aligned_sums(df, ['netIncome',
+                                   'netCashProvidedByOperatingActivities'], rpy=4)
+    assert all(np.isnan(v) for v in got), got
+    clean = pd.DataFrame({'a': [1.0, 2.0, 3.0, 4.0, 99.0], 'b': [5.0, 5.0, 5.0, 5.0, 99.0]})
+    assert gp.ttm_aligned_sums(clean, ['a', 'b'], rpy=4) == (10.0, 20.0)
+    #  and the two helpers now agree BY CONSTRUCTION on the same frame -- they did not before
+    assert gp.ttm_aligned_sums(clean, ['a'], rpy=4)[0] == gp.ttm_sum(clean, 'a', rpy=4)
+
+
+def test_the_TTM_helpers_no_longer_carry_the_dropna_then_head_expression():
+    """Structural, because the two behavioural tests above would both pass on a form that
+    re-introduced `dropna().head(rpy)` behind a length check that happened to be equivalent
+    on those fixtures.  The expression itself is what was wrong."""
+    for fn in (gp.ttm_sum, gp.ttm_aligned_sums):
+        src = _code_only(fn)
+        assert '.dropna()' not in src, (
+            '%s must window POSITIONALLY; `dropna` before `head` is the defect itself' % fn.__name__)
+        assert '.head(' in src

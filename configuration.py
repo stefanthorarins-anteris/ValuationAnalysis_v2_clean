@@ -271,11 +271,26 @@ def getDataFetchConfiguration(args):
     else:
         compyear = datetime.now().year - 1
 
-    # Set how many datapoints used in moving average of the entries of the financial statments fetched
+    #  -fsMAnumber IS RETIRED (CEO, 2026-08-14).  It set the width of a moving average over the
+    #  fetched statement entries, applied in `calcMetrics.calc_diff` before the Stage-1 d*
+    #  columns were built.  The smoothing is DELETED: at the only value production ever ran
+    #  (its default, 1) `rp.scale_window(1, rpy)` is 1 for both admitted frequencies, so it was
+    #  the identity, and the deletion was proven bit-identical on the 2026-08-13 panel.
+    #
+    #  THE FLAG STAYS REGISTERED IN `_build_parser` AND RAISES, rather than being dropped.
+    #  This parser uses `parse_known_args` and DISCARDS unknown tokens (preserved behaviour #2
+    #  at the top of this file), so simply deleting the flag would make `-fsMAnumber 4` parse
+    #  silently and do nothing -- a request to smooth, accepted, ignored.  That is strictly
+    #  worse than what is being removed.  Raising makes the retirement audible to anyone with
+    #  it in a saved command line.
     if _given(ns, 'fsMAnumber'):
-        fsMAnumber = int(_require(ns, 'fsMAnumber', '-fsMAnumber requires an argument'))
-    else:
-        fsMAnumber = 1
+        raise Exception(
+            '-fsMAnumber is RETIRED (2026-08-14). It set a moving-average width for the '
+            'Stage-1 d* columns; that smoothing has been deleted from calcMetrics.calc_diff, '
+            'which now returns the raw single-period change. Production always ran the '
+            'default of 1, at which the moving average was the identity, so no shipped number '
+            'changes. Drop the flag from the command line. If smoothing is wanted again it is '
+            'a deliberate rebuild, not a flag that still exists.')
 
     # Set number of periods used in averaging when calculating score for each metric
     if _given(ns, 'nrScorePeriods'):
@@ -587,7 +602,7 @@ def getDataFetchConfiguration(args):
 
     configdic = {'tickerfilter': tickerfilter, 'datasource': datasource, 'baseurl': baseurl, 'api_key': api_key,
                  'period': period, 'nrperiods': nrperiods, 'nrTaT': nrTaT, 'compyear': compyear, 'newOnly': newOnly,
-                 'fsMAnumber': fsMAnumber, 'startindex': startindex, 'mcapUL': mcapUL, 'mcapLL': mcapLL,
+                 'startindex': startindex, 'mcapUL': mcapUL, 'mcapLL': mcapLL,
                  'saveBoMetric': saveBoMetric, 'saveBoResults': saveBoResults, 'loadBoMetric': loadBoMetric,
                  'loadBoResults': loadBoResults, 'symbchRestock': symbchRestock, 'loadBoMetricfname': loadBoMetricfname,
                  'loadBoResultsfname': loadBoResultsfname, 'manualelimtickers': manualelimtickers,

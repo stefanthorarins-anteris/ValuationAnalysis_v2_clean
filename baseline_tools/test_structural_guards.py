@@ -571,7 +571,7 @@ def test_calc_special_REFUSES_an_unknown_metric_instead_of_returning_an_EMPTY_fr
     import calcMetrics as cm
     df = pd.DataFrame({"netIncome": [1.0, 2.0], "weightedAverageShsOut": [1.0, 1.0]})
     with pytest.raises(KeyError) as ei:
-        cm.calc_special(df, "notAMetric", 8)
+        cm.calc_special(df, "notAMetric")
     assert "BoMetric_special_dict" in str(ei.value)
 
 

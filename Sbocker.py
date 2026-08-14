@@ -990,8 +990,12 @@ def main():
                                          force_rebuild_maps=configdic.get('force_rebuild_maps'))
             # Assign variables and get financial data and calculate relevant metrics
             cdx_df, BoMetric_df, nrTaT = datandmetricdic['cdx_df'], datandmetricdic['BoMetric_df'], configdic['nrTaT']
+            #  `configdic['fsMAnumber']` USED TO SIT BETWEEN compyear AND nrTaT HERE.  The
+            #  smoothing it fed was deleted 2026-08-14 (CEO) after being proven inert at its
+            #  production value of 1 -- see calcMetrics.calc_diff -- so the argument is gone
+            #  and the four after it shift up one position.
             getfunddic = gdf.get_fundamentals_fmp(Tickers_df, cdx_df, BoMetric_df, baseurl, api_key, configdic['compyear'],
-                                                  configdic['fsMAnumber'], configdic['nrTaT'], configdic['startindex'],
+                                                  configdic['nrTaT'], configdic['startindex'],
                                                   configdic['period'], configdic['nrperiods'])
             newmanelimtckrs = list(set(manualelimtickers + list(set(getfunddic['tickersfailed']) - set(getfunddic['lenfail']))))
             datandmetricdic.update(getfunddic)

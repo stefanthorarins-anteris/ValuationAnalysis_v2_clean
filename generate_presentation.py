@@ -642,36 +642,83 @@ def _rpy_from_frame(df):
     return rpy_for_source(s.iloc[0])
 
 
+# =========================================================================== #
+#  THE TTM WINDOW IS POSITIONAL, AND IT ABSTAINS  (fix 2026-08-14)             #
+# =========================================================================== #
+#  WHAT WAS WRONG.  Both helpers below were `df[col].dropna().head(rpy)`, which is a window
+#  over the newest rpy PRESENT VALUES rather than over the newest rpy PERIODS.  That makes
+#  "trailing twelve months" a claim the number does not own, in two independent ways:
+#
+#    LIMB 1 -- FEWER THAN rpy VALUES.  The only guard was `len(values) == 0`, so a column
+#      with one populated period returned that ONE period's figure, labelled TTM, with
+#      nothing in the return value to say so.  A quarter presented as a year.
+#    LIMB 2 -- REACHING PAST THE WINDOW.  With a hole inside the newest rpy rows, `dropna`
+#      walks OLDER to find its rpy-th value, so the sum spans more than twelve months while
+#      still being divided into, and compared against, twelve-month quantities.
+#
+#  MEASURED ON THE SHIPPED 2026-08-13 CUR3K PANEL, and the measurement corrects the reason
+#  this fix was requested rather than confirming it:
+#    * over all 15,774 (source, column) pairs these helpers read, LIMB 1 fires **0 times** --
+#      every column carries either at least rpy present periods or none at all.  So the limb
+#      described as the live defect is LATENT on this data, not active.  It is still fixed:
+#      "latent" is a property of one panel, not of the function.
+#    * LIMB 2 fires on 21 of 15,774 pairs (0.133%), median span exactly 1.00 years and worst
+#      1.50 -- and on 0 of the 600 shortlist pairs.
+#    * driving the REAL presentation build for 2026-08-13 through all 15 exercised call
+#      sites (22,516 invocations), this change alters 10 of them, at four sites (the FCF
+#      margin, the Sloan recomputation and the two REIT reducers), every one from a number
+#      to an abstention, and every one of the 10 is a LIMB-2 reach.  None is a top-100 name;
+#      they are extended-pool members.
+#
+#  WHY ABSTAIN RATHER THAN SUM WHAT IS THERE.  These figures feed ratios and per-share
+#  quantities that are compared against annual benchmarks (a "> 4x" leverage bar, a P/FFO, an
+#  AFFO payout).  A sum over a different span is not a smaller measurement of the same thing,
+#  it is a different quantity wearing the same units -- and the consumer has no way to tell.
+#  NaN is a state every consumer here already handles.
 def ttm_sum(df, col, rpy=None):
     """Trailing-TWELVE-MONTH sum: the newest `rpy` rows (4 quarterly / 2 semi-annual) after a
-    newest-first sort. `rpy=None` derives it from the frame's own 'source' column; pass it
-    explicitly where the frame carries no 'source' (e.g. the extended-pool reducer)."""
+    newest-first sort, or NaN.
+
+    THE WINDOW IS POSITIONAL. `rpy` ROWS, EVERY ONE PRESENT -- see the block above. Anything
+    less returns NaN rather than a sum over a different span. `rpy=None` derives it from the
+    frame's own 'source' column; pass it explicitly where the frame carries no 'source'
+    (e.g. the extended-pool reducer)."""
     if df is None or df.empty or col not in df.columns:
         return np.nan
     if rpy is None:
         rpy = _rpy_from_frame(df)
-    values = df[col].dropna().head(int(rpy)).values
-    if len(values) == 0:
+    rpy = int(rpy)
+    window = pd.to_numeric(df[col], errors='coerce').head(rpy)
+    #  Two conditions, not one: the frame may be SHORTER than the window (a newly-listed
+    #  name), and the window may have a HOLE in it.  Both mean "there is no trailing year
+    #  here", and neither may be answered with a partial sum.
+    if len(window) < rpy or window.isna().any():
         return np.nan
-    return float(np.sum(values))
+    return float(np.sum(window.values))
 
 
 def ttm_aligned_sums(df, cols, rpy=None):
-    """Trailing-12-month sums for several columns computed over the SAME set of periods
-    (the newest `rpy` rows where EVERY listed column is non-NaN). Unlike calling ttm_sum per
-    column -- which drops NaNs independently and can sum DIFFERENT periods per column --
-    this keeps a paired sum (e.g. R2's netIncome vs operating cash flow) aligned on one
-    consistent period set. Returns a tuple of floats (np.nan where unavailable), in `cols`
-    order. `df` is assumed newest-first (get_cdx_for_ticker's order). `rpy=None` -> derived
-    from the frame's 'source' column (4 = quarterly when unknown)."""
+    """Trailing-12-month sums for several columns over the SAME `rpy` newest PERIODS, or NaNs.
+
+    Unlike calling ttm_sum per column -- which would window each column independently -- this
+    keeps a paired sum (e.g. R2's netIncome vs operating cash flow) on one consistent period
+    set. Returns a tuple of floats (np.nan where unavailable), in `cols` order.
+
+    THE ALIGNMENT IS NOW GUARANTEED BY CONSTRUCTION rather than by construction-and-hope: the
+    window is the newest `rpy` ROWS and EVERY listed column must be present in ALL of them, so
+    the returned sums cover the same twelve months as each other AND as `ttm_sum`'s. The old
+    `df[cols].dropna().head(rpy)` kept the columns aligned WITH EACH OTHER but let the shared
+    window slide older -- so a paired ratio could be internally consistent and still not be a
+    year. `df` is assumed newest-first (get_cdx_for_ticker's order); `rpy=None` -> derived from
+    the frame's 'source' column (4 = quarterly when unknown)."""
     if df is None or df.empty or any(c not in df.columns for c in cols):
         return tuple(np.nan for _ in cols)
     if rpy is None:
         rpy = _rpy_from_frame(df)
-    sub = df[cols].dropna()          # rows where ALL cols present -> aligned periods
-    if sub.empty:
+    rpy = int(rpy)
+    sub = df[cols].apply(pd.to_numeric, errors='coerce').head(rpy)
+    if len(sub) < rpy or bool(sub.isna().to_numpy().any()):
         return tuple(np.nan for _ in cols)
-    sub = sub.head(int(rpy))
     return tuple(float(sub[c].sum()) for c in cols)
 
 

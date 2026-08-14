@@ -29,6 +29,7 @@ GMI and DEPI use prior/current; the other five use current/prior. A single globa
 orientation flip therefore CANNOT make all eight correct at once -- each component
 must compute ITS OWN published direction, which is what is asserted below.
 """
+import inspect
 import os
 import sys
 
@@ -39,6 +40,7 @@ REPO = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, REPO)
 
 import detectManipulation as dm
+import nan_policy as npol
 import forensicFlags as ff
 import reporting_period as rp
 from detectManipulation import invrollsumTTM
@@ -505,6 +507,210 @@ def test_beneish_depi_is_deliberately_left_alone():
     print("PASS test_beneish_depi_is_deliberately_left_alone")
 
 
+#  ---- THE BENEISH BASE GUARDS (undefended-denominator fix, 2026-08-14) ------------------
+#  Three independent rules, each with its own failure it catches -- see the block at
+#  `detectManipulation.BENEISH_AQI_SHARE_FLOOR` for the panel measurements behind each:
+#    (a) a MAGNITUDE FLOOR on aqiTTM / depiTTM  -- the base is too small to be a measurement;
+#    (b) an IDENTITY guard on aqiTTM only       -- the base is outside [0,1], i.e. impossible;
+#    (c) a COVERAGE gate on the M window        -- too few periods survived to be a year.
+#  aqiTTM and depiTTM carry SEPARATE floors, each derived from its own density.
+
+def test_a_vanishing_aqi_base_ABSTAINS_instead_of_emitting_a_huge_index():
+    """(a) AQI must REFUSE a near-zero asset-quality base, not divide by it.
+
+    This is the WSE case from the shipped 2026-08-13 run reduced to a fixture: the base (the
+    share of total assets that is neither current assets nor net PP&E) is 0.2% of the balance
+    sheet in the prior year, so `AQI = a_t / a_{t-1}` is ~200 and the +0.404 coefficient alone
+    carries M ~80 points past a cutoff of 0.  The published index is calibrated on a population
+    centred at ~1.04; a value two orders of magnitude outside it is not evidence, it is a
+    division.
+
+    ASSERTED IN BOTH DIRECTIONS, because "it is NaN now" is worth nothing on its own -- the
+    same NaN would appear if the fixture were simply broken.  With the guard DISABLED the
+    fixture must produce the huge index; with it enabled the component must abstain.
+    """
+    prior = dict(_BASE, totalCurrentAssets=698, propertyPlantEquipmentNet=300)
+    annual = _annual([_BASE] * 4 + [prior, _BASE])
+    saved = dm.BENEISH_AQI_SHARE_FLOOR
+    try:
+        dm.BENEISH_AQI_SHARE_FLOOR = 0.0                 # pre-fix behaviour
+        raw = pd.to_numeric(_run(annual, 'VANISH')['mdf']['AQI'], errors='coerce').iloc[0]
+        assert raw > 100, ('fixture must reproduce the defect it guards against; AQI was %r'
+                           % raw)
+        dm.BENEISH_AQI_SHARE_FLOOR = 0.01
+        r = _run(annual, 'VANISH')
+        got = pd.to_numeric(r['mdf']['AQI'], errors='coerce').iloc[0]
+        assert pd.isna(got), ('a base of 0.002 is below the 0.01 floor, so AQI must ABSTAIN; '
+                              'got %r' % got)
+        assert pd.isna(pd.to_numeric(r['mdf']['M_Score'], errors='coerce').iloc[0])
+        assert raw * 0.404 > 40, raw
+    finally:
+        dm.BENEISH_AQI_SHARE_FLOOR = saved
+    print("PASS test_a_vanishing_aqi_base_ABSTAINS_instead_of_emitting_a_huge_index")
+
+
+def test_an_IMPOSSIBLE_aqi_base_is_refused_even_though_it_is_LARGE():
+    """(b) The limb a magnitude floor cannot reach, and the one that actually bounds the term.
+
+    `totalCurrentAssets + propertyPlantEquipmentNet <= totalAssets` is an identity, so an
+    aqiTTM outside [0,1] is arithmetically impossible -- the panel carries 160 such rows
+    (0.291%), reaching -14,550.37.  Those rows are not SMALL, they are WRONG, so every
+    magnitude floor from 0.001 to 0.02 leaves them untouched: measured, the largest single-row
+    |0.404 x AQI| contribution to M is 97,671,954 with no guard, still 136,644 with the floor
+    alone, and 36.32 only when the identity guard is added.
+
+    An earlier version of the block claimed aqiTTM was "bounded in [0,1] by construction".
+    This test is the standing refutation of that.
+    """
+    #  totalCurrentAssets + netPP&E = 1400 against totalAssets 1000 -> aqi = -0.4, impossible
+    bad = dict(_BASE, totalCurrentAssets=1100, propertyPlantEquipmentNet=300)
+    annual = _annual([_BASE] * 4 + [bad, _BASE])
+    saved = dm.BENEISH_AQI_SHARE_FLOOR
+    try:
+        dm.BENEISH_AQI_SHARE_FLOOR = 0.01
+        got = pd.to_numeric(_run(annual, 'IMPOSS')['mdf']['AQI'], errors='coerce').iloc[0]
+        assert pd.isna(got), ('an impossible base must be refused; got %r' % got)
+        #  ...and it is NOT the floor doing it: |−0.4| is far ABOVE any floor tested.
+        dm.BENEISH_AQI_SHARE_FLOOR = 0.0
+        still = pd.to_numeric(_run(annual, 'IMPOSS')['mdf']['AQI'], errors='coerce').iloc[0]
+        assert pd.isna(still), ('the identity guard must fire independently of the floor; '
+                                'got %r' % still)
+    finally:
+        dm.BENEISH_AQI_SHARE_FLOOR = saved
+    print("PASS test_an_IMPOSSIBLE_aqi_base_is_refused_even_though_it_is_LARGE")
+
+
+def test_depi_carries_its_OWN_floor_and_does_not_inherit_AQI_s():
+    """(b2) The two bases are different quantities with different degenerate populations.
+
+    depiTTM's density shows a sharp isolated spike of 1,797 rows in [0, 0.002) against 340 in
+    the next bin, so its floor is 0.002; aqiTTM's excess ends at 0.010.  Sharing one constant
+    cost 4,320 refused DEPI rows (8.0% of the column) while changing ZERO verdicts on the
+    shipped shortlist.  Pinned so the two cannot be silently re-merged into one symbol."""
+    assert dm.BENEISH_AQI_SHARE_FLOOR == 0.01
+    assert dm.BENEISH_DEPI_SHARE_FLOOR == 0.002
+    assert dm.BENEISH_DEPI_SHARE_FLOOR < dm.BENEISH_AQI_SHARE_FLOOR
+    #  a depi base of 0.005 is below AQI's floor but ABOVE its own -> it must survive
+    v, n = dm._floor_share_base(pd.Series([0.005, 0.5]), dm.BENEISH_DEPI_SHARE_FLOOR)
+    assert n == 0 and v.notna().all(), v.tolist()
+    v, n = dm._floor_share_base(pd.Series([0.005, 0.5]), dm.BENEISH_AQI_SHARE_FLOOR)
+    assert n == 1, n
+    print("PASS test_depi_carries_its_OWN_floor_and_does_not_inherit_AQI_s")
+
+
+def test_a_partially_refused_M_window_ABSTAINS_on_COVERAGE():
+    """(c) THE DEFECT THE GUARD ITSELF CREATED, now closed (review F-1).
+
+    `M_Score_mean` is `M_Score.head(scale_window(4, rpy)).mean()`, and pandas' `mean()` SKIPS
+    NaN -- so refusing SOME rows of the window silently shortens it while the column keeps its
+    trailing-year label.  On the shipped top-100 that converted HWX.TO (RANK 5) from a
+    manipulation flag (+0.9618) to a clean -1.3159 on a mean over ONE of its four quarters.
+
+    An earlier version of this file PINNED that behaviour as acceptable, on the stated ground
+    that applying `nan_policy.COVERAGE_MIN` "would also change the three names the floor never
+    touched".  It would not: that test is a STRICT `<` and the three sit at exactly 0.50.  The
+    deferral was wrong and this test replaces it.
+    """
+    prior = dict(_BASE, totalCurrentAssets=698, propertyPlantEquipmentNet=300)
+    annual = _annual([_BASE] * 4 + [prior, _BASE])       # refuses 1 of the 4 window rows
+    saved = dm.BENEISH_AQI_SHARE_FLOOR
+    try:
+        dm.BENEISH_AQI_SHARE_FLOOR = 0.01
+        r = _run(annual, 'PARTIAL')
+        m = pd.to_numeric(r['mdf']['M_Score'], errors='coerce').head(4)
+    finally:
+        dm.BENEISH_AQI_SHARE_FLOOR = saved
+    n_ok, n = int(m.notna().sum()), len(m)
+    assert 0 < n_ok < n, m.tolist()          # genuinely partial, or the test is vacuous
+    if n_ok / float(n) < npol.COVERAGE_MIN:
+        assert pd.isna(r['m_mean']), (
+            'a window below COVERAGE_MIN must abstain, not publish a short mean: %r'
+            % r['m_mean'])
+    else:
+        assert not pd.isna(r['m_mean'])
+        assert abs(float(r['m_mean']) - float(m.dropna().mean())) < TOL
+    #  and the rule is the REPO'S rule, not a second copy of it
+    src = inspect.getsource(dm.calcBeneishM)
+    assert 'COVERAGE_MIN' in src and 'npol' in src
+
+
+def test_the_coverage_gate_uses_a_STRICT_comparison_like_nan_policy():
+    """Exactly-at-threshold must PASS, matching `nan_policy.py`'s own strict `<`.
+
+    This is the fact the earlier deferral got wrong, so it is pinned rather than trusted: on
+    the shipped top-100 the three semi-annual names LOUP.PA, NEDAP.AS and MAU.PA sit at exactly
+    0.50 coverage, and it is precisely because 0.50 passes that this change touches ONE name
+    instead of four."""
+    src = inspect.getsource(dm.calcBeneishM)
+    assert '>= npol.COVERAGE_MIN' in src, (
+        'the M-window coverage test must ADMIT exactly-at-threshold, as nan_policy does')
+    assert npol.COVERAGE_MIN == 0.50
+
+
+def test_the_floors_are_read_at_CALL_time_not_bound_at_import():
+    """Both constants must be overridable by assignment, the way every other constant in this
+    repo is overridden for a measurement.
+
+    Bound as a default argument a constant is evaluated ONCE at import, so the override
+    silently does nothing and a before/after measurement reports "no change" for a reason that
+    has nothing to do with the data.  That happened while this fix was being measured."""
+    s = pd.Series([0.5, 0.004, np.nan, -0.002, 0.02])
+    v, n = dm._floor_share_base(s, 0.0)
+    assert n == 0 and int(v.notna().sum()) == 4, (n, v.tolist())
+    v, n = dm._floor_share_base(s, 0.01)
+    assert n == 2, n                       # 0.004 and -0.002
+    assert v.isna().tolist() == [False, True, True, True, False], v.tolist()
+    #  a row that was ALREADY NaN is not counted as a refusal by these rules
+    assert dm._floor_share_base(pd.Series([np.nan, np.nan]), 0.01)[1] == 0
+    #  the call sites read the module constants by NAME, so assignment reaches them
+    src = inspect.getsource(dm.calcBeneishM)
+    assert 'BENEISH_AQI_SHARE_FLOOR' in src and 'BENEISH_DEPI_SHARE_FLOOR' in src
+    print("PASS test_the_floors_are_read_at_CALL_time_not_bound_at_import")
+
+
+def test_the_floor_is_SYMMETRIC_and_guards_the_numerator_leg_too():
+    """A vanishing base in the NUMERATOR gives an index near 0 -- bounded, so it looks
+    harmless -- but it is the same non-measurement, and 0 is the index's BEST (least
+    suspicious) side.  The 2026-07-26 ruling is that an uncomputable component must never score
+    as the favourable one, so the guard is applied to the SERIES, not to the divisor."""
+    current = dict(_BASE, totalCurrentAssets=698, propertyPlantEquipmentNet=300)
+    annual = _annual([_BASE] * 5 + [current])       # newest year has the 0.002 base
+    saved = dm.BENEISH_AQI_SHARE_FLOOR
+    try:
+        dm.BENEISH_AQI_SHARE_FLOOR = 0.0
+        raw = pd.to_numeric(_run(annual, 'NUMER')['mdf']['AQI'], errors='coerce').iloc[0]
+        assert 0 < raw < 0.02, ('fixture must put the vanishing base on the NUMERATOR; '
+                                'AQI was %r' % raw)
+        dm.BENEISH_AQI_SHARE_FLOOR = 0.01
+        got = pd.to_numeric(_run(annual, 'NUMER')['mdf']['AQI'], errors='coerce').iloc[0]
+        assert pd.isna(got), ('a near-zero numerator must abstain, not score as the best '
+                              'possible asset quality; got %r' % got)
+    finally:
+        dm.BENEISH_AQI_SHARE_FLOOR = saved
+    print("PASS test_the_floor_is_SYMMETRIC_and_guards_the_numerator_leg_too")
+
+
+def test_the_guards_do_NOT_touch_an_ordinary_firm():
+    """The guards must be inert on a normal balance sheet -- the baseline fixture's asset-
+    quality base is 0.40 of total assets and its depreciation rate 0.25, both far above their
+    floors and inside [0,1].  Without this, a floor set too high would pass every test above by
+    refusing everything."""
+    annual = _annual([_BASE] * 5 + [_DIRTY])
+    sa, sd = dm.BENEISH_AQI_SHARE_FLOOR, dm.BENEISH_DEPI_SHARE_FLOOR
+    try:
+        dm.BENEISH_AQI_SHARE_FLOOR = dm.BENEISH_DEPI_SHARE_FLOOR = 0.0
+        a = _run(annual, 'ORD')['mdf']
+        dm.BENEISH_AQI_SHARE_FLOOR, dm.BENEISH_DEPI_SHARE_FLOOR = sa, sd
+        b = _run(annual, 'ORD')['mdf']
+    finally:
+        dm.BENEISH_AQI_SHARE_FLOOR, dm.BENEISH_DEPI_SHARE_FLOOR = sa, sd
+    for col in ('AQI', 'DEPI', 'M_Score'):
+        x = pd.to_numeric(a[col], errors='coerce').to_numpy(dtype='float64')
+        y = pd.to_numeric(b[col], errors='coerce').to_numpy(dtype='float64')
+        assert np.allclose(x, y, equal_nan=True, rtol=0, atol=0), (col, x, y)
+    print("PASS test_the_guards_do_NOT_touch_an_ordinary_firm")
+
+
 if __name__ == '__main__':
     test_component_directions_exact_row0()
     test_mscore_fold_and_flag_dirty()
@@ -522,4 +728,12 @@ if __name__ == '__main__':
     test_quarterly_path_is_bit_identical_under_rpy4()
     test_dappdec_is_gone_and_cannot_come_back()
     test_beneish_depi_is_deliberately_left_alone()
+    test_a_vanishing_aqi_base_ABSTAINS_instead_of_emitting_a_huge_index()
+    test_an_IMPOSSIBLE_aqi_base_is_refused_even_though_it_is_LARGE()
+    test_depi_carries_its_OWN_floor_and_does_not_inherit_AQI_s()
+    test_a_partially_refused_M_window_ABSTAINS_on_COVERAGE()
+    test_the_coverage_gate_uses_a_STRICT_comparison_like_nan_policy()
+    test_the_floors_are_read_at_CALL_time_not_bound_at_import()
+    test_the_floor_is_SYMMETRIC_and_guards_the_numerator_leg_too()
+    test_the_guards_do_NOT_touch_an_ordinary_firm()
     print("\nALL detectManipulation KNOWN-ANSWER TESTS PASSED")

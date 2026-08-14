@@ -470,7 +470,7 @@ def _stage1(tempfund, rpy=4):
     tmp = pd.DataFrame(columns=list(utils.initBoMetric_fromDict()['BoMetric_df'].columns))
     tmp['date'] = tempfund['date'].values
     tmp['source'] = 'TEST'
-    return gdf.build_bometric_rows(tempfund.copy(), tmp, rpy, n=1, dicts=packed)
+    return gdf.build_bometric_rows(tempfund.copy(), tmp, rpy, dicts=packed)
 
 
 def _score(bm, column, kind, key, avec=0.0, n=8):

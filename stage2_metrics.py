@@ -1482,6 +1482,27 @@ def prepare_eps_series(tempcdx):
 #  basis the metric uses; this constant is the VALUE of that basis and keeps the reasoning
 #  above.  test_stage2_registry pins the two together so the default below cannot drift from
 #  the declaration.
+#
+#  ==================================================================================
+#  CEO RULING, 2026-08-14 -- THIS WINDOW IS A DELIBERATE EXCEPTION AND IT STANDS.
+#  ==================================================================================
+#  The CEO's standing preference is that metrics use "the last 4 years or last 3 years".
+#  28 quarters is SEVEN years -- nearly twice that -- and it was put to him as such.  HE
+#  RULED THAT IT STANDS, for the reason the block above is built on: a 4-year window
+#  CANNOT SEE A CYCLE, so capping CycleHeat at 4 years would not shorten the metric, it
+#  would remove the thing the metric measures.  7 years is what makes cyclicality
+#  detectable at all, which is the whole purpose of the deep fetch this constant was
+#  written for.
+#
+#  RECORDED HERE, AT THE USE SITE, BECAUSE EVERY OTHER RULING IN THIS CODEBASE IS AND
+#  THESE TWO WERE NOT.  The other long window is the history-bonus saturation point
+#  (`calcScore.HISTORY_BONUS_SATURATION_ROWS`, 40 rows = 10 years), ruled the same day
+#  and for its own separate reason; the two are NOT one decision and must not be
+#  collapsed into "the CEO allows long windows".
+#
+#  THE SHORT-WINDOW PREFERENCE IS NOT WITHDRAWN by this.  It still governs every other
+#  metric in this module; what is recorded is that CycleHeat and the history bonus are
+#  the two named exceptions to it, each on its own stated grounds.
 CYCLEHEAT_BASE_NQ = 28
 
 

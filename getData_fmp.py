@@ -41,7 +41,14 @@ def _bar_print(msg):
 
 
 def get_fundamentals_fmp(Tickers_df, cdx_df, BoMetric_df, baseurl,
-                         api_key,compyear, n=1, nrTaT=-1, startindex=0,period='quarter',limit=44):
+                         api_key,compyear, nrTaT=-1, startindex=0,period='quarter',limit=44):
+    #  `n` (fsMAnumber) REMOVED FROM THIS SIGNATURE (CEO, 2026-08-14) along with the smoothing
+    #  it fed -- see calcMetrics.calc_diff.  IT SAT IN THE MIDDLE OF A POSITIONAL CALL:
+    #  Sbocker passes compyear / fsMAnumber / nrTaT / startindex / period / nrperiods by
+    #  POSITION, so this deletion shifts four arguments and that call site moves with it.
+    #  Removing the parameter rather than leaving it as an ignored default is what makes a
+    #  stale caller a TypeError instead of a silent off-by-one that would hand `nrTaT` the old
+    #  smoothing width.
     print('Fetching financial data from FMP and calculating relevant metrics.')
     if not isinstance(Tickers_df, pd.DataFrame):
         raise Exception('provide a DataFrame')
@@ -140,7 +147,7 @@ def get_fundamentals_fmp(Tickers_df, cdx_df, BoMetric_df, baseurl,
                     pricefailESN.append(row.exchangeShortName)
                 else:
                     tempMetric_df_trimmed = build_bometric_rows(
-                        tempfund, tempMetric_df, _rpy_t, n=n,
+                        tempfund, tempMetric_df, _rpy_t,
                         dicts=(BoMetric_base_dict, BoMetric_mean_dict,
                                BoMetric_unity_dict, BoMetric_diff_dict,
                                BoMetric_special_dict))
@@ -415,8 +422,15 @@ def fillPreReqdf(tempfund,preReq_dict,bs,inc,cf,km,fr,conflicts=None,fallbacks=N
     return tempfund, hcybool
 
 
-def build_bometric_rows(tempfund, tempMetric_df, rpy, n=1, dicts=None):
+def build_bometric_rows(tempfund, tempMetric_df, rpy, dicts=None):
     """Build ONE source's Stage-1 BoMetric rows from its cdx-schema frame.
+
+    THE `n` (fsMAnumber) PARAMETER IS GONE (CEO, 2026-08-14).  It was forwarded to
+    `calcMetrics.calc_diff` (a `rolling(scale_window(n, rpy)).mean()` that is the IDENTITY at
+    the production value of 1) and to `calcMetrics.calc_special` (which never read it).  Both
+    are deleted; see `calc_diff`'s docstring for the bit-identity proof on the 2026-08-13
+    panel.  Removed rather than defaulted, so the four offline callers cannot keep passing a
+    smoothing width that no longer exists and believe it applied.
 
     EXTRACTED from get_fundamentals_fmp's per-ticker body (2026-07-27) with NO
     behavioural change.  It was previously replicated in
@@ -551,7 +565,7 @@ def build_bometric_rows(tempfund, tempMetric_df, rpy, n=1, dicts=None):
             tempMetric_df[urestr] = _form_values(BoMetric_unity_dict[key])
         if key in BoMetric_diff_dict:
             tempdf['forDiff'] = _form_values(BoMetric_diff_dict[key])
-            tf = cm.calc_diff(tempdf, 'forDiff', n, rpy=rpy)
+            tf = cm.calc_diff(tempdf, 'forDiff', rpy=rpy)
             drestr = "d" + restr[0].upper() + restr[1:]
             tempMetric_df[drestr] = tf
 
@@ -559,7 +573,7 @@ def build_bometric_rows(tempfund, tempMetric_df, rpy, n=1, dicts=None):
         # `Guard` is forwarded rather than applied here: the special criteria are formulas, not
         # Upper/Lower ratios, so they never enter the loop above.  Same declaration, same
         # predicate registry -- one place to read a criterion's domain.
-        tf = cm.calc_special(tempfund, key1, n, rpy=rpy,
+        tf = cm.calc_special(tempfund, key1, rpy=rpy,
                              guard=BoMetric_special_dict[key1].get('Guard'))
         tempMetric_df[key1] = tf
 

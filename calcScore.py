@@ -15,6 +15,37 @@ HISTORY_BONUS_MAX = 0.05             # bonus at saturation; HALF the smallest cr
                                      # difference (a Tier-D criterion over a full window)
 HISTORY_BONUS_SATURATION_ROWS = 40   # ROWS available to the source, not the head(n) window
 
+# ==================================================================================
+#  CEO RULING, 2026-08-14 -- THE 40-ROW SATURATION IS A DELIBERATE EXCEPTION AND STANDS.
+# ==================================================================================
+#  The CEO's standing preference is that metrics use "the last 4 years or last 3 years".
+#  `HISTORY_BONUS_SATURATION_ROWS = 40` is TEN years -- the longest window in the pipeline --
+#  and it was put to him as such.  IT STANDS, on two grounds he gave:
+#
+#    1. IT IS HIS OWN 2026-08-05 RULING.  40 quarters is the saturation point he set when he
+#       ruled that the bonus should credit listing history "up to 40 quarters".  This is not
+#       an inherited default that nobody re-examined; it is the number he chose, and the
+#       2026-08-14 pass re-put it to him rather than assuming it still held.
+#    2. IT HAS NEVER ONCE BEEN REACHABLE, AND THIS FETCH IS THE FIRST THAT CAN REACH IT.  At
+#       `-nrperiods 24` the deepest attainable bonus was 0.0354-0.0371 against a 0.05 maximum
+#       (see `history_bonus_censored_by`), so the ruling has been censored by fetch depth for
+#       its entire life.  Shortening it now, on the first run where it finally measures what
+#       it was written to measure, would retire the ruling before it has ever been observed.
+#
+#  AND A UNIFORM 4-YEAR CAP WOULD NOT SHORTEN THIS BONUS -- IT WOULD DELETE IT.  That is the
+#  decisive point and it is arithmetic, not preference.  The fetch gate is a `lenfail` at
+#  >= 16 quarters, so EVERY admitted name carries at least 16 rows.  A 16-row saturation
+#  point makes `min(rows, 16) = 16` for every single admitted name, the bonus becomes
+#  `HISTORY_BONUS_MAX * sqrt(16/16) = 0.05` for all of them, and a term that is identical
+#  across the whole universe is a constant offset that cannot break a single tie.  The bonus
+#  exists ONLY as a tiebreak (90.9% of names share a score with another name), so capping it
+#  at the CEO's usual 4 years removes the metric rather than tightening it.
+#
+#  NOT THE SAME DECISION AS `stage2_metrics.CYCLEHEAT_BASE_NQ` (28 quarters / 7 years), which
+#  was ruled the same day on its own separate ground (a 4-year window cannot see a cycle).
+#  They are the two named exceptions to the short-window preference, and each stands on its
+#  own reason; neither generalises into "long windows are fine here".
+
 
 def history_bonus_censored_by(panel_rows):
     """`None` when a panel `panel_rows` deep can SATURATE the history bonus; otherwise the

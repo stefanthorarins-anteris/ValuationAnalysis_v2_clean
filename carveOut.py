@@ -1374,6 +1374,190 @@ _K2_MARKETCAP_FLOOR = 1e6
 #  K1), not a stronger corroborator.
 _K2_CORROBORATORS = ('name', 'date') + _K1_COLS
 
+#  ...AND THE `date` DISJUNCT NEEDS A STATEMENT-CONSISTENCY CHECK ON TOP (2026-08-14).
+#
+#  THE LIVE DEFECT.  The paragraph above closes by saying the operative disjunct for a chance
+#  collision is `date`, and that this removes "on the order of 60% of future chance collisions,
+#  NOT all of them".  One of the survivors was already shipping: on the 2026-08-13 run
+#  `ALTA.PA` (Altarea SCA, ISIN FR0000033219) and `AREIT.PA` (Altareit SCA, FR0000039216) were
+#  merged and AREIT.PA was DELETED (`decided_by=shares`).  They are a PARENT and its listed
+#  SUBSIDIARY -- revenue EUR875.9M vs 738.9M, totalAssets EUR7.69bn vs 2.99bn, shares 23.4M vs
+#  1.75M -- and they agree on exactly two things: a marketCap of 1,022,830,380.0 to the euro,
+#  and a latest statement date.  That is the Assystem/Elior failure again, one disjunct later.
+#
+#  TWO FIXES WERE TRIED FIRST AND BOTH ARE REFUTED BY MEASUREMENT.  Recorded because each is
+#  the obvious idea, and the next reader will have the same one:
+#
+#   1. "THE DATE DISJUNCT SHOULD NOT APPLY WHEN BOTH LINES ARE ON THE SAME EXCHANGE" -- the
+#      reasoning being that the date disjunct exists for FX-shifted cross-listings, which are
+#      on different exchanges by definition.  IT CHANGES NOTHING: 0 groups move on all three
+#      of the 2026-08-07 / 08-11 / 08-13 panels.  Altarea survives it by TRANSITIVITY through
+#      the LSE line -- `0IRK.L` (.L) and `AREIT.PA` (.PA) are on DIFFERENT exchanges, so that
+#      edge is untouched, and `ALTA.PA`/`0IRK.L` are held by K1, K3 AND K4.  Restricting a
+#      union-find edge does nothing when a two-hop path around it survives.
+#   2. "TWO KNOWN, DIFFERENT ISINs MAY NOT MERGE ON THE DATE ALONE".  It fixes Altarea but
+#      BREAKS TWO DOCUMENTED WANTED MERGES to do it.  Enumerated on 2026-08-13, the pairs held
+#      ONLY by the date disjunct are exactly FIVE, and every one has two known, different
+#      ISINs: the two Altarea edges (FALSE), `QSR.TO`/`QSP-UN.TO` + `0VFA.L`/`QSP-UN.TO`
+#      (Restaurant Brands Inc. vs its exchangeable LP units -- named in the block above as a
+#      case the date disjunct EARNS its place on), and `AEG`/`AGN.AS` (Aegon Ltd. vs Aegon
+#      N.V.).  Two real losses to fix one false merge is the wrong trade, and a different ISIN
+#      is plainly not proof of a different issuer -- Robertet (`RBT.PA`/`CBE.PA`) and Value8
+#      (`VALUE.AS`/`PREVA.AS`) both carry different ISINs and both merge correctly, on K1.
+#
+#  WHAT ACTUALLY SEPARATES THEM, and it is the property the register already names: A SHARE
+#  CLASS OR A CROSS-LISTING SHARES ITS ISSUER'S STATEMENTS; A SUBSIDIARY DOES NOT.  K1 tests
+#  that at EXACT equality, which is why it cannot see a pair reported in two currencies.  The
+#  general form is that two lines of ONE issuer differ by a SINGLE multiplicative constant --
+#  the FX rate, or 1.0 in a common currency -- so revenue, netIncome and totalAssets all scale
+#  by the SAME factor.  A parent and a subsidiary do not: consolidation moves the three lines
+#  by DIFFERENT factors.  So the discriminator is the SPREAD of the three ratios, which is
+#  CURRENCY-FREE by construction -- and being currency-free is exactly what killed proposals
+#  1 and 2, both of which used a proxy for currency instead of the thing itself.
+#
+#  THE STATISTIC IS `_statement_spread` -- READ ITS DOCSTRING FIRST.  It is NOT a plain
+#  max/min of the three ratios; it DISCARDS THE SINGLE MOST DEVIANT one before taking max/min,
+#  because a plain max/min was measured to refuse 2.90% / 3.64% / 3.22% of pairs whose
+#  same-issuer identity is not in question (Unilever, OpenText, Broadcom...).  Everything below
+#  is measured with the trimmed statistic.
+#
+#  WHERE 1.25 SITS, STATED WITHOUT THE HEADROOM CLAIM AN EARLIER VERSION MADE.  That version
+#  said the threshold had "36x" margin over the worst true pair.  THAT WAS AN ARTIFACT OF
+#  MEASURING ONLY THE FIVE PAIRS THEN HELD BY `date` ALONE.  Measured over every K2-`date`
+#  bucket pair on all three panels, with the trimmed statistic, the two populations DO NOT
+#  cleanly separate -- they leave a band about four percent wide:
+#
+#      largest KNOWN-TRUE spread   OGI / OGI.TO           1.3928   (PANEL-JAN)
+#                                  0VGE.L / SSRM          1.3244   (both CUR3K panels)
+#                                  SSRM / SSRM.TO         1.3135   (both CUR3K panels)
+#      the FALSE pair              ALTA.PA / AREIT.PA     1.4478   (all three panels)
+#
+#  So there is no comfortable gap to sit in the middle of.  1.25 is placed BELOW the true tail
+#  DELIBERATELY, on the refusing side: it accepts a measured 0.04% / 0.45% / 0.46% false
+#  refusal (SSR Mining on the CUR3K panels, Open Farm on PANEL-JAN) in exchange for 16% of
+#  margin against the false pair.  A threshold of 1.40 would refuse nothing true on any of the
+#  three panels AND still split Altarea -- but it would sit 3.4% under the false pair and 0.5%
+#  over the nearest true one, so the next vendor restatement moves it across.  The asymmetry
+#  in the block above decides it: a refused true pair costs a duplicate slot, a false merge
+#  DELETES A REAL COMPANY, so the threshold is placed where the recurring cost is a slot.
+#
+#  THE STATISTIC IS STILL NOISY AT THE BOTTOM and that is why it is not tighter.  netIncome is
+#  the unstable field: over the 1,013 KNOWN-TRUE pairs on these three panels (same exact ISIN,
+#  so identity is not in question) the UNTRIMMED spread has a median of 1.0000 but a maximum of
+#  1,324 -- SSR Mining's two lines carry near-zero and slightly different netIncome, so their
+#  ratio explodes while the companies are plainly identical.  The trim is what removes most of
+#  that, and SSR Mining is precisely the pair it does not fully rescue.
+#
+#  THE FAILURE DIRECTION IS THE SAFE ONE, AND THAT IS WHY THIS IS ACCEPTABLE AT ALL.  This rule
+#  can only ever REMOVE a date-disjunct union: it is monotone in the same way the corroborator
+#  itself is, so it can SPLIT what is merged today and can NEVER merge more.  A refused true
+#  pair costs a duplicate slot on the shortlist; a false merge DELETES A REAL COMPANY.  The
+#  block above sets that asymmetry out, and this threshold is chosen on the same side of it.
+#
+#  NOT A COLLISION-PROOF IDENTITY EITHER, stated as plainly as the paragraph above states it:
+#  a chance marketCap+date collision between two lines that HAPPEN to have proportional
+#  statements would still merge.  That still wants K4/ISIN coverage or a common-fiscal-period
+#  K1; this closes the case that is deleting a company today.
+_K2_DATE_MAX_STATEMENT_SPREAD = 1.25
+
+
+def _statement_spread(a, b, _val):
+    """How far the two lines' (revenue, netIncome, totalAssets) ratios are from ONE constant,
+    AFTER DISCARDING THE SINGLE MOST DEVIANT of the three.  `None` when it cannot be told.
+
+    WHY THE MOST DEVIANT RATIO IS DISCARDED (review D-3, 2026-08-14).  The first version of
+    this took `max/min` over all three ratios, and that is refused by measurement on our own
+    panels.  Enumerating every K2-`date` bucket pair that is ALSO corroborated by another key
+    -- so same-issuer identity is not in question -- and asking how many the plain `max/min`
+    would refuse at 1.25:
+
+        PANEL-JAN 2026-01-09   80 of 2,757 = 2.90%
+        CUR3K     2026-08-11   16 of   440 = 3.64%
+        CUR3K     2026-08-13   14 of   435 = 3.22%
+
+    and the refused set is not exotic -- `UL`/`ULVR.L` (Unilever, the canonical cross-listing)
+    at 2.00, `OTEX`/`OTEX.TO` at 4.13, `BATRA`/`BATRK` at 3.48, `1YD.DE`/`AVGO` at 1.64.
+    THE TWO DISTRIBUTIONS OVERLAP OUTRIGHT: Altarea/Altareit, the FALSE pair this guard exists
+    for, sits at 2.17 -- BELOW OpenText's 4.13 and ABOVE Unilever's 2.00.  So "two lines of one
+    issuer differ by a single multiplicative constant" is NOT true in general, and a statistic
+    resting on it is not a discriminator; the earlier version only ordered the five then-current
+    date-only pairs correctly, which is a much weaker claim than it was written as.
+
+    WHAT ACTUALLY GOES WRONG IS ALWAYS *ONE* LINE, AND RESTATEMENT LAG IS THE COUNTEREXAMPLE
+    CLASS.  A vendor restatement, a minority interest, or a period-boundary difference moves
+    ONE of the three fields while the other two still agree, and `max/min` over all three lets
+    that single line carry the verdict.  The case that proves it is this guard's OWN wanted
+    exemplar: `QSR.TO`/`QSP-UN.TO` (Restaurant Brands) reads rev 0.9996 / ni 0.9996 / ta 0.9996
+    on the 2026-08-13 panel but rev 0.9996 / ni 0.7621 / ta 0.9996 on the 2026-08-11 one,
+    because FMP served `QSP-UN.TO` netIncome 665,000,000 for period 2026-04-01 on the 08-11
+    vintage and RESTATED it to 507,000,000 by 08-13 while `QSR.TO` carried 506,783,948
+    throughout.  Under the old statistic that pair scored 1.3116 and was REFUSED on one of the
+    three panels cited as the threshold's evidence.  (Its blast radius was zero -- the family
+    survives via K1 and K4 through `QSR` -- but by luck of a second key, not by this guard.)
+
+    SO: DROP THE ONE MOST DEVIANT RATIO, then take `max/min` of what is left.  Measured
+    false-refusal on the same known-same-issuer populations:
+
+        PANEL-JAN  2.90% -> 0.04%      08-11  3.64% -> 0.45%      08-13  3.22% -> 0.46%
+
+    a 65-70x reduction, and Altarea is STILL refused (1.4478 against the 1.25 threshold).  It
+    also fixes the RBI-08-11 case (-> 1.0000) and both Carnival DLC pairs (`CCL`/`CCL.L` inf ->
+    1.0070, `CCL`/`POH1.DE` 1.9507 -> 1.0070), so the PANEL-JAN Carnival split now disappears
+    on the statistic's own merits instead of needing the name-map argument.
+
+    THE COST, STATED BECAUSE IT IS A REAL TRADE.  The Altarea margin narrows from 74% above the
+    threshold (2.1705 vs 1.25) to 16% (1.4478 vs 1.25), and an ASSYSTEM/ELIOR-SHAPED pair would
+    score 1.2378 -- INSIDE the threshold -- where the old statistic put it at 1.6106 outside.
+    That is hypothetical rather than a live regression: Assystem/Elior agree on nothing but
+    marketCap, are not in the `date` bucket at all, and are already separated by the K2
+    corroborator on both CUR3K panels.  The trade is taken deliberately: a 3% standing
+    false-refusal rate on real cross-listings is a certain, recurring cost, while the narrowed
+    margin is a hypothetical one.
+
+    NEGATIVE RESULT, RECORDED SO THE ROUTE STAYS CLOSED: using `revenue + totalAssets` only and
+    dropping netIncome is WORSE -- 4.57% / 7.73% / 7.82% false refusal -- because two fields
+    make the `len(ratios) < 2` branch fire on the zero-revenue LSE-depositary lines (22-53 pairs
+    per panel), converting them from "merge" to "cannot tell" -> refuse.  Do not take it.
+
+    RETURN CONTRACT:
+      None : fewer than two ratios computable -- "cannot tell".  The caller treats that as NOT
+             corroborated, which is the safe direction (see the block above).
+      inf  : TWO OR MORE ratios have opposite signs.  No currency conversion or share-class
+             relationship flips the sign of a statement line, so one sign disagreement is the
+             deviant ratio to discard (that is exactly Carnival's negative `CCL.L` revenue),
+             but two of them is positive evidence of different issuers rather than one bad line.
+    """
+    ratios = []
+    for c in _K1_COLS:
+        x, y = _val(a, c), _val(b, c)
+        if x is None or y is None or x == 0 or y == 0:
+            continue
+        ratios.append(x / y)
+    if len(ratios) < 2:
+        return None
+    #  A non-positive ratio has no log, so it cannot be ranked for deviance -- it IS the most
+    #  deviant, by the sign argument above.  One is discarded; two mean the pair is not one
+    #  issuer seen twice.
+    bad = [r for r in ratios if r <= 0]
+    if len(bad) >= 2:
+        return float('inf')
+    if bad:
+        if len(ratios) < 3:
+            #  Only one usable ratio would remain: a sign disagreement with nothing left to
+            #  corroborate against is not evidence of agreement.
+            return float('inf')
+        ratios = [r for r in ratios if r > 0]
+    elif len(ratios) >= 3:
+        #  Discard the ratio furthest from the MEDIAN in log space -- the median is the
+        #  robust centre, so the single restated / minority-interest line is what leaves.
+        import math
+        logs = sorted((math.log(r), r) for r in ratios)
+        med = logs[len(logs) // 2][0]
+        worst = max(logs, key=lambda t: abs(t[0] - med))[1]
+        ratios = list(ratios)
+        ratios.remove(worst)
+    return max(ratios) / min(ratios)
+
 
 def _issuer_components(syms, cdx_df, names, isin_map=None):
     """Union-find grouping of same-issuer lines. FOUR EXACT KEYS, NO TOLERANCE.
@@ -1569,7 +1753,27 @@ def _issuer_components(syms, cdx_df, names, isin_map=None):
         if isin:
             buckets.setdefault(('K4', isin), []).append(s)
 
-    for grp in buckets.values():
+    #  THE `date` BUCKET IS THE ONE KEY RESOLVED PAIRWISE, and the deviation is deliberate.
+    #  Every other key stays a pure per-line hash: a line's key is a function of that line
+    #  alone and two lines meet by landing in one bucket.  The date check CANNOT be expressed
+    #  that way -- "these two lines' statements are proportional" is a relation between two
+    #  lines, not a value either of them carries, and trying to hash it is what made the
+    #  same-exchange proposal a no-op (see `_K2_DATE_MAX_STATEMENT_SPREAD`).
+    #  IT IS CHEAP BECAUSE THE BUCKET IS ALREADY NARROW: membership requires an EXACT
+    #  marketCap AND an EXACT latest statement date, so these buckets hold 2-3 lines on the
+    #  real panels (338 of them with >1 member on 2026-08-13).  The quadratic is over that,
+    #  not over the pool.
+    for key, grp in buckets.items():
+        if key[0] == 'K2' and key[2] == 'date' and len(grp) > 1:
+            for i in range(len(grp)):
+                for j in range(i + 1, len(grp)):
+                    sp = _statement_spread(grp[i], grp[j], _val)
+                    #  None = cannot tell -> NOT corroborated.  A missing statement may never
+                    #  be read as agreement; that asymmetry is the same one `_corr` uses when
+                    #  it emits no bucket for a field the line lacks.
+                    if sp is not None and sp <= _K2_DATE_MAX_STATEMENT_SPREAD:
+                        union(grp[i], grp[j])
+            continue
         for s in grp[1:]:
             union(grp[0], s)
 

@@ -106,7 +106,7 @@ def _floatify(df):
     return d
 
 
-def _build_entity_frames(entity, source, cdx_cols, bm_cols, n=1):
+def _build_entity_frames(entity, source, cdx_cols, bm_cols):
     """Transform one dead entity's raw statements into (cdx_row_df, bm_row_df).
 
     entity : the dead-pickle value dict with 'km','fr','inc','bs','cf' DataFrames.
@@ -157,8 +157,9 @@ def _build_entity_frames(entity, source, cdx_cols, bm_cols, n=1):
     _rpy = rp.rows_per_year(
         tempfund[rp.FREQ_COLUMN].iloc[0] if rp.FREQ_COLUMN in tempfund.columns
         else rp.UNKNOWN)
+    #  `n=n` (fsMAnumber) dropped 2026-08-14 with the smoothing it fed -- calcMetrics.calc_diff.
     tempMetric_df_trimmed = gdf.build_bometric_rows(
-        tempfund, tempMetric_df, _rpy, n=n,
+        tempfund, tempMetric_df, _rpy,
         dicts=(BoMetric_base_dict, BoMetric_mean_dict, BoMetric_unity_dict,
                BoMetric_diff_dict, BoMetric_special_dict))
     return tempfund, tempMetric_df_trimmed
@@ -255,7 +256,7 @@ def _resolve_registry_row(reg_by_sym, sym):
 
 def dead_to_scoring_frames(dead, registry, cdx_cols, bm_cols,
                            entities=None, live_sources=None,
-                           collision="prefer_live", n=1, verbose=False):
+                           collision="prefer_live", verbose=False):
     """Build (cdx_dead, bm_dead) -- dead-name rows in cdx_df / BoMetric_df schema,
     inf-scrubbed to live parity via gdg.fixAfterGetData.
 
@@ -294,7 +295,7 @@ def dead_to_scoring_frames(dead, registry, cdx_cols, bm_cols,
                 source = f"{entity_id}_dead"
             # prefer_dead -> keep bare source (may double-count; caller warned)
 
-        cdx_row, bm_row = _build_entity_frames(entity, source, cdx_cols, bm_cols, n=n)
+        cdx_row, bm_row = _build_entity_frames(entity, source, cdx_cols, bm_cols)
         if cdx_row is None:
             gate_fail += 1
             continue
@@ -344,7 +345,7 @@ def dead_to_scoring_frames(dead, registry, cdx_cols, bm_cols,
 
 def merge_dead_into_dmdic(dmdic, dead, registry, as_of=None,
                           collision="prefer_live", exchange_filter=None,
-                          entities=None, n=1, verbose=False):
+                          entities=None, verbose=False):
     """Return a NEW dmdic whose cdx_df / BoMetric_df include the dead names, plus the
     exchange-matched as-of-D PIT union universe.
 
@@ -367,7 +368,7 @@ def merge_dead_into_dmdic(dmdic, dead, registry, as_of=None,
 
     cdx_dead, bm_dead = dead_to_scoring_frames(
         dead, registry, cdx_cols, bm_cols, entities=entities,
-        live_sources=live_sources, collision=collision, n=n, verbose=verbose)
+        live_sources=live_sources, collision=collision, verbose=verbose)
 
     universe = pit_universe(dmdic, registry, as_of, exchange_filter=exchange_filter)
 
