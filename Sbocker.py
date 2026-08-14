@@ -37,6 +37,7 @@ import os
 import glob
 from pathlib import Path
 import transfer_utils as tu
+import exclusions
 
 def transfer_outputs_to_drive(transfer_dir, configdic, verbose=True):
     """
@@ -147,6 +148,24 @@ def transfer_outputs_to_drive(transfer_dir, configdic, verbose=True):
         #  reaches neither the RunProvenance sidecar (which carries counts, not names) nor the
         #  postRank pickle.  Written at root for the reason stated above.
         'Stage1VetoEjections_*.csv',
+        #  THE INPUT-SANITY REFUSALS (2026-08-14) -- every cell the cross-field impossibility
+        #  guard (nan_policy section 5) refused, with the relation, the ratio that fired and
+        #  the ORIGINAL value.  It ships by exactly the rule stated above: it is the SOLE
+        #  on-disk record of a decision that changed what the pipeline scored -- 326 refusals
+        #  and ten forensic verdict changes on the 2026-08-13 panel -- and it reaches neither
+        #  the RunProvenance sidecar nor the postRank pickle.  ADDED IN REVIEW: the writer was
+        #  correctly routed through `transfer_utils.EVIDENCE_DIR` and then not given a glob,
+        #  which is the IDENTICAL defect this block records catching twice before (the mean-bar
+        #  calibration and the dedup report both "matched no pattern here, so reached the other
+        #  machine on no run").  Knowing the mechanism is not the same as using it.
+        'InputSanityRefusals_*.csv',
+        #  THE DATED EXCLUSION LIST (2026-08-14) -- what the run would exclude next time, with
+        #  each name's category, reason and expiry.  It ships because the CEO EDITS IT BY HAND:
+        #  a list he cannot see on his own machine is a list he cannot curate, and curating it
+        #  is the entire point of rebuilding it.  (`ManualEliminationTickersList_*` was never
+        #  in this manifest either -- for three years nobody could see the file that was
+        #  removing 3,692 names.)
+        'ExclusionList_*.csv',
         #  The mean-bar calibration (added 2026-08-09).  It is the run's own watchdog on the
         #  Stage-1 bars -- WRITTEN ALWAYS, even with no breach, because its PRESENCE is the
         #  evidence the check ran -- and it matched no pattern here, so it reached the other
@@ -975,15 +994,29 @@ def main():
             # Assign variables and get Tickers info and dataframe
             datasource, api_key, tickerfilter = configdic['datasource'], configdic['api_key'],  configdic['tickerfilter']
             manualelimtickers, baseurl = configdic['manualelimtickers'], configdic['baseurl']
-            # DELIBERATELY NOT APPLIED (CEO decision, 2026-07-19).  The
-            # ManualEliminationTickersList is a MACHINE-ACCUMULATED FETCH-FAILURE log
-            # (it is rebuilt below as manualelim + tickersfailed - lenfail), NOT CEO
-            # curation -- it contains ordinary companies whose fetch happened to fail
-            # once.  Blanking it deliberately RETRIES names whose coverage may have
-            # improved, which is the wanted behaviour.  Kept as an explicit, named
-            # variable so the provenance stamp can state what actually ran.
+            # DATED, EXPIRING EXCLUSIONS (CEO design, rebuilt 2026-08-14).
+            #
+            # THIS USED TO BE A HARD BLANK (`manualelim_applied = []`, CEO decision
+            # 2026-07-19).  The blank was right for what the list WAS: a
+            # machine-accumulated fetch-failure log with no dates and no reasons, holding
+            # ordinary companies whose fetch happened to fail once, so applying it banned
+            # real names forever.  The blank is no longer the only way to avoid that,
+            # because `exclusions` now refuses to produce an entry that has no reason and
+            # no expiry -- so what arrives here is, by construction, only names that a LIVE,
+            # DATED, REASONED entry explains.
+            #
+            # IT IS STILL EMPTY UNLESS THE CEO TURNS IT ON.  `-manelimtickers` defaults to
+            # 0, the default filename does not exist, and a legacy bare-ticker file is
+            # refused whole.  Three independent reasons this line applies nothing today.
             manualelim_loaded = list(manualelimtickers)
-            manualelim_applied = []
+            manualelim_applied = list(manualelimtickers)
+            _xv = configdic.get('exclusion_verdict')
+            if _xv is not None and manualelim_applied:
+                # Re-assert the identity at the point of USE, not only at the point of
+                # load: this is the line that actually shrinks the universe, and the
+                # 2026-07-19 provenance defect was precisely a value that meant one thing
+                # where it was set and another where it was consumed.
+                exclusions.reconcile(manualelim_applied, _xv)
             manualelimtickers = manualelim_applied
             Tickers_df = gdg.get_tickers(datasource, baseurl, api_key, manualelimtickers, tickerfilter,
                                          sfilt ='all', mcapf = -1, fn = '', as_of=as_of,
@@ -997,9 +1030,30 @@ def main():
             getfunddic = gdf.get_fundamentals_fmp(Tickers_df, cdx_df, BoMetric_df, baseurl, api_key, configdic['compyear'],
                                                   configdic['nrTaT'], configdic['startindex'],
                                                   configdic['period'], configdic['nrperiods'])
-            newmanelimtckrs = list(set(manualelimtickers + list(set(getfunddic['tickersfailed']) - set(getfunddic['lenfail']))))
+            # THE ACCUMULATION IS NOW DATED, AND THE `- lenfail` SUBTRACTION IS GONE.
+            # It used to be
+            #     newmanelimtckrs = manualelimtickers + (tickersfailed - lenfail)
+            # which had two defects that a bare ticker list cannot express its way out of:
+            #   * it SUBTRACTED the history-length failures -- the exact cohort the CEO
+            #     wants listed -- because with no expiry, listing them would ban a
+            #     two-year-old company forever.  A dated expiry serves that motive
+            #     directly, so the cohort is now RECORDED (`short_history`, 90 days) and
+            #     ages off on the cadence at which the answer can change.
+            #   * it banked every OTHER `tickersfailed` name permanently and reasonlessly,
+            #     so one slow vendor night was indistinguishable from a confirmed
+            #     duplicate.  Those are now `transient_fetch`, 14 days.
+            # Existing entries are merged, not overwritten: a hand-edited line wins over a
+            # machine re-observation of the same (ticker, category).
+            _newmanelim_entries = exclusions.merge_entries(
+                (configdic.get('exclusion_verdict').entries
+                 if configdic.get('exclusion_verdict') is not None else []),
+                exclusions.propose_from_run(getfunddic['tickersfailed'],
+                                            getfunddic['lenfail']))
+            newmanelimtckrs = sorted({e.ticker for e in _newmanelim_entries
+                                      if e.status == 'live'})
             datandmetricdic.update(getfunddic)
             datandmetricdic['manualelimtickers'] = newmanelimtckrs
+            datandmetricdic['exclusion_entries_next'] = _newmanelim_entries
 
             # REMOVED (review S9, 2026-07-26): a `hasCurrentYear` trim used to sit here --
             #     if lenhcy > 0 and lenhcy < 3/4 * (...):
@@ -1033,6 +1087,7 @@ def main():
             datandmetricdic['manualelim_applied'] = manualelim_applied
             datandmetricdic['manualelim_loaded'] = manualelim_loaded
             datandmetricdic['manualelimtickers'] = newmanelimtckrs
+            datandmetricdic['exclusion_entries_next'] = _newmanelim_entries
             print('MANUAL-ELIM PROVENANCE: loaded %d name(s) from %r, APPLIED %d; '
                   'accumulated %d fetch-failure name(s) for the next run. Filename will '
                   'stamp manelim%d.'

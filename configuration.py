@@ -4,6 +4,7 @@ import csv
 import os
 import utils
 import universes as un
+import exclusions as exclusions_mod
 
 # ===========================================================================
 #  ARGUMENT PARSING (argparse refactor, 2026-08-02)
@@ -388,11 +389,18 @@ def getDataFetchConfiguration(args):
     #      overrode whatever -manelimtickers had said.  That is how the stale 3,692-name
     #      list came to be loaded on every run.  Omitting the flag now leaves
     #      -manelimtickers in charge and only supplies the DEFAULT filename.
+    #  THE DEFAULT NO LONGER NAMES THE 2023 FILE (dated-exclusions rebuild, 2026-08-14).
+    #  It was `ManualEliminationTickersList_fmp_2023-02-14.csv` -- the bare 3,692-ticker row
+    #  that the three bugs above kept applying.  The default is now the new schema's
+    #  filename, which DOES NOT EXIST in a fresh tree, so the default resolves to an EMPTY
+    #  list rather than to a three-year-old ban list.  Pointing `-manelimfilename` at the
+    #  legacy file still resolves, and `exclusions.load_exclusions` then refuses it whole
+    #  (no header, no dates, no reasons) and applies zero names -- see exclusions.py (a).
     if _given(ns, 'manelimfilename'):
         manelimtick_fname_toget = _require(ns, 'manelimfilename',
                                            '-manelimfilename requires a filename argument')
     else:
-        manelimtick_fname_toget = 'ManualEliminationTickersList_fmp_2023-02-14.csv'
+        manelimtick_fname_toget = exclusions_mod.DEFAULT_EXCLUSION_FILE
 
     # Point-in-time as-of date D (design 2026-07-12 restructure).  Default None =
     # today / live run (reproduces current behaviour bit-for-bit).  Pass an ISO date
@@ -572,15 +580,26 @@ def getDataFetchConfiguration(args):
               "path -- this could create a stray directory under the run's working "
               "dir. Check VALUATION_TRANSFER_DIR / -transfer_dir." % transfer_dir)
 
-    # Skip loading manual elimination CSV when loading metrics (it's already in the pickle file)
+    # Skip loading the exclusion list when loading metrics (it's already in the pickle file)
+    #
+    #  DATED, EXPIRING EXCLUSIONS (rebuild 2026-08-14).  This used to be
+    #  `csv.reader(...); templist[0]` -- it took the FIRST ROW of the file as the whole list
+    #  and asked no questions: no header check, no date, no reason, no expiry.  That is how a
+    #  file written in February 2023 was still removing 3,692 names in January 2026.
+    #  `exclusions.load_exclusions` evaluates each entry against the run date and returns
+    #  ONLY what is live; it refuses a file that does not carry the schema header, so the
+    #  legacy bare-ticker format applies zero names by construction rather than by policy.
+    #  The verdict object is carried in configdic so the run can STATE what it applied.
     if loadBoMetric:
+        exclusion_verdict = exclusions_mod.ExclusionVerdict([], path=None)
         manualelimtickers = []
     elif manelimtickersbool:
-        with open(manelimtick_fname_toget, 'r') as file:
-            reader = csv.reader(file)
-            templist = list(reader)
-            manualelimtickers = templist[0]
+        exclusion_verdict = exclusions_mod.load_exclusions(manelimtick_fname_toget,
+                                                           verbose=True)
+        manualelimtickers = list(exclusion_verdict.applied)
+        exclusions_mod.reconcile(manualelimtickers, exclusion_verdict)
     else:
+        exclusion_verdict = exclusions_mod.ExclusionVerdict([], path=None)
         manualelimtickers = []
 
     # Inform of consistency
@@ -609,6 +628,9 @@ def getDataFetchConfiguration(args):
                  # recorded so the run can STATE which list it loaded (manual-elim provenance)
                  'manualelimtick_fname_toget': manelimtick_fname_toget,
                  'manelimtickersbool': manelimtickersbool,
+                 # the parsed verdict (live / expired / malformed), so the run and the saved
+                 # artifact can state WHY each name was excluded and not merely how many
+                 'exclusion_verdict': exclusion_verdict,
                  'lastindex_fn': lastindex_fn, 'nrScorePeriods': nrScorePeriods, 'ntopagg': ntopagg,
                  'ntopxlsx': ntopxlsx, 'sectorfilter': sectorfilter, 'portfoliotestyear': portfoliotestyear,
                  'sectorlist': sectorlist,

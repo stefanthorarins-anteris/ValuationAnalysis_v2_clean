@@ -96,6 +96,11 @@ ReportingFrequencyConflicts_*.csv
 # quarantined generated artifacts (never source)
 _quarantine/
 ManualEliminationTickersList_fmp_*.csv
+# its dated, schema-carrying replacement (2026-08-14).  NOTE the pattern deliberately does
+# NOT cover the un-dated `ExclusionList_fmp.csv`: that one is the file the CEO CURATES and
+# arms by hand, so if it ever exists it should be tracked, not ignored.
+ExclusionList_*_*.csv
+InputSanityRefusals_*.csv
 delisted_tickers_*.csv
 
 # Generated measurement-report text artifacts (baseline_tools/nan_policy_report.py and friends).

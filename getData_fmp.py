@@ -12,6 +12,9 @@ import getData_gen as gdg
 import failTests as ft
 import utils as utils
 import reporting_period as rp
+import nan_policy as npol
+import os
+import transfer_utils as _tu   # EVIDENCE_DIR: where the run's evidence CSVs are written
 from datetime import datetime
 
 
@@ -79,6 +82,11 @@ def get_fundamentals_fmp(Tickers_df, cdx_df, BoMetric_df, baseurl,
     # evidence about whether the two independent frequency signals ever disagree, and until
     # this existed the answer was unobservable rather than zero.
     freq_conflicts = []
+    # INPUT-SANITY REFUSALS (nan_policy section 5), accumulated per ticker.  Same reasoning
+    # as freq_conflicts above: a refusal that is invisible is indistinguishable from a name
+    # that never had the data, and the whole point of an ABSTENTION is that it is a different
+    # statement from a low score.  Written to the run's evidence CSV below.
+    sanity_refusals = []
     cntr = 0
     Tickers_df = Tickers_df.iloc[startindex: ,:]
     # BAR TOTAL, TAKEN FROM THE FRAME THE LOOP ACTUALLY ITERATES (2026-08-06).
@@ -146,6 +154,32 @@ def get_fundamentals_fmp(Tickers_df, cdx_df, BoMetric_df, baseurl,
                     pricefail.append(ticker)
                     pricefailESN.append(row.exchangeShortName)
                 else:
+                    #  ---- INPUT SANITY: ABSTAIN ON CONTRADICTORY VENDOR CELLS ----------
+                    #  (CEO ruling 2026-08-14; rules in nan_policy section 5.)  THIS IS THE
+                    #  ONLY PLACE THE HOOK BELONGS.  `tempfund` is both the frame
+                    #  `build_bometric_rows` computes every Stage-1 metric from AND the frame
+                    #  that becomes `cdx_df` a dozen lines below, so refusing a cell HERE
+                    #  protects every metric that reads it -- Stage-1, Stage-2, the Beneish
+                    #  and Montier forensics -- from one call site.  Hooking it downstream on
+                    #  the assembled `cdx_df` would leave the Stage-1 columns already
+                    #  computed off the corrupt value, which is the "we noticed it in one
+                    #  metric so we fixed it in that metric" failure this replaces.
+                    #
+                    #  It is also the only place the SPIKE rule has what it needs: `tempfund`
+                    #  is one ticker's whole history, so a period can be compared with its
+                    #  own neighbours without a groupby.
+                    #
+                    #  FULLY GUARDED.  A sanity check must never cost a 12-hour fetch: on any
+                    #  failure the ticker keeps its raw values and the run continues, loudly.
+                    try:
+                        tempfund, _sanity_rep = npol.refuse_impossible_cells(
+                            tempfund, verbose=False)
+                        if len(_sanity_rep):
+                            sanity_refusals.append(_sanity_rep)
+                    except Exception as _sane_err:
+                        _bar_print('WARNING: input-sanity check did not run for %s (%s: %s)'
+                                   ' -- its RAW vendor values are used unmodified.'
+                                   % (ticker, type(_sane_err).__name__, _sane_err))
                     tempMetric_df_trimmed = build_bometric_rows(
                         tempfund, tempMetric_df, _rpy_t,
                         dicts=(BoMetric_base_dict, BoMetric_mean_dict,
@@ -267,11 +301,39 @@ def get_fundamentals_fmp(Tickers_df, cdx_df, BoMetric_df, baseurl,
                      _gr[_gr != ''].value_counts().to_dict()), flush=True)
     except Exception as _e:
         print('WARNING: graham-undefined summary skipped (%s)' % _e, flush=True)
+    # INPUT-SANITY SUMMARY (nan_policy section 5).  Printed EVEN AT ZERO, for the reason the
+    # frequency-conflict banner is: an unobserved rate and a zero rate are different facts.
+    # The CSV names every refused cell -- source, date, relation, the ratio that fired and
+    # the ORIGINAL value -- so a refusal can be argued with rather than merely trusted.
+    _sanity_df = pd.DataFrame([], columns=npol._SANITY_REPORT_COLS)
+    try:
+        if sanity_refusals:
+            _sanity_df = pd.concat(sanity_refusals, ignore_index=True)
+        print('INPUT SANITY: %d cell(s) refused across %d of %d ticker(s) (%.3f%%) because '
+              'the vendor numbers contradict each other; those metrics ABSTAIN, no row and '
+              'no source is removed.%s'
+              % (len(_sanity_df),
+                 int(_sanity_df['source'].nunique()) if len(_sanity_df) else 0,
+                 _n_tick, 100.0 * (int(_sanity_df['source'].nunique()) if len(_sanity_df)
+                                   else 0) / max(1, _n_tick),
+                 ('  By relation: %s' % _sanity_df['relation'].value_counts().to_dict())
+                 if len(_sanity_df) else ''), flush=True)
+        if len(_sanity_df):
+            _sfn = os.path.join(
+                _tu.EVIDENCE_DIR,
+                'InputSanityRefusals_%s.csv' % datetime.today().strftime('%Y-%m-%d'))
+            _sanity_df.to_csv(_sfn, index=False)
+            print('    evidence written to %r' % _sfn, flush=True)
+    except Exception as _e:
+        print('WARNING: input-sanity summary skipped (%s: %s) -- the REFUSALS still applied; '
+              'this run simply has no written record of them.' % (type(_e).__name__, _e),
+              flush=True)
     resfunddic = {'BoMetric_df':BoMetric_df,
                   'cdx_df': cdx_df, 'tickersfailed': tickersfailed, 'lenfail': lenfail, 'pricefail': pricefail,
                   'datefail': datefail, 'emptyfail': emptyfail, 'parsefail': parsefail,
                   'cind': cntr, 'hasCurrentYear': hasCurrentYear,
-                  'freqConflicts': freq_conflicts, 'joinFallback': joinfallback}
+                  'freqConflicts': freq_conflicts, 'joinFallback': joinfallback,
+                  'inputSanityRefusals': _sanity_df}
     return resfunddic
 
 def _align_statements_by_date(bs, inc, cf, km, fr):

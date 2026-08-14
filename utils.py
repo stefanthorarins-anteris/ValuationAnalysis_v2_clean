@@ -241,14 +241,48 @@ def initBoMetric_fromDict():
                  'BoTckr_count': BoTckr_count, 'cdx_df': cdx_df}
     return metricdic
 
-def writeManElimToFile(dmdic,manualelimtickers):
-    tfilter = dmdic['tickerfilter']
+def writeManElimToFile(dmdic, manualelimtickers):
+    """Write the run's exclusion list IN THE SCHEMA THE LOADER READS.
+
+    IT USED TO WRITE ONE CSV ROW OF BARE TICKERS -- `writer.writerow(manualelimtickers)`.
+    That is why writer and loader did not even share a schema: the writer emitted a headerless
+    row of names and the loader (`configuration`) took `templist[0]` as the whole list, so
+    nothing carried a date, a reason or an expiry, and a file written in 2023 was still
+    authoritative in 2026.  This now writes `exclusions.EXCLUSION_HEADER` and the loader
+    refuses anything else, so the two cannot drift apart again.
+
+    `dmdic['exclusion_entries_next']` is the merged, dated entry list built in Sbocker.  The
+    `manualelimtickers` argument is retained for the legacy call shape and is used ONLY as a
+    fallback when the caller has no entries -- in which case the names are written as
+    `transient_fetch`, the category that says the least, rather than silently promoted into a
+    permanent ban.
+    """
+    import exclusions as _x
     ds = dmdic['datasource']
     fidag = datetime.today().strftime('%Y-%m-%d')
-    mefn = f'ManualEliminationTickersList_{ds}_{fidag}.csv'
-    with open(mefn, 'w', newline='') as f:
-        writer = csv.writer(f)
-        writer.writerow(manualelimtickers)
+    mefn = f'ExclusionList_{ds}_{fidag}.csv'
+    entries = dmdic.get('exclusion_entries_next')
+    if not entries:
+        entries = _x.propose_from_run(manualelimtickers, [])
+    _x.write_exclusions(mefn, entries)
+    live = [e for e in entries if e.status == 'live']
+    #  THE LOOP IS SHIPPED **INERT**, AND THAT IS STATED HERE RATHER THAN LEFT TO BE DISCOVERED
+    #  (review S10).  The run WRITES `ExclusionList_<ds>_<date>.csv` and the loader READS
+    #  `exclusions.DEFAULT_EXCLUSION_FILE` = `ExclusionList_fmp.csv`, so the file this writes is
+    #  never the file the next run reads.  That is deliberate -- it is safety lock (b), and it
+    #  is why "this change alone cannot alter a run" holds even once a schema-conforming file
+    #  exists on disk -- but an earlier draft described the accumulation as a working loop,
+    #  which it is not until the CEO arms it.  The dated filename is also what preserves the
+    #  audit trail: an undated file that round-tripped would overwrite its own history every
+    #  run, which is the property that let a 2023 list masquerade as current.
+    print('EXCLUSIONS WRITTEN: %r -- %d entr(ies), %d live, %d retained as expired '
+          'evidence. Categories: %s\n'
+          '    NOT YET ARMED (by design): the next run reads %r, which is NOT this file. '
+          'To apply this list, review it, copy it to %r and pass -manelimtickers 1.'
+          % (mefn, len(entries), len(live), len(entries) - len(live),
+             ', '.join(sorted({e.category for e in entries})) or '(none)',
+             _x.DEFAULT_EXCLUSION_FILE, _x.DEFAULT_EXCLUSION_FILE), flush=True)
+    return mefn
 
 def get_lastIndexRead(lastindex_fn):
     """Resume index for a universe's `lastIndexOfRead_<ds>_<filter>.txt`.

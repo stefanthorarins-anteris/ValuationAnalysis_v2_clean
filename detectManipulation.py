@@ -206,15 +206,30 @@ C_FLAG_COLS = ['NICFOdiv', 'DSOinc', 'DSIinc', 'OCARinc', 'TAgr']
 #  this fix is justified by the UNDEFENDED DENOMINATOR alone, which is real and live; the depth
 #  story is not evidence for it and is not claimed as such.
 #
-#  OPEN, NOT CLOSED BY THIS CHANGE -- the other index denominators are still unguarded, and on
-#  this panel the residual extremes are not AQI or DEPI at all.  It is a POPULATION, not a
-#  singleton: 17 names carry |M| > 100 after the guard and 3 exceed 1,000, the largest being
-#  RDZN at -67,865 (SGAI 1.98e5, LVGI 4.41e5) with JHX at -50,323 as its near-twin.  Those are
-#  NOT near-zero-base cases: RDZN's sgaTTM is ~2e5 x its revenue and its (LTD + CL) is ~4e5 x
-#  its totalAssets on four rows, i.e. a raw-input SCALE CORRUPTION, which a base floor cannot
-#  and should not catch.  It needs a different instrument (an input sanity check) and a CEO
-#  ruling; DO NOT fold it into this guard.  None of the 15 is in the shipped top-100, so none is
-#  on the CEO's desk today.
+#  OPEN, AND ONLY HALF CLOSED BY THE INPUT-SANITY GUARD (nan_policy section 5, 2026-08-14).
+#  17 names carried |M| > 100 after the AQI/DEPI guard and 3 exceeded 1,000, the largest being
+#  RDZN at -67,865 with JHX at -50,323.  An earlier version of this note said "those are NOT
+#  near-zero-base cases" and generalised RDZN's scale corruption to all 17.  THAT WAS WRONG,
+#  and the corrected decomposition is the reason the residual is what it is:
+#
+#      3 of 17 are RAW-INPUT SCALE CORRUPTION -- RDZN, JHX and SSRM.  RDZN's are TWO SINGLE
+#        CELLS (SG&A 1.090059e13 at 2025-10-01; totalCurrentLiabilities 6.136344e13 at
+#        2024-10-01), each smeared over four windows by `invrollsumTTM` -- the claim that its
+#        SG&A was corrupt "across four rows" was the TTM sum being read as the raw panel.
+#      3 of 17 are driven by TATA, i.e. by a DEGENERATE `totalAssets` LEVEL DENOMINATOR --
+#        ALDAR.PA (-142.5), EBON (-391.6) and SSRM (-137.7).  TATA is not one of the five
+#        indices, so this is a SIXTH defect class that neither the base floor nor the input
+#        guard addresses, and it is named here rather than left inside a miscount.
+#      the remaining 11 ARE near-zero-base cases on the five STILL-UNGUARDED index
+#        denominators (DSRI/GMI/SGI/SGAI/LVGI) -- e.g. SAP.TO's SGAI base falls to 5.2e-5,
+#        and BLDP's gross margin crosses zero (-1.383 -> +0.000996, GMI = -1,389).
+#
+#  MEASURED AFTER THE INPUT-SANITY GUARD: 17 -> 14 names at |M| > 100, 3 -> 1 above 1,000.
+#  RDZN, JHX and CCAP drop out.  So the guard closes the scale-corruption class and leaves the
+#  near-zero-base class on the other five denominators OPEN -- that is the next instrument, and
+#  it is a base floor like AQI's, NOT another input check.  DSRI's base is in DAYS and SGI's in
+#  CURRENCY, so neither takes AQI's dimensionless constant; each needs its own derivation.
+#  None of the 14 is in the shipped top-100, so none is on the CEO's desk today.
 BENEISH_AQI_SHARE_FLOOR = 0.01
 BENEISH_DEPI_SHARE_FLOOR = 0.002
 

@@ -149,6 +149,43 @@ SANITY_IMPOSSIBLE = {
 #  MEASURED COST OF NOT IMPLEMENTING IT: 4 of the 79 FIN-1 members, 0 pool names.
 PRIMARY_VERDICT_ROW = 'newest'
 
+#  A DELIBERATE ABSTENTION IS NOT AN ABSENT INPUT -- the column that says so.
+#  §5's `refuse_impossible_cells` blanks cells whose value the vendor contradicts.  Three of
+#  the fields it can blank are PRIMARY (`totalStockholdersEquity` here; `totalAssets` and
+#  `revenue` under SANITY_IMPOSSIBLE), and `_limb_fails` reads a blank as ABSENCE -- so the
+#  §5 guard, whose entire contract is "abstain, never eject", was EJECTING JHX and SZZL
+#  through this door.  Measured before the fix: 0 sources ejected -> 2, both on
+#  `totalStockholdersEquity`/NaN, i.e. the change deleted the $10bn company it exists to
+#  protect.  (Found in independent review, 2026-08-14.)
+#
+#  THE FIX IS TO MAKE THE REFUSAL LEGIBLE RATHER THAN TO STOP REFUSING.  Each row carries the
+#  pipe-joined names of the fields §5 refused ON THAT ROW, so `primary_eject` can tell "we
+#  declined to trust this number" from "the provider never sent one".  A column, not a module
+#  registry, deliberately: it rides `pd.concat`, the saved pickle and the `-loadbometric`
+#  reload with the data it describes, and `reset_counts` already documents what a module-level
+#  accumulator costs when one process scores twice.
+#
+#  IT IS THE CLASS THAT IS FIXED, NOT THE INSTANCE.  Dropping `totalStockholdersEquity` from
+#  the identity's blanked fields also clears both ejects at zero measured cost, and was the
+#  reviewer's verified stopgap -- but it re-arms silently the moment any future relation names
+#  a primary field (`netIncome` and `netCashProvidedByOperatingActivities` are both one edit
+#  away), and the defect is precisely that an abstention is indistinguishable from an absence.
+SANITY_REFUSED_COLUMN = 'sanityRefusedFields'
+_SANITY_REFUSED_SEP = '|'
+
+
+def refused_fields_mask(df, field, column=SANITY_REFUSED_COLUMN):
+    """Boolean Series: True where `field` was DELIBERATELY REFUSED by §5 on that row.
+
+    A frame without the column has refused nothing -- every pre-§5 panel, every test frame and
+    every external caller keeps its exact previous behaviour.
+    """
+    if column not in df.columns:
+        return pd.Series(False, index=df.index)
+    col = df[column].astype('object').where(df[column].notna(), '')
+    tok = _SANITY_REFUSED_SEP + field + _SANITY_REFUSED_SEP
+    return col.map(lambda v: tok in (_SANITY_REFUSED_SEP + str(v) + _SANITY_REFUSED_SEP))
+
 
 def primary_limbs():
     """[(field, condition_label)] for every limb, primary and impossibility, in report order."""
@@ -205,7 +242,9 @@ def primary_eject(df, source_col='source', date_col='date', verbose=False):
             'policy is defined over: %s. Every one is a RAW provider input that every cdx '
             'panel carries; a frame without them cannot be checked, and reporting 0 ejects '
             'would be a false negative.' % (len(missing), missing))
-    d = df[[source_col, date_col] + fields].copy()
+    _keep = [source_col, date_col] + fields + (
+        [SANITY_REFUSED_COLUMN] if SANITY_REFUSED_COLUMN in df.columns else [])
+    d = df[_keep].copy()
     d[date_col] = pd.to_datetime(d[date_col], errors='coerce')
     #  The AS-OF row per source = its latest parseable date.  `idxmax` on the date picks it
     #  regardless of the caller's row order; ties keep the first occurrence, which matches
@@ -219,6 +258,9 @@ def primary_eject(df, source_col='source', date_col='date', verbose=False):
     for field, limb in primary_limbs():
         v = pd.to_numeric(newest[field], errors='coerce')
         bad = _limb_fails(v, field)
+        #  A CELL §5 REFUSED IS AN ABSTENTION, NOT AN ABSENCE, so it must not eject the source.
+        #  Without this the guard that exists to keep JHX in the universe removed it.
+        bad = bad & ~refused_fields_mask(newest, field)
         if not bad.any():
             continue
         sub = newest.loc[bad, [source_col, date_col]].copy()
@@ -636,3 +678,393 @@ def window_verdict(values, w, key, rpy, tempcdx=None, structural_lag=0,
         _count(key, RULE_METRIC_GAPS)
         return np.nan
     return vw.mean()
+
+
+# =========================================================================== #
+#  5.  CROSS-FIELD IMPOSSIBILITY -- the vendor's numbers contradict each other #
+# =========================================================================== #
+#  THE CEO'S RULING (2026-08-14): an input sanity check that ABSTAINS.  "A ratio that is
+#  physically impossible means the VENDOR DATA IS WRONG, not that the company is unusual."
+#
+#  WHY IT IS HERE AND NOT IN `data_quality.check_price_sanity`, WHICH IS THE OBVIOUS HOME.
+#  That function is the repo's existing cross-field-plausibility idiom and its thresholds are
+#  set exactly where "the combination becomes ARITHMETICALLY IMPOSSIBLE".  But a False from
+#  it enters `filter_invalid_data`, which deletes every row AT OR BEFORE the flagged one
+#  (prefix removal).  The corruption this section exists for sits on the NEWEST row of JHX --
+#  so routing it there would delete a $10bn building-products company's entire history over
+#  one bad cell.  That is an EJECT; the CEO ruled ABSTAIN.  Section 1's `SANITY_IMPOSSIBLE`
+#  has the same problem for the same reason (it ejects the SOURCE).  So this is a FIFTH
+#  mechanism with a fifth home: it refuses CELLS.
+#
+#  IS THIS `vendor_contamination`'s JOB?  NO -- IT IS A DIFFERENT CHECK, and the difference is
+#  not cosmetic.  `vendor_contamination` answers "are these numbers SOMEONE ELSE'S?": it hashes
+#  (date, revenue, totalAssets) triples ACROSS SOURCES, finds pairs sharing three or more, and
+#  compares company names -- which is how it found `058820.KQ` serving Chipotle's statements.
+#  Its evidence is BETWEEN two names, its output is a REPORT a human promotes into
+#  `QUARANTINE_RULES`, and it removes whole row windows.  This check answers "are these numbers
+#  CONSISTENT WITH THEMSELVES?": its evidence is WITHIN one filing (or one name's own adjacent
+#  periods), it needs no second source to exist, it is AUTOMATIC because an identity violation
+#  admits no legitimate reading, and it refuses CELLS.  Neither subsumes the other -- JHX's
+#  divided-by-1e6 assets match no other company on earth, so the contamination detector cannot
+#  see them, and Chipotle's statements under a KOSDAQ ticker are internally perfectly
+#  consistent, so this check cannot see those.  They are deliberately kept apart.
+#  ONE COUPLING, AND IT RUNS ONE WAY (review S11).  They are not INDEPENDENT: this check runs
+#  upstream at fetch time and can NaN `totalAssets`, which is one of the three fields
+#  `vendor_contamination._triples` hashes and then `dropna`s on.  So ~50 of 61,354 rows lose
+#  their corroboration capacity for the cross-source detector.  Immaterial in size, and stated
+#  here so the next reader does not re-derive it.
+#
+#  WHY THE INSTRUMENT IS AN ACCOUNTING IDENTITY AND NOT A RATIO BOUND.  The change was
+#  proposed as "derive thresholds for the impossible ratios (SGA/revenue, (LTD+CL)/assets)
+#  from the panel".  MEASURED, THAT DOES NOT WORK AND THE PROPOSAL IS REFUSED:
+#  `GXAI` -- a real pre-revenue micro-cap ramping from $256 to $6.0M of quarterly revenue --
+#  carries sgaTTM/salesTTM of 9,456 and, one quarter earlier, +inf.  `RDZN`'s CORRUPT value
+#  is 1.98e5.  Twenty-fold apart, both on the same axis: no threshold on that ratio separates
+#  a legitimately unusual company from a corrupt cell, and the brief's own instruction was
+#  that the line is "physically impossible, not unusual -- orders of magnitude, not factors".
+#  An IDENTITY has no such tail.  A pre-revenue biotech's balance sheet balances; a leveraged
+#  REIT's balances; a commodity trader's balances.  Every relation below is a definitional
+#  containment or the balance-sheet identity itself, so a company cannot fail one by being
+#  unusual -- only by being misreported.  [panel = HomeGDrive/pipeline Boresults_dic CUR3K
+#  2026-08-13, 61,354 rows / 2,629 sources.]
+#
+#  THE DEFECT IS A UNITS ERROR, AND SAYING SO IS WHAT SETS THE THRESHOLDS.  The two names
+#  that motivated this are not "extreme", they are off by a POWER OF TEN:
+#      JHX  2026-04-01  totalAssets 1.3493e4 while totalLiabilities + equity = 1.34934e10
+#                       -- reported assets are (L+E)/1e6 TO FIVE FIGURES; totalCurrentAssets
+#                       (1.7592e3 vs 1.8268e9) and PP&E (3.2794e3 vs 3.3188e9) are divided by
+#                       the same 1e6 while revenue, SG&A, debt and equity stay full-scale.
+#      RDZN 2024-10-01  totalCurrentLiabilities 6.136344e13 against totalLiabilities 6.2476e7
+#                       -- current liabilities 982,186x TOTAL liabilities.
+#      RDZN 2025-10-01  SG&A 1.090059e13 against 1.006e7 the quarter before and 1.542e7 after.
+#  NOTE THE SHAPE: RDZN's are SINGLE CELLS.  The claim that "RDZN's SGA is ~2e5x its revenue
+#  across four rows" is the TTM rolling sum smearing ONE corrupt cell over four windows, not
+#  four bad rows -- the raw panel has exactly one of each.
+#
+#  WHAT IS DELIBERATELY *NOT* HERE, because it was measured and REFUSED:
+#    * `SGA <= grossProfit - operatingIncome` (total operating expenses).  A true inequality,
+#      and it catches RDZN's SG&A cell at 9.74e5.  But the DENOMINATOR degenerates on real
+#      companies -- FMP reports operatingIncome == grossProfit whenever the opex lines are
+#      absent -- so the ratio reaches 1.03e3 for ERA.PA, 1.45e3 for LACR.PA, 1.49e3 for CFX.L
+#      and 6.16e9 / 8.18e10 for two Korean industrials, all with ordinary statements.  RDZN
+#      sits INSIDE that population.  No threshold separates them, so the limb is not shipped
+#      and RDZN's SG&A cell is instead caught by the isolated-spike rule below.
+#    * `revenue / totalAssets` (asset turnover).  It would catch SSRM, whose 2026-04-01
+#      balance sheet is scaled down ~1,390x while its income statement is not -- but its
+#      legitimate tail (traders, distributors) runs into the same decade, and 65 panel rows
+#      sit in [100, 1000) with no way to adjudicate them from the panel alone.  SSRM is
+#      therefore NOT caught by this change and is named here rather than left implied.
+#      IT IS MISSED FOR *TWO* REASONS, NOT ONE (review S6).  Its identities hold because the
+#      whole balance sheet was scaled together -- AND its corrupt row is its NEWEST, where
+#      the spike rule is structurally blind (see the endpoint note below).  An earlier draft
+#      gave only the first, which reads as though the spike rule had had a shot at it.
+#  EACH RELATION DECLARES WHETHER IT IS TWO-SIDED, AND THAT FLAG IS NOT COSMETIC.  The first
+#  version of this table had no such flag and tested `ratio >= factor` for everything -- which
+#  silently MISSED JHX, the case that motivated the whole change: its `totalAssets` is
+#  (L+E)/1e6, so the identity ratio is 1e-6 and a one-sided upper test never fires.  Caught by
+#  measuring the before/after rather than by reading the code.
+#    IDENTITY (A = L + E) -> TWO-SIDED: either side of 1 is the same contradiction.
+#    CONTAINMENT (subset <= superset) -> ONE-SIDED: a subset being much SMALLER than its
+#    superset is the normal case and must never fire.
+IMPOSSIBLE_RELATIONS = (
+    #  (name, numerator fields, denominator fields, factor, two_sided, fields refused)
+    #
+    #  BALANCE-SHEET IDENTITY.  A = L + E, so A/(L+E) = 1 for any correct filing.  MEASURED
+    #  log10 of that ratio: 90.14% within +-0.02 (i.e. +-5%), and the distribution is
+    #  RIGHT-SKEWED for a real reason -- FMP's `totalStockholdersEquity` frequently excludes
+    #  minority interest, which makes A exceed L+E by the MI share (7.37% in [1.05, 1.26],
+    #  1.54% in [1.26, 2.0]).  That mechanism is BOUNDED: minority interest cannot exceed the
+    #  balance sheet, so it cannot take the ratio past ~2.  Counts by |log10|:
+    #      [0.5,1) 122    [1,2) 54    [2,3) 10    [3,5.5) 7    [5.5,6.5) 2
+    #  A factor of 100 is 50x past the largest mechanism that can produce a LEGITIMATE
+    #  deviation, and there is then a clean 2.4-decade empty band below it.  CORRECTED
+    #  (review S7): the far bin holds TWO rows, not one -- JHX at 10^-6.00 and FMONC.PA at
+    #  10^+5.62.  An earlier draft said 'JHX alone at 1e-6', which is wrong in the direction
+    #  that matters, because FMONC.PA is caught by the UPPER limb and would be missed if the
+    #  relation were reasoned about as a lower-tail test.
+    #  COST 19 rows of 61,197 computable (0.031%).  The 54 rows in [10,100) -- 51 above, 3
+    #  below -- are LEFT ALONE: they are probably wrong too, but no mechanism names them, and
+    #  that is the over-reach line.
+    ('balance_sheet_identity',
+     ('totalAssets',), ('totalLiabilities', 'totalStockholdersEquity'), 100.0, True,
+     ('totalAssets', 'totalLiabilities', 'totalStockholdersEquity')),
+
+    #  CURRENT ASSETS ARE A SUBSET OF TOTAL ASSETS.  No filer, no convention, no sector: a
+    #  subset cannot exceed its superset.  MEASURED TCA/TA: 0.445% in (1, 1.1] (rounding and
+    #  restated lines), 1 row in (1.1, 2], 2 rows in (2, 10], **ZERO rows in (10, 100]**, then
+    #  7 rows in (100, 1000] -- a measured empty decade separating the slop from the
+    #  degenerate population, exactly the density argument the AQI floor was rebuilt on.  The
+    #  cut is placed where the empty band is.  COST 7 rows (0.011%); all seven adjudicated
+    #  (CRML totalAssets 3,125 against TCA 344,668; RAIN 401,763 against 53.8M; ALAQU.PA x5).
+    ('current_assets_within_assets',
+     ('totalCurrentAssets',), ('totalAssets',), 10.0, False,
+     ('totalCurrentAssets', 'totalAssets')),
+
+    #  NET PP&E IS A SUBSET OF TOTAL ASSETS.  Same argument.  MEASURED PPE/TA: 2 rows in
+    #  (1, 1.1], 13 in (1.1, 2], 5 in (2, 10], then 19 rows at >= 10 of which every one is
+    #  adjudicable as corrupt (OTEX 2026-04 PP&E 6.57e11 against assets 1.31e10; USIO
+    #  2025-10 6.58e12 against 1.35e8; three Korean KOSDAQ names whose totalAssets is the
+    #  1,000x-too-small cell the identity limb also flags).  COST 19 rows (0.031%).
+    ('ppe_within_assets',
+     ('propertyPlantEquipmentNet',), ('totalAssets',), 10.0, False,
+     ('propertyPlantEquipmentNet', 'totalAssets')),
+
+    #  CURRENT LIABILITIES ARE A SUBSET OF TOTAL LIABILITIES -- AND THIS ONE GETS 500, NOT 10,
+    #  FOR A MEASURED REASON.  FMP populates `totalLiabilities` with only a FRAGMENT of the
+    #  liability side for insurers and banks while `totalCurrentLiabilities` carries the whole
+    #  of it, so the ratio reaches 247.5 for KakaoBank (323410.KS), 78 for ENJ/ENO, 30 for
+    #  085620.KS, 18.9 for Sun Life (SLF.TO) and 15 for iA Financial (IAG.TO).  Those are
+    #  large, real, healthy companies and a factor-10 or factor-100 cut WOULD REFUSE THEIR
+    #  ROWS -- the over-reach the brief warns about, caught by measurement not by argument.
+    #      cut 100 -> 10 rows      cut 500 -> 7 rows      cut 1,000 -> 1 row
+    #  THE CUT WAS 1,000 AND THAT WAS WRONG (review S5).  ALAQU.PA's six rows sit at 957.7,
+    #  972.1, 972.5, 996.8, 998.0 and 999.8 -- ALL BELOW 1,000 -- so the limb fired on ONE row
+    #  while this comment claimed seven, and 1,000 sat directly ON a cluster edge, slicing
+    #  exactly the kind of population the spike rule is careful not to slice.  The empty band
+    #  is 247.5 -> 957.7; 500 sits inside it, catches all seven, clears KakaoBank by 2x, and is
+    #  the constant `SCALE_SPIKE_FACTOR` already uses.  COST 7 rows (0.011%).
+    ('current_liabilities_within_liabilities',
+     ('totalCurrentLiabilities',), ('totalLiabilities',), 500.0, False,
+     ('totalCurrentLiabilities', 'totalLiabilities')),
+)
+
+#  ---- ISOLATED SCALE SPIKE -- one period disagreeing with BOTH its neighbours -------------
+#  The relations above are cross-field at one instant.  This is the same defect seen along
+#  TIME, and it is what catches the single corrupt cell no identity contains (RDZN's SG&A).
+#  A value is refused when it differs from BOTH the preceding and the following period, IN
+#  THE SAME DIRECTION, by at least `SCALE_SPIKE_FACTOR`.
+#
+#  "ISOLATED" IS THE COMMON SHAPE, NOT THE ONLY ONE, and pretending otherwise would misdescribe
+#  what ships.  MEASURED, several names ALTERNATE: `NRP.AS` reports PP&E as 537,000 / 1.54e9 /
+#  606,000 / 2.04e9 ... every six months for eight years (14 rows refused on that one name),
+#  and `IMDA.PA`, `WHA.AS` and `ARBB.L` do the same.  Each row still disagrees with both of its
+#  neighbours by >=500x, so the rule fires on all of them -- correctly: no year-over-year index
+#  can be computed across two incompatible units, and abstaining on every such row is the
+#  honest answer, not a bug in the rule.
+#
+#  Requiring both sides and one direction is what makes it a SPIKE rather than a LEVEL CHANGE: a SPAC merger, a rights
+#  issue or a shell starting to trade moves the level and STAYS there (SOFI's totalAssets
+#  4.66e5 -> 8.56e9 -> 8.06e8, a SPAC merger; CRML's equity 1.42e4 -> 1.51e8 -> 1.51e8), and
+#  NEITHER OF THOSE TWO CELLS is refused.  Stated precisely because it is easy to overclaim:
+#  a DIFFERENT SOFI cell (totalCurrentAssets, 2021-01) IS refused, so "SOFI is untouched"
+#  would be false -- what the rule leaves alone is the LEVEL CHANGE, not the name.  Growth is likewise untouched: GXAI's revenue rises 256 -> 6,005,051 over three
+#  years without a single period disagreeing with both its neighbours by 1,000x.
+#
+#  THE FACTOR IS 500, AND IT IS READ OFF THE DENSITY -- the same argument the AQI floor was
+#  rebuilt on, and it is NOT 1,000.  MEASURED on 382,720 interior comparisons over the field
+#  set below (both neighbours present, all three values non-zero), |log10| of the smaller of
+#  the two neighbour ratios, in quarter-decade bins.  THE DENOMINATOR IS THE FULL INTERIOR
+#  POPULATION, not the 181,760 same-side subset an earlier draft divided by -- every
+#  PERCENTAGE in that draft was ~2.3x too large, though the raw counts were right and no
+#  conclusion moved (review S7):
+#      [10^1.00,10^1.25) 336   [10^2.00,10^2.25)  78   [10^3.00,10^3.25) 55
+#      [10^1.25,10^1.50) 206   [10^2.25,10^2.50)  73   [10^3.25,10^3.50) 29
+#      [10^1.50,10^1.75) 159   [10^2.50,10^2.75)  57   [10^3.50,10^3.75)  8
+#      [10^1.75,10^2.00) 149   [10^2.75,10^3.00)  88   [10^3.75,10^4.00)  1
+#  The body decays monotonically 336 -> 57 and then RISES to 88 before falling away to
+#  8 and 1.  That rise is the degenerate population -- the vendor's THOUSANDS-vs-UNITS error --
+#  and it STRADDLES 10^3 rather than starting there, because the ratio is taken against
+#  neighbours that are themselves moving, so a true x1,000 error lands anywhere in roughly
+#  [333, 3000].  A cut AT 1,000 therefore slices that population down the middle and refuses
+#  only its upper half; the excess BEGINS at 10^2.75 = 562.  500 is that onset rounded to a
+#  readable constant, placed just OUTSIDE the excess rather than inside it.
+#      cut 100    413 cells (0.108%)     cut   500  215 cells (0.056%)   <- SHIPPED
+#      cut 1,000  117 cells (0.031%)     cut 3,162   33 cells (0.009%)
+#      cut 10,000  24 cells (0.006%)
+#  A cut at 1,000 leaves the whole 88-observation excess bin in the data; 500 costs 98 extra
+#  cells (0.026% of comparisons) to take it out.
+#
+#  THE FIELD SET IS RESTRICTED TO BALANCE-SHEET STOCKS, AND THAT RESTRICTION IS THE WHOLE
+#  DEFENCE.  Applied to FLOWS the rule over-reaches immediately and measurably: BMV.L earns
+#  GBP 24 in one quarter between two GBP 1-3M quarters, VIVK's operating cash flow passes
+#  through 35 between 1.6M and 7.0M, ALK.L's EBITDA oscillates through 0.025.  A flow
+#  legitimately passes near zero; a company's total assets do not teleport to a millionth of
+#  themselves for exactly one quarter and back.  `sellingGeneralAndAdministrativeExpenses` is
+#  included but UP-SPIKE ONLY, on the same asymmetry: an expense that momentarily rounds to
+#  nothing is odd (a shell), whereas one that is 1,000x its own neighbours on both sides
+#  while revenue and every other line continue normally is not a quarter any going concern
+#  has.  It catches RDZN (1.006e7 -> 1.090059e13 -> 1.542e7), JSG.L, SHI.L and ETG.TO.
+#
+#  THE CORRUPTION IS NOT CONFINED TO MICRO-CAPS, which is the finding that most justifies
+#  shipping this.  Adjudicated refusals on the 2026-08-13 panel include `CME` (current
+#  liabilities 5.58e7 for one quarter between two ~1.5e11 quarters -- CME Group holds ~$50bn
+#  of clearing-member deposits, so the 5.58e7 is the wrong one), `ABN.AS` (1.41e8 between two
+#  ~2.8e11 quarters), `UL`/`ULVR.L`/`UNA.AS` (Unilever's three listings, all three carrying the
+#  same 1.19e10 SG&A row between two ~1e7 rows) and `OTEX` (PP&E 6.57e11 against total assets
+#  of 1.31e10).  Before this, every one of those fed a Beneish index.
+#  STRUCTURALLY BLIND ON EVERY SOURCE'S NEWEST AND OLDEST ROW, and that is a real limit, not
+#  a detail: `ok` requires BOTH neighbours, so a row with no successor can never fire -- 5,258
+#  of 61,354 panel rows (8.6%), and the newest row is the one that drives every current-period
+#  metric.  JHX's corruption is on its newest row and survived only because the IDENTITY limb
+#  caught it; SSRM's is on its newest row and is missed entirely.  NOT REPAIRED HERE,
+#  deliberately: a one-sided endpoint test cannot distinguish a corrupt endpoint from a
+#  genuine level change (a SPAC merger, a rights issue, a disposal) landing on the newest row,
+#  which is exactly the discrimination the two-sided form buys.  The identity limbs are what
+#  cover the endpoint today; closing the rest of the gap needs a different instrument.
+SCALE_SPIKE_FACTOR = 500.0
+#  field -> allowed spike direction: 'both' (a stock cannot move either way) or 'up'.
+SCALE_SPIKE_FIELDS = {
+    'totalAssets': 'both',
+    'totalLiabilities': 'both',
+    'totalStockholdersEquity': 'both',
+    'totalCurrentAssets': 'both',
+    'totalCurrentLiabilities': 'both',
+    'propertyPlantEquipmentNet': 'both',
+    'sellingGeneralAndAdministrativeExpenses': 'up',
+}
+
+_SANITY_REPORT_COLS = ['source', 'date', 'relation', 'ratio', 'field', 'value']
+
+
+def _sum_fields(df, fields):
+    s = None
+    for f in fields:
+        if f not in df.columns:
+            return None
+        v = pd.to_numeric(df[f], errors='coerce')
+        s = v if s is None else (s + v)
+    return s
+
+
+def impossible_relation_hits(df):
+    """DataFrame [row, relation, ratio, fields] -- one row per (row, relation) that fires.
+
+    A relation whose fields are not all present is SKIPPED, not failed: this runs on the
+    per-ticker frame during the fetch, where a ragged payload can genuinely lack a column,
+    and refusing cells because a column is absent would convert a coverage gap into a
+    corruption finding.
+    """
+    out = []
+    for name, num_f, den_f, factor, two_sided, refuse in IMPOSSIBLE_RELATIONS:
+        num = _sum_fields(df, num_f)
+        den = _sum_fields(df, den_f)
+        if num is None or den is None:
+            continue
+        #  |num| / |den|, so a SIGN error cannot hide inside a magnitude test and a negative
+        #  equity (legitimate) is compared on size, not on sign.
+        ratio = (num.abs() / den.abs()).replace([np.inf, -np.inf], np.nan)
+        bad = ratio.notna() & (ratio >= float(factor))
+        if two_sided:
+            #  The reciprocal limb.  JHX's totalAssets is (L+E)/1e6, i.e. ratio 1e-6: without
+            #  this the case the change exists for goes uncaught.  `> 0` because a zero
+            #  numerator is an ABSENT line, not a contradicted one -- section 1 already owns
+            #  totalAssets <= 0 and would eject it.
+            bad = bad | (ratio.notna() & (ratio > 0) & (ratio <= 1.0 / float(factor)))
+        for idx in df.index[bad]:
+            out.append({'row': idx, 'relation': name, 'ratio': float(ratio.loc[idx]),
+                        'fields': refuse})
+    return pd.DataFrame(out, columns=['row', 'relation', 'ratio', 'fields'])
+
+
+def scale_spike_hits(df, date_col='date'):
+    """DataFrame [row, relation, ratio, fields] for the isolated-spike rule.
+
+    `df` is ONE SOURCE's rows in any order; the comparison is against the date-adjacent
+    periods, found by sorting, so the caller's orientation (this repo carries both
+    newest-first and oldest-first frames) cannot change the answer.
+    """
+    empty = pd.DataFrame([], columns=['row', 'relation', 'ratio', 'fields'])
+    if date_col not in df.columns or len(df) < 3:
+        return empty
+    order = pd.to_datetime(df[date_col], errors='coerce').sort_values().index
+    out = []
+    for field, direction in SCALE_SPIKE_FIELDS.items():
+        if field not in df.columns:
+            continue
+        v = pd.to_numeric(df.loc[order, field], errors='coerce').abs()
+        prev, nxt = v.shift(1), v.shift(-1)
+        ok = v.notna() & prev.notna() & nxt.notna() & (v > 0) & (prev > 0) & (nxt > 0)
+        k = float(SCALE_SPIKE_FACTOR)
+        up = (v >= k * prev) & (v >= k * nxt)
+        down = (prev >= k * v) & (nxt >= k * v)
+        bad = (ok & (up if direction == 'up' else (up | down))).fillna(False)
+        for idx in v.index[bad]:
+            r = max(float(v.loc[idx] / prev.loc[idx]), float(prev.loc[idx] / v.loc[idx]))
+            out.append({'row': idx, 'relation': 'isolated_scale_spike:%s' % field,
+                        'ratio': r, 'fields': (field,)})
+    return pd.DataFrame(out, columns=['row', 'relation', 'ratio', 'fields']) if out else empty
+
+
+def refuse_impossible_cells(df, date_col='date', source_col='source', verbose=False):
+    """Replace every cell a relation contradicts with NaN.  Returns (frame, report).
+
+    THIS IS AN ABSTENTION, NOT AN EJECTION.  The row stays, the source stays, the name still
+    scores on everything the refused cells do not feed; the metrics that DO read them become
+    NaN and are reported as 'data-incomplete: dig-deeper' by the same machinery the Beneish
+    base guards already use.  It never deletes a row and never touches a source's membership.
+
+    BOTH SIDES OF A VIOLATED RELATION ARE REFUSED, deliberately.  When
+    `totalCurrentLiabilities` is 982,186x `totalLiabilities`, the panel does not say which of
+    the two is wrong -- and using either one as if it were the sound half is exactly the
+    assumption that produced the finding in the first place.  Abstaining on both is the
+    honest reading of "these numbers contradict each other".
+
+    `df` may hold one source (the live call site, inside the fetch loop) or many (a saved
+    panel); the spike rule is applied PER SOURCE either way.
+    """
+    if df is None or len(df) == 0:
+        return df, pd.DataFrame([], columns=_SANITY_REPORT_COLS)
+    #  POSITIONAL INTERNALLY (review S9).  `ratio.loc[idx]` and `out.at[...]` assume UNIQUE
+    #  labels; on a duplicated index they raise `TypeError: cannot convert the series to
+    #  <class 'float'>`.  In the fetch that is caught by the per-ticker guard, so the ticker
+    #  would keep its RAW values with a warning -- the abstention silently not happening, which
+    #  is the worst of the three outcomes.  The caller's index is restored before returning, so
+    #  no caller sees a reindexed frame.
+    _orig_index = df.index
+    df = df.reset_index(drop=True)
+    parts = [impossible_relation_hits(df)]
+    if source_col in df.columns and df[source_col].nunique() > 1:
+        for _, sub in df.groupby(source_col, sort=False):
+            parts.append(scale_spike_hits(sub, date_col=date_col))
+    else:
+        parts.append(scale_spike_hits(df, date_col=date_col))
+    parts = [p for p in parts if len(p)]
+    if not parts:
+        if verbose:
+            print('INPUT SANITY: 0 cell(s) refused -- no cross-field impossibility in '
+                  '%d row(s).' % len(df), flush=True)
+        df.index = _orig_index
+        return df, pd.DataFrame([], columns=_SANITY_REPORT_COLS)
+    hits = pd.concat(parts, ignore_index=True)
+    out = df.copy()
+    rec = []
+    refused_by_row = {}
+    for h in hits.itertuples():
+        for f in h.fields:
+            if f not in out.columns:
+                continue
+            #  READ THE ORIGINAL VALUE FROM `df`, NOT FROM `out` (review S4).  `out` is the
+            #  frame this loop is ALREADY MUTATING, so a cell refused by two relations had its
+            #  value logged as NaN by the second -- 29 of 326 records on the 2026-08-13 panel,
+            #  including every ALAQU.PA containment row and RDZN's spike row.  That defeats the
+            #  CSV's whole purpose, which is that a refusal can be ARGUED WITH.
+            rec.append({'source': (df.at[h.row, source_col]
+                                   if source_col in df.columns else ''),
+                        'date': (df.at[h.row, date_col] if date_col in df.columns else ''),
+                        'relation': h.relation, 'ratio': h.ratio, 'field': f,
+                        'value': df.at[h.row, f]})
+            out.at[h.row, f] = np.nan
+            refused_by_row.setdefault(h.row, set()).add(f)
+    #  STAMP WHAT WAS REFUSED, so a downstream reader can tell an abstention from an absence.
+    #  Merged with any existing value rather than overwritten: this function is idempotent by
+    #  design (a refused cell is already NaN, so no relation fires on it a second time) and
+    #  `data_quality.filter_invalid_data` runs TWICE on the live path.
+    if refused_by_row:
+        existing = (out[SANITY_REFUSED_COLUMN].astype('object')
+                    if SANITY_REFUSED_COLUMN in out.columns
+                    else pd.Series('', index=out.index, dtype='object'))
+        existing = existing.where(existing.notna(), '')
+        for row, fields in refused_by_row.items():
+            prev = {t for t in str(existing.at[row]).split(_SANITY_REFUSED_SEP) if t}
+            existing.at[row] = _SANITY_REFUSED_SEP.join(sorted(prev | fields))
+        out[SANITY_REFUSED_COLUMN] = existing
+    report = pd.DataFrame(rec, columns=_SANITY_REPORT_COLS)
+    if verbose and len(report):
+        print('INPUT SANITY: refused %d cell(s) on %d row(s) across %d source(s) -- the '
+              'vendor numbers contradict each other, so the metrics reading them ABSTAIN '
+              'rather than score a corrupt value.'
+              % (len(report), hits['row'].nunique(), report['source'].nunique()), flush=True)
+        for rel, k in report['relation'].value_counts().items():
+            print('    %-46s %5d cell(s)' % (rel, k), flush=True)
+    out.index = _orig_index
+    return out, report
