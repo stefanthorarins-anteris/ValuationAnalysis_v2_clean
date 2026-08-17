@@ -236,7 +236,7 @@ C_FLAG_COLS = ['NICFOdiv', 'DSOinc', 'DSIinc', 'OCARinc', 'TAgr']
 #  summed into the trailing-year base as if it were a measured period, and two (SGI, LVGI) do
 #  not fail at all.  The decomposition above also mis-assigns two names -- ALDAR.PA and EBON are
 #  GMI-driven once the input-sanity guard is applied, not TATA-driven; SSRM is the only TATA
-#  case and the only one of the 14 still standing.  See BENEISH_PERIOD_DOMAIN below.
+#  case and the only one of the 14 still standing.  See PERIOD_DOMAIN below.
 BENEISH_AQI_SHARE_FLOOR = 0.01
 BENEISH_DEPI_SHARE_FLOOR = 0.002
 
@@ -322,7 +322,7 @@ BENEISH_DEPI_SHARE_FLOOR = 0.002
 #  flags lost was fabricated by the defect this change fixes.
 #
 #  ---- SO THE INSTRUMENT IS A DOMAIN ON THE PERIOD, APPLIED BEFORE THE SUM ------------------
-#  `BENEISH_PERIOD_DOMAIN` refuses the PERIOD, not the base, so `invrollsumTTM`'s rolling sum
+#  `PERIOD_DOMAIN` refuses the PERIOD, not the base, so `invrollsumTTM`'s rolling sum
 #  propagates the NaN and the whole trailing-year window abstains.  That is the same rule the
 #  2026-08-14 `ttm_sum` fix settled for the deck ("the newest rpy rows, every one present, else
 #  NaN") applied to the forensic layer: a trailing-year base assembled out of periods the
@@ -451,9 +451,15 @@ BENEISH_DEPI_SHARE_FLOOR = 0.002
 #  to `revenue` and to the endpoint row.  It is NOT done here for a scope reason that is worth
 #  stating: those fields feed STAGE-1 metrics, so refusing them moves scores, while everything
 #  in this block is merged after `getAggScore` and moves nothing.  Registered as the follow-up.
-#  ALSO NOT DONE, same class, different consumer: `calcMontierC`'s `DSOinc` reads the SAME
-#  sentinel-laden `daysSalesOutstanding` column with no domain guard at all.
-BENEISH_PERIOD_DOMAIN = {
+#  CLOSED FOR `daysSalesOutstanding` 2026-08-17 (P-1): `calcMontierC`'s `DSOinc` read the SAME
+#  sentinel-laden column with no domain guard at all, and now reads it through this same dict.
+#  The constant is therefore NO LONGER BENEISH-ONLY and was renamed from the old
+#  `BENEISH_`-prefixed name rather than aliased: two names for one dict is how a `dm.X = ...`
+#  override
+#  in a measurement or a test silently stops reaching the code it thinks it is patching, and a
+#  `BENEISH_` prefix on a constant the Montier model also reads is the same "number wearing a
+#  label it does not own" defect this module keeps fixing elsewhere.  See MONTIER_DSO_DOMAIN.
+PERIOD_DOMAIN = {
     'daysSalesOutstanding': (0.0, np.inf),
     'grossProfitMargin': (0.0, 1.0),
     'sellingGeneralAndAdministrativeExpenses': (0.0, np.inf),
@@ -468,8 +474,13 @@ def _domain_period_input(series, field):
     abstains -- a trailing-year base built out of periods the vendor did not report is
     not a trailing-year measurement.  NaN in, NaN out, so the count is what THIS rule
     removed and not the column's pre-existing gaps.
+
+    SHARED BY BOTH FORENSIC MODELS.  `calcBeneishM` calls it for three fields and
+    `calcMontierC` for `daysSalesOutstanding`; there is deliberately no second
+    implementation, because the failure mode of two is that the two models start
+    disagreeing about which periods the vendor actually reported.
     """
-    lo, hi = BENEISH_PERIOD_DOMAIN[field]
+    lo, hi = PERIOD_DOMAIN[field]
     v = pd.to_numeric(series, errors='coerce').replace([np.inf, -np.inf], np.nan)
     refused = v.notna() & ~((v > float(lo)) & (v < float(hi)))
     return v.where(~refused), int(refused.sum())
@@ -556,6 +567,73 @@ def _yoyPriorOverCur(ttm, rpy=rp.DEFAULT_ROWS_PER_YEAR):
     return ttm.shift(-int(rpy)) / ttm
 
 
+# =========================================================================== #
+#  MONTIER `DSOinc` READS THE SAME SENTINEL COLUMN  (P-1, 2026-08-17)
+# =========================================================================== #
+#  THE DEFECT IS THE ONE O-13 FIXED IN BENEISH, IN A SECOND MODEL.  `DSOinc` is
+#  `invrollsumTTM(daysSalesOutstanding).diff(-rpy)`, i.e. the SAME column, summed into the
+#  SAME kind of trailing-year base, with no domain guard at all.  The evidence that an exact
+#  zero there is a vendor SENTINEL rather than a collection period is established in the
+#  PERIOD_DOMAIN block above and is not re-derived: 7,174 panel rows at exactly zero against
+#  35 anywhere in (0, 0.01) days -- a cliff, not a distribution.  In Beneish the same cells
+#  MANUFACTURED a manipulation flag on a top-100 name (000660.KS, above).
+#
+#  SO THE INSTRUMENT IS THE ONE ALREADY SHIPPED, NOT A NEW ONE.  `_domain_period_input` with
+#  `PERIOD_DOMAIN['daysSalesOutstanding']`, applied to the PERIOD before `invrollsumTTM`,
+#  from the same dict `calcBeneishM` reads.  A second implementation is how the two models
+#  would start disagreeing about which periods the vendor reported -- which is the whole
+#  argument the shared helper was written under.
+#
+#  MEASURED ON THE REAL 2026-08-13 CUR3K PANEL (2,629 sources, 61,354 rows, guards OFF vs ON
+#  through this same code path).  THE HONEST HEADLINE IS THAT NOTHING THE CEO READS MOVES:
+#      general top-100      C_Score_mean moves on 0 of 100 names; C_flag_ge_4 5 -> 5;
+#                           `C_flags_fired` changes on 0 of 100; `forensicTag` on 0 of 100.
+#      whole panel          167 of 2,629 names (6.35%) move C_Score_mean, EVERY ONE DOWNWARD;
+#                           C >= 4 on 161 -> 146 names, 15 lost and 0 gained
+#                           (021240.KS ALRPD.PA BLNE CORZ CRE.L CTXR GMIN.TO KZIA MER.TO
+#                            MLHK.PA PHG PHIA.AS PRD.L RCAT TMI.L);
+#                           7,579 DSO periods refused across 874 sources; 8,727 DSOinc rows
+#                           change; 2,970 rows in 688 sources flip fired -> not-fired, and
+#                           NONE flips the other way (a refused period can only un-fire).
+#  THE TOP-100's IMMUNITY IS WINDOW POSITION, NOT ABSENCE OF SENTINELS -- said plainly because
+#  the opposite reading ("the shortlist is clean, so this is theoretical") is the one a reader
+#  will reach for.  14 of the shipped 100 carry 52 refused DSO periods between them and 84 of
+#  their `DSOinc` rows change; the C-score reads only `head(scale_window(2, rpy))`, so a
+#  refusal lands on the score ONLY when it falls within ~2*rpy rows of the newest period.  Four
+#  such rows exist on this shortlist (GAP i=0,1 and OII i=0,1) and all four were on a NEGATIVE
+#  `DSOinc` that was not firing anyway, so NaN and "not fired" agree by luck of sign.  Two more
+#  names sit one row outside the window (GMR.L i=2 with a window of 1, ALTPC.PA i=3) with the
+#  flag FIRING on the sentinel-built value.  A different quarter's shortlist is not immune.
+#
+#  THE COST, STATED RATHER THAN BURIED: THIS MODEL HAS NO ABSTENTION, SO THE SILENCE SCORES AS
+#  CLEAN.  `C_Score` is `(cols > 0).sum(axis=1)` and NaN > 0 is False, so a refused period does
+#  not make the name UNSCORED -- it makes one of five flags not fire, and `C_Score_mean` is
+#  never NaN for any name on the panel (0 of 2,629, both arms).  That is the residue this
+#  function's own 2026-07-19 note already declares ("a name with a non-computable component now
+#  scores LOWER and so reads as 'cleaner' rather than as 'incomplete'; under-counting is the
+#  safe direction for a review flag"), and this change ENLARGES the population it applies to:
+#  names with at least one C-flag non-computable inside the scored window go 155 -> 440 of
+#  2,629.  It is still the right trade under the house's own 2026-07-26 ruling -- firing a red
+#  flag off a number the vendor never reported is worse than not firing one -- but it is a
+#  trade, not a free correction.
+#  WHAT IS DELIBERATELY *NOT* DONE HERE, because both are CEO decisions and neither is a
+#  correctness fix:
+#    * making the C-score ABSTAIN (NaN, hence `data-incomplete: dig-deeper`) when a flag is
+#      non-computable, the way Beneish now does.  Measured: it would move 440 panel names and
+#      2 of the top-100 -- and both of those 2 are ALREADY tagged `data-incomplete` by Beneish,
+#      so the shipped shortlist's tags would not change at all;
+#    * charging the ad-hoc bucket for a C-score gap the way `contribute_forensic_gap_points`
+#      charges a Beneish gap.  Measured overlap: of the 440, 283 are already charged for the
+#      Beneish gap and 157 would be new; in the top-100 the figure is 2 of 2 already charged
+#      and 0 new, i.e. on this shortlist it would be a pure double-charge of one data gap
+#      through two models and would move nothing.
+#  `daysOfInventoryOutstanding` (DSIinc) is NOT guarded either, and that is a JUDGEMENT rather
+#  than an oversight: a services company genuinely carries no inventory, so a zero there is far
+#  more often a real reading than a sentinel, and the arithmetic corroboration that carries the
+#  gross-margin limb does not exist for it.  Raised, not decided.
+MONTIER_DSO_DOMAIN = 'daysSalesOutstanding'   # the PERIOD_DOMAIN key `DSOinc` is guarded on
+
+
 def calcMontierC(resdic, symblist, freq_map=None):
     cdx_df = resdic['cdx_df']
     if freq_map is None:
@@ -564,6 +642,11 @@ def calcMontierC(resdic, symblist, freq_map=None):
     SLmeanCscore['source'] = symblist
     cdf = pd.DataFrame(columns=['date', 'symbol', 'NICFOdiv','DSOinc','DSIinc','OCARinc','TAgr','C_Score'])
     problemlist = []
+    #  P-1 refusals, counted per run for the same reason the Beneish guards are: a refusal
+    #  nobody prints is indistinguishable from a name that never had the data -- and here the
+    #  refusal does NOT show up as an abstention downstream (C_Score_mean is never NaN), so
+    #  the run log is the ONLY place it is visible.
+    n_dso_period = [0]
     for symbol in symblist:
         tmpcdf = pd.DataFrame(columns=['date', 'symbol', 'NICFOdiv','DSOinc','DSIinc','OCARinc','TAgr','C_Score'])
         # C-score if NICFO > 0, DSOinc > 0 ...
@@ -597,7 +680,15 @@ def calcMontierC(resdic, symblist, freq_map=None):
         NICFO = (niTTM - cfoTTM)/cfoTTM.abs()
         tmpcdf['NICFOdiv'] = NICFO.diff(periods=-_rpy)
 
-        dsoTTM = invrollsumTTM(tempcdx_df['daysSalesOutstanding'], _rpy)
+        #  DOMAIN, PER PERIOD (P-1) -- the SAME dict and the SAME helper `calcBeneishM` uses.
+        #  A reported DSO of exactly zero is the vendor's placeholder, not a collection
+        #  period; refused BEFORE the TTM sum so `invrollsumTTM` propagates the NaN and the
+        #  affected windows do not fire `DSOinc` off a base the filer never reported.
+        #  See the MONTIER_DSO_DOMAIN block for the measurement and for what it costs.
+        _dso, _nd = _domain_period_input(tempcdx_df['daysSalesOutstanding'],
+                                         MONTIER_DSO_DOMAIN)
+        n_dso_period[0] += _nd
+        dsoTTM = invrollsumTTM(_dso, _rpy)
         tmpcdf['DSOinc'] = dsoTTM.diff(periods=-_rpy)
 
         dsiTTM = invrollsumTTM(tempcdx_df['daysOfInventoryOutstanding'], _rpy)
@@ -687,6 +778,20 @@ def calcMontierC(resdic, symblist, freq_map=None):
               % (len(C_FLAG_COLS), C_FLAG_COLS, C_FLAG_CUTOFF, len(C_FLAG_COLS),
                  _v.median(), C_FLAG_CUTOFF, int((_v >= C_FLAG_CUTOFF).sum()),
                  int(_v.notna().sum())), flush=True)
+        #  SECOND LINE, NOT FOLDED INTO THE FIRST, and it is the ONLY place this refusal is
+        #  visible: unlike Beneish, a refused period here does not produce an abstention --
+        #  it produces a flag that does not fire, which reads on every artifact as CLEAN.
+        print('MONTIER C-SCORE (P-1 domain guard): refused %d `%s` period(s) (not in %s) '
+              'BEFORE the trailing-year sum, from the SAME PERIOD_DOMAIN `calcBeneishM` '
+              'reads -- an exact zero there is the vendor placeholder, not a collection '
+              'period. THE REFUSAL DOES NOT ABSTAIN: `C_Score` counts `> 0` and NaN > 0 is '
+              'False, so a refused window makes DSOinc NOT FIRE and the name scores LOWER, '
+              'i.e. CLEANER. Under-counting is the ratified safe direction for a review flag '
+              '(2026-07-19), but on this panel it enlarges the silently-incomplete population '
+              'from 155 to 440 of 2,629 names. `daysOfInventoryOutstanding` is deliberately '
+              'NOT guarded: a services filer genuinely carries no inventory.'
+              % (n_dso_period[0], MONTIER_DSO_DOMAIN, PERIOD_DOMAIN[MONTIER_DSO_DOMAIN]),
+              flush=True)
     except Exception as _e:
         print('WARNING: C-score summary skipped (%s)' % _e, flush=True)
 
@@ -1024,7 +1129,7 @@ def calcBeneishM(resdic, symblist, freq_map=None, verbose=True):
         # 2.7e-03 -- i.e. the 1/SGI contamination was exact, not incidental.
         _rpy = rp.rows_per_year(freq_map, symbol)
         #  DOMAIN, PER PERIOD (O-13).  A DSO of zero is not a collection period -- see the
-        #  BENEISH_PERIOD_DOMAIN block.  Refused BEFORE the TTM sum, so a window holding one
+        #  PERIOD_DOMAIN block.  Refused BEFORE the TTM sum, so a window holding one
         #  such period abstains whole instead of summing a non-measurement into the base.
         _dso, _np = _domain_period_input(tempcdx_df['daysSalesOutstanding'],
                                          'daysSalesOutstanding')
@@ -1034,7 +1139,7 @@ def calcBeneishM(resdic, symblist, freq_map=None, verbose=True):
 
         #  DOMAIN, PER PERIOD (O-13).  GMI = GM_{t-1}/GM_t only reads as "margins declined"
         #  while both legs are positive fractions; outside (0,1) the index inverts or is
-        #  arithmetically impossible.  See the BENEISH_PERIOD_DOMAIN block for BLDP.
+        #  arithmetically impossible.  See the PERIOD_DOMAIN block for BLDP.
         _gm, _np = _domain_period_input(tempcdx_df['grossProfitMargin'], 'grossProfitMargin')
         n_period['grossProfitMargin'] += _np
         gmiTTM = invrollsumTTM(_gm, _rpy)
@@ -1057,7 +1162,7 @@ def calcBeneishM(resdic, symblist, freq_map=None, verbose=True):
         #  DOMAIN, ON THE BASE (O-13).  SGI's base is a CURRENCY LEVEL, so no unit-free floor
         #  exists for it and none is applied -- a 21,800x real revenue increase must still
         #  score (GXAI).  What IS refusable is the arithmetic domain: trailing-year sales of
-        #  zero or less is not a sales level to index against.  See BENEISH_PERIOD_DOMAIN.
+        #  zero or less is not a sales level to index against.  See PERIOD_DOMAIN.
         sgiTTM, _nb = _positive_base(invrollsumTTM(tempcdx_df['revenue'], _rpy))
         n_base['SGI'] += _nb
         tmpmdf['SGI'] = _yoyCurOverPrior(sgiTTM, _rpy)      # Sales_t / Sales_{t-1}
@@ -1099,7 +1204,7 @@ def calcBeneishM(resdic, symblist, freq_map=None, verbose=True):
         #  DOMAIN, ON THE BASE (O-13), AND DELIBERATELY NO FLOOR.  Liabilities cannot be
         #  negative and totalAssets is already guarded positive, so a leverage share <= 0 is
         #  impossible; but the panel shows NO degenerate population above zero for this base,
-        #  so no magnitude floor is imposed.  See BENEISH_PERIOD_DOMAIN for the density.
+        #  so no magnitude floor is imposed.  See PERIOD_DOMAIN for the density.
         lvgiTTM, _nb = _positive_base((ltdTTM+clTTM)/taTTM)
         n_base['LVGI'] += _nb
         tmpmdf['LVGI'] = _yoyCurOverPrior(lvgiTTM, _rpy)    # Leverage_t / Leverage_{t-1}
@@ -1224,10 +1329,10 @@ def calcBeneishM(resdic, symblist, freq_map=None, verbose=True):
               'five: SGI is a currency level, and DSRI/LVGI show no degenerate population '
               'above zero on this panel.'
               % (n_period['daysSalesOutstanding'],
-                 BENEISH_PERIOD_DOMAIN['daysSalesOutstanding'],
-                 n_period['grossProfitMargin'], BENEISH_PERIOD_DOMAIN['grossProfitMargin'],
+                 PERIOD_DOMAIN['daysSalesOutstanding'],
+                 n_period['grossProfitMargin'], PERIOD_DOMAIN['grossProfitMargin'],
                  n_period['sellingGeneralAndAdministrativeExpenses'],
-                 BENEISH_PERIOD_DOMAIN['sellingGeneralAndAdministrativeExpenses'],
+                 PERIOD_DOMAIN['sellingGeneralAndAdministrativeExpenses'],
                  n_base['SGI'], n_base['SGAI'], n_base['LVGI']), flush=True)
     except Exception as _e:
         print('WARNING: Beneish M-score summary skipped (%s)' % _e, flush=True)

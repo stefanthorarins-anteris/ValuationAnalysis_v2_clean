@@ -1368,6 +1368,27 @@ def _verdict_state_band(rule, v):
         return 'neutral'
 
 
+#  THE LOW-CONFIDENCE NOTE ASSERTED A VALUE THAT MAY NOT EXIST (P-2 sweep, 2026-08-17).
+#  `low_conf` is tested BEFORE the value is, so a metric that is both low-confidence and
+#  ABSENT rendered the sentence "value present but flagged low-confidence" beside an empty
+#  cell -- the same "explanation of a thing that is not there" class as `M_drivers` on a row
+#  with no M-score.  It reaches two live combinations: a forensically-invalid name whose
+#  M/C/Sloan is NaN (`low_conf_forensic`) and a weak-denominator name whose incomeQuality or
+#  cash-conversion is NaN (`denom_weak`).
+#  ONLY THE SENTENCE IS FIXED HERE.  The 🟡-over-⚪ PRECEDENCE is a documented spec decision
+#  ("spec Part C") about what the deck's icons mean, so changing it is the CEO's call and not
+#  a bug fix -- an absent value arguably belongs in ⚪ 'value unavailable' rather than in a
+#  🟡 that qualifies a reading nobody made.  RAISED, NOT TAKEN; the icon is unchanged and only
+#  the false half of the note is removed.  Its incidence could not be measured offline (it
+#  needs a rendered deck), which is why the change is confined to text that is wrong under
+#  every reading.
+def _low_conf_note(value):
+    """The Y2 low-confidence note, told apart from the case where there is no value."""
+    if np.isnan(safe_float(value)):
+        return 'value unavailable, and this metric is also flagged low-confidence (see 🚩/forensic)'
+    return 'value present but flagged low-confidence (see 🚩/forensic)'
+
+
 def compute_verdict(metric_key, value, cohort_label=None, low_conf=False):
     """4-state verdict for one metric. Precedence (spec Part C): (1) no rule / suppressed
     for cohort -> ⚪ 'gray'; (2) else Y2 low-confidence -> 🟡 'neutral'; (3) else value vs
@@ -1378,7 +1399,7 @@ def compute_verdict(metric_key, value, cohort_label=None, low_conf=False):
         if cohort_label is not None and cohort_label in r.get('suppress', set()):
             return 'gray', 'no universal rule for this cohort'
         if low_conf:
-            return 'neutral', 'value present but flagged low-confidence (see 🚩/forensic)'
+            return 'neutral', _low_conf_note(value)
         st = _verdict_state_band(r, value)
         if st is None:
             return 'gray', 'value unavailable'
@@ -1388,7 +1409,7 @@ def compute_verdict(metric_key, value, cohort_label=None, low_conf=False):
         if cohort_label is not None and cohort_label in f.get('suppress', set()):
             return 'gray', 'no universal rule for this cohort'
         if low_conf:
-            return 'neutral', 'value present but flagged low-confidence (see 🚩/forensic)'
+            return 'neutral', _low_conf_note(value)
         v = safe_float(value)
         if np.isnan(v):
             return 'gray', 'value unavailable'

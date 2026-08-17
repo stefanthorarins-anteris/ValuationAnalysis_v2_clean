@@ -300,8 +300,20 @@ def buildForensicFlagTable(resdic, topn, sector_fallback=None):
         m_finite = pd.notna(m_mean) and not np.isinf(m_mean)
         m_flag = bool(m_finite and m_mean > 0)  # stored M > 0 == standard M > -1.78
         _rpy = rp.rows_per_year(freq_map, symb)
+        #  NO VERDICT, NO DRIVER BREAKDOWN (P-2, CEO 2026-08-17).  `_mscore_drivers` averages
+        #  each component over the window INDEPENDENTLY, so it happily returns a decomposition
+        #  for a name whose M_Score is NaN -- the components it lists are the ones that WERE
+        #  computable, and the reason the name has no score is one it silently omits.  On the
+        #  2026-08-13 top-100 all 21 `data-incomplete: dig-deeper` rows shipped a populated
+        #  `M_drivers`; RMV.L's read `SGAI(+0.01)...` beside an abstention caused by the gross
+        #  margin, and PSI.TO's was four components all at `+0.00`.  A breakdown asserts "here
+        #  is what drove the verdict" where there is no verdict, which is the same "say nothing
+        #  rather than something unfounded" principle the abstention itself rests on.
+        #  NOTHING IS LOST: `M_abstain_reason` beside it names the missing vendor input, and
+        #  this is the ONE place to blank it -- `ForensicFlagsTop100`, `AggScoreTop100`, the
+        #  XLSX forensic block and the HTML deck's R5 rule all read this column.
         m_drivers = (_mscore_drivers(mscore_df, symb, _rpy)
-                     if not mscore_df.empty else '')
+                     if (m_finite and not mscore_df.empty) else '')
         #  The abstention's REASON, from the same two functions the penalty bucket uses.
         _absent = absent_components(mscore_df, symb, _rpy)
         _mwin = (pd.to_numeric(mscore_df[mscore_df['symbol'] == symb]['M_Score'],
@@ -323,8 +335,14 @@ def buildForensicFlagTable(resdic, topn, sector_fallback=None):
         c_mean = pd.to_numeric(c_row, errors='coerce').iloc[0] if len(c_row) else np.nan
         c_finite = pd.notna(c_mean) and not np.isinf(c_mean)
         c_flag = bool(c_finite and c_mean >= C_FLAG_CUTOFF)  # THE flag: C >= 4
+        #  THE SAME RULE ON THE C SIDE (P-2), AND ITS MEASURED EFFECT TODAY IS ZERO -- said
+        #  here so nobody reads the symmetry as evidence of a live defect.  `C_Score` is a
+        #  COUNT (`(cols > 0).sum()`, NaN > 0 = False), so `C_Score_mean` is NaN only when a
+        #  name produces no forensic rows at all: 0 of 2,629 on the 2026-08-13 panel.  The
+        #  guard is here because the asymmetry -- one column self-limiting, its neighbour not
+        #  -- is exactly how the M side acquired this defect, not because a row needs it now.
         c_fired = (_cscore_fired(cscore_df, symb, _rpy)
-                   if not cscore_df.empty else '')
+                   if (c_finite and not cscore_df.empty) else '')
 
         # Sloan
         sloan_val = sloan_map.get(symb, np.nan)

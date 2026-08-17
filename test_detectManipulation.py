@@ -755,15 +755,15 @@ class _domain_off(object):
         self.fields = fields
 
     def __enter__(self):
-        self.saved = dict(dm.BENEISH_PERIOD_DOMAIN)
+        self.saved = dict(dm.PERIOD_DOMAIN)
         d = dict(self.saved)
         for f in (self.fields or list(d)):
             d[f] = (-np.inf, np.inf)
-        dm.BENEISH_PERIOD_DOMAIN = d
+        dm.PERIOD_DOMAIN = d
         return self
 
     def __exit__(self, *a):
-        dm.BENEISH_PERIOD_DOMAIN = self.saved
+        dm.PERIOD_DOMAIN = self.saved
         return False
 
 
@@ -865,7 +865,7 @@ def test_SGAI_needs_no_magnitude_floor_because_the_PERIOD_domain_already_reaches
     on = _runq(rows, 'SAP_LIKE')['mdf']
     assert pd.isna(_col(on, 'SGAI').iloc[0]), _col(on, 'SGAI').iloc[0]
     #  no floor constant exists for this base, and none is smuggled in through the domain
-    assert dm.BENEISH_PERIOD_DOMAIN['sellingGeneralAndAdministrativeExpenses'] == (0.0, np.inf)
+    assert dm.PERIOD_DOMAIN['sellingGeneralAndAdministrativeExpenses'] == (0.0, np.inf)
     print("PASS test_SGAI_needs_no_magnitude_floor_because_the_PERIOD_domain_already_reaches_"
           "SAP_TO")
 
@@ -926,7 +926,7 @@ def test_LVGI_gets_NO_FLOOR_because_its_density_walks_flat_into_zero():
     assert not pd.isna(_col(r['mdf'], 'M_Score').iloc[0])
     #  a DEBT-FREE firm is a real firm: longTermDebt == 0 is a measurement (4,869 panel rows),
     #  NOT a sentinel, and nothing here may treat it as one.
-    assert 'longTermDebt' not in dm.BENEISH_PERIOD_DOMAIN
+    assert 'longTermDebt' not in dm.PERIOD_DOMAIN
     #  ...and the impossible side is still refused
     zero = [dict(_Q, longTermDebt=0.0, totalCurrentLiabilities=0.0) for _ in range(12)]
     assert pd.isna(_col(_runq(zero, 'NOLIAB')['mdf'], 'LVGI').iloc[0])
@@ -1329,6 +1329,306 @@ def test_no_penalty_book_means_NO_CHARGE_and_no_crash():
     print("PASS test_no_penalty_book_means_NO_CHARGE_and_no_crash")
 
 
+# ---------------------------------------------------------------------------
+#  P-1  --  `calcMontierC.DSOinc` READS THE SAME SENTINEL COLUMN (2026-08-17)
+#  P-2  --  AN EXPLANATION OF A VERDICT THAT DOES NOT EXIST
+#
+#  Both are the same shape as defects already fixed in this module, in a second consumer.
+#  Every test below is two-sided: the OFF arm must REPRODUCE the defect before the ON arm is
+#  allowed to claim it is gone, because a guard that only ever runs on clean fixtures proves
+#  nothing.
+# ---------------------------------------------------------------------------
+
+#  A quarterly series whose DSO is a vendor SENTINEL in the newest year and REPORTED in the
+#  prior one.  `DSOinc` = TTM(DSO)_t - TTM(DSO)_{t-4}, so with the zeros summed in as if they
+#  were collection periods the newest window's base COLLAPSES and the flag reads as a large
+#  DECREASE; drop the sentinels to the prior year instead and it reads as a large INCREASE and
+#  FIRES.  The second arrangement is the one that matters: the sentinel MANUFACTURES a red flag.
+def _dso_rows(newest_year, prior_year, n=12):
+    """12 quarters, oldest first: the newest 4 carry `newest_year`, the 4 before `prior_year`."""
+    rows = [dict(_Q) for _ in range(n)]
+    for i in range(n):
+        if i >= n - 4:
+            rows[i]['daysSalesOutstanding'] = newest_year
+        elif i >= n - 8:
+            rows[i]['daysSalesOutstanding'] = prior_year
+    return rows
+
+
+def _runc(rows, symbol='CQ'):
+    df = _build_quarters(rows, symbol)
+    cdf, slc, pc = dm.calcMontierC({'cdx_df': df}, [symbol])
+    return dict(cdf=cdf.reset_index(drop=True), c_mean=slc['C_Score_mean'].iloc[0],
+                c_flagged=symbol in pc)
+
+
+def test_P1_a_SENTINEL_zero_DSO_period_does_not_reach_MontierC_DSOinc():
+    """*** P-1. ***  `calcMontierC` differenced the SAME `daysSalesOutstanding` column
+    `calcBeneishM` guards, with no domain at all.  A zero there is FMP's placeholder -- 7,174
+    panel rows sit at exactly zero against 35 anywhere in (0, 0.01) days -- and
+    `invrollsumTTM` summed it into the trailing-year base as though it were a reported
+    collection period.
+
+    The fixture is the flag-MANUFACTURING arrangement: sentinels in the PRIOR year, a real 100
+    days in the newest, so `DSOinc` reads as receivables ballooning from nothing.
+    """
+    rows = _dso_rows(newest_year=100.0, prior_year=0.0)
+    with _domain_off('daysSalesOutstanding'):
+        off = _runc(rows, 'SENTC')
+    off_dso = pd.to_numeric(off['cdf']['DSOinc'], errors='coerce').iloc[0]
+    assert off_dso > 0, ('the fixture must reproduce the defect it guards against; DSOinc '
+                         'was %r' % off_dso)
+    on = _runc(rows, 'SENTC')
+    on_dso = pd.to_numeric(on['cdf']['DSOinc'], errors='coerce').iloc[0]
+    assert pd.isna(on_dso), on_dso
+    #  ...and the manufactured flag is gone from the score, not merely from the column
+    assert float(on['c_mean']) < float(off['c_mean']), (off['c_mean'], on['c_mean'])
+    print("PASS test_P1_a_SENTINEL_zero_DSO_period_does_not_reach_MontierC_DSOinc")
+
+
+def test_P1_MontierC_reads_the_SAME_domain_dict_as_calcBeneishM():
+    """ONE instrument, not a second implementation.  A second copy of "which DSO periods the
+    vendor actually reported" is how the two forensic models start disagreeing about one
+    column -- so the constant is shared, read at CALL time, and `calcMontierC` goes through
+    the same `_domain_period_input` helper.
+
+    Asserted BEHAVIOURALLY (override the dict, watch the C-score move) and then structurally,
+    because the behavioural half alone would still pass if someone copy-pasted the helper.
+    """
+    rows = _dso_rows(newest_year=100.0, prior_year=0.0)
+    saved = dict(dm.PERIOD_DOMAIN)
+    try:
+        #  a domain that refuses NOTHING must restore the unguarded answer...
+        dm.PERIOD_DOMAIN = dict(saved, daysSalesOutstanding=(-np.inf, np.inf))
+        wide = pd.to_numeric(_runc(rows, 'DOMC')['cdf']['DSOinc'], errors='coerce').iloc[0]
+        #  ...and one that refuses everything below 200 days must refuse the reported 100 too,
+        #  which no hard-coded `> 0` inside calcMontierC could ever do.
+        dm.PERIOD_DOMAIN = dict(saved, daysSalesOutstanding=(200.0, np.inf))
+        narrow = pd.to_numeric(_runc(rows, 'DOMC')['cdf']['DSOinc'], errors='coerce').iloc[0]
+    finally:
+        dm.PERIOD_DOMAIN = saved
+    assert wide > 0 and pd.isna(narrow), (wide, narrow)
+    src = inspect.getsource(dm.calcMontierC)
+    assert '_domain_period_input' in src and 'MONTIER_DSO_DOMAIN' in src, src[:400]
+    assert dm.MONTIER_DSO_DOMAIN == 'daysSalesOutstanding'
+    assert dm.PERIOD_DOMAIN['daysSalesOutstanding'] == (0.0, np.inf)
+    #  ONE definition of the dict, and no BENEISH_-prefixed alias left behind: an alias would
+    #  let `dm.<old name> = ...` in a test or a measurement silently patch nothing.
+    mod = open(os.path.join(REPO, 'detectManipulation.py'), encoding='utf-8').read()
+    assert mod.count('\nPERIOD_DOMAIN = {') == 1, mod.count('\nPERIOD_DOMAIN = {')
+    assert 'BENEISH_PERIOD_DOMAIN' not in mod
+    print("PASS test_P1_MontierC_reads_the_SAME_domain_dict_as_calcBeneishM")
+
+
+def test_P1_the_guard_does_NOT_touch_a_name_whose_DSO_is_always_reported():
+    """The negative control.  Every column of the C-score frame must be BIT-identical for a
+    filer with no sentinel anywhere -- the guard refuses periods, it does not re-specify the
+    model."""
+    rows = _dso_rows(newest_year=300.0, prior_year=100.0)
+    with _domain_off('daysSalesOutstanding'):
+        off = _runc(rows, 'CLEANC')
+    on = _runc(rows, 'CLEANC')
+    for col in dm.C_FLAG_COLS + ['C_Score']:
+        x = pd.to_numeric(off['cdf'][col], errors='coerce').to_numpy(dtype='float64')
+        y = pd.to_numeric(on['cdf'][col], errors='coerce').to_numpy(dtype='float64')
+        assert np.allclose(x, y, equal_nan=True, rtol=0, atol=0), col
+    assert float(off['c_mean']) == float(on['c_mean'])
+    #  and the fixture is a live one: DSOinc genuinely fires here, so "identical" is not
+    #  "identically empty"
+    assert pd.to_numeric(on['cdf']['DSOinc'], errors='coerce').iloc[0] > 0
+    print("PASS test_P1_the_guard_does_NOT_touch_a_name_whose_DSO_is_always_reported")
+
+
+def test_P1_the_refusal_does_NOT_abstain_it_scores_the_name_CLEANER():
+    """THE DECLARED COST, PINNED SO IT CANNOT BE FORGOTTEN.  Unlike Beneish, this model has no
+    abstention: `C_Score` is `(cols > 0).sum()` and NaN > 0 is False, so a refused period does
+    not make the name UNSCORED -- it makes one of five flags not fire, and the name reads
+    CLEANER.  Measured on the 2026-08-13 panel `C_Score_mean` is non-NaN for all 2,629 sources
+    on BOTH arms, and every one of the 167 names that moves moves DOWN.
+
+    This is the ratified safe direction for a review flag (2026-07-19), not a free correction.
+    If a future change gives the C-score a real abstention, this test SHOULD fail -- and it
+    should fail loudly, because that is a CEO decision about what a blank C-score means, not a
+    refactor.
+    """
+    rows = _dso_rows(newest_year=100.0, prior_year=0.0)
+    with _domain_off('daysSalesOutstanding'):
+        off = _runc(rows, 'COSTC')
+    on = _runc(rows, 'COSTC')
+    assert not pd.isna(float(on['c_mean'])), on['c_mean']
+    assert float(on['c_mean']) < float(off['c_mean'])
+    #  the refused flag reads exactly like a flag that was computed and did not fire
+    assert pd.isna(pd.to_numeric(on['cdf']['DSOinc'], errors='coerce').iloc[0])
+    assert int(on['cdf']['C_Score'].iloc[0]) == int(off['cdf']['C_Score'].iloc[0]) - 1
+    print("PASS test_P1_the_refusal_does_NOT_abstain_it_scores_the_name_CLEANER")
+
+
+def test_P1_daysOfInventoryOutstanding_is_deliberately_NOT_guarded():
+    """A JUDGEMENT, RAISED RATHER THAN TAKEN -- pinned so that guarding it later is a decision
+    and not a drift.  `DSIinc` reads `daysOfInventoryOutstanding`, which carries exact zeros
+    too, but a services filer genuinely holds no inventory: the arithmetic corroboration that
+    carries the gross-margin limb (a zero margin sits on a zero-revenue row) has no analogue
+    here.  So the field is NOT in the domain dict and `DSIinc` still fires on a zero-to-real
+    transition."""
+    assert 'daysOfInventoryOutstanding' not in dm.PERIOD_DOMAIN
+    rows = [dict(_Q) for _ in range(12)]
+    for i in range(12):
+        rows[i]['daysOfInventoryOutstanding'] = 100.0 if i >= 8 else 0.0
+    r = _runc(rows, 'DSIC')
+    assert pd.to_numeric(r['cdf']['DSIinc'], errors='coerce').iloc[0] > 0
+    print("PASS test_P1_daysOfInventoryOutstanding_is_deliberately_NOT_guarded")
+
+
+def test_the_C_score_is_DISPLAY_ONLY_and_cannot_reach_the_RANKING():
+    """*** The question P-1 had to answer before it could be scoped. ***  Beneish's ABSENCE
+    now enters the score through the ad-hoc bucket, so "is the C-score in the ranking too?"
+    decides whether a guard on it is a display change or a scoring change.  It is NOT: the
+    whole forensic layer is computed AFTER the ranking is fixed.
+
+    Same idiom as `test_the_gap_charge_is_raised_BEFORE_head_100...` -- the fact is true only
+    by statement ORDER in `Sbocker`, so the order is what is asserted.  If this ever fails,
+    the C-score has become a scoring input and every measurement of a C-side change has to be
+    redone against AggScore, not against a CSV column.
+    """
+    sb = open(os.path.join(REPO, 'Sbocker.py'), encoding='utf-8').read()
+    assert sb.index('pb.postBoWrapper') < sb.index('dm.detectManipulationWrapper'), (
+        'detectManipulationWrapper must run AFTER postBoWrapper (which contains Stage-1, the '
+        'head(100) cut and Stage-2); if it moves earlier its output could be fed into the '
+        'score.')
+    #  ...and nothing on the scoring path reads the C-score by name.
+    for mod in ('postBoRank.py', 'calcScore.py', 'adhoc_penalty.py', 'stage1_veto.py',
+                'carveOut.py'):
+        s = open(os.path.join(REPO, mod), encoding='utf-8').read()
+        for token in ('SLmeanCscore', 'C_Score_mean', 'C_flag_ge_4', 'calcMontierC'):
+            assert token not in s, (mod, token)
+    #  the ONE consumer that is allowed to see it publishes a column, and does so from the
+    #  frame `head(ntopagg)` already fixed.
+    pbsrc = open(os.path.join(REPO, 'postBo.py'), encoding='utf-8').read()
+    assert "BoComp_tocsv['C-Score'] = cscoreVec" in pbsrc
+    print("PASS test_the_C_score_is_DISPLAY_ONLY_and_cannot_reach_the_RANKING")
+
+
+# ---------------------------------------------------------------------------
+#  P-2  --  a driver breakdown for a verdict that does not exist
+# ---------------------------------------------------------------------------
+
+class _no_sector_pickle(object):
+    """Close the world for `buildForensicFlagTable`.
+
+    Its default `_load_sector_map()` reads the repo-root `sectorsdic_fmp.pickle` (40,164 REAL
+    symbols), so a short synthetic ticker can collide with a real financial and be tagged
+    `financial: forensic-invalid` -- which is a DIFFERENT row shape from the one these tests
+    are about.  The same trap `_charge` documents, on the other function.
+    """
+
+    def __enter__(self):
+        self.saved = ff._load_sector_map
+        ff._load_sector_map = lambda *a, **k: {}
+        return self
+
+    def __exit__(self, *a):
+        ff._load_sector_map = self.saved
+        return False
+
+
+def _flagtable(rows, symbol):
+    df = _build_quarters(rows, symbol)
+    resdic = {'cdx_df': df, 'postRank': pd.DataFrame({'source': [symbol]})}
+    det = dm.detectManipulationWrapper(resdic)
+    with _no_sector_pickle():
+        return ff.buildForensicFlagTable({**resdic, **det}, 1)
+
+
+def test_P2_M_drivers_is_BLANK_on_a_row_that_has_no_M_score():
+    """*** P-2, CEO 2026-08-17: blank it. ***  `_mscore_drivers` averages each component
+    INDEPENDENTLY, so it returns a decomposition even when `M_Score_mean` is NaN -- listing
+    the components that WERE computable and silently omitting the one that caused the
+    abstention.  On the shipped 2026-08-13 top-100 all 21 `data-incomplete` rows carried one.
+    A breakdown asserts "here is what drove the verdict" where there is no verdict; the CEO's
+    ruling is to say nothing rather than something unfounded, and `M_abstain_reason` already
+    tells the reader why the cell is empty.
+
+    TWO-SIDED, and the second half is the one that matters: the column must still be populated
+    for every name that HAS a verdict, or the fix has traded one wrong artifact for a blank one.
+    """
+    #  Abstains on GMI (no usable gross margin anywhere in the window) while DSRI is not only
+    #  computable but strongly ADVERSE -- DSO 100 -> 300 -- so the fixture is the real case:
+    #  a name with no verdict whose surviving components would happily produce a breakdown.
+    rows = [dict(r, grossProfitMargin=0.0) for r in _dso_rows(300.0, 100.0)]
+    t = _flagtable(rows, 'NOVERD')
+    assert pd.isna(t['M_score_mean'].iloc[0]), t['M_score_mean'].iloc[0]
+    assert t['M_drivers'].iloc[0] == '', repr(t['M_drivers'].iloc[0])
+    assert t['M_abstain_reason'].iloc[0], 'the blank must still be EXPLAINED'
+    assert t['forensicTag'].iloc[0] == 'data-incomplete: dig-deeper'
+    #  ...and the underlying decomposition still EXISTS -- this is a publication rule, not a
+    #  deletion of the computation, so a future reader can still ask for it deliberately.
+    det = dm.detectManipulationWrapper(
+        {'cdx_df': _build_quarters(rows, 'NOVERD'),
+         'postRank': pd.DataFrame({'source': ['NOVERD']})})
+    assert ff._mscore_drivers(det['mscore_df'], 'NOVERD') != ''
+
+    #  the other side: a scored name keeps its drivers
+    annual = _annual([_BASE] * 5 + [_DIRTY])
+    df = _build(annual, 'HASVERD')
+    resdic = {'cdx_df': df, 'postRank': pd.DataFrame({'source': ['HASVERD']})}
+    det2 = dm.detectManipulationWrapper(resdic)
+    with _no_sector_pickle():
+        t2 = ff.buildForensicFlagTable({**resdic, **det2}, 1)
+    assert pd.notna(t2['M_score_mean'].iloc[0])
+    assert t2['M_drivers'].iloc[0] != '', 'a name WITH a verdict must keep its breakdown'
+    assert t2['M_abstain_reason'].iloc[0] == ''
+    print("PASS test_P2_M_drivers_is_BLANK_on_a_row_that_has_no_M_score")
+
+
+def test_P2_C_flags_fired_is_BLANK_when_there_is_no_C_score():
+    """The same rule on the neighbouring column.  ITS MEASURED EFFECT TODAY IS ZERO and that
+    is stated rather than implied: `C_Score` is a COUNT, so `C_Score_mean` is NaN only when a
+    name produces no forensic rows at all -- 0 of 2,629 on the 2026-08-13 panel.  The guard is
+    here because an asymmetry between two adjacent columns (one self-limiting, one not) is
+    exactly how the M side acquired P-2 in the first place.
+    """
+    rows = _dso_rows(300.0, 100.0)      # DSOinc genuinely fires, so the blank is a REFUSAL
+    df = _build_quarters(rows, 'NOC')
+    resdic = {'cdx_df': df, 'postRank': pd.DataFrame({'source': ['NOC']})}
+    det = dm.detectManipulationWrapper(resdic)
+    #  force the no-C-score row that the panel does not currently produce: the mean is absent
+    #  while the per-period frame still holds fired flags.
+    det['SLmeanCscore'] = det['SLmeanCscore'].assign(C_Score_mean=np.nan)
+    assert (pd.to_numeric(det['cscore_df'][dm.C_FLAG_COLS].stack(), errors='coerce') > 0).any()
+    with _no_sector_pickle():
+        t = ff.buildForensicFlagTable({**resdic, **det}, 1)
+    assert pd.isna(t['C_score_mean'].iloc[0])
+    assert t['C_flags_fired'].iloc[0] == '', repr(t['C_flags_fired'].iloc[0])
+    assert t['forensicTag'].iloc[0] == 'data-incomplete: dig-deeper'
+    #  two-sided: with the mean present the fired set is published as before
+    det2 = dm.detectManipulationWrapper(resdic)
+    with _no_sector_pickle():
+        t2 = ff.buildForensicFlagTable({**resdic, **det2}, 1)
+    assert pd.notna(t2['C_score_mean'].iloc[0]) and t2['C_flags_fired'].iloc[0] != ''
+    print("PASS test_P2_C_flags_fired_is_BLANK_when_there_is_no_C_score")
+
+
+def test_P2_blanking_at_SOURCE_reaches_every_artifact_the_CEO_reads():
+    """ONE place, four surfaces.  `M_drivers` is blanked in `buildForensicFlagTable`, which is
+    upstream of `ForensicFlagsTop100.csv`, of the `AggScoreTop100` merge, of the XLSX forensic
+    block and of the HTML deck's R5 rule -- so there is no second site to keep in step.  This
+    asserts the wiring, because the measurement that proved the count goes to zero was run on
+    the CSV and would not have caught a deck that recomputes its own drivers.
+    """
+    pb = open(os.path.join(REPO, 'postBo.py'), encoding='utf-8').read()
+    #  the AggScore CSV carries the column through the merge (so the deck inherits the blank)
+    assert "'M_drivers', 'M_abstain_reason'" in pb
+    #  the XLSX forensic block reads the same frame, not a recomputation
+    assert "frow.get('M_drivers', '')" in pb
+    assert '_mscore_drivers' not in pb, 'postBo must not recompute the breakdown'
+    gp = open(os.path.join(REPO, 'generate_presentation.py'), encoding='utf-8').read()
+    assert "r0.get('M_drivers')" in gp, 'the deck must READ the published column'
+    assert '_mscore_drivers' not in gp, 'the deck must not recompute the breakdown'
+    #  and the R5 rule is the deck consumer that a stale breakdown would have fired
+    assert "mdriver_hit = any(tok in m_drivers.upper()" in gp
+    print("PASS test_P2_blanking_at_SOURCE_reaches_every_artifact_the_CEO_reads")
+
+
 if __name__ == '__main__':
     test_component_directions_exact_row0()
     test_mscore_fold_and_flag_dirty()
@@ -1378,4 +1678,13 @@ if __name__ == '__main__':
     test_a_forensically_INVALID_name_is_NOT_charged_for_lacking_a_Beneish_score()
     test_a_partial_failure_commits_NOTHING_to_the_book()
     test_no_penalty_book_means_NO_CHARGE_and_no_crash()
+    test_P1_a_SENTINEL_zero_DSO_period_does_not_reach_MontierC_DSOinc()
+    test_P1_MontierC_reads_the_SAME_domain_dict_as_calcBeneishM()
+    test_P1_the_guard_does_NOT_touch_a_name_whose_DSO_is_always_reported()
+    test_P1_the_refusal_does_NOT_abstain_it_scores_the_name_CLEANER()
+    test_P1_daysOfInventoryOutstanding_is_deliberately_NOT_guarded()
+    test_the_C_score_is_DISPLAY_ONLY_and_cannot_reach_the_RANKING()
+    test_P2_M_drivers_is_BLANK_on_a_row_that_has_no_M_score()
+    test_P2_C_flags_fired_is_BLANK_when_there_is_no_C_score()
+    test_P2_blanking_at_SOURCE_reaches_every_artifact_the_CEO_reads()
     print("\nALL detectManipulation KNOWN-ANSWER TESTS PASSED")

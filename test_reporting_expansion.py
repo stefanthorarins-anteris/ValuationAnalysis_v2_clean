@@ -969,3 +969,46 @@ def test_the_deck_falls_back_to_the_FORENSIC_csv_when_the_aggscore_one_lacks_the
     assert 'asset quality (AQI)' in html, html
     d2 = _deck_with_forensic({'source': 'CFX.L', 'forensicTag': 'clean'})
     assert 'forensic-why' not in d2.section_b_flags('CFX.L')
+
+
+# ---------------------------------------------------------------------------
+#  P-2 SWEEP -- "an explanation of a thing that is not there", deck edition
+# ---------------------------------------------------------------------------
+
+def test_the_low_confidence_note_does_not_claim_a_value_that_is_ABSENT():
+    """*** P-2 sweep, 2026-08-17. ***  `compute_verdict` tests `low_conf` BEFORE it tests the
+    value, so a metric that is both low-confidence and MISSING rendered the sentence
+    "value present but flagged low-confidence" beside an empty cell.  Two live combinations
+    reach it: a forensically-invalid name whose M/C/Sloan is NaN (`low_conf_forensic`), and a
+    weak-denominator name whose incomeQuality or cash-conversion is NaN (`denom_weak`).
+
+    ONLY THE SENTENCE IS ASSERTED HERE.  The 🟡-over-⚪ precedence is a documented spec
+    decision about what the deck's icons mean and is deliberately UNCHANGED -- so this test
+    pins the state as 'neutral' too.  If a later ruling moves an absent value to ⚪, this test
+    should be updated as part of that decision rather than quietly relaxed.
+    """
+    #  one key from EACH branch that carries the low-confidence short-circuit: VERDICT_RULES
+    #  (M-Score, sloan) and VERDICT_FLOORS (cash_conv).  `incomeQuality` is VERDICT_GRAY and
+    #  never reaches the branch, so including it would have tested nothing.
+    for key in ('M-Score', 'sloan', 'cash_conv'):
+        st_missing, note_missing = gp.compute_verdict(key, np.nan, None, low_conf=True)
+        assert 'value present' not in note_missing, (key, note_missing)
+        assert 'unavailable' in note_missing, (key, note_missing)
+        assert st_missing == 'neutral', (key, st_missing)     # precedence UNCHANGED
+        #  ...and the note is unchanged wherever a value actually exists
+        _st, note_present = gp.compute_verdict(key, 0.5, None, low_conf=True)
+        assert note_present == 'value present but flagged low-confidence (see 🚩/forensic)', note_present
+    #  the ordinary (not low-confidence) missing case is untouched
+    assert gp.compute_verdict('M-Score', np.nan, None, low_conf=False)[0] == 'gray'
+
+
+def test_the_deck_R5_rule_cannot_fire_off_a_driver_string_that_has_no_M_score():
+    """*** P-2. ***  R5 reads `M_drivers` from the AggScore CSV and fires "Beneish drivers
+    (DSRI/SGI/AQI) elevated" on a token match.  The column is now BLANK for any name without
+    an M-score (forensicFlags.buildForensicFlagTable), so the deck inherits the fix and must
+    not carry its own recomputation that would defeat it."""
+    src = inspect.getsource(gp)
+    assert "m_drivers = str(r0.get('M_drivers') or '')" in src
+    assert '_mscore_drivers' not in src, 'the deck must READ the published column, not rebuild it'
+    #  and the rule still keys off that variable, so a blank column disarms it
+    assert "mdriver_hit = any(tok in m_drivers.upper()" in src
