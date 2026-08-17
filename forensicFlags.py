@@ -37,7 +37,8 @@ import numpy as np
 import pandas as pd
 
 from detectManipulation import (invrollsumTTM, _toNewestFirst,
-                                C_FLAG_CUTOFF, C_FLAG_COLS)
+                                C_FLAG_CUTOFF, C_FLAG_COLS, M_COMPONENTS,
+                                absent_components, abstention_reason)
 import reporting_period as rp
 
 # --- Beneish component decomposition constants -------------------------------
@@ -49,7 +50,9 @@ import reporting_period as rp
 # the components "driving" a flag. This is an exact linear decomposition of M
 # around the neutral baseline -- a directional driver read, not a per-component
 # threshold (we do NOT claim any single component independently signals fraud).
-M_COMPONENTS = ['DSRI', 'GMI', 'AQI', 'SGI', 'DEPI', 'SGAI', 'LVGI', 'TATA']
+# `M_COMPONENTS` is IMPORTED from detectManipulation, not restated here (2026-08-16): the
+# forensic-gap penalty counts absent components against the same list this file decomposes, and
+# two copies of "the eight components" is how a ninth one gets added to one of them.
 M_COEF = {'DSRI': 0.92, 'GMI': 0.528, 'AQI': 0.404, 'SGI': 0.892,
           'DEPI': 0.115, 'SGAI': -0.172, 'LVGI': -0.327, 'TATA': 4.679}
 M_NEUTRAL = {'DSRI': 1.0, 'GMI': 1.0, 'AQI': 1.0, 'SGI': 1.0,
@@ -299,6 +302,21 @@ def buildForensicFlagTable(resdic, topn, sector_fallback=None):
         _rpy = rp.rows_per_year(freq_map, symb)
         m_drivers = (_mscore_drivers(mscore_df, symb, _rpy)
                      if not mscore_df.empty else '')
+        #  The abstention's REASON, from the same two functions the penalty bucket uses.
+        _absent = absent_components(mscore_df, symb, _rpy)
+        _mwin = (pd.to_numeric(mscore_df[mscore_df['symbol'] == symb]['M_Score'],
+                               errors='coerce').head(rp.scale_window(M_WINDOW, _rpy))
+                 if not mscore_df.empty else pd.Series(dtype='float64'))
+        m_abstain_reason = abstention_reason(_absent, m_finite,
+                                             int(_mwin.notna().sum()), len(_mwin))
+        #  A FORENSICALLY INVALID NAME DID NOT FAIL TO BE MEASURED -- THE MODEL DOES NOT APPLY
+        #  (review H-2, 2026-08-17).  The ad-hoc penalty exempts these names for exactly this
+        #  reason; saying "no usable vendor data" beside a `financial: forensic-invalid` tag
+        #  would describe a measurement we never attempted, and the two artifacts would give
+        #  the reader two different accounts of one row.
+        if is_fin and m_abstain_reason:
+            m_abstain_reason = ('the Beneish model does not apply to a %s -- not measured, '
+                                'and not charged' % (fin_kind or 'financial'))
 
         # C-score
         c_row = SLmeanCscore[SLmeanCscore['source'] == symb]['C_Score_mean']
@@ -326,6 +344,14 @@ def buildForensicFlagTable(resdic, topn, sector_fallback=None):
             'M_score_mean': round(m_mean, 4) if m_finite else np.nan,
             'M_flag_gt_-1.78': m_flag,
             'M_drivers': m_drivers,
+            #  WHY THE CELL BESIDE IT IS EMPTY (CEO, 2026-08-16).  After the O-13 domain
+            #  guards a fifth of the shortlist abstains, and a blank M with no explanation
+            #  reads as a broken tool rather than as a refusal -- which is the CEO's standing
+            #  "presentation must be correctly suggestive" constraint applied to a hole.
+            #  '' for a name that HAS a verdict, so the column is self-limiting; the same
+            #  string is what `adhoc_penalty` charged the name on, from one shared function,
+            #  so the CSV cannot explain the abstention differently from the bucket.
+            'M_abstain_reason': m_abstain_reason,
             'C_score_mean': round(c_mean, 4) if c_finite else np.nan,
             'C_flag_ge_4': c_flag,
             'C_flags_fired': c_fired,

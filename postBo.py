@@ -7,6 +7,10 @@ import getData_gen as gdg
 import postBoRank as pbr
 import reporting_period as rp
 import forensicFlags as ff
+#  Imported for the FORENSIC DATA-GAP charge into the ad-hoc penalty bucket (CEO, 2026-08-16),
+#  which runs BEFORE Stage-2 -- the M-score display decoration still happens in `Sbocker` after
+#  ranking, and this import does not move it.
+import detectManipulation as dm
 import pandas as pd
 import requests
 import openpyxl
@@ -435,6 +439,44 @@ def postBoWrapper(dmdic, as_of=None):
         print('WARNING: STAGE-1 VETO DID NOT RUN -- pools are UN-VETOED this run (%s: %s)'
               % (type(_e).__name__, _e), flush=True)
         veto_reports = {}
+
+    #  --- THE FORENSIC DATA GAP FEEDS THE SAME BUCKET (CEO, 2026-08-16) ------------------
+    #  *"We should not be rewarding lack of data. What we want is to have the top 20 be
+    #  INFORMED good, rather than perhaps good but we don't know because we lack data."*
+    #  A name whose Beneish assessment could not be made now carries points, exactly like a
+    #  name the Stage-1 veto could not judge.  THE DERIVATION, THE AMOUNT (max 4 points =
+    #  -0.04, half the veto's largest) AND THE MEASURED EFFECT are in `detectManipulation`
+    #  beside the guards that produce the gap -- not restated here.
+    #  RAISED ONCE, WITH `pool=None`, over the union of every pool Stage-2 will score: the gap
+    #  is a property of the name's data, not of the pool, and `penalty_series` sums a source's
+    #  contributions across pool tags -- so raising it per pool would charge a name that sits in
+    #  both the general pool and a cohort twice for one finding.
+    #  ITS OWN `try`, separate from the veto's: a forensic-gap failure must not be able to
+    #  un-veto the pools, and a veto failure must not silence this.  Either way the bucket
+    #  degrades to FEWER points, never to a wrong one.
+    try:
+        _gap_sources = list(general_scores['source'])
+        if carve is not None:
+            for _cs in carve['cohorts'].values():
+                _gap_sources += list(_cs['source'])
+        _gap_df = dm.contribute_forensic_gap_points(cdx_df, _gap_sources, penalty_book)
+    except Exception as _ge:
+        print('WARNING: FORENSIC DATA-GAP PENALTY DID NOT RUN -- names whose Beneish '
+              'assessment is missing are NOT charged this run (%s: %s)'
+              % (type(_ge).__name__, _ge), file=sys.stderr, flush=True)
+        print('WARNING: FORENSIC DATA-GAP PENALTY DID NOT RUN (%s: %s)'
+              % (type(_ge).__name__, _ge), flush=True)
+        #  BOTH checks are declared, not just the first (review L-2): a reader filtering the
+        #  evidence CSV on `forensic_gap:no_verdict` would otherwise see nothing AND no caveat,
+        #  which is the "charged nothing == found nothing" confusion this section exists to
+        #  prevent.  The charge itself is all-or-nothing (see `contribute_forensic_gap_points`),
+        #  so "cost nothing" is true here rather than approximately true.
+        for _chk in (dm.CHECK_GAP_COMPONENTS, dm.CHECK_GAP_NO_VERDICT):
+            penalty_book.declare_unmeasured(
+                _chk,
+                'the forensic data-gap charge could not be computed this run (%s: %s), so an '
+                'ABSENT Beneish assessment cost nothing -- "charged nothing" here does not mean '
+                '"no gaps found"' % (type(_ge).__name__, _ge))
 
     #  SHIP THE BUCKET AS EVIDENCE, at the repo ROOT (CEO, 2026-08-10 -- the root-level
     #  artifacts travel, `output/` demonstrably did not on the 2026-08-10 run).  Written
@@ -1828,9 +1870,13 @@ def writeBoAggToCSV(fb_df, mscore, cscore, baseurl, api_key, ntopagg, fname_AggS
         # API `sector` just fetched (sectorVec is aligned to symblist): if EITHER
         # source says bank/insurer/REIT, the name is forensic-invalid (conservative).
         flag_df = ff.applySectorFallback(flag_df, dict(zip(symblist, sectorVec)))
+        #  `M_abstain_reason` RIDES THE SAME MERGE (CEO, 2026-08-16), for the same reason
+        #  `forensicTag` does: the HTML deck reads this CSV, not the forensic one, so a reason
+        #  that stopped here would explain the abstention in the artifact the CEO opens least.
         forensic_cols = ['source', 'isFinancial', 'financialKind', 'forensicValid',
-                         'M_flag_gt_-1.78', 'M_drivers', 'C_flag_ge_4', 'C_flags_fired',
-                         'sloanAccruals', 'sloan_worstQuintile_inShortlist', 'forensicTag']
+                         'M_flag_gt_-1.78', 'M_drivers', 'M_abstain_reason', 'C_flag_ge_4',
+                         'C_flags_fired', 'sloanAccruals',
+                         'sloan_worstQuintile_inShortlist', 'forensicTag']
         keep = [c for c in forensic_cols if c in flag_df.columns]
         BoComp_tocsv = BoComp_tocsv.merge(flag_df[keep], on='source', how='left')
 
@@ -2215,6 +2261,10 @@ def createPresentation(finalBoRank_df, mscore, cscore, baseurl, api_key, topn, f
             forensic_items = [
                 ('Summary tag', frow.get('forensicTag', '')),
                 ('Beneish M > -1.78?', 'FLAG' if frow.get('M_flag_gt_-1.78') else 'no'),
+                #  WHY THERE IS NO M AT ALL (CEO, 2026-08-16).  Blank for a name that HAS an
+                #  M, so the line appears exactly where it is needed; an abstention with a
+                #  reason reads as a refusal, an abstention without one reads as a bug.
+                ('  Why no M-score', frow.get('M_abstain_reason', '') or '-'),
                 ('  M drivers', frow.get('M_drivers', '') or '-'),
                 ('Montier C >= 4?', 'FLAG' if frow.get('C_flag_ge_4') else 'no'),
                 ('  C flags fired', frow.get('C_flags_fired', '') or '-'),

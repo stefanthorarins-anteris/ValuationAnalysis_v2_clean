@@ -906,3 +906,66 @@ def test_the_TTM_helpers_no_longer_carry_the_dropna_then_head_expression():
         assert '.dropna()' not in src, (
             '%s must window POSITIONALLY; `dropna` before `head` is the defect itself' % fn.__name__)
         assert '.head(' in src
+
+
+# ---------------------------------------------------------------------------
+#  THE ABSTENTION SAYS WHY, ON THE DECK (CEO, 2026-08-16).  After the O-13 domain guards a
+#  fifth of the shortlist carries `data-incomplete: dig-deeper`; a tag that says only
+#  "incomplete" reads as a broken tool at that rate.
+# ---------------------------------------------------------------------------
+
+def _deck_with_forensic(agg_row, forensic_df=None):
+    b = object.__new__(gp.PresentationBuilder)
+    b.data = {'aggscore_df': pd.DataFrame([agg_row]),
+              'postrank_df': pd.DataFrame({'source': [agg_row['source']],
+                                           'AggScore': [0.5], 'moatScore': [7.0]}),
+              'forensic_df': forensic_df,
+              'profile_map': {}, 'fx_table': None, 'fill_by_name': {}, 'clone_map': {},
+              'fx_label': None}
+    b._offline_cache = {}
+    return b
+
+
+def test_the_deck_says_WHY_a_name_has_no_M_score():
+    d = _deck_with_forensic({'source': 'RMV.L',
+                             'forensicTag': 'data-incomplete: dig-deeper',
+                             'M_abstain_reason': 'no usable vendor data for: gross margin (GMI)'})
+    html = d.section_b_flags('RMV.L')
+    assert 'data-incomplete' in html
+    assert 'gross margin (GMI)' in html, html
+    assert 'forensic-why' in html
+
+
+def test_the_deck_reason_is_STYLED_apart_from_the_forensic_tag_it_follows():
+    """A data gap rendered in the tag's alarm-red would read as a forensic red flag -- the
+    exact inversion the CEO ruled against for the imputed-share marker ("a red flag beside a
+    high-quality earnings indicator inverts the read and is worse than no marker")."""
+    css = gp.PresentationBuilder._get_css(object.__new__(gp.PresentationBuilder))
+    assert '.forensic-why' in css, 'the reason has no style of its own'
+    #  the tag's own colour is the alarm red; the reason must not inherit it
+    block = css.split('.forensic-why')[1].split('}')[0]
+    assert '#d9534f' not in block, block
+    src = _code_only(gp.PresentationBuilder.section_b_flags)
+    assert 'forensic-why' in src
+
+
+def test_a_name_WITH_an_M_score_gets_no_reason_and_no_extra_markup():
+    d = _deck_with_forensic({'source': 'TNK', 'forensicTag': 'clean',
+                             'M_abstain_reason': ''})
+    html = d.section_b_flags('TNK')
+    assert 'forensic-why' not in html, html
+    assert 'clean' in html
+
+
+def test_the_deck_falls_back_to_the_FORENSIC_csv_when_the_aggscore_one_lacks_the_column():
+    """An older AggScore CSV predates the column; the forensic CSV of the same run carries it.
+    Absence of the reason must never blank the TAG, which is the pre-2026-08-16 behaviour and
+    still the right one."""
+    fdf = pd.DataFrame({'source': ['CFX.L'],
+                        'M_abstain_reason': ['no usable vendor data for: asset quality (AQI)']})
+    d = _deck_with_forensic({'source': 'CFX.L',
+                             'forensicTag': 'data-incomplete: dig-deeper'}, forensic_df=fdf)
+    html = d.section_b_flags('CFX.L')
+    assert 'asset quality (AQI)' in html, html
+    d2 = _deck_with_forensic({'source': 'CFX.L', 'forensicTag': 'clean'})
+    assert 'forensic-why' not in d2.section_b_flags('CFX.L')

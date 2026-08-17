@@ -2696,10 +2696,30 @@ class PresentationBuilder:
         moat_score = row.get('moatScore', np.nan)
 
         forensic_tag = "—"
+        #  THE ABSTENTION SAYS WHY, ON THE DECK TOO (CEO, 2026-08-16).  After the O-13 domain
+        #  guards a fifth of the shortlist carries `data-incomplete: dig-deeper`, and a tag
+        #  that says only "incomplete" reads as a broken tool at that rate; the reason names
+        #  the vendor input that is missing.  Appended to the SAME chip rather than added as a
+        #  new one, because the reason is meaningless without the tag it qualifies -- the same
+        #  adjacency argument the `Score coverage` cell rests on.
+        #  READ FROM THE SAME ROW AS THE TAG, with the forensic CSV as the fallback.  There is
+        #  deliberately no `offline_field` path: that fallback resolves PROFILE-map fields, and
+        #  a page with no `forensicTag` has no abstention to explain in the first place.
+        _why = ''
         if aggscore_df is not None:
             ag_row = aggscore_df[aggscore_df['source'] == ticker]
             if not ag_row.empty:
                 forensic_tag = ag_row.iloc[0].get('forensicTag', '—')
+                _why = ag_row.iloc[0].get('M_abstain_reason', '')
+        if not str(_why).strip() or str(_why).strip().lower() == 'nan':
+            _fdf = self.data.get('forensic_df')
+            if _fdf is not None and not getattr(_fdf, 'empty', True) \
+                    and 'M_abstain_reason' in _fdf.columns:
+                _fr = _fdf[_fdf['source'] == ticker]
+                _why = _fr.iloc[0].get('M_abstain_reason', '') if not _fr.empty else ''
+        _why = '' if _why is None or (isinstance(_why, float) and np.isnan(_why)) else str(_why)
+        if _why.strip() and _why.strip().lower() != 'nan':
+            forensic_tag = f"{forensic_tag} <span class=\"forensic-why\">— {_why}</span>"
 
         # HOW MUCH OF THIS SCORE IS MEASURED (register N-4, CEO 2026-08-13).
         # Placed IMMEDIATELY BESIDE `Forensic`, deliberately and not anywhere else: the exact
@@ -3683,6 +3703,17 @@ nav.sidebar {
 
 .score-item.forensic {
     color: #d9534f;
+}
+
+/* WHY a name has no M-score.  Deliberately NOT the red of the tag it follows (CEO's standing
+   "presentation must be correctly suggestive"): the tag is a forensic finding, this is a
+   statement about the vendor's data, and rendering a data gap in alarm-red would read as a
+   forensic red flag -- the exact inversion the CEO ruled against for the imputed-share
+   marker. */
+.forensic-why {
+    color: #6c757d;
+    font-style: italic;
+    font-weight: normal;
 }
 
 .section-c h3,

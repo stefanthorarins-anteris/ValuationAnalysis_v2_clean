@@ -711,6 +711,624 @@ def test_the_guards_do_NOT_touch_an_ordinary_firm():
     print("PASS test_the_guards_do_NOT_touch_an_ordinary_firm")
 
 
+# ---------------------------------------------------------------------------
+#  O-13: the other five indices (DSRI, GMI, SGI, SGAI, LVGI), 2026-08-15.
+#  These fixtures are PER QUARTER, not per year: the whole point of the guard is that ONE
+#  unreported period inside a trailing-year window poisons the base, which an annual fixture
+#  (four identical quarters) cannot express.
+# ---------------------------------------------------------------------------
+
+_Q = {k: (v / 4.0) for k, v in _BASE.items()}     # the per-QUARTER baseline `_build` implies
+
+
+def _build_quarters(rows, symbol):
+    """rows: per-QUARTER dicts, OLDEST first.  Returns an oldest-first per-symbol frame."""
+    dates = pd.date_range('2015-03-31', periods=len(rows),
+                          freq='QE').strftime('%Y-%m-%d').tolist()
+    df = pd.DataFrame(list(rows))
+    df['date'] = dates
+    df['source'] = symbol
+    return df
+
+
+def _runq(rows, symbol='Q'):
+    df = _build_quarters(rows, symbol)
+    resdic = {'cdx_df': df, 'postRank': pd.DataFrame({'source': [symbol]})}
+    mdf, slm, pm = dm.calcBeneishM(resdic, [symbol])
+    return dict(mdf=mdf.reset_index(drop=True), m_mean=slm['M_Score_mean'].iloc[0],
+                m_flagged=symbol in pm)
+
+
+def _col(mdf, name):
+    return pd.to_numeric(mdf[name], errors='coerce')
+
+
+class _domain_off(object):
+    """Neutralise one or more period domains for the OFF arm of a two-sided assertion.
+
+    The domains are read at CALL time (see the test of that below), so this is the same
+    override mechanism `BENEISH_AQI_SHARE_FLOOR` uses -- and it is what lets every test here
+    assert the defect REPRODUCES before asserting the guard removes it.
+    """
+
+    def __init__(self, *fields):
+        self.fields = fields
+
+    def __enter__(self):
+        self.saved = dict(dm.BENEISH_PERIOD_DOMAIN)
+        d = dict(self.saved)
+        for f in (self.fields or list(d)):
+            d[f] = (-np.inf, np.inf)
+        dm.BENEISH_PERIOD_DOMAIN = d
+        return self
+
+    def __exit__(self, *a):
+        dm.BENEISH_PERIOD_DOMAIN = self.saved
+        return False
+
+
+def test_a_SENTINEL_zero_DSO_period_is_not_summed_into_the_trailing_year_base():
+    """DSRI: the CFG / 0HYP.L case (one issuer, two listings) reduced to a fixture.
+
+    Its `daysSalesOutstanding` reads 0, 0, 5922.68, 0, 0, 0, 30.5453, 0 across eight quarters,
+    so the "base" DSRI divided was a single spike surrounded by periods FMP could not compute,
+    smeared over four windows by `invrollsumTTM`.  DSRI came out at 194 and carried M to +132.
+    A magnitude floor cannot reach this: the base is 5,922, not small.
+    """
+    rows = [dict(_Q, daysSalesOutstanding=0.0) for _ in range(12)]
+    rows[6]['daysSalesOutstanding'] = 30.0        # the prior-year window's only reported period
+    rows[10]['daysSalesOutstanding'] = 5922.0     # the current window's
+    with _domain_off('daysSalesOutstanding'):
+        off = _col(_runq(rows, 'SENT')['mdf'], 'DSRI').iloc[0]
+    assert off > 100, ('fixture must reproduce the defect it guards against; DSRI was %r' % off)
+    on = _runq(rows, 'SENT')['mdf']
+    assert pd.isna(_col(on, 'DSRI').iloc[0]), _col(on, 'DSRI').iloc[0]
+    assert pd.isna(_col(on, 'M_Score').iloc[0])
+    print("PASS test_a_SENTINEL_zero_DSO_period_is_not_summed_into_the_trailing_year_base")
+
+
+def test_GMI_is_refused_on_its_DOMAIN_and_a_magnitude_floor_would_be_the_WRONG_instrument():
+    """GMI: the BLDP case, and the reason the brief's "floor the base" prescription fails here.
+
+    Two rows, one fixture:
+      * the SIGN-CHANGE row -- prior-year margins negative, current-year margins summing to a
+        hair above zero.  GMI is a large NEGATIVE number, and because the coefficient is
+        POSITIVE (+0.528) it SUBTRACTS hundreds of points from M: the index that exists to
+        catch deteriorating margins scores an IMPROVING one as maximally clean.
+      * the BOTH-NEGATIVE row -- margins negative in both years, base |1.4| and |0.3|, i.e.
+        FAR above any magnitude floor anyone would write.  GMI is a plausible-looking +4.96,
+        read as a 5x margin deterioration, while the margin actually IMPROVED from -36.9% to
+        -7.4%.  This is the row that proves a floor is the wrong instrument: no floor refuses
+        it, and it is wrong anyway.
+    """
+    #  the SIGN-CHANGE fixture: prior year 4 x -0.3458, current year summing to +0.0025
+    sign = [dict(_Q, grossProfitMargin=-0.3458) for _ in range(8)]
+    sign += [dict(_Q, grossProfitMargin=-0.10), dict(_Q, grossProfitMargin=-0.10),
+             dict(_Q, grossProfitMargin=-0.10), dict(_Q, grossProfitMargin=+0.3025)]
+    #  the BOTH-NEGATIVE fixture: -34.58% -> -7.43% a quarter, i.e. the margin IMPROVED
+    bothneg = [dict(_Q, grossProfitMargin=-0.3458) for _ in range(8)]
+    bothneg += [dict(_Q, grossProfitMargin=-0.0743) for _ in range(4)]
+    with _domain_off('grossProfitMargin'):
+        gmi_sign = _col(_runq(sign, 'SIGNX')['mdf'], 'GMI').iloc[0]
+        gmi_bothneg = _col(_runq(bothneg, 'BOTHNEG')['mdf'], 'GMI').iloc[0]
+    assert gmi_sign < -100, gmi_sign
+    assert 0.528 * gmi_sign < -50, gmi_sign          # it CLEARS the name, by a lot
+    assert 3.0 < gmi_bothneg < 8.0, gmi_bothneg      # plausible-looking, and inverted
+    assert pd.isna(_col(_runq(sign, 'SIGNX')['mdf'], 'GMI').iloc[0])
+    assert pd.isna(_col(_runq(bothneg, 'BOTHNEG')['mdf'], 'GMI').iloc[0])
+    print("PASS test_GMI_is_refused_on_its_DOMAIN_and_a_magnitude_floor_would_be_the_WRONG_"
+          "instrument")
+
+
+def test_a_gross_margin_of_exactly_1_is_the_MISSING_COST_line_and_must_not_score_as_NEUTRAL():
+    """GMI: 2,497 panel rows report grossProfitMargin == 1 -- gross profit equal to revenue to
+    the cent, i.e. no cost of revenue.  Of the 323 sources carrying one, exactly TWO report 1 in
+    every period; the rest alternate between 1 and a real margin (GXAI: 1, 0.9516, 1, 0.669, 1).
+
+    Left alone it is worse than noise: with both legs at 1 the index is EXACTLY 1.0, the neutral
+    value, so an unmeasured component silently scores as the benign one -- the case the
+    2026-07-26 domain review ruled on ("UNCOMPUTABLE != MAXIMALLY SUSPICIOUS" has a mirror).
+    """
+    rows = [dict(_Q, grossProfitMargin=1.0) for _ in range(12)]
+    with _domain_off('grossProfitMargin'):
+        off = _col(_runq(rows, 'NOCOGS')['mdf'], 'GMI').iloc[0]
+    assert off == 1.0, ('the sentinel scores as dead neutral, which is why it is invisible; '
+                        'got %r' % off)
+    assert pd.isna(_col(_runq(rows, 'NOCOGS')['mdf'], 'GMI').iloc[0])
+    #  ...and a REAL high margin just below the sentinel is untouched.
+    real = [dict(_Q, grossProfitMargin=0.999) for _ in range(12)]
+    assert _col(_runq(real, 'HIGHM')['mdf'], 'GMI').iloc[0] == 1.0
+    assert not pd.isna(_col(_runq(real, 'HIGHM')['mdf'], 'M_Score').iloc[0])
+    print("PASS test_a_gross_margin_of_exactly_1_is_the_MISSING_COST_line_and_must_not_score_"
+          "as_NEUTRAL")
+
+
+def test_SGAI_needs_no_magnitude_floor_because_the_PERIOD_domain_already_reaches_SAP_TO():
+    """SGAI: the brief's near-zero-base exemplar was SAP.TO at base 5.2e-5.
+
+    It is not a small measurement.  The window behind that base is SG&A = 0, 0, 1,000,000, 0
+    over sales of ~1.9e10, in a series whose reported quarters carry 4.8e8 to 1.1e9 -- three
+    sentinels and a crumb.  Refusing the PERIODS reaches it, so no SGAI magnitude constant is
+    introduced, and this test is what stops one being added on the theory that the period rule
+    missed the case it was written for.
+    """
+    rows = [dict(_Q, sellingGeneralAndAdministrativeExpenses=0.0, revenue=4.6e9)
+            for _ in range(8)]
+    rows[6]['sellingGeneralAndAdministrativeExpenses'] = 1.0e6      # the crumb
+    rows += [dict(_Q, sellingGeneralAndAdministrativeExpenses=4.8e8, revenue=4.6e9)
+             for _ in range(4)]
+    with _domain_off('sellingGeneralAndAdministrativeExpenses'):
+        off = _runq(rows, 'SAP_LIKE')['mdf']
+        base_prior = _col(off, 'SGAI').iloc[0]
+    assert base_prior > 1000, ('fixture must reproduce the defect; SGAI was %r' % base_prior)
+    assert abs(-0.172 * base_prior) > 100, base_prior
+    on = _runq(rows, 'SAP_LIKE')['mdf']
+    assert pd.isna(_col(on, 'SGAI').iloc[0]), _col(on, 'SGAI').iloc[0]
+    #  no floor constant exists for this base, and none is smuggled in through the domain
+    assert dm.BENEISH_PERIOD_DOMAIN['sellingGeneralAndAdministrativeExpenses'] == (0.0, np.inf)
+    print("PASS test_SGAI_needs_no_magnitude_floor_because_the_PERIOD_domain_already_reaches_"
+          "SAP_TO")
+
+
+def test_SGI_has_NO_floor_and_a_REAL_21800x_revenue_ramp_STILL_SCORES():
+    """SGI: the over-reach test, and the reason SGI gets no floor at all.
+
+    GXAI's revenue genuinely goes 275 -> 6,005,051 across the window.  Its SGI is enormous and
+    LEGITIMATE, and its base is a CURRENCY LEVEL, so there is no unit-free constant to place on
+    it and a self-relative test would refuse exactly this name.  The index must survive, be
+    finite, and still be able to FLAG -- an abstention here would be the guard over-reaching
+    into the signal it exists to protect.
+    """
+    rows = [dict(_Q, revenue=68.75) for _ in range(8)]               # 275/yr
+    rows += [dict(_Q, revenue=1.50126e6) for _ in range(4)]          # 6,005,051/yr
+    r = _runq(rows, 'RAMP')
+    sgi = _col(r['mdf'], 'SGI').iloc[0]
+    assert 21000 < sgi < 22500, sgi
+    assert not pd.isna(_col(r['mdf'], 'M_Score').iloc[0]), 'the ramp must still SCORE'
+    assert r['m_flagged'], 'and it must still be able to flag'
+    print("PASS test_SGI_has_NO_floor_and_a_REAL_21800x_revenue_ramp_STILL_SCORES")
+
+
+def test_SGI_refuses_only_the_ARITHMETIC_domain_of_its_base():
+    """SGI: trailing-year sales of zero or less is not a level to index against (3,493 bases on
+    the panel).  That is arithmetic, not a threshold -- and it is the ONLY refusal SGI gets.
+
+    The NEGATIVE base is the limb worth pinning: a zero base already produced NaN through 0/0,
+    but a trailing year that nets to -400 of contra-revenue against +4,000 this year used to
+    emit SGI = -10, which at +0.892 SUBTRACTS 9 points from M -- an unmeasurable sales level
+    scoring as the clean side, the mirror of the 2026-07-26 ruling.  The panel carries 379
+    negative revenue rows and 3,057 zero ones.
+    """
+    zero = [dict(_Q, revenue=0.0) for _ in range(8)] + [dict(_Q) for _ in range(4)]
+    assert pd.isna(_col(_runq(zero, 'NOSALES')['mdf'], 'SGI').iloc[0])
+    neg = [dict(_Q, revenue=-100.0) for _ in range(8)] + [dict(_Q, revenue=1000.0)
+                                                          for _ in range(4)]
+    on = _col(_runq(neg, 'NEGSALES')['mdf'], 'SGI').iloc[0]
+    assert pd.isna(on), ('a negative trailing-year sales base must ABSTAIN, not emit a '
+                         'negative growth index; got %r' % on)
+    print("PASS test_SGI_refuses_only_the_ARITHMETIC_domain_of_its_base")
+
+
+def test_LVGI_gets_NO_FLOOR_because_its_density_walks_flat_into_zero():
+    """LVGI: the one place a floor was expected and the panel refuses it.
+
+    (LTD+CL)/TA has a per-0.001 density of 51.6, 60.4, 56.9, 48.7, 46.7 walking INTO zero --
+    flat, no excess.  Compare aqiTTM, where the same measurement gave 2,164 rows in the first
+    0.005 bin against a flat ~740/bin above 0.010.  So a leverage share of 0.002 is UNUSUAL,
+    not degenerate, and it must still produce an index.  Only the impossible side is refused.
+    """
+    #  leverage share 0.002 -> 0.004: a real, if extreme, doubling of a tiny liability book
+    thin = [dict(_Q, longTermDebt=0.0, totalCurrentLiabilities=0.5) for _ in range(8)]
+    thin += [dict(_Q, longTermDebt=0.0, totalCurrentLiabilities=1.0) for _ in range(4)]
+    r = _runq(thin, 'THIN')
+    lvgi = _col(r['mdf'], 'LVGI').iloc[0]
+    assert abs(lvgi - 2.0) < 1e-9, lvgi
+    assert not pd.isna(_col(r['mdf'], 'M_Score').iloc[0])
+    #  a DEBT-FREE firm is a real firm: longTermDebt == 0 is a measurement (4,869 panel rows),
+    #  NOT a sentinel, and nothing here may treat it as one.
+    assert 'longTermDebt' not in dm.BENEISH_PERIOD_DOMAIN
+    #  ...and the impossible side is still refused
+    zero = [dict(_Q, longTermDebt=0.0, totalCurrentLiabilities=0.0) for _ in range(12)]
+    assert pd.isna(_col(_runq(zero, 'NOLIAB')['mdf'], 'LVGI').iloc[0])
+    print("PASS test_LVGI_gets_NO_FLOOR_because_its_density_walks_flat_into_zero")
+
+
+def test_ONE_refused_period_takes_the_WHOLE_trailing_year_window_not_just_its_own_row():
+    """The refusal is at the SUMMAND, before `invrollsumTTM`, so the NaN propagates through
+    every window that contains it -- the `ttm_sum` rule of 2026-08-14 ("the newest rpy rows,
+    every one present, else NaN") applied to the forensic layer.  A base assembled from periods
+    the vendor did not report is not a trailing-year measurement whatever its magnitude."""
+    rows = [dict(_Q) for _ in range(16)]
+    rows[8]['daysSalesOutstanding'] = 0.0          # exactly ONE bad period, in the interior
+    bad = int(_col(_runq(rows, 'ONEBAD')['mdf'], 'DSRI').isna().sum())
+    #  the CLEAN arm still has NaN at the OLD end -- the oldest rows have no prior-year window
+    #  -- so the claim is the DIFFERENCE, not the count.
+    clean = int(_col(_runq([dict(_Q) for _ in range(16)], 'CLEAN')['mdf'], 'DSRI').isna().sum())
+    assert bad - clean >= 4, ('one refused period must take its whole trailing-year window, '
+                              'not one row; %d vs %d NaN' % (bad, clean))
+    print("PASS test_ONE_refused_period_takes_the_WHOLE_trailing_year_window_not_just_its_own_"
+          "row")
+
+
+def test_the_period_domains_are_read_at_CALL_time_not_bound_at_import():
+    """The same trap `_floor_share_base` documents: a default argument is evaluated ONCE at
+    import, so overriding the module constant would appear to work and do nothing -- which is
+    how an earlier measurement in this file's history reported "no change" for a reason that had
+    nothing to do with the data.  Every test above depends on this holding."""
+    rows = [dict(_Q, daysSalesOutstanding=0.0) for _ in range(12)]
+    rows[6]['daysSalesOutstanding'] = 30.0
+    rows[10]['daysSalesOutstanding'] = 5922.0
+    with _domain_off('daysSalesOutstanding'):
+        assert not pd.isna(_col(_runq(rows, 'CALLT')['mdf'], 'DSRI').iloc[0])
+    assert pd.isna(_col(_runq(rows, 'CALLT')['mdf'], 'DSRI').iloc[0])
+    print("PASS test_the_period_domains_are_read_at_CALL_time_not_bound_at_import")
+
+
+def test_the_period_domains_do_NOT_touch_an_ordinary_firm():
+    """Inertness on a normal filer -- without this, a domain set too wide would pass every test
+    above by refusing everything.  The baseline fixture's DSO is 25 days, its margin 0.10 and
+    its SG&A 25, all strictly inside their domains."""
+    rows = [dict(_Q) for _ in range(20)]
+    with _domain_off():
+        a = _runq(rows, 'ORD2')['mdf']
+    b = _runq(rows, 'ORD2')['mdf']
+    for col in ('DSRI', 'GMI', 'SGI', 'SGAI', 'LVGI', 'M_Score'):
+        x = _col(a, col).to_numpy(dtype='float64')
+        y = _col(b, col).to_numpy(dtype='float64')
+        assert np.allclose(x, y, equal_nan=True, rtol=0, atol=0), (col, x, y)
+    print("PASS test_the_period_domains_do_NOT_touch_an_ordinary_firm")
+
+
+def test_a_beneish_refusal_can_NEVER_reach_primary_eject():
+    """THE COUPLING THAT NEARLY SHIPPED IN 72298ab, asserted at this layer too.
+
+    Blanking a field that appears in `nan_policy.PRIMARY_PRESENT` ejects the whole SOURCE via
+    `primary_eject` inside `data_quality.filter_invalid_data` -- that is how the input-sanity
+    change came within a review of deleting JHX and SZZL from the universe.  These guards are
+    structurally incapable of it because they refuse LOCAL COPIES and never write to the shared
+    panel; this test pins that structure rather than trusting it.  Asserted THREE ways: the
+    frame is byte-identical after scoring, no `sanityRefusedFields` stamp appears, and the eject
+    verdict on the frame is unchanged and empty.
+    """
+    rows = [dict(_Q, daysSalesOutstanding=0.0, grossProfitMargin=0.0,
+                 sellingGeneralAndAdministrativeExpenses=0.0, revenue=0.0)
+            for _ in range(12)]
+    df = _build_quarters(rows, 'EJECT')
+    df['totalLiabilities'] = 100.0
+    df['totalStockholdersEquity'] = 150.0
+    df['price'] = 10.0
+    df['marketCap'] = 40.0
+    before = df.copy(deep=True)
+    eject_before = npol.primary_eject(df)
+    dm.calcBeneishM({'cdx_df': df, 'postRank': pd.DataFrame({'source': ['EJECT']})}, ['EJECT'])
+    eject_after = npol.primary_eject(df)
+    assert df.equals(before), 'calcBeneishM must not mutate the shared panel'
+    assert npol.SANITY_REFUSED_COLUMN not in df.columns
+    assert len(eject_before) == 0 and len(eject_after) == 0, (eject_before, eject_after)
+    print("PASS test_a_beneish_refusal_can_NEVER_reach_primary_eject")
+
+
+# ---------------------------------------------------------------------------
+#  THE FORENSIC DATA GAP IN THE AD-HOC PENALTY BUCKET (CEO, 2026-08-16).
+#  Beneish itself stays display-only; what enters the score is the ABSENCE of an assessment.
+#  The bucket's own invariants are pinned in test_adhoc_penalty.py -- what is pinned HERE is
+#  the CHECK that feeds it, beside the layer that raises it.
+# ---------------------------------------------------------------------------
+
+import adhoc_penalty as ap
+
+
+def _charge(rows, symbol='GAP', sector_map=None):
+    """(book, gaps frame) for one synthetic source, through the shipped function.
+
+    `sector_map={}` BY DEFAULT, and it is not cosmetic: the production default reads the
+    repo-root `sectorsdic_fmp.pickle` (40,164 real symbols), and these fixtures use short
+    synthetic tickers that COLLIDE with real ones -- `TWO` resolves to a financial there, so
+    the forensic-validity gate silently exempted a fixture and two point tests failed for a
+    reason that had nothing to do with points.  An empty map makes every fixture 'Unknown',
+    i.e. forensically valid, which is the case these tests are about.
+    """
+    df = _build_quarters(rows, symbol)
+    book = ap.PenaltyBook()
+    gaps = dm.contribute_forensic_gap_points(df, [symbol], book, verbose=False,
+                                             sector_map={} if sector_map is None
+                                             else sector_map)
+    return book, gaps
+
+
+def test_the_forensic_gap_CHARGES_the_bucket_and_SCALES_with_how_much_is_missing():
+    """CEO, 2026-08-16: *"we should probably punish it slightly. Straight to the ad-hoc penalty
+    bucket. But have it very slight."*  And: one absent input is a different statement from
+    three, so the charge is a COUNT of gap events, exactly as `stage1_veto` counts missing rows
+    -- the weight stays 0.01 and the scaling lives in the amount (the 2026-08-10 ruling).
+    """
+    full = [dict(_Q) for _ in range(12)]
+    one = [dict(_Q, grossProfitMargin=0.0) for _ in range(12)]
+    two = [dict(_Q, grossProfitMargin=0.0,
+                sellingGeneralAndAdministrativeExpenses=0.0) for _ in range(12)]
+    _b, g_full = _charge(full, 'FULL')
+    _b, g_one = _charge(one, 'ONE')
+    _b, g_two = _charge(two, 'TWO')
+    assert float(g_full['points'].iloc[0]) == 0.0, g_full.to_dict('records')
+    #  one absent component + the missing verdict it causes
+    assert float(g_one['points'].iloc[0]) == 2.0, g_one.to_dict('records')
+    assert float(g_two['points'].iloc[0]) == 3.0, g_two.to_dict('records')
+    #  and the AggScore consequence, at the fixed weight
+    b2, _ = _charge(two, 'TWO2')
+    assert abs(float(b2.penalty_series(['TWO2']).iloc[0]) - (-0.03)) < 1e-12
+    print("PASS test_the_forensic_gap_CHARGES_the_bucket_and_SCALES_with_how_much_is_missing")
+
+
+def test_the_charge_is_MONOTONE_and_CAPPED_and_can_never_be_a_BONUS():
+    """MONOTONICITY IS THE PROPERTY THIS BUCKET HAS BROKEN BEFORE.  Its first version read the
+    SHAPE of the refusals and gave a FULLY refused window a free pass, so the charge climbed to
+    -0.07 at seven missing rows of eight and fell to 0.00 at eight of eight -- the WORST data
+    paid LEAST.  Walked here across 0..8 absent components.
+
+    The cap at 3 component points is a DECISION, not a rounding: beyond three the statement has
+    saturated ("we could not assess this company") and the `no_verdict` point is what says it.
+    It binds on 162 of 2,629 panel names (6.2%).
+    """
+    last = -1.0
+    for n in range(0, 9):
+        absent = list(dm.M_COMPONENTS)[:n]
+        pts, items = dm.forensic_gap_points(absent, has_verdict=(n == 0))
+        assert pts >= last, ('the charge FELL as the data got worse: %d absent -> %.1f after '
+                             '%.1f' % (n, pts, last))
+        last = pts
+        assert all(p > 0 for _c, p in items), items      # `PenaltyBook.add` refuses <= 0
+    assert dm.forensic_gap_points(list(dm.M_COMPONENTS), False)[0] == 4.0
+    assert dm.forensic_gap_points(list(dm.M_COMPONENTS)[:3], False)[0] == 4.0
+    #  "Very slight" is the CEO's word and this is where it is pinned: the maximum forensic
+    #  charge must stay STRICTLY BELOW the largest charge ONE Stage-1 veto flag can raise --
+    #  a missing forensic assessment is a smaller finding than a persistent solvency red flag.
+    #  ASSERTED AGAINST THE VETO'S OWN CONSTANT (review L-7: the previous
+    #  `assert 0.01 * 4.0 * 2 == 0.08` was a tautology on literals and could not fail if the
+    #  veto's window changed underneath it).
+    #  AND THE "HALF" CLAIM WAS WRONG, which is what writing this assertion exposed: the veto's
+    #  worst SINGLE FLAG is 7 points (refused rows on all but one row of its 8-row window),
+    #  i.e. -0.07, not -0.08.  -0.08 is the worst per-SOURCE total observed on the 2026-08-13
+    #  run, across several checks.  So 4 points is 57% of one veto flag and exactly half the
+    #  worst observed source total -- both stated in the block, neither of them "half the
+    #  veto's maximum".
+    import stage1_veto as sv
+    veto_one_flag_max = float(sv.WINDOW_ROWS - 1)
+    ours = dm.forensic_gap_points(list(dm.M_COMPONENTS), False)[0]
+    assert ours < veto_one_flag_max, (ours, veto_one_flag_max)
+    print("PASS test_the_charge_is_MONOTONE_and_CAPPED_and_can_never_be_a_BONUS")
+
+
+def test_the_COVERAGE_ONLY_abstention_is_charged_TOO_and_it_is_the_only_charge_that_reaches_it():
+    """The 84 panel names whose components are ALL computable somewhere and which still abstain
+    on `nan_policy.COVERAGE_MIN`.  Under a components-only rule they would be FREE -- an
+    abstention that costs nothing, which is the exact case the ruling exists to remove.
+    """
+    rows = [dict(_Q) for _ in range(8)]            # too short for a full M window
+    book, g = _charge(rows, 'COV')
+    assert int(g['n_absent'].iloc[0]) == 0, g.to_dict('records')
+    assert bool(g['has_verdict'].iloc[0]) is False
+    assert float(g['points'].iloc[0]) == 1.0, g.to_dict('records')
+    items = book.itemised()
+    assert list(items['check']) == [dm.CHECK_GAP_NO_VERDICT], list(items['check'])
+    assert 'trailing-year' in items['reason'].iloc[0] or 'computable' in items['reason'].iloc[0]
+    print("PASS test_the_COVERAGE_ONLY_abstention_is_charged_TOO_and_it_is_the_only_charge_"
+          "that_reaches_it")
+
+
+def test_a_name_whose_assessment_WAS_made_is_charged_NOTHING():
+    """Inertness, and it is the half that makes the charge mean something: if an ordinary
+    filer were charged too, the penalty would be a constant and would reorder nobody."""
+    rows = [dict(_Q) for _ in range(16)]
+    book, g = _charge(rows, 'CLEANFIRM')
+    assert bool(g['has_verdict'].iloc[0]) is True
+    assert float(g['points'].iloc[0]) == 0.0
+    assert len(book) == 0 and book.penalty_series(['CLEANFIRM']).iloc[0] == 0.0
+    assert g['reason'].iloc[0] == ''
+    print("PASS test_a_name_whose_assessment_WAS_made_is_charged_NOTHING")
+
+
+def test_the_points_and_the_SCORE_come_from_ONE_computation_and_cannot_drift():
+    """The bucket charges a name for not having an M; the CSV beside it explains why.  If the
+    two were computed separately the artifact could show a gross margin the bucket had just
+    charged the name for lacking.  `contribute_forensic_gap_points` calls `calcBeneishM` rather
+    than re-deriving the gap, and this is what pins that: every name the scorer leaves without
+    an M_Score_mean is charged, and no name that has one is.
+    """
+    rows = [dict(_Q, grossProfitMargin=0.0) for _ in range(6)] + [dict(_Q) for _ in range(6)]
+    df = _build_quarters(rows, 'DRIFT')
+    _mdf, SL, _p = dm.calcBeneishM({'cdx_df': df}, ['DRIFT'], verbose=False)
+    scored = pd.notna(pd.to_numeric(SL['M_Score_mean'], errors='coerce').iloc[0])
+    book = ap.PenaltyBook()
+    g = dm.contribute_forensic_gap_points(df, ['DRIFT'], book, verbose=False)
+    charged = float(g['points'].iloc[0]) > 0
+    assert charged == (not scored), (scored, charged, g.to_dict('records'))
+    print("PASS test_the_points_and_the_SCORE_come_from_ONE_computation_and_cannot_drift")
+
+
+def test_verbose_False_changes_the_LOG_and_never_the_NUMBERS():
+    """The gap charge computes the pool's M a second time and must not print a second set of
+    guard counts over a DIFFERENT name set -- an operator reading two different refusal counts
+    for one run cannot tell which describes the names the CEO is shown.  What it must not do is
+    change an answer."""
+    rows = [dict(_Q, grossProfitMargin=0.0) for _ in range(12)]
+    df = _build_quarters(rows, 'QUIET')
+    a = dm.calcBeneishM({'cdx_df': df}, ['QUIET'], verbose=True)
+    b = dm.calcBeneishM({'cdx_df': df}, ['QUIET'], verbose=False)
+    for col in dm.M_COMPONENTS + ('M_Score',):
+        x = pd.to_numeric(a[0][col], errors='coerce').to_numpy(dtype='float64')
+        y = pd.to_numeric(b[0][col], errors='coerce').to_numpy(dtype='float64')
+        assert np.allclose(x, y, equal_nan=True, rtol=0, atol=0), col
+    assert a[2] == b[2]
+    print("PASS test_verbose_False_changes_the_LOG_and_never_the_NUMBERS")
+
+
+def test_the_abstention_SAYS_WHY_and_names_the_missing_vendor_input():
+    """CEO, 2026-08-16: an abstention must say why -- a 34% blank rate reads as a broken tool
+    unless it explains itself.  The reason names the INPUT in English, not the component code,
+    because the reader of the deck is not required to know what SGAI is."""
+    rows = [dict(_Q, grossProfitMargin=0.0,
+                 sellingGeneralAndAdministrativeExpenses=0.0) for _ in range(12)]
+    _b, g = _charge(rows, 'WHY')
+    reason = g['reason'].iloc[0]
+    assert 'gross margin' in reason and 'SG&A intensity' in reason, reason
+    assert 'GMI' in reason and 'SGAI' in reason, reason
+    #  ...and a name that HAS a verdict says nothing, so the column is self-limiting
+    assert dm.abstention_reason([], True) == ''
+    print("PASS test_the_abstention_SAYS_WHY_and_names_the_missing_vendor_input")
+
+
+def test_the_CSV_reason_is_the_SAME_STRING_the_bucket_charged_on():
+    """One function, two artifacts.  If `ForensicFlagsTop100.csv` and
+    `AdHocPenaltyBucket.csv` explained the same abstention differently, the CEO would have two
+    accounts of one fact and no way to tell which the score used."""
+    rows = [dict(_Q, grossProfitMargin=0.0) for _ in range(12)]
+    df = _build_quarters(rows, 'SAME')
+    book = ap.PenaltyBook()
+    g = dm.contribute_forensic_gap_points(df, ['SAME'], book, verbose=False)
+    resdic = {'cdx_df': df, 'postRank': pd.DataFrame({'source': ['SAME']})}
+    det = dm.detectManipulationWrapper(resdic)
+    tbl = ff.buildForensicFlagTable({**resdic, **det}, 1)
+    csv_reason = tbl['M_abstain_reason'].iloc[0]
+    charged_reason = book.itemised()
+    charged_reason = charged_reason[
+        charged_reason['check'] == dm.CHECK_GAP_COMPONENTS]['reason'].iloc[0]
+    assert csv_reason == charged_reason == g['reason'].iloc[0], (csv_reason, charged_reason)
+    assert tbl['forensicTag'].iloc[0] == 'data-incomplete: dig-deeper'
+    print("PASS test_the_CSV_reason_is_the_SAME_STRING_the_bucket_charged_on")
+
+
+def test_the_gap_is_raised_ONCE_per_run_so_a_name_in_TWO_pools_is_not_charged_TWICE():
+    """`PenaltyBook.penalty_series` sums a source's contributions across every pool tag, so a
+    finding raised for the general pool AND again for a carve-out cohort would charge a name
+    that sits in both twice for ONE gap.  The gap is a property of the name's data and is
+    identical in every pool, so it is raised once with `pool=None` -- and the call site passes
+    the UNION of the pools rather than calling per pool.  A duplicate source in that union must
+    still only be charged once.
+    """
+    rows = [dict(_Q, grossProfitMargin=0.0) for _ in range(12)]
+    df = _build_quarters(rows, 'DUP')
+    book = ap.PenaltyBook()
+    dm.contribute_forensic_gap_points(df, ['DUP', 'DUP', 'DUP'], book, verbose=False)
+    assert float(book.penalty_series(['DUP']).iloc[0]) == -0.02, book.itemised().to_dict()
+    assert set(book.itemised()['pool'].fillna('')) == {''}, book.itemised().to_dict()
+    print("PASS test_the_gap_is_raised_ONCE_per_run_so_a_name_in_TWO_pools_is_not_charged_TWICE")
+
+
+def test_the_gap_charge_is_raised_BEFORE_head_100_so_it_cannot_change_MEMBERSHIP():
+    """*** review L-8. ***  "`head(100)` runs BEFORE Stage-2, so this penalty CANNOT change
+    top-100 membership" is load-bearing -- it is what bounds the blast radius of the whole
+    charge to a REORDER -- and it was true only by the current statement order in `postBo`.
+    Nothing asserted it, so a future reorder would silently turn a reordering penalty into a
+    selection one.  Same idiom as `test_published_columns.test_moatScore_is_raw_because_it_is_
+    merged_after_scoring`, which pins the mirror-image ordering fact for moatScore.
+    """
+    src = open(os.path.join(REPO, 'postBo.py'), encoding='utf-8').read()
+    i_charge = src.index('contribute_forensic_gap_points')
+    #  the ACTUAL cut, by its statement -- not the first `.head(100)` in the file, which is a
+    #  comment about the legacy no-carve path 200 lines earlier
+    i_cut = src.index('BoS_dftop100 = general_scores.head(100)')
+    i_stage2 = src.index('pbr.postBoScoreRanking')
+    assert i_charge < i_cut < i_stage2, (
+        'the forensic gap charge must be raised BEFORE the head(100) cut and the cut BEFORE '
+        'Stage-2 (charge %d, cut %d, stage-2 %d). If the charge ever moves after the cut it '
+        'still only reorders; if the CUT moves after Stage-2, the penalty starts deciding '
+        'top-100 MEMBERSHIP, which is a different and much larger claim than the one measured.'
+        % (i_charge, i_cut, i_stage2))
+    print("PASS test_the_gap_charge_is_raised_BEFORE_head_100_so_it_cannot_change_MEMBERSHIP")
+
+
+def test_a_forensically_INVALID_name_is_NOT_charged_for_lacking_a_Beneish_score():
+    """*** review H-2. ***  `forensicFlags._classify_financial` already rules Beneish
+    structurally undefined for banks, insurers and REITs, and the forensic tag says so instead
+    of scoring them.  Charging a REIT for not having a Beneish score is charging it for being a
+    REIT, and the reason written against it ("the assessment is ABSENT -- not clean") is false:
+    it is INAPPLICABLE.  Measured before this gate, the five shipped cohort side-lists charged
+    71 names of which 57 were forensically invalid (REIT 16 of 17, InvestmentVehicle 16 of 20,
+    FinManager 13 of 16, BalanceSheetFin 12 of 13); the general top-100 was already clean.
+
+    Asserted in BOTH directions -- the exemption must not become a blanket amnesty: the SAME
+    fixture with a non-financial sector is still charged.
+    """
+    rows = [dict(_Q, grossProfitMargin=0.0) for _ in range(12)]
+    df = _build_quarters(rows, 'AREIT')
+    book = ap.PenaltyBook()
+    g = dm.contribute_forensic_gap_points(df, ['AREIT'], book, verbose=False,
+                                          sector_map={'AREIT': 'Real Estate'})
+    assert float(g['points'].iloc[0]) == 0.0, g.to_dict('records')
+    assert bool(g['forensically_valid'].iloc[0]) is False
+    assert len(book) == 0 and float(book.penalty_series(['AREIT']).iloc[0]) == 0.0
+    #  ...and the exemption is DECLARED, not silent
+    un = book.unmeasured
+    assert len(un) == 1 and 'EXEMPT' in un[0]['reason'] and un[0]['points'] == 0.0
+    #  the same name with an ordinary sector IS charged -- the gate is a classification, not an
+    #  amnesty, and the gap itself is unchanged
+    book2 = ap.PenaltyBook()
+    g2 = dm.contribute_forensic_gap_points(df, ['AREIT'], book2, verbose=False,
+                                           sector_map={'AREIT': 'Technology'})
+    assert float(g2['points'].iloc[0]) == 2.0, g2.to_dict('records')
+    assert int(g2['n_absent'].iloc[0]) == int(g['n_absent'].iloc[0]) == 1
+    #  ...and the DEFAULT map is the forensic layer's own, so the charge and the shipped tag
+    #  cannot be classifying names off two different sources.  (Every test above passes an
+    #  explicit map to stay hermetic, which would otherwise leave this wiring unpinned.)
+    src = inspect.getsource(dm.contribute_forensic_gap_points)
+    assert 'from forensicFlags import _classify_financial, _load_sector_map' in src
+    assert 'sector_map = _load_sector_map()' in src
+    #  ...and the CSV explains such a row the SAME way the bucket does: the model does not
+    #  apply, rather than "no usable vendor data", which would describe a measurement nobody
+    #  attempted.  Two artifacts, one account of the row.
+    resdic = {'cdx_df': df, 'postRank': pd.DataFrame({'source': ['AREIT']})}
+    det = dm.detectManipulationWrapper(resdic)
+    tbl = ff.buildForensicFlagTable({**resdic, **det}, 1,
+                                    sector_fallback={'AREIT': 'Real Estate'})
+    assert tbl['forensicTag'].iloc[0].startswith('financial: forensic-invalid')
+    assert 'does not apply' in tbl['M_abstain_reason'].iloc[0], tbl['M_abstain_reason'].iloc[0]
+    assert 'no usable vendor data' not in tbl['M_abstain_reason'].iloc[0]
+    print("PASS test_a_forensically_INVALID_name_is_NOT_charged_for_lacking_a_Beneish_score")
+
+
+def test_a_partial_failure_commits_NOTHING_to_the_book():
+    """*** review L-1. ***  The caller wraps this in one `except` whose banner says the gap
+    "cost nothing -- 'charged nothing' here does not mean 'no gaps found'".  If the loop raised
+    partway, names 1..k-1 were already in the book and would ship in the evidence CSV
+    underneath that caveat -- a false statement in the one file that exists to be argued with.
+    Contributions are buffered and committed only after the loop completes.
+    """
+    rows = [dict(_Q, grossProfitMargin=0.0) for _ in range(12)]
+    df = pd.concat([_build_quarters(rows, 'A1'), _build_quarters(rows, 'A2')],
+                   ignore_index=True)
+    book = ap.PenaltyBook()
+    saved = dm.abstention_reason
+    calls = {'n': 0}
+
+    def _boom(*a, **k):
+        calls['n'] += 1
+        if calls['n'] > 1:
+            raise RuntimeError('vendor frame went missing mid-loop')
+        return saved(*a, **k)
+    try:
+        dm.abstention_reason = _boom
+        try:
+            dm.contribute_forensic_gap_points(df, ['A1', 'A2'], book, verbose=False)
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError('the fixture did not raise; the test proves nothing')
+    finally:
+        dm.abstention_reason = saved
+    assert len(book) == 0, ('a partial charge reached the book: %s' % book.itemised().to_dict())
+    print("PASS test_a_partial_failure_commits_NOTHING_to_the_book")
+
+
+def test_no_penalty_book_means_NO_CHARGE_and_no_crash():
+    """A caller that passes no book gets an empty frame and no exception -- the same shape
+    `postBoScoreRanking` already has for a pool with no book, where the honest reading is
+    "this pool was scored with no penalty", not "this pool has no data gaps"."""
+    rows = [dict(_Q, grossProfitMargin=0.0) for _ in range(12)]
+    out = dm.contribute_forensic_gap_points(_build_quarters(rows, 'NB'), ['NB'], None)
+    assert out.empty and list(out.columns)[:2] == ['source', 'n_absent']
+    print("PASS test_no_penalty_book_means_NO_CHARGE_and_no_crash")
+
+
 if __name__ == '__main__':
     test_component_directions_exact_row0()
     test_mscore_fold_and_flag_dirty()
@@ -736,4 +1354,28 @@ if __name__ == '__main__':
     test_the_floors_are_read_at_CALL_time_not_bound_at_import()
     test_the_floor_is_SYMMETRIC_and_guards_the_numerator_leg_too()
     test_the_guards_do_NOT_touch_an_ordinary_firm()
+    test_a_SENTINEL_zero_DSO_period_is_not_summed_into_the_trailing_year_base()
+    test_GMI_is_refused_on_its_DOMAIN_and_a_magnitude_floor_would_be_the_WRONG_instrument()
+    test_a_gross_margin_of_exactly_1_is_the_MISSING_COST_line_and_must_not_score_as_NEUTRAL()
+    test_SGAI_needs_no_magnitude_floor_because_the_PERIOD_domain_already_reaches_SAP_TO()
+    test_SGI_has_NO_floor_and_a_REAL_21800x_revenue_ramp_STILL_SCORES()
+    test_SGI_refuses_only_the_ARITHMETIC_domain_of_its_base()
+    test_LVGI_gets_NO_FLOOR_because_its_density_walks_flat_into_zero()
+    test_ONE_refused_period_takes_the_WHOLE_trailing_year_window_not_just_its_own_row()
+    test_the_period_domains_are_read_at_CALL_time_not_bound_at_import()
+    test_the_period_domains_do_NOT_touch_an_ordinary_firm()
+    test_a_beneish_refusal_can_NEVER_reach_primary_eject()
+    test_the_forensic_gap_CHARGES_the_bucket_and_SCALES_with_how_much_is_missing()
+    test_the_charge_is_MONOTONE_and_CAPPED_and_can_never_be_a_BONUS()
+    test_the_COVERAGE_ONLY_abstention_is_charged_TOO_and_it_is_the_only_charge_that_reaches_it()
+    test_a_name_whose_assessment_WAS_made_is_charged_NOTHING()
+    test_the_points_and_the_SCORE_come_from_ONE_computation_and_cannot_drift()
+    test_verbose_False_changes_the_LOG_and_never_the_NUMBERS()
+    test_the_abstention_SAYS_WHY_and_names_the_missing_vendor_input()
+    test_the_CSV_reason_is_the_SAME_STRING_the_bucket_charged_on()
+    test_the_gap_is_raised_ONCE_per_run_so_a_name_in_TWO_pools_is_not_charged_TWICE()
+    test_the_gap_charge_is_raised_BEFORE_head_100_so_it_cannot_change_MEMBERSHIP()
+    test_a_forensically_INVALID_name_is_NOT_charged_for_lacking_a_Beneish_score()
+    test_a_partial_failure_commits_NOTHING_to_the_book()
+    test_no_penalty_book_means_NO_CHARGE_and_no_crash()
     print("\nALL detectManipulation KNOWN-ANSWER TESTS PASSED")
