@@ -1,0 +1,27 @@
+{
+  "asof": "2026-08-19",
+  "fields": [
+    "beta",
+    "cik",
+    "companyName",
+    "country",
+    "currency",
+    "cusip",
+    "exchange",
+    "exchangeShortName",
+    "fullTimeEmployees",
+    "industry",
+    "ipoDate",
+    "isActivelyTrading",
+    "isAdr",
+    "isEtf",
+    "isFund",
+    "isin",
+    "mktCap",
+    "price",
+    "sector",
+    "symbol",
+    "volAvg"
+  ],
+  "fingerprint": "e7cb66a56d665467"
+}

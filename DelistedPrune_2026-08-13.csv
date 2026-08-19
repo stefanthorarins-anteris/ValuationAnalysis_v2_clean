@@ -1,0 +1,3 @@
+symbol,reason,source_endpoint,page,vendor_list_size,universe,asof,coverage_note
+EA,delisted_prune,v3/delisted-companies,0,100,stock_CUR3K,2026-08-13,"PAGE 0 ONLY of a paginated endpoint -- this is a PARTIAL delisted list, so absence from this file is NOT evidence that a name is still listed"
+ELSE,delisted_prune,v3/delisted-companies,0,100,stock_CUR3K,2026-08-13,"PAGE 0 ONLY of a paginated endpoint -- this is a PARTIAL delisted list, so absence from this file is NOT evidence that a name is still listed"
