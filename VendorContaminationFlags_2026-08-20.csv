@@ -1,0 +1,468 @@
+source_a,source_b,n_shared,name_a,name_b,shared_tokens,name_match,verdict,first_shared_date,last_shared_date
+ALTA.PA,AREIT.PA,30,Altarea SCA,Altareit SCA,,False,NAME_MISMATCH,2009-04-01,2023-10-01
+058820.KQ,CMG,11,"CMG Pharmaceutical Co., Ltd.","Chipotle Mexican Grill, Inc.",,False,NAME_MISMATCH,2012-10-01,2022-07-01
+058820.KQ,0HXW.L,10,"CMG Pharmaceutical Co., Ltd.","Chipotle Mexican Grill, Inc.",,False,NAME_MISMATCH,2012-10-01,2022-07-01
+CRML,SZZL,8,Critical Metals Corp.,Sizzle Acquisition Corp. II,,False,NAME_MISMATCH,2021-10-01,2023-07-01
+CIGI,FSV,5,Colliers International Group Inc.,FirstService Corporation,,False,NAME_MISMATCH,2013-07-01,2015-01-01
+CIGI,FSV.TO,5,Colliers International Group Inc.,FirstService Corporation,,False,NAME_MISMATCH,2013-07-01,2015-01-01
+CIGI.TO,FSV,5,Colliers International Group Inc.,FirstService Corporation,,False,NAME_MISMATCH,2013-07-01,2015-01-01
+CIGI.TO,FSV.TO,5,Colliers International Group Inc.,FirstService Corporation,,False,NAME_MISMATCH,2013-07-01,2015-01-01
+AC.PA,EDEN.PA,4,Accor S.A.,Edenred S.A.,,False,NAME_MISMATCH,2007-04-01,2009-10-01
+0RJ6.L,LOUP.PA,27,L.d.c. S.a.,L.d.c. S.a.,,,name_unknown,2010-01-01,2026-01-01
+AFG,AFGB,80,"American Financial Group, Inc.","American Financial Group, Inc.",american financial,True,name_match,2006-07-01,2026-04-01
+AFGC,AFGD,80,"American Financial Group, Inc.","American Financial Group, Inc.",american financial,True,name_match,2006-07-01,2026-04-01
+AFGC,AFGE,80,"American Financial Group, Inc.","American Financial Group, Inc.",american financial,True,name_match,2006-07-01,2026-04-01
+AFGD,AFGE,80,"American Financial Group, Inc.","American Financial Group, Inc.",american financial,True,name_match,2006-07-01,2026-04-01
+HVT,HVT-A,80,"Haverty Furniture Companies, Inc.","Haverty Furniture Companies, Inc.",furniture haverty,True,name_match,2006-07-01,2026-04-01
+TCBI,TCBIO,80,"Texas Capital Bancshares, Inc.","Texas Capital Bancshares, Inc.",bancshares capital texas,True,name_match,2006-07-01,2026-04-01
+TECK-A.TO,TECK-B.TO,80,Teck Resources Limited,Teck Resources Limited,resources teck,True,name_match,2006-07-01,2026-04-01
+0A18.L,GIB-A.TO,80,CGI Inc.,CGI Inc.,cgi,True,name_match,2006-07-01,2026-04-01
+TTE.L,TTE.PA,80,TotalEnergies SE,TotalEnergies SE,totalenergies,True,name_match,2006-07-01,2026-04-01
+RCI-A.TO,RCI-B.TO,80,Rogers Communications Inc.,Rogers Communications Inc.,communications rogers,True,name_match,2006-07-01,2026-04-01
+MOG-A,MOG-B,80,Moog Inc.,Moog Inc.,moog,True,name_match,2006-07-01,2026-04-01
+BH,BH-A,80,Biglari Holdings Inc.,Biglari Holdings Inc.,biglari,True,name_match,2006-07-01,2026-04-01
+PPL,PPLC,80,PPL Corporation,PPL Corporation,ppl,True,name_match,2006-07-01,2026-04-01
+0JZU.L,MCK,80,McKesson Corporation,McKesson Corporation,mckesson,True,name_match,2006-07-01,2026-04-01
+HBAN,HBANL,80,Huntington Bancshares Incorporated,Huntington Bancshares Incorporated,bancshares huntington,True,name_match,2006-07-01,2026-04-01
+HBAN,HBANM,80,Huntington Bancshares Incorporated,Huntington Bancshares Incorporated,bancshares huntington,True,name_match,2006-07-01,2026-04-01
+HBANL,HBANM,80,Huntington Bancshares Incorporated,Huntington Bancshares Incorporated,bancshares huntington,True,name_match,2006-07-01,2026-04-01
+CTC-A.TO,CTC.TO,80,"Canadian Tire Corporation, Limited","Canadian Tire Corporation, Limited",canadian tire,True,name_match,2006-07-01,2026-07-01
+BBD-A.TO,BBD-B.TO,80,Bombardier Inc.,Bombardier Inc.,bombardier,True,name_match,2006-07-01,2026-04-01
+CSW-A.TO,CSW-B.TO,80,Corby Spirit and Wine Limited,Corby Spirit and Wine Limited,corby spirit wine,True,name_match,2006-01-01,2026-01-01
+QBR-A.TO,QBR-B.TO,80,Quebecor Inc.,Quebecor Inc.,quebecor,True,name_match,2006-07-01,2026-04-01
+CCL-A.TO,CCL-B.TO,80,CCL Industries Inc.,CCL Industries Inc.,ccl industries,True,name_match,2006-07-01,2026-04-01
+TCL-A.TO,TCL-B.TO,80,Transcontinental Inc.,Transcontinental Inc.,transcontinental,True,name_match,2006-07-01,2026-04-01
+ADW-A.TO,ADW-B.TO,80,Andrew Peller Limited,Andrew Peller Limited,andrew peller,True,name_match,2006-07-01,2026-04-01
+ABX.TO,B,79,Barrick Gold Corporation,Barrick Mining Corporation,barrick,True,name_match,2006-07-01,2026-01-01
+0HJI.L,ADP,79,"Automatic Data Processing, Inc.","Automatic Data Processing, Inc.",automatic data processing,True,name_match,2006-07-01,2026-04-01
+0KFZ.L,PH,78,Parker-Hannifin Corporation,Parker-Hannifin Corporation,hannifin parker,True,name_match,2006-07-01,2026-04-01
+0R07.L,PAAS,78,Pan American Silver Corp.,Pan American Silver Corp.,american pan silver,True,name_match,2006-07-01,2025-10-01
+005930.KS,005935.KS,78,"Samsung Electronics Co., Ltd.","Samsung Electronics Co., Ltd.",electronics samsung,True,name_match,2007-01-01,2026-04-01
+0R18.L,BBY,78,"Best Buy Co., Inc.","Best Buy Co., Inc.",best buy,True,name_match,2006-07-01,2025-10-01
+BNS,BNS.TO,78,The Bank of Nova Scotia,The Bank of Nova Scotia,bank nova scotia,True,name_match,2006-07-01,2026-04-01
+AFG,AFGC,77,"American Financial Group, Inc.","American Financial Group, Inc.",american financial,True,name_match,2006-07-01,2025-07-01
+AFG,AFGD,77,"American Financial Group, Inc.","American Financial Group, Inc.",american financial,True,name_match,2006-07-01,2025-07-01
+AFG,AFGE,77,"American Financial Group, Inc.","American Financial Group, Inc.",american financial,True,name_match,2006-07-01,2025-07-01
+AFGB,AFGC,77,"American Financial Group, Inc.","American Financial Group, Inc.",american financial,True,name_match,2006-07-01,2025-07-01
+AFGB,AFGD,77,"American Financial Group, Inc.","American Financial Group, Inc.",american financial,True,name_match,2006-07-01,2025-07-01
+AFGB,AFGE,77,"American Financial Group, Inc.","American Financial Group, Inc.",american financial,True,name_match,2006-07-01,2025-07-01
+TXP.L,TXP.TO,77,Touchstone Exploration Inc.,Touchstone Exploration Inc.,exploration touchstone,True,name_match,2006-07-01,2025-10-01
+FSM,FVI.TO,77,Fortuna Mining Corp.,Fortuna Mining Corp.,fortuna mining,True,name_match,2006-07-01,2026-04-01
+BC94.L,SMSD.L,77,"Samsung Electronics Co., Ltd.","Samsung Electronics Co., Ltd.",electronics samsung,True,name_match,2007-01-01,2026-01-01
+ENJ,ENO,77,"Entergy New Orleans, LLC","Entergy New Orleans, LLC",entergy orleans,True,name_match,2006-07-01,2026-04-01
+0UGS.L,AGI,77,Alamos Gold Inc.,Alamos Gold Inc.,alamos gold,True,name_match,2006-07-01,2025-10-01
+BEP,BEP-UN.TO,77,Brookfield Renewable Partners L.P.,Brookfield Renewable Partners L.P.,brookfield partners renewable,True,name_match,2006-07-01,2026-04-01
+BEP,BEPI,77,Brookfield Renewable Partners L.P.,Brookfield Renewable Partners L.P.,brookfield partners renewable,True,name_match,2006-07-01,2026-04-01
+BEP-UN.TO,BEPI,77,Brookfield Renewable Partners L.P.,Brookfield Renewable Partners L.P.,brookfield partners renewable,True,name_match,2006-07-01,2026-04-01
+0UKI.L,BNS,77,The Bank of Nova Scotia,The Bank of Nova Scotia,bank nova scotia,True,name_match,2006-07-01,2026-04-01
+0UKI.L,BNS.TO,77,The Bank of Nova Scotia,The Bank of Nova Scotia,bank nova scotia,True,name_match,2006-07-01,2026-04-01
+EDR.TO,EXK,77,Endeavour Silver Corp.,Endeavour Silver Corp.,endeavour silver,True,name_match,2006-07-01,2026-01-01
+BN,BN.TO,77,Brookfield Corporation,Brookfield Corporation,brookfield,True,name_match,2006-07-01,2025-07-01
+GTE.L,GTE.TO,77,Gran Tierra Energy Inc.,Gran Tierra Energy Inc.,energy gran tierra,True,name_match,2006-07-01,2025-07-01
+PHG,PHIA.AS,76,Koninklijke Philips N.V.,Koninklijke Philips N.V.,koninklijke philips,True,name_match,2006-07-01,2026-04-01
+SU,SU.TO,76,Suncor Energy Inc.,Suncor Energy Inc.,energy suncor,True,name_match,2006-07-01,2026-04-01
+FENC,FRX.TO,76,Fennec Pharmaceuticals Inc.,Fennec Pharmaceuticals Inc.,fennec pharmaceuticals,True,name_match,2006-07-01,2025-04-01
+BC94.L,SMSN.L,76,"Samsung Electronics Co., Ltd.","Samsung Electronics Co., Ltd.",electronics samsung,True,name_match,2007-01-01,2026-01-01
+SMSD.L,SMSN.L,76,"Samsung Electronics Co., Ltd.","Samsung Electronics Co., Ltd.",electronics samsung,True,name_match,2007-01-01,2026-01-01
+001750.KS,001755.KS,76,Hanyang Securities Co. Ltd.,Hanyang Securities Co. Ltd.,hanyang securities,True,name_match,2007-04-01,2026-04-01
+TC.TO,TCX,76,Tucows Inc.,Tucows Inc.,tucows,True,name_match,2006-07-01,2025-07-01
+WPM,WPM.TO,76,Wheaton Precious Metals Corp.,Wheaton Precious Metals Corp.,metals precious wheaton,True,name_match,2006-07-01,2026-04-01
+TA.TO,TAC,76,TransAlta Corporation,TransAlta Corporation,transalta,True,name_match,2006-07-01,2026-04-01
+003460.KS,003465.KS,76,"Yuhwa Securities co.,ltd.","Yuhwa Securities co.,ltd.",securities yuhwa,True,name_match,2007-04-01,2026-04-01
+000540.KS,000545.KS,76,"Heungkuk Fire&Marine Insurance Co., Ltd.","Heungkuk Fire&Marine Insurance Co., Ltd.",fire heungkuk insurance marine,True,name_match,2007-04-01,2026-04-01
+MT,MT.AS,75,ArcelorMittal S.A.,ArcelorMittal S.A.,arcelormittal,True,name_match,2006-07-01,2026-01-01
+0KTI.L,ENB.TO,75,Enbridge Inc.,Enbridge Inc.,enbridge,True,name_match,2006-07-01,2026-04-01
+RBA,RBA.TO,75,"RB Global, Inc.","RB Global, Inc.",global rb,True,name_match,2006-07-01,2026-04-01
+SHEL,SHEL.L,75,Shell plc,Shell plc,shell,True,name_match,2006-07-01,2025-04-01
+0JZ1.L,MAS,75,Masco Corporation,Masco Corporation,masco,True,name_match,2006-07-01,2026-04-01
+0HPW.L,BR,75,"Broadridge Financial Solutions, Inc.","Broadridge Financial Solutions, Inc.",broadridge financial solutions,True,name_match,2007-01-01,2026-01-01
+009150.KS,009155.KS,75,"Samsung Electro-Mechanics Co., Ltd.","Samsung Electro-Mechanics Co., Ltd.",electro mechanics samsung,True,name_match,2007-01-01,2026-04-01
+SLF,SLF.TO,75,Sun Life Financial Inc.,Sun Life Financial Inc.,financial life sun,True,name_match,2006-07-01,2026-04-01
+WPM.L,WPM.TO,75,Wheaton Precious Metals Corp.,Wheaton Precious Metals Corp.,metals precious wheaton,True,name_match,2006-07-01,2025-07-01
+003550.KS,003555.KS,74,LG Corp.,LG Corp.,lg,True,name_match,2007-01-01,2026-01-01
+MUX,MUX.TO,74,McEwen Mining Inc.,McEwen Mining Inc.,mcewen mining,True,name_match,2006-07-01,2026-04-01
+005300.KS,005305.KS,74,"Lotte Chilsung Beverage Co., Ltd.","Lotte Chilsung Beverage Co., Ltd.",beverage chilsung lotte,True,name_match,2007-01-01,2026-04-01
+MKC,MKC-V,74,"McCormick & Company, Incorporated","McCormick & Company, Incorporated",mccormick,True,name_match,2006-07-01,2026-04-01
+WPRT,WPRT.TO,74,Westport Fuel Systems Inc.,Westport Fuel Systems Inc.,fuel systems westport,True,name_match,2006-07-01,2025-07-01
+SA,SEA.TO,74,Seabridge Gold Inc.,Seabridge Gold Inc.,gold seabridge,True,name_match,2006-07-01,2025-07-01
+005930.KS,BC94.L,74,"Samsung Electronics Co., Ltd.","Samsung Electronics Co., Ltd.",electronics samsung,True,name_match,2007-01-01,2025-07-01
+005930.KS,SMSD.L,74,"Samsung Electronics Co., Ltd.","Samsung Electronics Co., Ltd.",electronics samsung,True,name_match,2007-01-01,2025-07-01
+005935.KS,BC94.L,74,"Samsung Electronics Co., Ltd.","Samsung Electronics Co., Ltd.",electronics samsung,True,name_match,2007-01-01,2025-07-01
+005935.KS,SMSD.L,74,"Samsung Electronics Co., Ltd.","Samsung Electronics Co., Ltd.",electronics samsung,True,name_match,2007-01-01,2025-07-01
+SKE,SKE.TO,74,Skeena Resources Limited,Skeena Resources Limited,resources skeena,True,name_match,2006-07-01,2025-07-01
+010060.KS,456040.KS,74,OCI Company Ltd.,OCI Company Ltd.,oci,True,name_match,2007-01-01,2026-04-01
+002020.KS,002025.KS,74,Kolon Corporation,Kolon Corporation,kolon,True,name_match,2007-01-01,2026-04-01
+001230.KS,460860.KS,74,Dongkuk Steel Mill Company Limited,Dongkuk Steel Mill Company Limited,dongkuk mill steel,True,name_match,2007-01-01,2026-04-01
+000660.KS,SKHY,74,SK hynix Inc.,SK hynix Inc.,hynix sk,True,name_match,2007-01-01,2026-04-01
+CIM,CIMN,74,Chimera Investment Corporation,Chimera Investment Corporation,chimera investment,True,name_match,2008-01-01,2026-04-01
+CIGI,CIGI.TO,73,Colliers International Group Inc.,Colliers International Group Inc.,colliers international,True,name_match,2006-04-01,2024-10-01
+AEG,AGN.AS,73,Aegon Ltd.,Aegon N.V.,aegon,True,name_match,2005-04-01,2025-04-01
+CP,CP.TO,73,Canadian Pacific Kansas City Ltd.,Canadian Pacific Kansas City Ltd.,canadian city kansas pacific,True,name_match,2006-07-01,2025-10-01
+EDV.L,EDV.TO,73,Endeavour Mining plc,Endeavour Mining plc,endeavour mining,True,name_match,2006-07-01,2026-04-01
+MG.TO,MGA,73,Magna International Inc.,Magna International Inc.,international magna,True,name_match,2006-07-01,2025-04-01
+005930.KS,SMSN.L,73,"Samsung Electronics Co., Ltd.","Samsung Electronics Co., Ltd.",electronics samsung,True,name_match,2007-01-01,2025-04-01
+005935.KS,SMSN.L,73,"Samsung Electronics Co., Ltd.","Samsung Electronics Co., Ltd.",electronics samsung,True,name_match,2007-01-01,2025-04-01
+CCJ,CCO.TO,73,Cameco Corporation,Cameco Corporation,cameco,True,name_match,2006-07-01,2025-07-01
+CLS,CLS.TO,73,Celestica Inc.,Celestica Inc.,celestica,True,name_match,2006-07-01,2026-01-01
+URB-A.TO,URB.TO,73,Urbana Corporation,Urbana Corporation,urbana,True,name_match,2003-04-01,2026-04-01
+WPM,WPM.L,73,Wheaton Precious Metals Corp.,Wheaton Precious Metals Corp.,metals precious wheaton,True,name_match,2006-07-01,2025-07-01
+000810.KS,000815.KS,72,"Samsung Fire & Marine Insurance Co., Ltd.","Samsung Fire & Marine Insurance Co., Ltd.",fire insurance marine samsung,True,name_match,2007-04-01,2026-04-01
+SSRM,SSRM.TO,72,SSR Mining Inc.,SSR Mining Inc.,mining ssr,True,name_match,2006-07-01,2026-01-01
+CNI,CNR.TO,72,Canadian National Railway Company,Canadian National Railway Company,canadian national railway,True,name_match,2006-07-01,2025-04-01
+EMA,EMA.TO,72,Emera Incorporated,Emera Incorporated,emera,True,name_match,2006-07-01,2025-07-01
+071050.KS,071055.KS,72,"Korea Investment Holdings Co., Ltd.","Korea Investment Holdings Co., Ltd.",investment korea,True,name_match,2007-04-01,2026-04-01
+090350.KS,090355.KS,71,"NOROO PAINT & COATINGS Co., Ltd.","NOROO PAINT & COATINGS Co., Ltd.",coatings noroo paint,True,name_match,2007-01-01,2026-04-01
+001680.KS,001685.KS,71,Daesang Corporation,Daesang Corporation,daesang,True,name_match,2007-01-01,2026-04-01
+019170.KS,019175.KS,71,"Shinpoong Pharmaceutical Co., Ltd.","Shinpoong Pharmaceutical Co.,Ltd",pharmaceutical shinpoong,True,name_match,2007-01-01,2026-04-01
+001790.KS,001795.KS,71,TS Corporation,TS Corporation,ts,True,name_match,2007-01-01,2026-04-01
+004360.KS,004365.KS,71,"Sebang Co., Ltd","Sebang Co., Ltd",sebang,True,name_match,2007-01-01,2026-04-01
+OVV,OVV.TO,71,Ovintiv Inc.,Ovintiv Inc,ovintiv,True,name_match,2006-10-01,2026-04-01
+K.TO,KGC,71,Kinross Gold Corporation,Kinross Gold Corporation,gold kinross,True,name_match,2006-07-01,2025-07-01
+014910.KS,014915.KS,71,"Sungmoon Electronics Co., Ltd.","Sungmoon Electronics Co., Ltd.",electronics sungmoon,True,name_match,2007-01-01,2026-04-01
+003070.KS,003075.KS,71,Kolon Global Corporation,Kolon Global Corporation,global kolon,True,name_match,2007-01-01,2026-04-01
+004540.KS,004545.KS,71,"KleanNara Co., Ltd.","KleanNara Co., Ltd.",kleannara,True,name_match,2007-01-01,2026-04-01
+WCN,WCN.TO,70,"Waste Connections, Inc.","Waste Connections, Inc.",connections waste,True,name_match,2006-07-01,2025-04-01
+084690.KS,084695.KS,70,"Daesang Holdings Co., Ltd.","Daesang Holdings Co., Ltd.",daesang,True,name_match,2007-01-01,2026-01-01
+TKO.L,TKO.TO,69,Trekor Metals Limited,Trekor Metals Limited,metals trekor,True,name_match,2006-07-01,2026-04-01
+ATS,ATS.TO,69,ATS Corporation,ATS Corporation,ats,True,name_match,2006-07-01,2026-04-01
+IAG,IMG.TO,69,Iamgold Corporation,Iamgold Corporation,iamgold,True,name_match,2006-07-01,2026-01-01
+TD,TD.TO,69,The Toronto-Dominion Bank,The Toronto-Dominion Bank,bank dominion toronto,True,name_match,2008-07-01,2025-10-01
+006800.KS,006805.KS,69,Mirae Asset Securities Co. Ltd.,Mirae Asset Securities Co. Ltd.,asset mirae securities,True,name_match,2007-04-01,2026-01-01
+006800.KS,00680K.KS,69,Mirae Asset Securities Co. Ltd.,"Mirae Asset Securities Co., Ltd.",asset mirae securities,True,name_match,2007-04-01,2026-01-01
+006805.KS,00680K.KS,69,Mirae Asset Securities Co. Ltd.,"Mirae Asset Securities Co., Ltd.",asset mirae securities,True,name_match,2007-04-01,2026-01-01
+SHEL.L,SHELL.AS,68,Shell plc,Shell plc,shell,True,name_match,2006-07-01,2025-07-01
+SHEL,SHELL.AS,68,Shell plc,Shell plc,shell,True,name_match,2006-07-01,2025-04-01
+TTE,TTE.L,68,TotalEnergies SE,TotalEnergies SE,totalenergies,True,name_match,2006-07-01,2025-07-01
+TTE,TTE.PA,68,TotalEnergies SE,TotalEnergies SE,totalenergies,True,name_match,2006-07-01,2025-07-01
+NOA,NOA.TO,68,North American Construction Group Ltd.,North American Construction Group Ltd.,american construction north,True,name_match,2006-07-01,2025-07-01
+ULVR.L,UNA.AS,67,Unilever PLC,Unilever PLC,unilever,True,name_match,1986-10-01,2026-04-01
+0QYZ.L,FNV.TO,67,Franco-Nevada Corporation,Franco-Nevada Corporation,franco nevada,True,name_match,2008-01-01,2026-04-01
+PAAS,PAAS.TO,67,Pan American Silver Corp.,Pan American Silver Corp.,american pan silver,True,name_match,2006-07-01,2026-01-01
+0R07.L,PAAS.TO,67,Pan American Silver Corp.,Pan American Silver Corp.,american pan silver,True,name_match,2006-07-01,2026-04-01
+0UGS.L,AGI.TO,67,Alamos Gold Inc.,Alamos Gold Inc.,alamos gold,True,name_match,2006-10-01,2026-04-01
+CG.TO,CGAU,67,Centerra Gold Inc.,Centerra Gold Inc.,centerra gold,True,name_match,2006-07-01,2026-04-01
+CNQ,CNQ.TO,66,Canadian Natural Resources Limited,Canadian Natural Resources Limited,canadian natural resources,True,name_match,2006-07-01,2026-04-01
+ELVA,ELVA.TO,66,Electrovaya Inc.,Electrovaya Inc.,electrovaya,True,name_match,2006-07-01,2025-07-01
+IP,IPC.L,66,International Paper Company,International Paper Company,international paper,True,name_match,2006-10-01,2026-04-01
+LAC,LAC.TO,65,Lithium Americas Corp.,Lithium Americas Corp.,americas lithium,True,name_match,2007-10-01,2025-07-01
+REL.L,RELX,65,RELX Plc,RELX Plc,relx,True,name_match,1987-01-01,2025-04-01
+UL,UNA.AS,65,Unilever PLC,Unilever PLC,unilever,True,name_match,1987-10-01,2025-04-01
+HRZN,HTFC,65,Horizon Technology Finance Corporation,Horizon Technology Finance Corp,finance horizon technology,True,name_match,2009-10-01,2026-04-01
+AGI,AGI.TO,65,Alamos Gold Inc.,Alamos Gold Inc.,alamos gold,True,name_match,2006-10-01,2025-10-01
+PD.TO,PDS,65,Precision Drilling Corporation,Precision Drilling Corporation,drilling precision,True,name_match,2006-07-01,2026-04-01
+UL,ULVR.L,64,Unilever PLC,Unilever PLC,unilever,True,name_match,1987-10-01,2024-10-01
+TRP,TRP.TO,63,TC Energy Corporation,TC Energy Corporation,energy tc,True,name_match,2006-07-01,2025-07-01
+FTS,FTS.TO,63,Fortis Inc.,Fortis Inc.,fortis,True,name_match,2006-07-01,2026-04-01
+BLDP,BLDP.TO,62,Ballard Power Systems Inc.,Ballard Power Systems Inc.,ballard power systems,True,name_match,2006-07-01,2025-07-01
+AEM,AEM.TO,62,Agnico Eagle Mines Limited,Agnico Eagle Mines Limited,agnico eagle mines,True,name_match,2006-07-01,2026-01-01
+T.TO,TU,61,TELUS Corporation,Telus Corp,telus,True,name_match,2006-07-01,2025-07-01
+NTR,NTR.TO,61,Nutrien Ltd.,Nutrien Ltd.,nutrien,True,name_match,2006-07-01,2025-04-01
+EGO,ELD.TO,60,Eldorado Gold Corporation,Eldorado Gold Corporation,eldorado gold,True,name_match,2006-07-01,2026-01-01
+FNV,FNV.TO,60,Franco-Nevada Corporation,Franco-Nevada Corporation,franco nevada,True,name_match,2008-01-01,2025-07-01
+BHC,BHC.TO,60,Bausch Health Companies Inc.,Bausch Health Companies Inc.,bausch health,True,name_match,2006-10-01,2025-04-01
+SBI.TO,SRB.L,60,Serabi Gold plc,Serabi Gold plc,gold serabi,True,name_match,2005-10-01,2026-01-01
+PBA,PPL.TO,59,Pembina Pipeline Corporation,Pembina Pipeline Corporation,pembina pipeline,True,name_match,2006-07-01,2025-07-01
+VET,VET.TO,59,Vermilion Energy Inc.,Vermilion Energy Inc.,energy vermilion,True,name_match,2006-07-01,2025-07-01
+LGO,LGO.TO,59,Largo Inc.,Largo Inc.,largo,True,name_match,2006-07-01,2025-10-01
+PPTA,PPTA.TO,58,Perpetua Resources Corp.,Perpetua Resources Corp.,perpetua resources,True,name_match,2010-10-01,2025-07-01
+TRI,TRI.TO,58,Thomson Reuters Corporation,Thomson Reuters Corporation,reuters thomson,True,name_match,2006-10-01,2025-07-01
+PTAL.L,TAL.TO,58,PetroTal Corp.,PetroTal Corp.,petrotal,True,name_match,2006-07-01,2025-07-01
+145990.KS,145995.KS,58,Samyang Corporation,Samyang Corporation,samyang,True,name_match,2012-01-01,2026-04-01
+RCI,RCI-A.TO,57,Rogers Communications Inc.,Rogers Communications Inc.,communications rogers,True,name_match,2006-10-01,2025-07-01
+RCI,RCI-B.TO,57,Rogers Communications Inc.,Rogers Communications Inc.,communications rogers,True,name_match,2006-10-01,2025-07-01
+BCE,BCE.TO,56,BCE Inc.,BCE Inc.,bce,True,name_match,2006-10-01,2025-07-01
+SII,SII.TO,56,Sprott Inc.,Sprott Inc.,sprott,True,name_match,2007-10-01,2026-04-01
+OGI,OGI.TO,56,Organigram Global Inc.,Organigram Global Inc.,global organigram,True,name_match,2011-10-01,2026-04-01
+0QYZ.L,FNV,55,Franco-Nevada Corporation,Franco-Nevada Corporation,franco nevada,True,name_match,2008-01-01,2023-07-01
+QSP-UN.TO,QSR,55,Restaurant Brands International Limited Partnership,Restaurant Brands International Inc.,brands international restaurant,True,name_match,2012-10-01,2026-04-01
+TFG.AS,TFGS.L,55,Tetragon Financial Group Limited,Tetragon Financial Group Limited,financial tetragon,True,name_match,2009-10-01,2026-01-01
+CGC,WEED.TO,54,Canopy Growth Corporation,Canopy Growth Corporation,canopy growth,True,name_match,2010-04-01,2026-04-01
+0JZS.L,MKC,54,"McCormick & Company, Incorporated","McCormick & Company, Incorporated",mccormick,True,name_match,2012-10-01,2026-04-01
+0R35.L,CCO.TO,54,Cameco Corporation,Cameco Corporation,cameco,True,name_match,2013-01-01,2026-04-01
+0VOA.L,WDO.TO,54,Wesdome Gold Mines Ltd.,Wesdome Gold Mines Ltd.,gold mines wesdome,True,name_match,2012-10-01,2026-04-01
+0KAN.L,OII,54,"Oceaneering International, Inc.","Oceaneering International, Inc.",international oceaneering,True,name_match,2012-10-01,2026-04-01
+VBNK,VBNK.TO,53,VersaBank,VersaBank,versabank,True,name_match,2011-10-01,2025-10-01
+0I0X.L,CDXS,53,"Codexis, Inc.","Codexis, Inc.",codexis,True,name_match,2012-10-01,2026-04-01
+0HUR.L,CE,53,Celanese Corporation,Celanese Corporation,celanese,True,name_match,2013-01-01,2026-04-01
+0IV3.L,GERN,53,Geron Corporation,Geron Corporation,geron,True,name_match,2013-01-01,2026-04-01
+0QZ2.L,SVM.TO,53,Silvercorp Metals Inc.,Silvercorp Metals Inc.,metals silvercorp,True,name_match,2013-01-01,2026-04-01
+0KBK.L,OMC,53,Omnicom Group Inc,Omnicom Group Inc.,omnicom,True,name_match,2012-10-01,2026-04-01
+0QCV.L,ABBV,53,AbbVie Inc.,AbbVie Inc.,abbvie,True,name_match,2013-01-01,2026-01-01
+LBRDA,LBRDK,52,Liberty Broadband Corporation,Liberty Broadband Corporation,broadband liberty,True,name_match,2013-01-01,2026-04-01
+LBRDA,LBRDP,52,Liberty Broadband Corporation,Liberty Broadband Corporation,broadband liberty,True,name_match,2013-01-01,2026-04-01
+LBRDK,LBRDP,52,Liberty Broadband Corporation,Liberty Broadband Corporation,broadband liberty,True,name_match,2013-01-01,2026-04-01
+NXE,NXE.TO,52,NexGen Energy Ltd.,NexGen Energy Ltd.,energy nexgen,True,name_match,2012-04-01,2026-04-01
+0L98.L,STAG,52,"STAG Industrial, Inc.","STAG Industrial, Inc.",industrial stag,True,name_match,2013-01-01,2026-04-01
+CAE,CAE.TO,52,CAE Inc.,CAE Inc.,cae,True,name_match,2006-07-01,2026-04-01
+MEOH,MX.TO,52,Methanex Corporation,Methanex Corporation,methanex,True,name_match,2006-07-01,2025-01-01
+0J4V.L,HRTX,52,"Heron Therapeutics, Inc.","Heron Therapeutics, Inc.",heron therapeutics,True,name_match,2013-01-01,2026-04-01
+SAN.PA,SNY,52,Sanofi,Sanofi,sanofi,True,name_match,2007-04-01,2026-04-01
+0IFJ.L,EIX,52,Edison International,Edison International,edison international,True,name_match,2013-01-01,2026-04-01
+0KNY.L,TROW,52,"T. Rowe Price Group, Inc.","T. Rowe Price Group, Inc.",price rowe,True,name_match,2012-10-01,2026-04-01
+VALN,VLA.PA,51,Valneva SE,Valneva SE,valneva,True,name_match,2012-10-01,2025-10-01
+0LK3.L,MTN,51,"Vail Resorts, Inc.","Vail Resorts, Inc.",resorts vail,True,name_match,2012-10-01,2026-04-01
+0JZS.L,MKC-V,51,"McCormick & Company, Incorporated","McCormick & Company, Incorporated",mccormick,True,name_match,2012-10-01,2026-04-01
+0HXW.L,CMG,51,"Chipotle Mexican Grill, Inc.","Chipotle Mexican Grill, Inc.",chipotle grill mexican,True,name_match,2012-10-01,2026-04-01
+0R2E.L,UNP,51,Union Pacific Corporation,Union Pacific Corporation,pacific union,True,name_match,2012-10-01,2026-04-01
+0MT8.L,DRW3.DE,51,Drägerwerk AG & Co. KGaA,Drägerwerk AG & Co. KGaA,dragerwerk,True,name_match,2013-01-01,2026-04-01
+0IW5.L,HO.PA,50,Thales S.A.,Thales S.A.,thales,True,name_match,2001-10-01,2026-04-01
+0S9E.L,EXE.TO,50,Extendicare Inc.,Extendicare Inc.,extendicare,True,name_match,2012-10-01,2026-04-01
+0KEJ.L,PPL,50,PPL Corporation,PPL Corporation,ppl,True,name_match,2012-10-01,2026-04-01
+0KEJ.L,PPLC,50,PPL Corporation,PPL Corporation,ppl,True,name_match,2012-10-01,2026-04-01
+0VGE.L,SSRM,50,SSR Mining Inc.,SSR Mining Inc.,mining ssr,True,name_match,2013-01-01,2025-07-01
+0R4M.L,LUG.TO,50,Lundin Gold Inc.,Lundin Gold Inc.,gold lundin,True,name_match,2013-01-01,2025-04-01
+SANG,STC.TO,49,Sangoma Technologies Corporation,Sangoma Technologies Corporation,sangoma technologies,True,name_match,2006-04-01,2021-04-01
+0R1T.L,EXPE,49,"Expedia Group, Inc.","Expedia Group, Inc.",expedia,True,name_match,2013-01-01,2026-04-01
+0HFB.L,APH,49,Amphenol Corporation,Amphenol Corporation,amphenol,True,name_match,2012-10-01,2026-04-01
+0R2C.L,EDR.TO,49,Endeavour Silver Corp.,Endeavour Silver Corp.,endeavour silver,True,name_match,2013-01-01,2026-04-01
+DTE,DTG,49,DTE Energy Company,DTE Energy Company 2021 Series,dte energy,True,name_match,2007-07-01,2026-01-01
+0A18.L,GIB,48,CGI Inc.,CGI Inc.,cgi,True,name_match,2006-07-01,2025-07-01
+GIB,GIB-A.TO,48,CGI Inc.,CGI Inc.,cgi,True,name_match,2006-07-01,2025-07-01
+0QYM.L,FVI.TO,48,Fortuna Mining Corp.,Fortuna Mining Corp.,fortuna mining,True,name_match,2013-01-01,2025-10-01
+0VGE.L,SSRM.TO,48,SSR Mining Inc.,SSR Mining Inc.,mining ssr,True,name_match,2013-01-01,2025-10-01
+ECCC,ECCU,48,Eagle Point Credit Company Inc.,Eagle Point Credit Company Inc.,credit eagle point,True,name_match,2014-04-01,2026-04-01
+ECCC,ECCV,48,Eagle Point Credit Company Inc.,Eagle Point Credit Company Inc.,credit eagle point,True,name_match,2014-04-01,2026-04-01
+ECCU,ECCV,48,Eagle Point Credit Company Inc.,Eagle Point Credit Company Inc.,credit eagle point,True,name_match,2014-04-01,2026-04-01
+0R35.L,CCJ,48,Cameco Corporation,Cameco Corporation,cameco,True,name_match,2013-01-01,2025-07-01
+0IYU.L,AUMN.TO,48,Golden Minerals Company,Golden Minerals Company,golden minerals,True,name_match,2012-10-01,2025-07-01
+BRAG,BRAG.TO,48,Bragg Gaming Group Inc.,Bragg Gaming Group Inc.,bragg gaming,True,name_match,2006-07-01,2025-07-01
+0QKU.L,RY.TO,48,Royal Bank of Canada,Royal Bank of Canada,bank canada royal,True,name_match,2013-04-01,2025-07-01
+0HC2.L,ALRM,48,"Alarm.com Holdings, Inc.","Alarm.com Holdings, Inc.",alarm com,True,name_match,2013-07-01,2026-04-01
+0LJL.L,UHS,48,"Universal Health Services, Inc.","Universal Health Services, Inc.",health services universal,True,name_match,2012-10-01,2026-04-01
+0QYM.L,FSM,47,Fortuna Mining Corp.,Fortuna Mining Corp.,fortuna mining,True,name_match,2013-01-01,2025-10-01
+OTEX,OTEX.TO,47,Open Text Corporation,Open Text Corporation,open text,True,name_match,2006-07-01,2025-10-01
+0TIQ.L,FICO,46,Fair Isaac Corporation,Fair Isaac Corporation,fair isaac,True,name_match,2012-10-01,2026-04-01
+0VFA.L,QSR.TO,46,"Restaurant Brands International, Inc.",Restaurant Brands International Inc.,brands international restaurant,True,name_match,2013-01-01,2026-04-01
+0VFA.L,QSP-UN.TO,46,"Restaurant Brands International, Inc.",Restaurant Brands International Limited Partnership,brands international restaurant,True,name_match,2013-01-01,2025-07-01
+0VFA.L,QSR,46,"Restaurant Brands International, Inc.",Restaurant Brands International Inc.,brands international restaurant,True,name_match,2013-01-01,2025-07-01
+0R2C.L,EXK,46,Endeavour Silver Corp.,Endeavour Silver Corp.,endeavour silver,True,name_match,2013-01-01,2025-10-01
+0HQU.L,CF,46,"CF Industries Holdings, Inc.","CF Industries Holdings, Inc.",cf industries,True,name_match,2012-10-01,2026-04-01
+0UU0.L,EFR.TO,46,Energy Fuels Inc.,Energy Fuels Inc.,energy fuels,True,name_match,2014-01-01,2025-10-01
+FSV,FSV.TO,45,FirstService Corporation,FirstService Corporation,firstservice,True,name_match,2012-10-01,2025-07-01
+0LWG.L,WY,45,Weyerhaeuser Company,Weyerhaeuser Company,weyerhaeuser,True,name_match,2012-10-01,2026-04-01
+0HWG.L,CC,45,The Chemours Company,The Chemours Company,chemours,True,name_match,2013-10-01,2026-04-01
+0HJH.L,ALV,45,"Autoliv, Inc.","Autoliv, Inc.",autoliv,True,name_match,2012-10-01,2026-04-01
+AQN,AQN.TO,45,Algonquin Power & Utilities Corp.,Algonquin Power & Utilities Corp.,algonquin power utilities,True,name_match,2006-07-01,2026-04-01
+0HK4.L,CAR,45,"Avis Budget Group, Inc.","Avis Budget Group, Inc.",avis budget,True,name_match,2013-01-01,2026-04-01
+0KGH.L,PAYC,45,"Paycom Software, Inc.","Paycom Software, Inc.",paycom software,True,name_match,2012-10-01,2026-04-01
+0K05.L,MED,45,"Medifast, Inc.","Medifast, Inc.",medifast,True,name_match,2013-01-01,2026-04-01
+NWG,NWG.L,44,NatWest Group plc,NatWest Group plc,natwest,True,name_match,2008-04-01,2026-01-01
+TSAT,TSAT.TO,44,Telesat Corporation,Telesat Corporation,telesat,True,name_match,2012-07-01,2025-04-01
+0QOW.L,RIG,44,Transocean Ltd.,Transocean Ltd.,transocean,True,name_match,2013-01-01,2026-04-01
+0EV1.L,CCL,44,Carnival Corporation & plc,Carnival Corporation & plc,carnival,True,name_match,2012-10-01,2026-04-01
+0IQE.L,FLS,44,Flowserve Corporation,Flowserve Corporation,flowserve,True,name_match,2012-10-01,2026-04-01
+0LF8.L,THO,43,"Thor Industries, Inc.","Thor Industries, Inc.",industries thor,True,name_match,2013-07-01,2026-01-01
+0K3W.L,MYGN,43,"Myriad Genetics, Inc.","Myriad Genetics, Inc.",genetics myriad,True,name_match,2012-04-01,2026-04-01
+0R2J.L,AEM,43,Agnico Eagle Mines Limited,Agnico Eagle Mines Limited,agnico eagle mines,True,name_match,2006-07-01,2025-07-01
+QSP-UN.TO,QSR.TO,43,Restaurant Brands International Limited Partnership,Restaurant Brands International Inc.,brands international restaurant,True,name_match,2012-10-01,2025-07-01
+QSR,QSR.TO,43,Restaurant Brands International Inc.,Restaurant Brands International Inc.,brands international restaurant,True,name_match,2012-10-01,2025-07-01
+ALCLS.PA,CLLS,43,Cellectis S.A.,Cellectis S.A.,cellectis,True,name_match,2012-07-01,2026-04-01
+ETL.L,ETL.PA,42,Eutelsat Communications S.A.,Eutelsat Communications S.A.,communications eutelsat,True,name_match,2005-04-01,2025-10-01
+0M29.L,XYL,42,Xylem Inc.,Xylem Inc.,xylem,True,name_match,2012-10-01,2026-01-01
+0KCC.L,IMDX,42,Insight Molecular Diagnostics Inc.,Insight Molecular Diagnostics Inc.,diagnostics insight molecular,True,name_match,2015-04-01,2026-04-01
+0VL5.L,TXG.TO,42,Torex Gold Resources Inc.,Torex Gold Resources Inc.,gold resources torex,True,name_match,2014-10-01,2025-10-01
+0KTI.L,ENB,41,Enbridge Inc.,Enbridge Inc.,enbridge,True,name_match,2006-07-01,2017-01-01
+0G68.L,KENDR.AS,41,Kendrion N.V.,Kendrion N.V.,kendrion,True,name_match,2012-10-01,2026-01-01
+0J71.L,JBHT,41,"J.B. Hunt Transport Services, Inc.","J.B. Hunt Transport Services, Inc.",hunt services transport,True,name_match,2012-10-01,2026-04-01
+SHOP,SHOP.TO,40,Shopify Inc.,Shopify Inc.,shopify,True,name_match,2014-01-01,2026-04-01
+0HR2.L,CME,40,CME Group Inc.,CME Group Inc.,cme,True,name_match,2012-10-01,2026-04-01
+BTE,BTE.TO,40,Baytex Energy Corp.,Baytex Energy Corp.,baytex energy,True,name_match,2006-07-01,2016-04-01
+DSG.TO,DSGX,40,The Descartes Systems Group Inc.,The Descartes Systems Group Inc.,descartes systems,True,name_match,2006-07-01,2016-04-01
+ENB,ENB.TO,39,Enbridge Inc.,Enbridge Inc.,enbridge,True,name_match,2006-07-01,2016-10-01
+0XVU.L,ZS,39,"Zscaler, Inc.","Zscaler, Inc.",zscaler,True,name_match,2016-07-01,2026-04-01
+0R2J.L,AEM.TO,39,Agnico Eagle Mines Limited,Agnico Eagle Mines Limited,agnico eagle mines,True,name_match,2006-07-01,2026-04-01
+0AHJ.L,HBM.TO,39,Hudbay Minerals Inc.,Hudbay Minerals Inc.,hudbay minerals,True,name_match,2015-07-01,2026-04-01
+0KKZ.L,MDB,38,"MongoDB, Inc.","MongoDB, Inc.",mongodb,True,name_match,2017-01-01,2026-04-01
+0JQQ.L,ADM,38,Archer-Daniels-Midland Company,Archer-Daniels-Midland Company,archer daniels midland,True,name_match,2013-01-01,2026-01-01
+0HH6.L,AQMS,38,"Aqua Metals, Inc.","Aqua Metals, Inc.",aqua metals,True,name_match,2015-01-01,2026-04-01
+0HYJ.L,CTAS,38,Cintas Corporation,Cintas Corporation,cintas,True,name_match,2012-10-01,2026-04-01
+0HQ1.L,AZTA,37,"Azenta, Inc.","Azenta, Inc.",azenta,True,name_match,2014-01-01,2026-04-01
+0VBE.L,OR,37,OR Royalties Inc.,OR Royalties Inc.,or royalties,True,name_match,2014-04-01,2023-07-01
+0IC9.L,D,37,"Dominion Energy, Inc.","Dominion Energy, Inc.",dominion energy,True,name_match,2013-01-01,2025-07-01
+0HV8.L,PEUG.PA,37,Peugeot Invest S.A.,Peugeot Invest S.A.,invest peugeot,True,name_match,2005-10-01,2025-10-01
+0LVJ.L,WU,37,The Western Union Company,The Western Union Company,union western,True,name_match,2012-10-01,2026-01-01
+IPH.PA,IPHA,37,Innate Pharma S.A.,Innate Pharma S.A.,innate pharma,True,name_match,2005-10-01,2025-04-01
+0SGO.L,DBX,36,"Dropbox, Inc.","Dropbox, Inc.",dropbox,True,name_match,2016-01-01,2026-04-01
+HUT,HUT.TO,36,Hut 8 Corp.,Hut 8 Mining Corp.,hut,True,name_match,2012-10-01,2025-04-01
+0VNO.L,VGZ.TO,36,Vista Gold Corp.,Vista Gold Corp.,gold vista,True,name_match,2016-07-01,2025-07-01
+AQN.TO,AQNB,36,Algonquin Power & Utilities Corp.,Algonquin Power & Utilities Corp.,algonquin power utilities,True,name_match,2013-01-01,2026-04-01
+0K80.L,NEE,35,"NextEra Energy, Inc.","NextEra Energy, Inc.",energy nextera,True,name_match,2012-10-01,2026-04-01
+0R08.L,UPS,35,"United Parcel Service, Inc.","United Parcel Service, Inc.",parcel service united,True,name_match,2012-10-01,2026-04-01
+0IP1.L,BLC.PA,35,Bastide Le Confort Médical S.A.,Bastide Le Confort Médical S.A.,bastide confort le medical,True,name_match,2008-04-01,2025-10-01
+0I6Q.L,DTG,35,DTE Energy Company,DTE Energy Company 2021 Series,dte energy,True,name_match,2013-01-01,2025-07-01
+0R0U.L,CDE,35,"Coeur Mining, Inc.","Coeur Mining, Inc.",coeur mining,True,name_match,2012-10-01,2025-07-01
+ALNOV.PA,NCYT.L,35,Novacyt S.A.,Novacyt S.A.,novacyt,True,name_match,2012-07-01,2025-07-01
+0QXX.L,MOLN,35,Molecular Partners AG,Molecular Partners AG,molecular partners,True,name_match,2014-01-01,2025-10-01
+0DO7.L,AVT.PA,34,Avenir Telecom S.A.,Avenir Telecom S.A.,avenir telecom,True,name_match,2007-01-01,2026-01-01
+CBE.PA,RBT.PA,34,Robertet S.A.,Robertet S.A.,robertet,True,name_match,2007-10-01,2025-10-01
+BMNP,BMNR,34,"Bitmine Immersion Technologies, Inc.","Bitmine Immersion Technologies, Inc.",bitmine immersion technologies,True,name_match,2011-01-01,2026-04-01
+0EAQ.L,TNK,34,Teekay Tankers Ltd.,Teekay Tankers Ltd.,tankers teekay,True,name_match,2012-10-01,2026-04-01
+0I35.L,ED,34,"Consolidated Edison, Inc.","Consolidated Edison, Inc.",consolidated edison,True,name_match,2012-10-01,2026-04-01
+0OQQ.L,INF.PA,34,Infotel S.A.,Infotel S.A.,infotel,True,name_match,2008-10-01,2025-10-01
+0I6Q.L,DTE,34,DTE Energy Company,DTE Energy Company,dte energy,True,name_match,2013-01-01,2026-04-01
+0VQD.L,CB,34,Chubb Limited,Chubb Limited,chubb,True,name_match,2013-01-01,2022-10-01
+0L5A.L,SREA,34,Sempra,Sempra,sempra,True,name_match,2012-10-01,2026-04-01
+0VJA.L,SLF.TO,33,Sun Life Financial Inc.,Sun Life Financial Inc.,financial life sun,True,name_match,2013-01-01,2026-01-01
+PHAR,PHARM.AS,33,Pharming Group N.V.,Pharming Group N.V.,pharming,True,name_match,2009-10-01,2025-04-01
+0Z62.L,KDP,32,Keurig Dr Pepper Inc.,Keurig Dr Pepper Inc.,dr keurig pepper,True,name_match,2018-07-01,2026-04-01
+VTA.AS,VTA.L,32,Volta Finance Limited,Volta Finance Limited,finance volta,True,name_match,2008-07-01,2026-01-01
+0IF3.L,EMN,32,Eastman Chemical Company,Eastman Chemical Company,chemical eastman,True,name_match,2013-01-01,2026-04-01
+AG,AG.TO,32,First Majestic Silver Corp.,First Majestic Silver Corp.,first majestic silver,True,name_match,2006-04-01,2025-07-01
+0VJA.L,SLF,32,Sun Life Financial Inc.,Sun Life Financial Inc.,financial life sun,True,name_match,2013-01-01,2025-07-01
+0ROZ.L,XFAB.PA,32,X-FAB Silicon Foundries SE,X-FAB Silicon Foundries SE,fab foundries silicon,True,name_match,2016-01-01,2026-04-01
+0KJD.L,PLNT,31,"Planet Fitness, Inc.","Planet Fitness, Inc.",fitness planet,True,name_match,2014-01-01,2026-04-01
+AXS.AS,AXS.L,31,Accsys Technologies PLC,Accsys Technologies PLC,accsys technologies,True,name_match,2003-01-01,2025-01-01
+HBM,HBM.TO,31,Hudbay Minerals Inc.,Hudbay Minerals Inc.,hudbay minerals,True,name_match,2015-07-01,2025-10-01
+0AHJ.L,HBM,30,Hudbay Minerals Inc.,Hudbay Minerals Inc.,hudbay minerals,True,name_match,2015-07-01,2025-07-01
+0HSU.L,CWH,30,"Camping World Holdings, Inc.","Camping World Holdings, Inc.",camping world,True,name_match,2015-01-01,2026-04-01
+0A6Y.L,XRX,30,Xerox Holdings Corporation,Xerox Holdings Corporation,xerox,True,name_match,2014-10-01,2026-04-01
+ING,INGA.AS,30,ING Groep N.V.,ING Groep N.V.,groep ing,True,name_match,2009-04-01,2026-01-01
+KEEL,KEEL.TO,29,Keel Infrastructure Corp.,Keel Infrastructure Corp.,infrastructure keel,True,name_match,2018-04-01,2025-10-01
+ACB,ACB.TO,29,Aurora Cannabis Inc.,Aurora Cannabis Inc.,aurora cannabis,True,name_match,2007-07-01,2025-10-01
+CVE,CVE.TO,28,Cenovus Energy Inc.,Cenovus Energy Inc.,cenovus energy,True,name_match,2009-10-01,2025-07-01
+CRDL,CRDL.TO,28,Cardiol Therapeutics Inc.,Cardiol Therapeutics Inc.,cardiol therapeutics,True,name_match,2017-10-01,2025-10-01
+0P07.L,FF.TO,28,First Mining Gold Corp.,First Mining Gold Corp.,first gold mining,True,name_match,2019-01-01,2026-04-01
+0UGP.L,AIM.TO,28,Aimia Inc.,Aimia Inc.,aimia,True,name_match,2012-10-01,2026-04-01
+ACT.TO,ADUR,28,Aduro Clean Technologies Inc.,Aduro Clean Technologies Inc.,aduro clean technologies,True,name_match,2018-07-01,2026-01-01
+0L5A.L,SRE,28,Sempra,Sempra,sempra,True,name_match,2012-10-01,2026-04-01
+0O80.L,BAIN.PA,28,Société Anonyme des Bains de Mer et du Cercle des Étrangers à Monaco,Société Anonyme des Bains de Mer et du Cercle des Étrangers à Monaco,anonyme bains cercle des du et etrangers mer monaco societe,True,name_match,2012-07-01,2026-01-01
+0IX0.L,GLO.PA,27,GL Events S.A.,GL Events S.A.,events gl,True,name_match,2013-04-01,2026-04-01
+0DLI.L,ACOMO.AS,27,Acomo N.V.,Acomo N.V.,acomo,True,name_match,2013-04-01,2026-04-01
+TFII,TFII.TO,27,TFI International Inc.,TFI International Inc.,international tfi,True,name_match,2006-07-01,2026-04-01
+0URY.L,DML.TO,27,Denison Mines Corp.,Denison Mines Corp.,denison mines,True,name_match,2018-01-01,2026-04-01
+0HDQ.L,SDG.PA,26,Synergie SE,Synergie SE,synergie,True,name_match,2013-04-01,2025-10-01
+0OPJ.L,ABCA.PA,26,ABC arbitrage S.A.,ABC arbitrage S.A.,abc arbitrage,True,name_match,2012-10-01,2025-10-01
+0O1O.L,VETO.PA,26,Vetoquinol S.A.,Vetoquinol S.A.,vetoquinol,True,name_match,2013-04-01,2025-10-01
+0O0E.L,BIG.PA,26,BigBen Interactive,BigBen Interactive,bigben interactive,True,name_match,2013-01-01,2025-07-01
+VTA.AS,VTAS.L,26,Volta Finance Limited,Volta Finance Limited,finance volta,True,name_match,2008-07-01,2022-07-01
+VTA.L,VTAS.L,26,Volta Finance Limited,Volta Finance Limited,finance volta,True,name_match,2008-07-01,2022-07-01
+0QSV.L,EKI.PA,26,Ekinops S.a.,Ekinops S.a.,ekinops,True,name_match,2013-04-01,2026-04-01
+0NY3.L,STF.PA,26,STEF S.a.,STEF S.a.,stef,True,name_match,2013-04-01,2025-10-01
+0II4.L,EQIX,26,"Equinix, Inc.","Equinix, Inc.",equinix,True,name_match,2013-10-01,2026-04-01
+0O33.L,SBT.PA,26,Oeneo S.A.,Oeneo S.A.,oeneo,True,name_match,2013-01-01,2026-01-01
+0GN6.L,ARG.PA,26,Argan S.A.,Argan S.A.,argan,True,name_match,2013-04-01,2026-04-01
+0HHU.L,ARR,26,"ARMOUR Residential REIT, Inc.","ARMOUR Residential REIT, Inc.",armour reit residential,True,name_match,2012-10-01,2026-04-01
+ASTL,ASTL.TO,26,Algoma Steel Group Inc.,Algoma Steel Group Inc.,algoma steel,True,name_match,2012-10-01,2025-07-01
+0DI7.L,AJAX.AS,26,AFC Ajax N.V.,AFC Ajax N.V.,afc ajax,True,name_match,2012-10-01,2025-10-01
+0OR2.L,LNA.PA,26,LNA Santé S.A.,LNA Santé S.A.,lna sante,True,name_match,2013-04-01,2025-10-01
+0F8V.L,AKW.PA,26,Akwel,Akwel,akwel,True,name_match,2013-04-01,2025-10-01
+0DTF.L,BOI.PA,26,Boiron S.A.,Boiron S.A.,boiron,True,name_match,2013-04-01,2025-10-01
+0OQ0.L,VAC.PA,26,Pierre et Vacances S.A.,Pierre et Vacances S.A.,et pierre vacances,True,name_match,2013-01-01,2026-01-01
+0DZJ.L,CEN.PA,26,Groupe CRIT S.A.,Groupe CRIT S.A.,crit,True,name_match,2013-04-01,2025-10-01
+0IPY.L,AUB.PA,26,Aubay S.A.,Aubay S.A.,aubay,True,name_match,2013-04-01,2025-10-01
+0HVA.L,PIG.PA,25,Haulotte Group S.A.,Haulotte Group S.A.,haulotte,True,name_match,2013-04-01,2025-10-01
+STN,STN.TO,25,Stantec Inc.,Stantec Inc.,stantec,True,name_match,2006-07-01,2025-07-01
+0F2S.L,LIN.PA,25,Linedata Services S.A.,Linedata Services S.A.,linedata services,True,name_match,2013-04-01,2025-04-01
+0VHA.L,SHOP,25,Shopify Inc.,Shopify Inc.,shopify,True,name_match,2014-01-01,2025-07-01
+0VHA.L,SHOP.TO,25,Shopify Inc.,Shopify Inc.,shopify,True,name_match,2014-01-01,2025-07-01
+0J5I.L,HLT,25,Hilton Worldwide Holdings Inc.,Hilton Worldwide Holdings Inc.,hilton worldwide,True,name_match,2016-01-01,2026-04-01
+0N7N.L,CDA.PA,25,Compagnie des Alpes S.A.,Compagnie des Alpes S.A.,alpes compagnie des,True,name_match,2013-01-01,2026-01-01
+0QVW.L,ATEME.PA,25,Ateme S.A.,Ateme S.A.,ateme,True,name_match,2013-10-01,2025-10-01
+0OA7.L,ASY.PA,25,Assystem S.A.,Assystem S.A.,assystem,True,name_match,2013-04-01,2025-10-01
+0QAV.L,NANO.PA,25,Nanobiotix S.A.,Nanobiotix S.A.,nanobiotix,True,name_match,2013-04-01,2025-10-01
+0Q77.L,AB.PA,25,AB Science S.A.,AB Science S.A.,science,True,name_match,2013-04-01,2025-10-01
+0NNU.L,NEDAP.AS,25,Nedap N.V.,Nedap N.V.,nedap,True,name_match,2013-04-01,2026-04-01
+0DTK.L,SAVE.PA,25,Savencia S.A.,Savencia S.A.,savencia,True,name_match,2013-04-01,2025-10-01
+VOXR,VOXR.TO,25,Vox Royalty Corp.,Vox Royalty Corp.,royalty vox,True,name_match,2019-10-01,2026-04-01
+SRE,SREA,25,Sempra,Sempra,sempra,True,name_match,2012-07-01,2026-04-01
+0RVA.L,SMCP.PA,25,SMCP S.a.,SMCP S.a.,smcp,True,name_match,2012-10-01,2026-04-01
+0ELV.L,GBT.PA,25,Guerbet S.A.,Guerbet S.A.,guerbet,True,name_match,2013-04-01,2025-10-01
+0GX2.L,NRO.PA,25,Neurones S.A.,Neurones S.A.,neurones,True,name_match,2013-04-01,2025-10-01
+PREVA.AS,VALUE.AS,24,Value8 N.V.,Value8 N.V.,value8,True,name_match,2006-10-01,2026-04-01
+REL.L,REN.AS,24,RELX Plc,RELX Plc,relx,True,name_match,2013-04-01,2025-04-01
+RELX,REN.AS,24,RELX Plc,RELX Plc,relx,True,name_match,2013-04-01,2025-04-01
+0OPN.L,ODET.PA,24,Compagnie de l'Odet,Compagnie de l'Odet,compagnie odet,True,name_match,2013-04-01,2025-10-01
+WFG,WFG.TO,24,West Fraser Timber Co. Ltd.,West Fraser Timber Co. Ltd.,fraser timber west,True,name_match,2006-07-01,2025-07-01
+0MN5.L,SWP.PA,24,Sword Group S.E.,Sword Group S.E.,sword,True,name_match,2013-04-01,2025-10-01
+0N9V.L,NAE.PA,24,North Atlantic Energies,North Atlantic Energies,atlantic energies north,True,name_match,2013-04-01,2025-10-01
+0OJJ.L,ALATI.PA,24,ACTIA Group S.A.,ACTIA Group S.A.,actia,True,name_match,2013-04-01,2025-10-01
+0OG6.L,SCHP.PA,24,Séché Environnement S.A.,Séché Environnement S.A.,environnement seche,True,name_match,2013-04-01,2025-10-01
+0OGG.L,ALCAT.PA,24,S.A. Catana Group,S.A. Catana Group,catana,True,name_match,2013-01-01,2026-01-01
+LSPD,LSPD.TO,24,Lightspeed Commerce Inc.,Lightspeed Commerce Inc.,commerce lightspeed,True,name_match,2018-01-01,2025-07-01
+0OB3.L,VLA.PA,23,Valneva SE,Valneva SE,valneva,True,name_match,2017-07-01,2026-04-01
+0D1X.L,ALGIL.PA,23,Groupe Guillin S.A.,Groupe Guillin S.A.,guillin,True,name_match,2013-04-01,2025-10-01
+0RNP.L,AVTX.AS,23,Avantium N.V.,Avantium N.V.,avantium,True,name_match,2012-10-01,2025-10-01
+0QAG.L,IDL.PA,23,ID Logistics Group S.A.,ID Logistics Group S.A.,id logistics,True,name_match,2013-04-01,2025-10-01
+0IUV.L,EC.PA,23,TotalEnergies EP Gabon S.A.,TotalEnergies EP Gabon S.A.,ep gabon totalenergies,True,name_match,2013-04-01,2025-04-01
+0RHT.L,SIFG.AS,22,Sif Holding N.V.,Sif Holding N.V.,sif,True,name_match,2014-10-01,2026-04-01
+0OCQ.L,TNG.PA,22,Transgene S.A.,Transgene S.A.,transgene,True,name_match,2012-10-01,2025-10-01
+ERO,ERO.TO,22,Ero Copper Corp.,Ero Copper Corp.,copper ero,True,name_match,2016-10-01,2026-04-01
+0RUJ.L,ALDLT.PA,22,Delta Plus Group,Delta Plus Group,delta plus,True,name_match,2013-04-01,2025-10-01
+GFL,GFL.TO,21,GFL Environmental Inc.,GFL Environmental Inc.,environmental gfl,True,name_match,2018-01-01,2025-10-01
+0QAU.L,VMX.PA,21,Verimatrix S.A.,Verimatrix S.A.,verimatrix,True,name_match,2013-04-01,2026-04-01
+PRN.TO,PROF,21,Profound Medical Corp.,Profound Medical Corp.,medical profound,True,name_match,2014-07-01,2025-04-01
+0HGC.L,APA,21,APA Corporation,APA Corporation,apa,True,name_match,2012-10-01,2026-01-01
+0UWL.L,FRU.TO,21,Freehold Royalties Ltd.,Freehold Royalties Ltd.,freehold royalties,True,name_match,2019-01-01,2026-04-01
+0QW7.L,VLTSA.PA,21,Voltalia S.A.,Voltalia S.A.,voltalia,True,name_match,2013-10-01,2025-10-01
+HEIA.AS,HEIO.AS,20,Heineken N.V.,Heineken Holding N.V.,heineken,True,name_match,2010-04-01,2022-04-01
+0LNT.L,FUR.AS,20,Fugro N.V.,Fugro N.V.,fugro,True,name_match,2013-04-01,2026-04-01
+0OB3.L,VALN,20,Valneva SE,Valneva SE,valneva,True,name_match,2017-07-01,2025-07-01
+DCBO,DCBO.TO,20,Docebo Inc.,Docebo Inc.,docebo,True,name_match,2018-01-01,2025-04-01
+0RA9.L,ABVX.PA,20,Abivax S.A.,Abivax S.A.,abivax,True,name_match,2015-04-01,2025-10-01
+0V9D.L,NXE.TO,20,NexGen Energy Ltd.,NexGen Energy Ltd.,energy nexgen,True,name_match,2021-01-01,2026-04-01
+0J66.L,HST,20,"Host Hotels & Resorts, Inc.","Host Hotels & Resorts, Inc.",host hotels resorts,True,name_match,2021-01-01,2026-04-01
+0UYN.L,GOLD.TO,20,GoldMining Inc.,GoldMining Inc.,goldmining,True,name_match,2021-04-01,2026-04-01
+BBUC,BBUC.TO,20,Brookfield Business Corporation,Brookfield Business Corporation,brookfield business,True,name_match,2020-10-01,2026-04-01
+HIVE,HIVE.TO,20,HIVE Digital Technologies Ltd.,HIVE Digital Technologies Ltd.,digital hive technologies,True,name_match,2011-01-01,2026-01-01
+0Q76.L,CBOT.PA,20,CBo Territoria S.A.,CBo Territoria S.A.,cbo territoria,True,name_match,2012-10-01,2025-04-01
+BLCO,BLCO.TO,19,Bausch + Lomb Corporation,Bausch + Lomb Corporation,bausch lomb,True,name_match,2020-10-01,2025-07-01
+0R3M.L,VVY.AS,19,Vivoryon Therapeutics N.V.,Vivoryon Therapeutics N.V.,therapeutics vivoryon,True,name_match,2014-04-01,2026-04-01
+0RP0.L,TKO.PA,19,Tikehau Capital,Tikehau Capital,capital tikehau,True,name_match,2015-10-01,2026-04-01
+0V9D.L,NXE,19,NexGen Energy Ltd.,NexGen Energy Ltd.,energy nexgen,True,name_match,2020-10-01,2026-04-01
+IVA,IVA.PA,19,Inventiva S.A.,Inventiva S.A.,inventiva,True,name_match,2015-10-01,2025-04-01
+0LD9.L,TRGP,18,Targa Resources Corp.,Targa Resources Corp.,resources targa,True,name_match,2012-10-01,2026-04-01
+TLRY,TLRY.TO,18,"Tilray Brands, Inc.","Tilray Brands, Inc.",brands tilray,True,name_match,2011-10-01,2017-10-01
+0QYN.L,BTO.TO,18,B2Gold Corp.,B2Gold Corp.,b2gold,True,name_match,2013-01-01,2026-04-01
+0R9T.L,EQS.PA,17,Equasens S.A.,Equasens S.A.,equasens,True,name_match,2016-04-01,2024-04-01
+TFPM,TFPM.TO,17,Triple Flag Precious Metals Corp.,Triple Flag Precious Metals Corp.,flag metals precious triple,True,name_match,2018-10-01,2026-04-01
+CNL,CNL.TO,16,Collective Mining Ltd.,Collective Mining Ltd.,collective mining,True,name_match,2020-10-01,2025-04-01
+0JSZ.L,LADR,16,Ladder Capital Corp,Ladder Capital Corp,capital ladder,True,name_match,2021-01-01,2026-01-01
+0OPY.L,PARRO.PA,16,Parrot S.A.,Parrot S.A.,parrot,True,name_match,2014-10-01,2026-04-01
+NANO.PA,NBTX,15,Nanobiotix S.A.,Nanobiotix S.A.,nanobiotix,True,name_match,2014-04-01,2025-10-01
+0QZP.L,BBD-A.TO,15,Bombardier Inc.,Bombardier Inc.,bombardier,True,name_match,2013-01-01,2026-01-01
+0QZP.L,BBD-B.TO,15,Bombardier Inc.,Bombardier Inc.,bombardier,True,name_match,2013-01-01,2026-01-01
+EPRX,EPRX.TO,15,Eupraxia Pharmaceuticals Inc.,Eupraxia Pharmaceuticals Inc.,eupraxia pharmaceuticals,True,name_match,2019-10-01,2025-04-01
+0A1S.L,DOW,14,Dow Inc.,Dow Inc.,dow,True,name_match,2022-04-01,2025-07-01
+0QAV.L,NBTX,14,Nanobiotix S.A.,Nanobiotix S.A.,nanobiotix,True,name_match,2014-04-01,2025-10-01
+0MV8.L,VANTI.PA,14,Vantiva S.A.,Vantiva S.A.,vantiva,True,name_match,2013-04-01,2026-04-01
+FG,FGN,14,"F&G Annuities & Life, Inc.","F&G Annuities & Life, Inc.",annuities life,True,name_match,2016-01-01,2026-04-01
+0RA9.L,ABVX,13,Abivax S.A.,Abivax S.A.,abivax,True,name_match,2015-04-01,2024-10-01
+0KDU.L,NXH,13,"Neighborhood Intelligence, Inc. Common Stock","Neighborhood Intelligence, Inc. Common Stock",intelligence neighborhood,True,name_match,2023-01-01,2026-04-01
+0OQ2.L,ALSOG.PA,13,Sogeclair S.A.,Sogeclair S.A.,sogeclair,True,name_match,2019-10-01,2025-10-01
+ABVX,ABVX.PA,12,Abivax S.A.,Abivax S.A.,abivax,True,name_match,2014-10-01,2022-04-01
+0R2O.L,FCX,12,Freeport-McMoRan Inc.,Freeport-McMoRan Inc.,freeport mcmoran,True,name_match,2012-10-01,2026-04-01
+BEPC,BEPC.TO,12,Brookfield Renewable Corporation,Brookfield Renewable Corporation,brookfield renewable,True,name_match,2018-01-01,2026-04-01
+0GJS.L,ALXIL.PA,12,Xilam Animation,Xilam Animation,animation xilam,True,name_match,2014-10-01,2025-04-01
+0RNK.L,IVA,12,Inventiva S.A.,Inventiva S.A.,inventiva,True,name_match,2015-10-01,2025-04-01
+0RNK.L,IVA.PA,12,Inventiva S.A.,Inventiva S.A.,inventiva,True,name_match,2015-10-01,2025-04-01
+BIPC,BIPC.TO,11,Brookfield Infrastructure Corporation,Brookfield Infrastructure Corporation,brookfield infrastructure,True,name_match,2018-07-01,2026-04-01
+AQN,AQNB,11,Algonquin Power & Utilities Corp.,Algonquin Power & Utilities Corp.,algonquin power utilities,True,name_match,2018-01-01,2026-04-01
+ARIS,ARIS.TO,10,Aris Mining Corporation,Aris Mining Corporation,aris mining,True,name_match,2010-04-01,2026-01-01
+0UKH.L,BMO.TO,9,Bank of Montreal,Bank of Montreal,bank montreal,True,name_match,2013-04-01,2026-04-01
+DBV.PA,DBVT,8,DBV Technologies S.A.,DBV Technologies S.A.,dbv technologies,True,name_match,2012-10-01,2025-07-01
+0F6L.L,MAU.PA,8,Etablissements Maurel & Prom S.A.,Etablissements Maurel & Prom S.A.,etablissements maurel prom,True,name_match,2018-10-01,2026-04-01
+0OA4.L,VU.PA,7,VusionGroup,VusionGroup,vusiongroup,True,name_match,2022-04-01,2025-10-01
+0YP5.L,ADYEN.AS,7,Adyen N.V.,Adyen N.V.,adyen,True,name_match,2014-10-01,2026-04-01
+KEI.TO,KGEI,7,Kolibri Global Energy Inc.,Kolibri Global Energy Inc.,energy global kolibri,True,name_match,2024-01-01,2025-10-01
+0AH3.L,GWO.TO,6,Great-West Lifeco Inc.,Great-West Lifeco Inc.,great lifeco west,True,name_match,2013-07-01,2020-07-01
+0VCO.L,PEY.TO,6,Peyto Exploration & Development Corp.,Peyto Exploration & Development Corp.,development exploration peyto,True,name_match,2023-10-01,2026-04-01
+0A28.L,PRX.AS,6,Prosus N.V.,Prosus N.V.,prosus,True,name_match,2019-01-01,2026-01-01
+BMO,BMO.TO,5,Bank of Montreal,Bank of Montreal,bank montreal,True,name_match,2024-10-01,2025-10-01
+0J72.L,HBAN,5,Huntington Bancshares Incorporated,Huntington Bancshares Incorporated,bancshares huntington,True,name_match,2022-10-01,2026-04-01
+0J72.L,HBANL,5,Huntington Bancshares Incorporated,Huntington Bancshares Incorporated,bancshares huntington,True,name_match,2022-10-01,2026-04-01
+0J72.L,HBANM,5,Huntington Bancshares Incorporated,Huntington Bancshares Incorporated,bancshares huntington,True,name_match,2022-10-01,2026-04-01
+0K76.L,RITM,5,Rithm Capital Corp.,Rithm Capital Corp.,capital rithm,True,name_match,2022-01-01,2025-07-01
+DOO,DOO.TO,5,BRP Inc.,BRP Inc.,brp,True,name_match,2025-04-01,2026-04-01
+0FRI.L,LBIRD.PA,5,Lumibird S.A.,Lumibird S.A.,lumibird,True,name_match,2022-04-01,2025-04-01
+0K5R.L,NAVI,5,Navient Corporation,Navient Corporation,navient,True,name_match,2012-10-01,2025-07-01
+0HYP.L,CFG,5,"Citizens Financial Group, Inc.","Citizens Financial Group, Inc.",citizens financial,True,name_match,2012-10-01,2026-04-01
+ORIO,ORIO.TO,4,Orion Digital Corp.,Orion Digital Corp.,digital orion,True,name_match,2025-01-01,2026-04-01
+0JX5.L,MAC,3,The Macerich Company,The Macerich Company,macerich,True,name_match,2021-01-01,2025-07-01
+0IRK.L,ALTA.PA,3,Altarea SCA,Altarea SCA,altarea,True,name_match,2025-04-01,2026-04-01
+0JQR.L,KEY,3,KeyCorp,KeyCorp,keycorp,True,name_match,2025-07-01,2026-01-01
+OR,OR.TO,3,OR Royalties Inc.,OR Royalties Inc.,or royalties,True,name_match,2013-10-01,2026-04-01
+0V46.L,LGD.TO,3,Liberty Gold Corp.,Liberty Gold Corp.,gold liberty,True,name_match,2025-10-01,2026-04-01
+BCT.TO,BCTX,3,BriaCell Therapeutics Corp.,BriaCell Therapeutics Corp.,briacell therapeutics,True,name_match,2025-10-01,2026-04-01
+CRON,CRON.TO,3,Cronos Group Inc.,Cronos Group Inc.,cronos,True,name_match,2017-04-01,2025-07-01
+0KEF.L,PNC,3,"The PNC Financial Services Group, Inc.","The PNC Financial Services Group, Inc.",financial pnc services,True,name_match,2025-04-01,2025-10-01
+MSCL.TO,MSLE,3,Satellos Bioscience Inc.,Satellos Bioscience Inc.,bioscience satellos,True,name_match,2025-01-01,2025-07-01
