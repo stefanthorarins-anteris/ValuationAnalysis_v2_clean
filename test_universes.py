@@ -306,9 +306,14 @@ def test_asia_appears_ONLY_in_the_asia_universes_and_amex_otc_nowhere(
     #  stock_CUR3K added 2026-08-06: it wires KSC/KOE DELIBERATELY, because the Korean
     #  preferred families are one of the dedup cases the ~3,000-name shakedown run exists
     #  to observe. It is Korea-gated like the other two.
+    #  stock_CUR6K added 2026-08-21 for the same reason and MORE of it: it raises Korea
+    #  25% -> 40% precisely because the one still-unverified half of the Asia work (does an
+    #  FMP Korean preferred carry its ISSUER'S statements, so the family GROUPS at all --
+    #  ASIA_BLOCKER residual) is answered by having more whole FAMILIES, not more US names.
     asia_universes = {n for n in un.names()
                       if set(un.exchanges(n) or ()) & set(un.ASIA_LIKELY_INVESTABLE)}
-    assert asia_universes == {'stock_ASIA1', 'stock_NA1_EU1_ASIA1', 'stock_CUR3K'}, (
+    assert asia_universes == {'stock_ASIA1', 'stock_NA1_EU1_ASIA1', 'stock_CUR3K',
+                              'stock_CUR6K'}, (
         'an unexpected universe now wires likely-investable Asia: %s' % asia_universes)
     for name in un.names():
         if un.is_every_exchange(name):
@@ -1552,14 +1557,30 @@ def test_a_dead_SAMPLED_code_still_screams():
     assert [p[0] for p in un.check_resolved_counts('stock_CUR3K', thinned)] == ['NASDAQ']
 
 
+#  THE UNIVERSES THAT CARRY A `sample` DICT.  DECLARED rather than derived, so that adding
+#  one is a deliberate edit HERE as well as in the registry -- several tests below assert
+#  properties of the UNSAMPLED path, and a new sampled universe silently joining the set
+#  would quietly shrink their coverage rather than fail.  stock_CUR3K 2026-08-06,
+#  stock_CUR6K 2026-08-21.
+SAMPLED_UNIVERSES = frozenset(('stock_CUR3K', 'stock_CUR6K'))
+
+
+def test_the_declared_sampled_universes_are_exactly_the_ones_with_a_sample_dict():
+    """Both directions.  A universe with a rate but not declared here would weaken every
+    test that keys off SAMPLED_UNIVERSES; a name declared here that no longer samples is
+    dead configuration -- the EURONEXT lesson applied to a test constant."""
+    assert {n for n in un.names() if un.sample_rates(n)} == set(SAMPLED_UNIVERSES)
+
+
 def test_sampling_changes_nothing_for_a_universe_with_no_sample_dict():
-    """BIT-IDENTICAL, asserted rather than assumed: every universe except stock_CUR3K has
-    no `sample` dict, so its rate is 1.0 and the arithmetic must be the pre-fix one."""
+    """BIT-IDENTICAL, asserted rather than assumed: every universe outside
+    SAMPLED_UNIVERSES has no `sample` dict, so its rate is 1.0 and the arithmetic must be
+    the pre-fix one."""
     for name in un.names():
         if un.sample_rates(name):
-            assert name == 'stock_CUR3K', (
+            assert name in SAMPLED_UNIVERSES, (
                 'a new sampled universe appeared -- re-check this test still covers the '
-                'unsampled path: %s' % name)
+                'unsampled path, then add it to SAMPLED_UNIVERSES: %s' % name)
             continue
         for c in (un.exchanges(name) or ()):
             assert un.expected_resolved_count(name, c) == float(
@@ -2262,7 +2283,14 @@ def test_cur3k_fingerprints_of_the_PRE_EXISTING_universes_are_UNTOUCHED():
     predates 2026-08-06 fingerprints to exactly the value it did before -- otherwise every
     existing artifact would look like it came from a different definition."""
     for name in un.names():
-        if name == CUR3K:
+        #  WIDENED 2026-08-21 from `name == CUR3K` to the PROPERTY rather than the name.
+        #  The fingerprint basis grows a `|sample/...` / `|must:...` segment exactly when a
+        #  universe HAS rates or pins, so keying the skip on one hardcoded name meant the
+        #  SECOND such universe (stock_CUR6K) failed a test whose whole point is about the
+        #  universes that predate the feature.  `test_the_declared_sampled_universes_...`
+        #  is what keeps the skipped set from growing silently.
+        if un.sample_rates(name) or un.must_include(name):
+            assert name in SAMPLED_UNIVERSES, name
             continue
         d = un.UNIVERSES[name]
         if d['symbols'] is not None:
@@ -2434,6 +2462,562 @@ def test_the_two_WRONG_company_names_cannot_come_back():
     for bad in ('skyharbour', 'sk growth opportunities', 'northwest pipe'):
         assert bad not in blob, (
             '%r is back in a CUR3K why-string -- it names the WRONG company' % bad)
+
+
+# =========================================================================== #
+#  stock_CUR6K -- THE ~6,000-NAME UNIVERSE WITH stock_CUR3K AS A STRICT SUBSET   #
+#                                                                               #
+#  THE HARD REQUIREMENT IS THE SUBSET PROPERTY, and it is asserted HERE against   #
+#  the LIVE definitions replayed through the REAL wrapper -- not argued from the    #
+#  construction.  The construction argument is in universes.py above                #
+#  CURATED6K_TAKE_ALL and it is sound, but it is exactly the class of argument       #
+#  this project has been burned by: the FIRST cut of the issuer sample also had a    #
+#  sound-sounding closure argument and split 218 groups in practice (see              #
+#  `most_permissive_rate`).  So the property is MEASURED.                            #
+#                                                                               #
+#  WHOLLY OFFLINE.  The replay runs over `available_traded_raw_2026-08-04.pickle`,   #
+#  a saved live capture, with `safe_get` stubbed -- no network, no paid call.  The    #
+#  tests skip rather than pass vacuously when the capture is not on the machine.      #
+# =========================================================================== #
+CUR6K = 'stock_CUR6K'
+
+
+@pytest.fixture(scope='module')
+def live_capture_table():
+    """The full live 2026-08-04 available-traded capture as the pre-filter table.
+
+    Module-scoped: the replay tests run the real wrapper over 68k rows and there is no
+    reason to pay for the load more than once.
+    """
+    p = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                     'available_traded_raw_2026-08-04.pickle')
+    if not os.path.exists(p):
+        pytest.skip('live capture absent: %s' % os.path.basename(p))
+    return pd.read_pickle(p)
+
+
+def _replay(table, name, monkeypatch, tmp_path):
+    """Resolve `name` end-to-end through the REAL wrapper, offline.
+
+    Deliberately NOT a reimplementation of the membership rule: the whole value of this
+    replay is that it exercises the same code path a fetch does -- type filter,
+    `filter_non_common_instruments` on the full table, the exchange filter, the issuer
+    sample, the pin union with group closure, the delisted prune.  A hand-rolled
+    reimplementation would prove the subset property of the TEST, not of the pipeline.
+    """
+    monkeypatch.setattr(gdg, 'safe_get', lambda *a, **k: [])   # delisted page 0 -> empty
+    monkeypatch.chdir(tmp_path)
+    return set(gdg.tickerfilterWrapper(table, name, 'all', -1, 'http://x', 'k')['symbol'])
+
+
+def test_cur6k_stock_CUR3K_IS_A_STRICT_SUBSET_of_it__REPLAYED(
+        live_capture_table, monkeypatch, tmp_path):
+    """*** THE REQUIREMENT.  Every stock_CUR3K member is a stock_CUR6K member. ***
+
+    WHY IT IS THE REQUIREMENT AND NOT A NICETY: it is what makes the two runs comparable.
+    With it, every difference between a CUR3K run and a CUR6K run is attributable to the
+    ADDED names -- same pinned dedup/veto cases, same measured names, same buckets.
+    Without it the two runs are two unrelated experiments and every pooled statistic
+    differs for a second, unattributable reason, which is the irreconcilable-beat-rate
+    trap the CONTINUITY note at the top of universes.py exists to prevent.
+
+    Replayed through the REAL wrapper over the live capture, both directions checked.
+    """
+    small = _replay(live_capture_table, CUR3K, monkeypatch, tmp_path)
+    big = _replay(live_capture_table, CUR6K, monkeypatch, tmp_path)
+    missing = sorted(small - big)
+    assert not missing, (
+        '%d stock_CUR3K member(s) are NOT in stock_CUR6K -- the subset property is BROKEN '
+        'and the two universes are no longer comparable: %s%s'
+        % (len(missing), ', '.join(missing[:25]),
+           ' (+%d more)' % (len(missing) - 25) if len(missing) > 25 else ''))
+    #  STRICT, not merely a subset: a "superset" that added nothing would satisfy the
+    #  inclusion above and answer none of the CEO's question.
+    assert len(big) > len(small), 'stock_CUR6K added nothing'
+    #  And the replay must agree with the numbers the module PUBLISHES, or the banner, the
+    #  label and the cost estimate are all quoting a universe that is not the one built.
+    assert len(small) == un.CURATED3K_ESTIMATED_MEMBERS, (
+        'stock_CUR3K replays to %d, module says %d' % (len(small),
+                                                      un.CURATED3K_ESTIMATED_MEMBERS))
+    assert len(big) == un.CURATED6K_ESTIMATED_MEMBERS, (
+        'stock_CUR6K replays to %d, module says %d -- re-replay and update BOTH '
+        'CURATED6K_SIZING and REPLAYED_MEMBER_COUNTS (fingerprint included)'
+        % (len(big), un.CURATED6K_ESTIMATED_MEMBERS))
+
+
+def test_cur6k_the_subset_test_above_HAS_TEETH(live_capture_table, monkeypatch, tmp_path):
+    """THE ANTI-VACUITY GUARD.  A subset assertion passes trivially if the smaller set is
+    empty, if the two definitions are identical, or if the resolution silently returns
+    everything.  So: the added set must be large, and -- the part that actually gives the
+    assertion teeth -- LOWERING a rate below stock_CUR3K's must BREAK the property.
+
+    If this test could not break it, the one above would be proving nothing about the
+    sample and everything about the pin union.
+    """
+    small = _replay(live_capture_table, CUR3K, monkeypatch, tmp_path)
+    added = _replay(live_capture_table, CUR6K, monkeypatch, tmp_path) - small
+    assert len(added) > 2000, 'only %d names added; the point was ~6,000 total' % len(added)
+
+    #  A DELIBERATELY BROKEN definition: CUR6K's venues, but the US/LSE rate cut BELOW
+    #  CUR3K's 170. The nesting argument says this must lose CUR3K members, and it must.
+    entry = un.UNIVERSES[CUR6K]
+    old = entry['sample']
+    try:
+        entry['sample'] = dict(old, NYSE=100, NASDAQ=100, LSE=100)
+        broken = _replay(live_capture_table, CUR6K, monkeypatch, tmp_path)
+    finally:
+        entry['sample'] = old
+    assert small - broken, (
+        'LOWERING the US/LSE rate from 220 to 100 lost NO stock_CUR3K member, so the '
+        'subset test above cannot distinguish a nested sample from an arbitrary one -- '
+        'either the sample is not being applied or the pins are carrying the whole '
+        'property')
+    #  Sanity: the un-broken definition is still whole after the mutation is undone.
+    assert not (small - _replay(live_capture_table, CUR6K, monkeypatch, tmp_path))
+
+
+def test_cur6k_raising_a_rate_can_NEVER_drop_an_issuer():
+    """THE MONOTONICITY PROPERTY, at the level of the two functions that decide it, so it
+    holds for any future rate edit and not just for the pair of definitions on the table.
+
+    `issuer_sample_bucket` is a pure function of the NORMALISED ISSUER NAME, so the bucket
+    is the same number in both universes and only the THRESHOLD moves.
+    `most_permissive_rate` returns None on any take-all venue and otherwise the MAX over
+    the venues the issuer occupies -- monotone non-decreasing in BOTH the venue set and the
+    per-code rates.  `issuer_in_sample` is `bucket < rate`.  So a rate rise can only ever
+    ADD issuers.
+
+    *** IF THIS FAILED, THE DESIGN WOULD BE WRONG AND THE ANSWER WOULD BE TO SAY SO, NOT
+    TO WORK AROUND IT: a threshold sample whose selected set is not NESTED under a rate
+    rise is not a sample, it is a reshuffle, and no two runs over it are comparable. ***
+    """
+    lo, hi = un.sample_rates(CUR3K), un.sample_rates(CUR6K)
+    #  Precondition of the whole argument: same bucket scale, and every shared rate rose.
+    assert un.CURATED6K_SAMPLE_DENOMINATOR == un.CURATED3K_SAMPLE_DENOMINATOR, (
+        'the two universes must share the bucket denominator or `bucket < rate` is not '
+        'nested and the subset property is an accident')
+    for c, r in lo.items():
+        assert hi.get(c, r) >= r, '%s rate FELL %d -> %d' % (c, r, hi[c])
+    #  1. per-issuer: nesting of `issuer_in_sample` over 5,000 synthetic names.
+    for i in range(5000):
+        nm = 'issuer name %d' % i
+        for c, r in lo.items():
+            if un.issuer_in_sample(nm, r):
+                assert un.issuer_in_sample(nm, hi[c]), (
+                    '%r is in at rate %d but OUT at the higher rate %d' % (nm, r, hi[c]))
+    #  2. most_permissive_rate: adding a venue never tightens, and a take-all venue wins.
+    small_codes = set(un.exchanges(CUR3K))
+    big_codes = set(un.exchanges(CUR6K))
+    assert small_codes < big_codes, 'CUR6K must wire strictly more venues'
+    for c in sorted(small_codes):
+        r_small = un.most_permissive_rate((c,), lo)
+        r_big = un.most_permissive_rate((c,), hi)
+        assert r_big is None or (r_small is not None and r_big >= r_small), (
+            '%s: effective rate tightened %r -> %r' % (c, r_small, r_big))
+        #  and adding any CUR6K-only venue to the group can only loosen it further
+        for extra in sorted(big_codes - small_codes):
+            r_pair = un.most_permissive_rate((c, extra), hi)
+            assert r_pair is None, (
+                '%s + %s should be take-all (%s carries no rate) but resolved to %r'
+                % (c, extra, extra, r_pair))
+
+
+def test_cur6k_take_all_is_EXACTLY_production_minus_the_sampled_venues():
+    """The definition is worth being able to state in one line -- "production, with
+    NYSE/NASDAQ/LSE sampled and Korea added" -- and the prose above CURATED6K_TAKE_ALL
+    states it.  Asserted so the prose and the tuple cannot drift apart."""
+    prod = set(un.exchanges('stock_NA1_EU1'))
+    assert set(un.CURATED6K_TAKE_ALL) == prod - {'NYSE', 'NASDAQ', 'LSE'}
+    #  Every wired code is either take-all or sampled, nothing in between and nothing lost.
+    assert set(un.exchanges(CUR6K)) == set(un.CURATED6K_TAKE_ALL) | set(un.CURATED6K_SAMPLED)
+    #  It adds Korea on top of production, and nothing else outside it.
+    assert set(un.exchanges(CUR6K)) - prod == set(un.korea_codes())
+
+
+def test_cur6k_the_four_NEVER_FETCHED_venues_are_actually_in_it():
+    """The stated main reason for the fetch is new-venue defect discovery, and four of the
+    six added venues have never been through the fetch path at all (OSL/BRU/LIS/ICE were
+    the EURONEXT/OSE dead-code defect, restored 2026-08-02, and no run since has covered
+    them).  If they were not actually wired, the universe's whole rationale would be
+    prose."""
+    for code in ('XETRA', 'STO', 'OSL', 'BRU', 'LIS', 'ICE'):
+        assert code in un.exchanges(CUR6K), code
+        assert code not in un.sample_rates(CUR6K), '%s must be taken WHOLE' % code
+        assert code in un.CURATED6K_SIZING and un.CURATED6K_SIZING[code] > 0, code
+    #  and they were NOT in CUR3K in any meaningful quantity (STO/XETRA only via pins)
+    for code in ('OSL', 'BRU', 'LIS', 'ICE'):
+        assert code not in (un.exchanges(CUR3K) or ()), code
+
+
+def test_cur6k_sizing_sums_to_the_member_count_and_covers_every_wired_code():
+    """The per-code table is what an operator reads to see WHERE the added mass went, so a
+    missing code or a sum that disagrees with the member count is a misleading table --
+    the CURATED3K_COHORT_ESTIMATE defect (summed to 3,045 against a 3,258 universe) in a
+    new place."""
+    assert sum(un.CURATED6K_SIZING.values()) == un.CURATED6K_ESTIMATED_MEMBERS
+    assert set(un.CURATED6K_SIZING) == set(un.exchanges(CUR6K)), (
+        'CURATED6K_SIZING and the wired exchange set disagree: %s'
+        % (set(un.CURATED6K_SIZING) ^ set(un.exchanges(CUR6K))))
+    #  It must land where the CEO asked. "Roughly 6,000" is the target; a universe that
+    #  quietly drifted to 7,500 is a different (and 25%-more-expensive) run.
+    assert 5700 <= un.CURATED6K_ESTIMATED_MEMBERS <= 6300, (
+        'stock_CUR6K sizes at %d; the CEO asked for roughly 6,000'
+        % un.CURATED6K_ESTIMATED_MEMBERS)
+    #  And it must be a real superset in SIZE, not just in membership.
+    assert un.CURATED6K_ESTIMATED_MEMBERS > 1.5 * un.CURATED3K_ESTIMATED_MEMBERS
+
+
+def test_cur6k_the_rate_scaled_FORMULA_gap_is_recorded_not_hidden():
+    """`expected_count` returns the REPLAY for this universe, so the formula's answer is
+    invisible unless it is written down.  It is worth writing down: the formula understates
+    by 544 here against 135 for CUR3K, and that ratio IS the compromise story -- six more
+    take-all venues means far more per-issuer upward closure, which is why the rates had to
+    come down from 30% to 22% to hit ~6,000."""
+    rates = un.sample_rates(CUR6K)
+    formula = sum(
+        un._VERIFIED_COUNTS.get(c, 0) if rates.get(c) is None
+        else un._VERIFIED_COUNTS.get(c, 0) * rates[c] / un.CURATED6K_SAMPLE_DENOMINATOR
+        for c in un.exchanges(CUR6K)) + len(un.must_include(CUR6K))
+    gap = un.CURATED6K_ESTIMATED_MEMBERS - formula
+    assert gap > 0, (
+        'the gap must be POSITIVE -- upward closure can only ADD members. Got %+.0f '
+        '(replay %d vs formula %.0f), which means the replay or the rates are stale'
+        % (gap, un.CURATED6K_ESTIMATED_MEMBERS, formula))
+    assert abs(gap - un.CURATED6K_FORMULA_GAP) < 25, (
+        'CURATED6K_FORMULA_GAP says %d, the arithmetic says %+.0f'
+        % (un.CURATED6K_FORMULA_GAP, gap))
+    #  The claim that this universe closes MORE than CUR3K does, asserted rather than said.
+    assert gap > (un.CURATED3K_ESTIMATED_MEMBERS - sum(
+        un._VERIFIED_COUNTS.get(c, 0) if un.sample_rates(CUR3K).get(c) is None
+        else un._VERIFIED_COUNTS.get(c, 0) * un.sample_rates(CUR3K)[c]
+             / un.CURATED3K_SAMPLE_DENOMINATOR
+        for c in un.exchanges(CUR3K)) - len(un.must_include(CUR3K)))
+
+
+def test_cur6k_runtime_estimate_is_on_the_SAME_basis_as_CUR3K():
+    """The CEO is deciding whether to spend ~1.85x CUR3K's fetch, so the number has to be
+    defensible AND comparable: same 5-calls-per-source + 3 basis, same 0.80-1.15 s/call
+    band, profile batches excluded from both.  Tolerance is one decimal place -- the
+    precision the band is stated to -- for the reason the CUR3K version of this test
+    records: at +-0.5 h the guard was decorative and absorbed a real drift."""
+    assert un.CURATED6K_API_CALLS == 5 * un.CURATED6K_ESTIMATED_MEMBERS + 3
+    lo, hi = un.CURATED6K_WALLCLOCK_HOURS
+    assert lo < hi
+    assert abs(lo - un.CURATED6K_API_CALLS * 0.80 / 3600.0) < 0.05, (
+        'CURATED6K_WALLCLOCK_HOURS lo=%r does not follow from %d calls at 0.80 s/call '
+        '(%.2f h) -- re-derive the band, do not widen the tolerance'
+        % (lo, un.CURATED6K_API_CALLS, un.CURATED6K_API_CALLS * 0.80 / 3600.0))
+    assert abs(hi - un.CURATED6K_API_CALLS * 1.15 / 3600.0) < 0.05, (
+        'CURATED6K_WALLCLOCK_HOURS hi=%r does not follow from %d calls at 1.15 s/call '
+        '(%.2f h)' % (hi, un.CURATED6K_API_CALLS, un.CURATED6K_API_CALLS * 1.15 / 3600.0))
+    #  The label an operator READS must carry the same band as the constant a script uses.
+    assert '%.1f-%.1f h' % (lo, hi) in un.label(CUR6K), (
+        'the registry label and CURATED6K_WALLCLOCK_HOURS state different fetch lengths')
+    #  And the BANNER's independently-derived line must agree with the constants, since it
+    #  is computed from `expected_count` rather than looked up -- that is the point of
+    #  deriving it, and it is only worth anything if the two actually match.
+    assert '~{:,} statement calls'.format(un.CURATED6K_API_CALLS) in un.run_banner(CUR6K)
+    assert '~%.1f-%.1f h' % (lo, hi) in un.run_banner(CUR6K)
+    assert '~{:,} statement calls'.format(un.CURATED3K_API_CALLS) in un.run_banner(CUR3K)
+    assert '~%.1f-%.1f h' % un.CURATED3K_WALLCLOCK_HOURS in un.run_banner(CUR3K)
+
+
+def test_cur6k_inherits_the_pins_and_the_KOREA_GATE(offline_wrapper):
+    """The pins are the measured dedup/veto cases; sharing them with CUR3K by IDENTITY (not
+    by copy) is what makes "same pinned cases" a fact rather than a convention someone has
+    to maintain in two places.  And Korea cannot be enabled by adding a registry entry."""
+    assert un.must_include(CUR6K) == un.CURATED3K_MUST_INCLUDE_SYMBOLS
+    assert un.must_include(CUR6K) == un.must_include(CUR3K)
+    assert any(c in gdg.KOREA_EXCHANGE_CODES for c in un.exchanges(CUR6K))
+    fixture = _cur3k_fixture_rows()
+    import carveOut as _co
+    real = _co._non_canonical_tag
+    try:
+        del _co._non_canonical_tag
+        with pytest.raises(Exception) as e:
+            offline_wrapper(fixture, CUR6K, 'all', -1, 'http://x', 'k')
+        assert 'Korea' in str(e.value)
+    finally:
+        _co._non_canonical_tag = real
+
+
+def test_cur6k_every_pin_RESOLVES_through_the_real_wrapper(live_capture_table, monkeypatch,
+                                                          tmp_path):
+    """The guard the CEO asked for on CUR3K, applied here too: no edit to the base rule may
+    drop a pinned case.  Resolved through the REAL wrapper against the live capture rather
+    than checked registry-against-itself, because a registry-only assertion passes even
+    when the union is not applied at all."""
+    got = _replay(live_capture_table, CUR6K, monkeypatch, tmp_path)
+    absent = sorted(set(un.must_include(CUR6K)) - got)
+    #  MS-PE and GIPRW are not pins here; every CUR6K pin should resolve, but a pin the
+    #  INSTRUMENT FILTER removes stays removed by design, so compare against what CUR3K
+    #  itself achieves rather than demanding 40/40 in the abstract.
+    absent_in_cur3k = sorted(set(un.must_include(CUR3K))
+                             - _replay(live_capture_table, CUR3K, monkeypatch, tmp_path))
+    assert absent == absent_in_cur3k, (
+        'stock_CUR6K resolves a DIFFERENT set of pins than stock_CUR3K (CUR6K missing %s, '
+        'CUR3K missing %s) -- the pin union is behaving differently on the wider universe'
+        % (absent, absent_in_cur3k))
+
+
+def test_cur6k_the_PINS_REACH_OUTSIDE_property_is_now_vacuous_here_and_that_is_DECLARED():
+    """CUR3K's pins reach OUTSIDE its base-rule exchanges (EMBELL.ST on STO, EIN.DE and
+    DRW3.DE on XETRA), which is what proves the must-include union is not exchange-bound.
+    CUR6K WIRES STO and XETRA, so all 40 of its pins sit inside its own exchange set and it
+    exercises that path vacuously.
+
+    Pinned as a FACT rather than left as a comment, because the tempting mistake is to read
+    CUR6K as a superset of CUR3K's TEST coverage as well as of its membership.  It is not:
+    this property is covered only by `test_cur3k_pins_reach_OUTSIDE_the_base_rule_exchanges`
+    and that test must not be deleted on the grounds that CUR6K subsumes CUR3K.
+    """
+    codes = set(un.exchanges(CUR6K))
+    outside = [s for s in un.must_include(CUR6K) if _exchange_of(s) not in codes]
+    assert outside == [], (
+        'a CUR6K pin now sits outside its exchange set (%s) -- the property is no longer '
+        'vacuous here and this test should become a real assertion' % outside)
+    #  ... and it is genuinely NON-vacuous on CUR3K, which is what still covers it.
+    cur3k_codes = set(un.exchanges(CUR3K))
+    assert [s for s in un.must_include(CUR3K) if _exchange_of(s) not in cur3k_codes], \
+        'CUR3K no longer has an out-of-exchange pin, so NOTHING covers the union path'
+
+
+# --------------------------------------------------------------------------- #
+#  THE REPLAYED-COUNT FINGERPRINT GUARD (2026-08-21)                            #
+#  Closes the staleness path the 2026-08-06 review named and deferred: a member   #
+#  count stored against a NAME survives an edit to the definition and keeps        #
+#  looking plausible.                                                             #
+# --------------------------------------------------------------------------- #
+def test_the_replayed_member_counts_MATCH_the_definitions_they_were_measured_against():
+    """The stored fingerprints are the whole guard, so they must be current."""
+    assert set(un.REPLAYED_MEMBER_COUNTS) == set(SAMPLED_UNIVERSES), (
+        'a sampled universe has no replayed member count, so `expected_count` silently '
+        'falls back to the formula that understates it: %s'
+        % (set(SAMPLED_UNIVERSES) ^ set(un.REPLAYED_MEMBER_COUNTS)))
+    for name, (fp, n) in un.REPLAYED_MEMBER_COUNTS.items():
+        assert un.definition_fingerprint(name) == fp, (
+            '%s: replay was measured against definition %s but the definition is now %s '
+            '-- re-replay offline and update BOTH the fingerprint and the count'
+            % (name, fp, un.definition_fingerprint(name)))
+        assert un.replayed_count_is_stale(name) is None
+        assert un.expected_count(name) == n
+
+
+def test_a_STALE_replay_is_REFUSED_and_the_banner_SHOUTS_about_it():
+    """The failure this closes is silent: the stored count survives a definition edit and
+    still looks plausible, so nothing looks wrong.  Two things must happen instead --
+    `expected_count` must fall back to the formula, and the banner must say the number
+    changed kind (measurement -> model), because otherwise the operator just sees a slightly
+    different figure."""
+    entry = un.UNIVERSES[CUR6K]
+    old = entry['sample']
+    measured = un.expected_count(CUR6K)
+    try:
+        entry['sample'] = dict(old, NYSE=201)          # a real definition change
+        stale = un.replayed_count_is_stale(CUR6K)
+        assert stale is not None, 'a rate change did not invalidate the stored replay'
+        assert stale[0] == un.REPLAYED_MEMBER_COUNTS[CUR6K][0]
+        assert stale[1] == un.definition_fingerprint(CUR6K) != stale[0]
+        assert un.expected_count(CUR6K) != measured, (
+            'the STORED count was returned for a definition it was not measured against '
+            '-- this is exactly the silent staleness the fingerprint key exists to stop')
+        b = un.run_banner(CUR6K)
+        assert 'REPLAYED MEMBER COUNT FOR THIS UNIVERSE IS STALE' in b
+        assert 'RATE-SCALED FORMULA' in b
+    finally:
+        entry['sample'] = old
+    assert un.replayed_count_is_stale(CUR6K) is None
+    assert un.expected_count(CUR6K) == measured
+
+
+# --------------------------------------------------------------------------- #
+#  WHAT THE BANNER MUST SAY BEFORE A 7-10 HOUR FETCH                            #
+# --------------------------------------------------------------------------- #
+def test_cur6k_banner_states_the_SUBSET_the_COST_and_that_it_is_NOT_A_POWER_FIX():
+    """Three things an operator would otherwise get wrong in a predictable direction, so
+    they belong in the loudest place in the run rather than in a docstring."""
+    b = un.run_banner(CUR6K)
+    #  1. the subset property -- what the comparison to the CUR3K run is actually worth
+    assert 'stock_CUR3K IS A STRICT SUBSET OF THIS UNIVERSE' in b
+    assert 'attributable to the %d ADDED names' % (
+        un.CURATED6K_ESTIMATED_MEMBERS - un.CURATED3K_ESTIMATED_MEMBERS) in b
+    #  2. the cost, before it is incurred
+    assert 'fetch cost (estimate)' in b
+    assert 'A FLOOR' in b, (
+        'the band comes from runs with smaller payloads; at -nrperiods 80 the payloads are '
+        '~2.3x larger, so it must not read as a centre')
+    #  3. that "more names" is NOT more statistical power -- the claim most likely to be
+    #     read into a bigger universe, and the measurement says otherwise
+    assert 'DOES **NOT** FIX THE POWER PROBLEM' in b
+    assert 'independent 3-year WINDOWS' in b
+    #  the generic sampled-universe warning still fires too
+    assert 'SAMPLED UNIVERSE' in b and 'NOT COMPARABLE' in b
+    assert 'universe_fingerprint' in b
+
+
+def test_cur6k_banner_says_a_BACKTEST_over_it_does_not_COVER_it():
+    """THE PRICE-COVERAGE CAVEAT.  The CEO has ruled that price coverage is an analysis
+    tool and not a filter input, so the 1,386 XETRA+STO names are a deliberate inclusion,
+    NOT a blocker -- these names score normally.  What the ruling does not cover is someone
+    reading a BACKTEST over this universe as covering this universe.  It does not, and the
+    banner has to say so on every run."""
+    b = un.run_banner(CUR6K)
+    assert 'SCOREABLE BUT NOT BACKTESTABLE' in b
+    assert str(un.CURATED6K_UNBACKTESTABLE) in b
+    assert '2021-12-31' in b
+    assert 'STO' in b and 'XETRA' in b
+    #  the pool a beat-rate may actually be quoted against
+    assert str(un.CURATED6K_ESTIMATED_MEMBERS - un.CURATED6K_UNBACKTESTABLE) in b
+
+
+def test_the_price_coverage_gap_is_recorded_as_DATA_and_its_total_follows():
+    """Recorded as data rather than prose so the banner and any tooling read ONE source,
+    and so the figures are attributable: they are supplied by the price-coverage work,
+    measured at 2021-12-31, NOT measured by universes.py -- which is why they carry a date
+    and a venue rather than sitting inside a sentence."""
+    gap = un.CURATED6K_PRICE_COVERAGE_GAP
+    assert set(gap) == {'XETRA', 'STO'}
+    for code, (members, covered) in gap.items():
+        assert code in un.exchanges(CUR6K), code
+        assert members == un.CURATED6K_SIZING[code], (
+            '%s: the price-coverage row says %d members but CURATED6K_SIZING says %d'
+            % (code, members, un.CURATED6K_SIZING[code]))
+        assert 0 <= covered < members
+    assert un.CURATED6K_UNBACKTESTABLE == sum(m for m, _c in gap.values())
+    #  It is a real fraction of the universe -- worth a banner -- but not most of it.
+    assert 0.15 < un.CURATED6K_UNBACKTESTABLE / float(un.CURATED6K_ESTIMATED_MEMBERS) < 0.30
+
+
+def test_the_sampled_banner_derives_its_top_100_share_instead_of_HARDCODING_3_PERCENT():
+    """THE DEFECT A SECOND SAMPLED UNIVERSE EXPOSED (fixed 2026-08-21).  The sampled-universe
+    warning said "a top-100 cut here is roughly the top 3% of the pool" as a literal.  That
+    was measured for stock_CUR3K, but the block fires for EVERY sampled universe, so
+    stock_CUR6K -- where the real figure is 1.7% -- would have been told 3%: a wrong number
+    in the loudest place in the run, and wrong in the direction that makes the pool sound
+    MORE distorted than it is.  Same class as the label counts that drifted."""
+    for name in sorted(SAMPLED_UNIVERSES):
+        exp = un.expected_count(name)
+        want = '~%.1f%%' % (100.0 * 100.0 / exp)
+        assert 'top %s of the pool' % want in un.run_banner(name), (
+            '%s (%d members) should state a top-100 share of %s' % (name, exp, want))
+    #  and the two universes must NOT be told the same share, which is the whole point
+    assert (un.run_banner(CUR3K).count('top ~3.1% of the pool') == 1
+            and un.run_banner(CUR6K).count('top ~1.7% of the pool') == 1)
+
+
+def test_cur6k_the_dead_code_FLOOR_is_silent_on_the_real_replay_but_still_screams():
+    """THE GUARD THAT MUST NOT CRY WOLF ON A SECOND SAMPLED UNIVERSE.
+
+    This is the defect fixed on 2026-08-07: comparing a POST-SAMPLE count against a
+    WHOLE-EXCHANGE number made five of stock_CUR3K's eight codes report 75-83% SHORT on
+    EVERY run, all five false -- and a guard that fires five times a run is one the
+    operator learns to skip, so the next genuinely dead code hides inside the noise of the
+    guard built to find it.  stock_CUR6K has fourteen codes and two rate tiers, so it is
+    the harder case.
+
+    Asserted against the REPLAYED per-code counts, not against a synthetic healthy dict:
+    a synthetic one is constructed to pass.
+    """
+    problems = un.check_resolved_counts(CUR6K, un.CURATED6K_SIZING)
+    assert problems == [], (
+        "the shortfall floor fires on stock_CUR6K's own replayed counts: %s" % problems)
+    #  Every code must clear the floor with real margin, or the guard is one bad run from
+    #  being noise. The floor UNDER-states by design (it cannot model upward closure), so
+    #  the replay should sit at or above it.
+    for c in un.exchanges(CUR6K):
+        exp = un.expected_resolved_count(CUR6K, c)
+        shortfall = 1.0 - (un.CURATED6K_SIZING[c] / exp)
+        assert shortfall < 0.10, (
+            '%s replays %d against a floor of %.0f (%.1f%% short) -- too close to the '
+            '%.0f%% warn threshold for the guard to stay quiet on a normal run'
+            % (c, un.CURATED6K_SIZING[c], exp, 100 * shortfall,
+               100 * un.RESOLVED_SHORTFALL_WARN_ABOVE))
+    #  AND THE DEAD-CODE SIGNAL SURVIVES, which is the whole point of the guard. Checked on
+    #  a NEWLY-ADDED venue: if wiring six new codes had broken the floor for them, the four
+    #  never-fetched venues would be exactly where a dead code could hide.
+    for dead_code in ('OSL', 'BRU', 'LIS', 'ICE', 'XETRA', 'STO'):
+        dead = dict(un.CURATED6K_SIZING, **{dead_code: 0})
+        got = un.check_resolved_counts(CUR6K, dead)
+        assert [g[0] for g in got] == [dead_code], (
+            'a dead %s did not scream: %s' % (dead_code, got))
+        assert got[0][3] == 1.0, '%s reported %.2f short, expected 100%%' % (dead_code,
+                                                                            got[0][3])
+
+
+def test_cur6k_lands_on_the_right_side_of_BOTH_panel_predicates():
+    """The 2026-08-17 defect, checked for the NEW universe by name as well as by the generic
+    loop in `test_a_CURATED_panel_can_never_stand_in_as_the_production_pool`.
+
+    stock_CUR6K is curated by a SAMPLING RULE, so `un.symbols()` returns None for it exactly
+    as it does for stock_CUR3K -- the shape that made a curated universe read as production.
+    `is_explicit_list_panel` must be FALSE (it is not an explicit list) and
+    `is_production_panel` must ALSO be false (it is not the production universe), and those
+    two are different questions.
+    """
+    path = 'Bometric_dic-fmp_%s_all_2026-08-21_len6036.pickle' % CUR6K
+    assert un.symbols(CUR6K) is None, 'CUR6K is rule-curated, not list-curated'
+    assert vtu.panel_universe(path) == CUR6K, (
+        'the panel filename must resolve to CUR6K and not to a name it contains as a '
+        'substring -- panel_universe matches LONGEST first')
+    assert vtu.is_explicit_list_panel(path) is False
+    assert vtu.is_production_panel(path) is False
+    #  and the two CUR names must not alias each other, which is the failure a shared
+    #  prefix would cause
+    assert vtu.panel_universe(
+        'Bometric_dic-fmp_%s_all_2026-08-07_len3258.pickle' % CUR3K) == CUR3K
+
+
+def test_cur6k_is_RESUMABLE_and_its_artifact_names_do_not_collide_with_cur3k(
+        tmp_path, monkeypatch):
+    """A newly-added universe must not be born unresumable -- the defect that left
+    stock_US1_EU1 and stock_US1_EU2 raising 'Not Implemented' for -startfromlastindex after
+    a partial multi-hour fetch had already been paid for.
+
+    Exercised through the REAL `utils.get_lastIndexRead`, not just against
+    `resume_filenames()`: the derivation is the thing that could break, and the whitelist
+    check is inside that function.  `chdir(tmp_path)` because the function CREATES the
+    resume file when the name is allowed, and a test must not drop one in the repo."""
+    fn = un.resume_filename(CUR6K)
+    assert fn == 'lastIndexOfRead_fmp_stock_CUR6K.txt'
+    assert fn in un.resume_filenames()
+    assert fn != un.resume_filename(CUR3K)
+    monkeypatch.chdir(tmp_path)
+    assert utils.get_lastIndexRead(fn) == 0, (
+        'a fresh resume file for a newly-added universe must start at 0, not raise')
+    with pytest.raises(Exception):
+        utils.get_lastIndexRead('lastIndexOfRead_fmp_stock_NOT_A_UNIVERSE.txt')
+    #  the fingerprint is distinct, so artifacts from the two runs can never be conflated
+    assert un.definition_fingerprint(CUR6K) != un.definition_fingerprint(CUR3K)
+
+
+def test_cur6k_provenance_stamp_carries_the_sample_and_the_pins():
+    """The filter NAME is not sufficient provenance for a sampled universe: two runs at
+    different rates carry the same name.  The stamp must carry the rates and the pins, and
+    it must stay JSON-able so tooling need not import this module."""
+    st = un.provenance(CUR6K)
+    assert st['universe'] == CUR6K
+    assert st['universe_sample'] == dict(un.CURATED6K_SAMPLED)
+    assert st['universe_sample_denominator'] == un.CURATED6K_SAMPLE_DENOMINATOR
+    assert len(st['universe_must_include']) == len(un.must_include(CUR6K))
+    assert st['universe_expected_count'] == un.CURATED6K_ESTIMATED_MEMBERS
+    assert st['universe_definition_changed'] is False
+    json.dumps(st)
+
+
+def test_the_recorded_subset_relationships_HOLD_against_the_live_definitions(
+        live_capture_table, monkeypatch, tmp_path):
+    """CONTAINS_AS_STRICT_SUBSET is read by `run_banner`, so it is a claim printed on every
+    run.  Every entry is therefore replayed, both counts included -- a banner asserting a
+    subset relationship that no longer holds is worse than no banner."""
+    assert un.CONTAINS_AS_STRICT_SUBSET, 'nothing recorded; this test would pass vacuously'
+    for big_name, (small_name, n_small, n_big) in un.CONTAINS_AS_STRICT_SUBSET.items():
+        small = _replay(live_capture_table, small_name, monkeypatch, tmp_path)
+        big = _replay(live_capture_table, big_name, monkeypatch, tmp_path)
+        assert small <= big, '%s is NOT a subset of %s' % (small_name, big_name)
+        assert small < big, '%s is not a STRICT subset of %s' % (small_name, big_name)
+        assert (len(small), len(big)) == (n_small, n_big), (
+            '%s/%s recorded as (%d, %d) but replays to (%d, %d)'
+            % (small_name, big_name, n_small, n_big, len(small), len(big)))
 
 
 # =========================================================================== #

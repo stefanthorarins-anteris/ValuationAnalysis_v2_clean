@@ -731,7 +731,7 @@ TEST_UNIVERSE = (
 #  ---------------------------------------------------------------------------  #
 #  Weaker than the TEST_UNIVERSE warning but NOT absent, and the difference is the  #
 #  point of choosing ~3,000 over 142.  A z-score here is computed against ~3,000    #
-#  peers instead of ~11,500, and a top-100 cut is the top ~3.3% of the pool rather  #
+#  peers instead of ~11,500, and a top-100 cut is the top ~3.1% of the pool rather  #
 #  than the top ~0.9%.  So the top-100 selection and the veto's survivor count are  #
 #  REAL NUMBERS on a REAL POOL -- which is what the CEO asked for -- but they are    #
 #  still NOT COMPARABLE to a stock_NA1_EU1 run, because the pool differs.  Read     #
@@ -992,6 +992,248 @@ def curated3k_manifest():
     same shape and same purpose as `test_universe_manifest`."""
     return tuple(CURATED3K_MUST_INCLUDE)
 
+# =========================================================================== #
+#  THE ~6,000-NAME UNIVERSE, WITH stock_CUR3K AS A STRICT SUBSET (2026-08-21)    #
+#                                                                               #
+#  CEO ask, verbatim: a universe of roughly 6,000 names that has stock_CUR3K as   #
+#  a strict subset, because "it might show us some new problems and give us some   #
+#  more info on the power problem".                                               #
+#                                                                               #
+#  ---------------------------------------------------------------------------  #
+#  WHY THE SUBSET PROPERTY IS THE REQUIREMENT AND NOT A NICETY                    #
+#  ---------------------------------------------------------------------------  #
+#  Every pinned dedup/veto case, and every name the 2026-08-07 CUR3K run observed,  #
+#  is present here TOO.  So a difference between a CUR3K run and a CUR6K run is     #
+#  attributable to the 2,778 ADDED names -- not to a reshuffled sample.  Drop the   #
+#  subset property and the two runs become two unrelated experiments: every pooled  #
+#  statistic (z-score, percentile cut, top-100 membership, veto survivor count)     #
+#  would differ for a second, unattributable reason, which is exactly the           #
+#  irreconcilable-beat-rate trap the CONTINUITY note at the top of this module      #
+#  exists to prevent.                                                              #
+#                                                                               #
+#  IT IS ASSERTED BY TEST, NOT BY THIS ARGUMENT.  `test_universes` replays BOTH     #
+#  definitions through the REAL `tickerfilterWrapper` over the live 2026-08-04       #
+#  `available_traded_raw` capture and asserts set inclusion, member for member       #
+#  (3,258 in, 6,036 out, 0 missing).  The argument below is why it HOLDS; the test   #
+#  is why we know.                                                                  #
+#                                                                               #
+#  ---------------------------------------------------------------------------  #
+#  WHY RAISING A RATE CANNOT DROP A NAME -- THE MONOTONICITY ARGUMENT              #
+#  ---------------------------------------------------------------------------  #
+#  Membership is decided in four stages (`getData_gen.tickerfilterWrapper`), and    #
+#  CUR6K is more permissive than CUR3K at every one:                               #
+#                                                                               #
+#    1. TYPE + INSTRUMENT FILTER.  Both run on the FULL table, BEFORE membership     #
+#       selection (moved there 2026-08-02), so the removal set does not depend on    #
+#       the active universe at all.  IDENTICAL for both -- and this is the stage      #
+#       where a PAIRWISE rule like `filter_non_common_instruments` rule C could       #
+#       otherwise have made a BIGGER universe drop a name the smaller one kept.       #
+#       The 2026-08-02 reordering is what makes that impossible rather than merely     #
+#       unlikely; without it the subset property would not be available at all.        #
+#    2. EXCHANGE FILTER.  CUR6K's codes are a strict SUPERSET of CUR3K's (it adds      #
+#       XETRA STO OSL BRU LIS ICE), so the exchange-filtered frame is a superset.      #
+#    3. THE ISSUER SAMPLE.  `issuer_sample_bucket` is a pure function of the            #
+#       NORMALISED ISSUER NAME, so an issuer's bucket is the SAME NUMBER in both        #
+#       universes.  Only the THRESHOLD moves, and it moves UP:                          #
+#         * per code, every CUR6K rate is >= its CUR3K rate (170 -> 220, 250 -> 400),    #
+#           and the six added codes carry NO rate at all, i.e. take-all;                 #
+#         * `most_permissive_rate` returns None the moment ANY venue the issuer            #
+#           occupies is take-all, and otherwise the MAX over those venues -- both          #
+#           monotone non-decreasing in the venue set and in the per-code rates;            #
+#         * the venue set itself only grows (stage 2).                                     #
+#       So the effective rate is >= CUR3K's (or None) for EVERY issuer, and                #
+#       `issuer_in_sample` is `bucket < rate`.  bucket < r_CUR3K therefore implies          #
+#       bucket < r_CUR6K.                                                                  #
+#       *** IF THIS WERE FALSE THE DESIGN WOULD BE WRONG AND THE ANSWER WOULD BE TO         #
+#       SAY SO, NOT TO WORK AROUND IT: a threshold sample whose selected set is not         #
+#       NESTED under a rate rise is not a sample, it is a reshuffle, and no two runs         #
+#       over it would ever be comparable.  It is nested. ***                                #
+#    4. THE PIN UNION + GROUP CLOSURE.  The same 40 pinned symbols, drawn from the same      #
+#       full post-instrument-filter table.  Sibling closure is restricted to the             #
+#       universe's OWN exchanges, and CUR6K wires more of them, so it pulls in MORE           #
+#       siblings (10 against CUR3K's 7), never fewer.                                         #
+#                                                                               #
+#  MEASURED, not merely argued: replayed at seven (us_lse_rate, korea_rate) pairs from #
+#  (170,250) to (400,500), CUR3K arrives COMPLETE at every one -- 0 missing.           #
+#                                                                               #
+#  ONE PROPERTY CUR3K HAS THAT CUR6K DOES NOT DEMONSTRATE: CUR3K's pins reach          #
+#  OUTSIDE its base-rule exchanges (EMBELL.ST on STO, EIN.DE / DRW3.DE on XETRA),      #
+#  which is what proves the must-include union is not exchange-bound.  CUR6K WIRES     #
+#  STO and XETRA, so all 40 of its pins are inside its own exchange set and it         #
+#  exercises that path vacuously.  The property is still covered -- by CUR3K's own      #
+#  test -- but it is no longer covered HERE, and that is worth knowing before anyone    #
+#  treats CUR6K as a superset of CUR3K's TEST coverage as well as of its membership.    #
+#                                                                               #
+#  ---------------------------------------------------------------------------  #
+#  WHERE THE ADDED MASS WENT, AND THE COMPROMISE THAT FORCED                       #
+#  ---------------------------------------------------------------------------  #
+#  The added mass is spent on COVERAGE first, because "show us new problems" is the  #
+#  CEO's first stated purpose and a new VENUE is where a new problem lives: a new    #
+#  currency through the FX table, a new suffix through the dedup rules, a new        #
+#  reporting convention, a new share-class idiom.  So the take-all set is now EVERY  #
+#  stock_NA1_EU1 venue EXCEPT the three big ones -- CUR6K is production, with         #
+#  NYSE/NASDAQ/LSE sampled and Korea added.  That is the whole definition and it is   #
+#  worth stating that way:                                                           #
+#      CURATED6K_TAKE_ALL == set(exchanges('stock_NA1_EU1')) - {NYSE, NASDAQ, LSE}    #
+#  asserted by test, so the prose and the tuple cannot drift apart.                  #
+#                                                                               #
+#  FOUR OF THE SIX ADDED VENUES HAVE NEVER BEEN FETCHED BY ANY RUN.  OSL (226), BRU  #
+#  (110), LIS (35) and ICE (20) were RESTORED on 2026-08-02 -- they were the          #
+#  EURONEXT/OSE dead-code defect -- and no run since has been made over them, because  #
+#  CUR3K deliberately left them out to stay small.  XETRA and STO have only ever been  #
+#  reached by three PINNED symbols.  581 names on venues that have never been through  #
+#  the fetch path, plus 1,386 on two that have barely been, is where the new problems  #
+#  are if there are any.                                                              #
+#                                                                               #
+#  *** THE COMPROMISE, NAMED RATHER THAN ROUNDED AWAY.  The rates are 22.0% / 40.0%,   #
+#  NOT the 30% / 40% the sizing sketch proposed, and the reason is that the sketch's   #
+#  arithmetic was PER CODE while the base rule closes groups UPWARD.  Six more          #
+#  take-all venues means far more issuers straddle a take-all venue and a sampled one   #
+#  -- 659 issuer names against CUR3K's 278 -- and every one of those is pulled in WHOLE  #
+#  regardless of its bucket.  Replayed end-to-end: 30%/40% lands at 6,620 members       #
+#  (+10% over the ask, ~+2,900 calls, ~+40-55 min of fetch); 22%/40% lands at 6,036.    #
+#  Even at CUR3K's OWN rates (17%/25%) the added venues alone put this universe at      #
+#  5,471, so "roughly 6,000" leaves only ~565 names of room on the sampled venues --     #
+#  the six whole venues, not the rate rise, are what gets us there.  Raising the rate    #
+#  to 30% is a two-number edit if the CEO wants the bigger pool; 22% is the number       #
+#  that answers "roughly 6,000" literally. ***                                           #
+#                                                                               #
+#  Korea is raised PROPORTIONALLY MORE (25% -> 40%) on purpose.  The Korean preferred     #
+#  families are where the one still-UNVERIFIED half of the Asia work lives -- whether     #
+#  FMP serves a preferred its ISSUER'S statements, so the family GROUPS at all            #
+#  (ASIA_BLOCKER residual) -- and that question is answered by having more whole           #
+#  FAMILIES, not more US names.  500 Korean rows against CUR3K's 334.                     #
+#                                                                               #
+#  ---------------------------------------------------------------------------  #
+#  !!! WHAT THIS UNIVERSE DOES **NOT** BUY: IT DOES NOT FIX THE POWER PROBLEM !!!     #
+#  ---------------------------------------------------------------------------  #
+#  Stated here because "more names" reads as "more statistical power", and on the      #
+#  measurement we actually have, it is not.  The binding constraint on K-2 was          #
+#  MEASURED to be the number of INDEPENDENT 3-YEAR WINDOWS (~2.3), not the number of    #
+#  names: pooled n was already 2,984 against a 1,730 requirement, so names were not     #
+#  the shortfall and were never the shortfall.  Doubling the universe does not add a    #
+#  single independent window.  What a ~6,000-name pool genuinely buys is three other    #
+#  things, and they are worth the fetch on their own terms:                             #
+#    (a) NEW-VENUE DEFECT DISCOVERY -- six venues, four never fetched, each with its     #
+#        own currency, suffix and reporting conventions.  This is the main reason.       #
+#    (b) A LESS DISTORTED TOP-100 CUT -- 100 of 6,036 is the top ~1.7% of the pool,      #
+#        against ~3.1% on CUR3K and ~0.9% in production.  Closer, still not equal.       #
+#    (c) A GENERALISATION CHECK -- whether the findings to date survive past a 3.2k      #
+#        curated sample, which nothing so far has tested.                                #
+#  If the goal is statistical power on K-2, this universe is the wrong instrument; the    #
+#  right one is more HISTORY, not more names.  `run_banner` says this on every run.       #
+# =========================================================================== #
+
+#  Taken WHOLE.  Identical to stock_NA1_EU1's venue set minus the three sampled ones;
+#  asserted by test rather than left as a claim in the prose above.
+CURATED6K_TAKE_ALL = ('TSX', 'PAR', 'AMS', 'XETRA', 'STO', 'OSL', 'BRU', 'LIS', 'ICE')
+
+#  SAMPLED, out of CURATED6K_SAMPLE_DENOMINATOR -- which IS CURATED3K_SAMPLE_DENOMINATOR
+#  and MUST stay equal: the subset property is the nesting of `bucket < rate` on the SAME
+#  bucket scale, so a different denominator would silently break it.  Every rate is >= its
+#  CUR3K counterpart, which is the other half of what makes the nesting hold.
+CURATED6K_SAMPLED = {
+    'NYSE': 220, 'NASDAQ': 220, 'LSE': 220,     # 22.0% of issuer names (CUR3K: 17.0%)
+    'KSC': 400, 'KOE': 400,                     # 40.0% of issuer names (CUR3K: 25.0%)
+}
+CURATED6K_SAMPLE_DENOMINATOR = CURATED3K_SAMPLE_DENOMINATOR
+
+#  REPLAYED, NOT MODELLED.  Both definitions run end-to-end through the REAL
+#  `getData_gen.tickerfilterWrapper` -- type filter, `filter_non_common_instruments`,
+#  exchange filter, `_apply_issuer_sample`, the pin union with group closure, the delisted
+#  prune -- over the live 2026-08-04 `available_traded_raw` capture, on 2026-08-21.
+#  These are per-code counts of the RESOLVED membership, directly comparable to
+#  CURATED3K_SIZING (whose figure is in each trailing comment), and they SUM to the member
+#  count.  Measured against the RAW capture, which is NOT intersected with
+#  `financial-statement-symbol-lists`, so each is a slight OVER-count of what a live fetch
+#  finds -- the same basis caveat CURATED3K_SIZING carries, stated again rather than
+#  inherited silently.
+CURATED6K_SIZING = {
+    'LSE': 891,        # CUR3K 529   sampled 17.0% -> 22.0%
+    'NASDAQ': 870,     # CUR3K 620   sampled 17.0% -> 22.0%
+    'STO': 697,        # CUR3K   1   pins only -> WHOLE
+    'XETRA': 689,      # CUR3K   2   pins only -> WHOLE
+    'NYSE': 671,       # CUR3K 445   sampled 17.0% -> 22.0%
+    'TSX': 641,        # CUR3K 641   WHOLE, unchanged
+    'PAR': 582,        # CUR3K 582   WHOLE, unchanged
+    'KSC': 331,        # CUR3K 223   sampled 25.0% -> 40.0%
+    'OSL': 226,        # CUR3K   0   NEVER FETCHED -> WHOLE
+    'KOE': 169,        # CUR3K 111   sampled 25.0% -> 40.0%
+    'BRU': 110,        # CUR3K   0   NEVER FETCHED -> WHOLE
+    'AMS': 104,        # CUR3K 104   WHOLE, unchanged
+    'LIS': 35,         # CUR3K   0   NEVER FETCHED -> WHOLE
+    'ICE': 20,         # CUR3K   0   NEVER FETCHED -> WHOLE
+}
+CURATED6K_ESTIMATED_MEMBERS = sum(CURATED6K_SIZING.values())      # 6,036
+
+#  THE RATE-SCALED FORMULA IN `expected_count` ANSWERS 5,492 FOR THIS DEFINITION, i.e. it
+#  understates the replayed count by 544 (~9%), because no per-code factor can express
+#  "kept for a reason that lives on a different exchange code".  The gap is four times
+#  CUR3K's +135 for exactly the reason the compromise note gives: six more take-all venues
+#  means far more upward closure.  Recorded as data so the two answers can be compared
+#  rather than one quietly replacing the other.
+CURATED6K_FORMULA_GAP = 544
+
+#  NO COHORT TABLE, AND THAT IS DELIBERATE.  `CURATED3K_COHORT_ESTIMATE` is derived by
+#  intersecting the base rule with the saved 2026-01-08 panel, because `carveOut.classify`
+#  needs real fundamentals for its FIN-1 equity/assets fingerprint.  That panel predates
+#  PAR/AMS/Korea entirely AND all six venues this universe adds, so for CUR6K the shares
+#  would be a lower bound on a lower bound -- a table whose every row is wrong by an
+#  unknown amount in an unknown direction.  The honest statement is that the cohort
+#  composition of the 2,778 added names IS NOT KNOWN before the fetch; a fabricated table
+#  would hide that, and an operator would add the column up and believe it.
+
+#  Fetch cost, on the SAME basis as CURATED3K_API_CALLS so the two are comparable: 5
+#  statement calls per source + 3 for the universe build, at 0.80-1.15 s/call (the two
+#  independent readings recorded above CURATED3K_API_CALLS).  Profile batches are excluded
+#  from BOTH figures, again for comparability -- so this is the statement-fetch cost, not
+#  the whole run.
+#    CUR3K   16,293 calls   3.6-5.2 h
+#    CUR6K   30,183 calls   6.7-9.6 h        <- 1.85x.  The CEO decides whether to spend it.
+#
+#  *** READ THE BAND AS A FLOOR, NOT A CENTRE. ***  The 0.80-1.15 s/call readings come from
+#  runs whose statement payloads were smaller.  At `-nrperiods 80` the payloads are ~2.3x
+#  larger (figure supplied with the sizing brief; NOT measured by this module), and per-call
+#  latency is partly payload size.  6.7-9.6 h is what the CUR3K basis implies; LONGER is the
+#  expected direction of error, not a surprise.
+CURATED6K_API_CALLS = 5 * CURATED6K_ESTIMATED_MEMBERS + 3        # 30,183
+CURATED6K_WALLCLOCK_HOURS = (6.7, 9.6)
+
+#  ---------------------------------------------------------------------------------- #
+#  !!! SCOREABLE BUT NOT BACKTESTABLE -- THE PRICE-COVERAGE GAP ON THE ADDED VENUES !!! #
+#  ---------------------------------------------------------------------------------- #
+#  Two of the six added venues have effectively NO historical bulk price coverage.
+#  Measured at 2021-12-31 (figures supplied with the sizing brief, from the price-coverage
+#  work -- NOT measured by this module): XETRA 22 symbols covered, STOCKHOLM 0.  So the
+#  1,386 XETRA+STO names this universe adds can be SCORED -- the filter is a fundamentals
+#  filter and scoring needs statements, which exist -- but CANNOT be BACKTESTED, because a
+#  backtest needs a price at the rebalance date and there is none.
+#
+#  THE CEO HAS RULED ON THE PRINCIPLE, so this is NOT a blocker: "my filter is a
+#  fundamentals filter and price coverage is more of an analysis tool".  It is recorded
+#  here, and printed by `run_banner` on every run, for the ONE failure mode the ruling does
+#  not cover: reading a BACKTEST over this universe as though it covered the universe.  It
+#  does not.  A backtest over CUR6K covers roughly the 4,650 names that have prices, so any
+#  beat-rate from it must be quoted against THAT pool -- never against 6,036, and never
+#  described as "the 6k universe's beat-rate".
+CURATED6K_PRICE_COVERAGE_GAP = {
+    #  code: (members this universe carries, symbols with bulk price coverage @2021-12-31)
+    'XETRA': (689, 22),
+    'STO': (697, 0),
+}
+CURATED6K_UNBACKTESTABLE = sum(n for n, _c in CURATED6K_PRICE_COVERAGE_GAP.values())   # 1,386
+
+#  PROVEN STRICT-SUBSET RELATIONSHIPS between universes: {bigger: (smaller, n_small, n_big)}
+#  with both counts REPLAYED through the real wrapper.  Data rather than prose, for the same
+#  reason DEAD_CODES is data: the run banner reads it, and a test asserts the relationship
+#  still holds against the live definitions -- so the claim in a banner is a checked fact,
+#  never a comment someone forgot to update.  It is what makes two runs comparable, so it is
+#  the LAST property that should be allowed to rot quietly.
+CONTAINS_AS_STRICT_SUBSET = {
+    'stock_CUR6K': ('stock_CUR3K', CURATED3K_ESTIMATED_MEMBERS,
+                    CURATED6K_ESTIMATED_MEMBERS),
+}
+
 
 # =========================================================================== #
 #  THE REGISTRY.  One entry per universe scope.  Both `configuration` (which     #
@@ -1120,12 +1362,39 @@ UNIVERSES = {
              'needed tweak costs ~4 h to rediscover instead of ~21 h. The base rule '
              'samples on the NORMALISED ISSUER NAME (not the symbol), so every line of '
              'an issuer is IN or OUT together and cross-listing groups arrive CLOSED -- '
-             'a per-symbol sample would split them and test nothing. 39 measured '
+             'a per-symbol sample would split them and test nothing. 40 measured '
              'dedup/veto cases are pinned by symbol so no rate edit can drop them '
              '(asserted in test_universes). KOREA IS GATED: '
              'getData_gen.assert_korea_dedup_ready must pass. POOL-RELATIVE OUTPUT IS '
-             'REAL BUT NOT PRODUCTION -- a top-100 cut is the top ~3.3% of this pool '
+             'REAL BUT NOT PRODUCTION -- a top-100 cut is the top ~3.1% of this pool '
              'against ~0.9% in production, so read BEHAVIOUR, never a pick list.'),
+    'stock_CUR6K': dict(
+        label='AD-HOC CURATED ~6,000, stock_CUR3K AS A STRICT SUBSET -- every '
+              'stock_NA1_EU1 venue WHOLE except NYSE NASDAQ LSE @22%, plus KSC KOE @40% '
+              'of issuer NAMES resolved PER ISSUER at the most permissive rate, plus the '
+              'same 40 pinned dedup/veto cases and their siblings '
+              '(6,036 pre-filter) -- ~30,200 calls, ~6.7-9.6 h fetch',
+        exchanges=CURATED6K_TAKE_ALL + tuple(sorted(CURATED6K_SAMPLED)),
+        symbols=None, every_exchange=False, was=None,
+        sample=dict(CURATED6K_SAMPLED),
+        must_include=CURATED3K_MUST_INCLUDE_SYMBOLS,
+        note='stock_CUR3K IS A STRICT SUBSET OF THIS UNIVERSE -- replayed through the '
+             'real wrapper over the live 2026-08-04 capture, 3,258 in, 6,036 out, 0 '
+             'missing, asserted by test. That is what makes the two runs comparable: '
+             'every difference is attributable to the 2,778 ADDED names, not to a '
+             'reshuffled sample. IT DOES NOT FIX THE POWER PROBLEM -- the binding '
+             'constraint on K-2 was measured to be the number of independent 3-year '
+             'WINDOWS (~2.3), not names (pooled n was 2,984 against a 1,730 '
+             'requirement), and more names adds no window. What it buys is new-venue '
+             'defect discovery (six added venues, FOUR never fetched by any run: OSL BRU '
+             'LIS ICE), a top-100 cut at ~1.7% of the pool against CUR3K\'s ~3.1% and '
+             'production\'s ~0.9%, and a check that the findings generalise past a 3.2k '
+             'sample. 1,386 of its names (XETRA+STO) are SCOREABLE BUT NOT '
+             'BACKTESTABLE -- bulk price coverage at 2021-12-31 is 22 symbols on XETRA '
+             'and ZERO on Stockholm -- so a backtest over this universe covers ~4,650 '
+             'names and its beat-rate must never be quoted against 6,036. KOREA IS '
+             'GATED: getData_gen.assert_korea_dedup_ready must pass. POOL-RELATIVE '
+             'OUTPUT IS REAL BUT STILL NOT PRODUCTION.'),
     'stock_FULL1': dict(
         label='FULL -- every exchange FMP serves with statements (~49,000 names)',
         exchanges=None, symbols=None, every_exchange=True, was=None,
@@ -1310,6 +1579,51 @@ def note(name):
     return _entry(name)['note']
 
 
+# --------------------------------------------------------------------------- #
+#  REPLAYED MEMBER COUNTS -- A MEASUREMENT BEATS A MODEL, BUT ONLY WHILE THE      #
+#  DEFINITION IT WAS MEASURED AGAINST IS STILL THE DEFINITION.                    #
+#                                                                               #
+#  `expected_count`'s rate-scaled formula cannot model PER-ISSUER UPWARD CLOSURE:   #
+#  a cross-listed issuer that misses the sample threshold is KEPT because one of     #
+#  its lines sits on a take-all venue, and no per-code factor can express "kept for  #
+#  a reason that lives on a different exchange code".  Measured, the formula          #
+#  understates stock_CUR3K by 135 and stock_CUR6K by 544.  So where a REPLAY exists,  #
+#  the replay is what `expected_count` returns.                                      #
+#                                                                               #
+#  KEYED BY FINGERPRINT, NOT BY NAME.  This is the close for the staleness path the  #
+#  2026-08-06 review named and deferred: a figure stored against a NAME survives an   #
+#  edit to the definition and keeps looking plausible, which is the worst shape a     #
+#  stale number can have.  Stored against `definition_fingerprint(name)`, it is       #
+#  refused the moment a rate, a code or a pin moves -- and `run_banner` says so.       #
+#                                                                               #
+#  HOW TO RE-MEASURE (offline, no API calls): run `tickerfilterWrapper` over          #
+#  `available_traded_raw_<date>.pickle` with `safe_get` stubbed to return [] -- which   #
+#  is exactly what `test_cur6k_...` in test_universes.py does, so the test IS the       #
+#  re-measurement procedure.  Update BOTH the fingerprint and the count together.       #
+# --------------------------------------------------------------------------- #
+REPLAYED_MEMBER_COUNTS = {
+    #  name: (definition_fingerprint, resolved member count)
+    #  Both replayed against the live 2026-08-04 `available_traded_raw` capture.
+    'stock_CUR3K': ('844b3eaf1ea2', CURATED3K_ESTIMATED_MEMBERS),   # 3,258, replayed 2026-08-06
+    'stock_CUR6K': ('718712e8d985', CURATED6K_ESTIMATED_MEMBERS),   # 6,036, replayed 2026-08-21
+}
+
+
+def replayed_count_is_stale(name):
+    """The stored replay for `name` no longer matches its definition -- (stored_fp, live_fp)
+    -- or None when there is nothing stale to report.
+
+    None covers both healthy cases and they are NOT the same thing, which is why this
+    returns a tuple rather than a bool: a universe with NO stored replay is not stale, it
+    simply has none, and `expected_count` correctly falls back to the formula for it.
+    """
+    rep = REPLAYED_MEMBER_COUNTS.get(name)
+    if rep is None:
+        return None
+    live = definition_fingerprint(name)
+    return None if rep[0] == live else (rep[0], live)
+
+
 def expected_count(name):
     """Sum of live-verified per-exchange counts, or the member count for an explicit
     list.  None for the every-exchange universe (no per-code sum applies).
@@ -1332,25 +1646,25 @@ def expected_count(name):
     measurement beats a model here; the formula stays as the fallback for any future
     sampled universe that has not been replayed.
 
-    KNOWN SILENT-STALENESS PATH, NAMED RATHER THAN CLOSED (reviewer, 2026-08-06).  The
-    `stock_CUR3K` branch is special-cased BY NAME, so it is exact today but keeps returning
-    the STORED measurement if the universe DEFINITION moves -- with no symptom, because the
-    number still looks plausible.  A `definition_fingerprint` (hash the exchange set + sample
-    rates + must-include list, and refuse the stored figure when it does not match) is the
-    real close and is NOT DONE -- deliberately deferred rather than rushed in ahead of the
-    fetch.  THE CHEAPER PROTECTION IS IN PLACE INSTEAD: `test_universes` now derives the
-    wallclock band from `CURATED3K_API_CALLS` at +-0.05 h (was +-0.5 h, wide enough to absorb
-    the 3,045 -> 3,258 drift) and asserts `CURATED3K_COHORT_ESTIMATE` sums to the coded member
-    count, so a definition change that moves the member count trips a test.  It does NOT catch
-    a definition change that leaves the count unmoved; that residual is the fingerprint's.
+    THE SILENT-STALENESS PATH IS NOW CLOSED (2026-08-21), and this is the note that said it
+    was not.  The stored measurement used to be reached by a `name == 'stock_CUR3K'` branch,
+    so it stayed exact only as long as nobody edited the definition: move a rate or add an
+    exchange code and the branch kept returning the OLD figure with no symptom, because the
+    number still looked plausible.  The close is the one the deferral named: the measurements
+    live in `REPLAYED_MEMBER_COUNTS` keyed by name AND by `definition_fingerprint`, and a
+    stored figure is refused the moment the fingerprint does not match -- at which point this
+    function falls back to the rate-scaled formula and `run_banner` says out loud that the
+    replay is stale.  `replayed_count_is_stale` is the predicate, so a caller (or a test) can
+    ask without re-deriving the hash.
     """
     d = _entry(name)
     if d['symbols'] is not None:
         return len(d['symbols'])
     if d['every_exchange']:
         return None
-    if name == 'stock_CUR3K':
-        return CURATED3K_ESTIMATED_MEMBERS
+    rep = REPLAYED_MEMBER_COUNTS.get(name)
+    if rep is not None and rep[0] == definition_fingerprint(name):
+        return rep[1]
     rates = sample_rates(name)
     total = 0.0
     for c in d['exchanges']:
@@ -1363,7 +1677,7 @@ def expected_count(name):
     #  Must-includes are a UNION, so a member the base rule already selected is not
     #  counted twice -- but which ones those are is only knowable against the live table,
     #  so this over-counts by the overlap.  Over-counting is the safe direction for a
-    #  sanity expectation and the count is 39, i.e. ~1%.
+    #  sanity expectation and the count is 40, i.e. ~1%.
     total += len(must_include(name))
     return int(round(total))
 
@@ -1558,10 +1872,41 @@ def run_banner(name, resolved_count=None):
     out = [bar, '  UNIVERSE: %s' % name, '  %s' % d['label'],
            '  definition fingerprint : %s   (exchange codes verified live 2026-08-02)'
            % definition_fingerprint(name)]
+    #  A STALE REPLAY IS SAID OUT LOUD, not silently swapped for the formula.  The stored
+    #  member count is refused when the fingerprint moves (see REPLAYED_MEMBER_COUNTS), and
+    #  the operator has to know that the "expected members" line below dropped from a
+    #  measurement to a model -- otherwise the number just looks slightly different.
+    stale = replayed_count_is_stale(name)
+    if stale is not None:
+        out += [
+            bang,
+            '!!! THE REPLAYED MEMBER COUNT FOR THIS UNIVERSE IS STALE AND HAS BEEN REFUSED.',
+            '!!!   replay was measured against definition : %s' % stale[0],
+            '!!!   this definition is                     : %s' % stale[1],
+            '!!! "expected members" below is therefore the RATE-SCALED FORMULA, which',
+            '!!! UNDERSTATES a sampled universe (it cannot model per-issuer upward',
+            '!!! closure -- measured gaps: CUR3K +135, CUR6K +544). Re-replay the',
+            '!!! definition offline and update REPLAYED_MEMBER_COUNTS before quoting a',
+            '!!! member count or a fetch length from this run.',
+            bang,
+        ]
     exp = expected_count(name)
     if exp is not None:
         out.append('  expected members      : ~%d before the instrument/delisted/sector '
                    'filters' % exp)
+        #  THE COST, BEFORE THE COST IS INCURRED.  Derived here from `exp` on the one
+        #  basis every cost figure in this module uses -- 5 statement calls per source + 3
+        #  for the universe build, at the 0.80-1.15 s/call two independent runs imply --
+        #  rather than looked up per universe, so it cannot drift from
+        #  CURATED3K_API_CALLS / CURATED6K_API_CALLS (a test asserts all three agree).
+        #  PROFILE BATCHES ARE EXCLUDED, and the band is a FLOOR: the per-call readings
+        #  come from runs with smaller statement payloads, and at -nrperiods 80 the
+        #  payloads are ~2.3x larger, so LONGER is the expected direction of error.
+        _calls = 5 * exp + 3
+        out.append('  fetch cost (estimate) : ~%s statement calls, ~%.1f-%.1f h at '
+                   '0.80-1.15 s/call -- A FLOOR, profile batches excluded'
+                   % ('{:,}'.format(_calls), _calls * 0.80 / 3600.0,
+                      _calls * 1.15 / 3600.0))
     if resolved_count is not None:
         out.append('  RESOLVED members      : %d' % resolved_count)
     if d['exchanges']:
@@ -1623,13 +1968,71 @@ def run_banner(name, resolved_count=None):
             '!!! Membership is a deterministic sample of ISSUER NAMES plus %d pinned'
             % len(mi),
             '!!! cases, so the POOL is ~%s members against ~10,693 in production.'
-            % (('%d' % exp) if exp is not None else '?'),
+            % (('{:,}'.format(exp)) if exp is not None else '?'),
             '!!! Every pool-relative number (z-scores, percentile cuts, cohort scoring,',
             '!!! the top-100 pool, the top-20 and the per-band top-5s) is therefore REAL',
             '!!! but NOT COMPARABLE to a production run: a top-100 cut here is roughly the',
-            '!!! top 3% of the pool against ~0.9% in production. Read this run for',
+            #  DERIVED, not the hardcoded "3%" this line carried until 2026-08-21. That
+            #  figure was measured for stock_CUR3K and this block fires for EVERY sampled
+            #  universe, so the second one (stock_CUR6K, where the true figure is 1.7%)
+            #  would have been told 3% -- a wrong number in the loudest place in the run,
+            #  and wrong in the direction that makes the pool sound MORE distorted than it
+            #  is. Same defect class as the label counts that drifted.
+            '!!! top %s of the pool against ~0.9%% in production. Read this run for'
+            % (('~%.1f%%' % (100.0 * 100.0 / exp)) if exp else 'N%'),
             '!!! BEHAVIOUR -- what the dedup merges, which line survives, whom the veto',
             '!!! ejects -- never as a pick list. Match artifacts by universe_fingerprint.',
+            bang,
+        ]
+
+    #  THE SUPERSET BLOCK.  Keyed on CONTAINS_AS_STRICT_SUBSET, not on the universe's name,
+    #  so a second such universe gets the banner for free.  Three things go here and each
+    #  one is a thing an operator would otherwise get wrong in a predictable direction:
+    #  what the comparison to the smaller run is worth, what it does NOT buy, and what a
+    #  backtest over it does not cover.
+    sub = CONTAINS_AS_STRICT_SUBSET.get(name)
+    if sub is not None:
+        smaller, n_small, n_big = sub
+        out += [
+            bang,
+            '!!! %s IS A STRICT SUBSET OF THIS UNIVERSE (%d of %d, replayed through the'
+            % (smaller, n_small, n_big),
+            '!!! real wrapper against the live capture; 0 missing, asserted by test).',
+            '!!! SO THE COMPARISON IS VALID ON MEMBERSHIP: every difference between a %s'
+            % smaller,
+            '!!! run and this one is attributable to the %d ADDED names, not to a'
+            % (n_big - n_small),
+            '!!! reshuffled sample. Pooled statistics still differ -- the POOL grew by',
+            '!!! %.0f%%, so a z-score, a percentile cut and a top-100 membership all move'
+            % (100.0 * (n_big - n_small) / float(n_small)),
+            '!!! for that reason alone, even for a name present in both.',
+            '!!!',
+            '!!! IT DOES **NOT** FIX THE POWER PROBLEM, and "more names" reads as though it',
+            '!!! would. The binding constraint on K-2 was MEASURED to be the number of',
+            '!!! independent 3-year WINDOWS (~2.3), NOT the number of names: pooled n was',
+            '!!! already 2,984 against a 1,730 requirement. Doubling the universe adds no',
+            '!!! window. What it buys is (a) new-venue defect discovery, (b) a top-100 cut',
+            '!!! at ~%.1f%% of the pool against ~%.1f%% on %s and ~0.9%% in production, and'
+            % (100.0 * 100.0 / n_big, 100.0 * 100.0 / n_small, smaller),
+            '!!! (c) a check that the findings generalise past a curated sample.',
+            bang,
+        ]
+    gap = CURATED6K_PRICE_COVERAGE_GAP if name == 'stock_CUR6K' else None
+    if gap:
+        out += [
+            bang,
+            '!!! SCOREABLE BUT NOT BACKTESTABLE -- %d of this universe\'s names have no'
+            % CURATED6K_UNBACKTESTABLE,
+            '!!! historical bulk price coverage. Measured at 2021-12-31: %s.'
+            % '; '.join('%s %d members / %d covered' % (c, n, cov)
+                        for c, (n, cov) in sorted(gap.items())),
+            '!!! The filter is a FUNDAMENTALS filter and these names have statements, so',
+            '!!! they SCORE normally -- that is the CEO\'s ruling and it is not a blocker.',
+            '!!! BUT A BACKTEST OVER THIS UNIVERSE DOES NOT COVER THIS UNIVERSE: it covers',
+            '!!! the ~%d names that have prices. Quote any beat-rate against THAT pool,'
+            % (CURATED6K_ESTIMATED_MEMBERS - CURATED6K_UNBACKTESTABLE),
+            '!!! never against %d, and never as "the 6k universe\'s beat-rate".'
+            % CURATED6K_ESTIMATED_MEMBERS,
             bang,
         ]
 
@@ -1798,5 +2201,9 @@ DEDUP_PARTNER_CLOSES = {
 #  (available-traded/list, financial-statement-symbol-lists, delisted page 0).
 #  The ~12h/9,000-name production fetch runs at ~1 s/call, which is the basis for the
 #  wall-clock estimate.
-TEST_UNIVERSE_API_CALLS = 5 * TEST_UNIVERSE_LISTED + 3          # 648
+#  The trailing comment said 648 until 2026-08-21 -- 5*129+3, i.e. a 129-name list that
+#  has not existed since the closure audit added the dedup partners. The CONSTANT was
+#  always right (it is computed); the number a reader would have QUOTED was wrong by 65
+#  calls, which is the kind of figure that ends up in a cost estimate.
+TEST_UNIVERSE_API_CALLS = 5 * TEST_UNIVERSE_LISTED + 3          # 713
 TEST_UNIVERSE_WALLCLOCK_MIN = (8, 15)                           # minutes, observed rate
