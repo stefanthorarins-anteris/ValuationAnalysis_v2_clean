@@ -48,6 +48,7 @@ sys.path.insert(0, _HERE)
 import dead_merge as dm
 import stage2_pit as s2
 import returns_core as rc
+import derived_prices as dpx
 
 # --------------------------------------------------------------------------- #
 #  Default inputs (present locally at the HomeGDrive paths; NONE cross git).   #
@@ -498,6 +499,42 @@ def main():
                     help="metric weight vector (default=production, equal=all weights 1)")
     ap.add_argument("--carve", choices=["off", "on"], default="off",
                     help="filter universe to carveOut general pool BEFORE ranking")
+    #  OUTCOME-VARIABLE ROUTE.  'real' is the default and is bit-for-bit unchanged, so the
+    #  certified grid is untouched unless this is passed explicitly.  'derived' swaps in
+    #  the panel-based TOTAL-RETURN leg (deeper coverage, dividend-inclusive) -- see
+    #  derived_prices.py.  Scoring is NOT affected either way: this only changes what the
+    #  return is measured against, never how a name is ranked.
+    ap.add_argument("--price-route", dest="price_route",
+                    choices=list(dpx.PRICE_ROUTES), default="real",
+                    help="outcome-variable price source: 'real' = real_prices*.csv "
+                         "(default, unchanged); 'derived' = panel total-return leg")
+    ap.add_argument("--panel", default=dpx.DEFAULT_PANEL_GLOB,
+                    help="fundamentals panel (pickle path or glob) for --price-route=derived")
+    ap.add_argument("--derived-max-lag-days", dest="derived_max_lag_days", type=int,
+                    default=None,
+                    help="derived route only: withhold a pick staler than N days before "
+                         "the anchor (raises fidelity, costs names; default: keep all)")
+    #  GUARD TOGGLES -- present so the guard progression is reproducible from the CLI, NOT
+    #  because turning a guard off is a supported configuration.  Each default-ON guard
+    #  fixes a measured defect; `--derived-no-*` reinstates that defect on purpose.
+    ap.add_argument("--derived-no-currency-match", dest="derived_no_currency_match",
+                    action="store_true",
+                    help="DEFECT REPRODUCTION: stop requiring reportedCurrency == listing "
+                         "currency, i.e. compare a reporting-ccy return against a "
+                         "listing-ccy adjClose on ~20%% of names")
+    ap.add_argument("--derived-no-backfill-reject", dest="derived_no_backfill_reject",
+                    action="store_true",
+                    help="DEFECT REPRODUCTION: keep rows whose price exactly repeats the "
+                         "previous period's (pre-listing backfill)")
+    ap.add_argument("--derived-max-period-yield", dest="derived_max_period_yield",
+                    type=float, default=dpx.MAX_PERIOD_YIELD,
+                    help="derived route only: per-period yield reject ceiling "
+                         f"(default {dpx.MAX_PERIOD_YIELD})")
+    ap.add_argument("--derived-yield-denominator", dest="derived_yield_denominator",
+                    choices=["start", "end"], default="start",
+                    help="DEFECT REPRODUCTION when 'end': take the per-period yield over "
+                         "period-END market cap, which overstates the yield of any payer "
+                         "whose price fell during the period")
     args = ap.parse_args()
 
     log = lambda *a: print(*a, file=sys.stderr, flush=True)
@@ -511,7 +548,30 @@ def main():
     if supp is not None and not os.path.exists(supp):
         log(f"FATAL: missing prices-2025 input: {supp}")
         sys.exit(2)
-    price_source = rc.PriceSource(args.prices, supp_csv=supp)
+    #  The real leg is built either way: on the derived route it still supplies the URTH
+    #  benchmark, which can never be derived (the panel holds no ETF rows).
+    uses_panel = args.price_route in ("derived", "derived+real")
+    price_source = dpx.build_price_source(
+        args.price_route, prices_csv=args.prices, supp_csv=supp,
+        panel=(args.panel if uses_panel else None),
+        **({"max_lag_days": args.derived_max_lag_days,
+            "require_listing_currency_match": not args.derived_no_currency_match,
+            "reject_repeated_price": not args.derived_no_backfill_reject,
+            "max_period_yield": args.derived_max_period_yield,
+            "yield_denominator": args.derived_yield_denominator} if uses_panel else {}))
+    log(f"[price-source] route={args.price_route}")
+    if uses_panel:
+        #  SURFACE the timing noise rather than hiding it: ~9-10% of names sit more than
+        #  45 days before the anchor, and that is a property of the leg the reader of a
+        #  grid needs in front of them.
+        d = price_source.diagnostics()
+        for k, v in d.items():
+            if k != "ic_caveat":
+                log(f"[price-source]   {k} = {v}")
+        log(f"[price-source]   !! {d['ic_caveat']}")
+        log("[price-source] anchor timing (period-end lag vs the anchor's Dec-31):")
+        for line in price_source.timing_report().to_string(index=False).splitlines():
+            log(f"[price-source]   {line}")
     inputs = load_inputs(args.pickle, args.dead, args.registry, log)
     per_anchor = rank_all_anchors(inputs, log, weights=args.weights, carve=args.carve)
     cells, pooled, pooled_clean = compute_grid(per_anchor, price_source)
