@@ -168,15 +168,34 @@ def test_rows_carry_every_declared_column_and_blanks_where_absent():
 # --------------------------------------------------------------------------- #
 #  header-width guard                                                         #
 # --------------------------------------------------------------------------- #
-def test_append_refuses_on_header_width_drift(tmp_path):
-    """Append-only + no per-block header = a column change silently mis-aligns every future
-    row against a header that can never be rewritten.  It must refuse."""
+def test_append_quarantines_on_header_width_drift_and_still_writes(tmp_path):
+    """Append-only + no per-block header = a column change silently mis-aligns every future row
+    against a header that can never be rewritten.  It must NOT append under the stale header.
+
+    It used to REFUSE, which on the run machine meant the stage raised every night and no
+    forward pick was ever recorded.  It now MOVES the stale file aside (bytes untouched) and
+    writes a fresh one -- so this test pins both halves: the stale bytes survive somewhere else,
+    AND the row this call was asked to write actually exists."""
     p = tmp_path / "pick_log.csv"
     with open(p, "w", encoding="utf-8", newline="") as f:
         csv.writer(f, lineterminator="\n").writerow(["as_of", "ticker"])  # stale 2-col header
         f.write("2026-01-01,AAA\n")
-    with pytest.raises(RuntimeError, match="SCHEMA DRIFT"):
-        pl.append_pick_log([{"as_of": "2026-07-29", "ticker": "BBB"}], path=str(p))
+    stale = open(p, encoding="utf-8", newline="").read()
+
+    n = pl.append_pick_log([{"as_of": "2026-07-29", "ticker": "BBB"}], path=str(p))
+    assert n == 1
+
+    #  the fresh log carries the CURRENT header and only the new row
+    with open(p, encoding="utf-8", newline="") as f:
+        rdr = list(csv.reader(f))
+    assert rdr[0] == list(pl.PICK_LOG_COLUMNS)
+    assert len(rdr) == 2 and "BBB" in rdr[1] and "AAA" not in rdr[1]
+
+    #  the stale file survives, byte-identical, under the quarantine directory
+    qd = tmp_path / pl.QUARANTINE_DIRNAME
+    moved = sorted(qd.iterdir())
+    assert len(moved) == 1, moved
+    assert moved[0].read_text(encoding="utf-8") == stale
 
 
 def test_append_writes_full_header_on_a_fresh_file(tmp_path):

@@ -150,8 +150,12 @@ class PitRankContext:
             if self.carve == "on":
                 import depth_horizon_grid as dh
                 tickers_df = self.dmdic.get("Tickers_df")
+                #  coverage_scope = the LIVE sources (see carve_general_universe): the
+                #  PIT universe includes delisted entities the profile-derived sector map
+                #  structurally cannot cover.
                 uni = sorted(dh.carve_general_universe(
-                    uni, self.merged["cdx_df"], tickers_df, lambda *a: None))
+                    uni, self.merged["cdx_df"], tickers_df, lambda *a: None,
+                    coverage_scope=set(self.dmdic["cdx_df"]["source"].dropna().unique())))
             self._uni_cache[as_of] = uni
         return self._uni_cache[as_of]
 

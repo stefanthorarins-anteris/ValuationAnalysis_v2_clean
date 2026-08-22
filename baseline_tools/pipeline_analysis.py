@@ -196,6 +196,10 @@ def run_price_fetch_stage(resdic, configdic, log):
     printed (masked).  Returns dict(main=..., supp=...) of resolved paths (or None)."""
     import fetch_prices as fp  # KEY-FREE pure helpers only (build_anchor_dates, ...)
 
+    #  PRESENCE, NOT FRESHNESS -- and that is now a stated decision rather than an oversight.
+    #  A present-but-stale grid is NOT re-fetched here: the refresh costs API calls and is a
+    #  deliberate human action.  Whether the grid still fits tonight's universe is answered by
+    #  the SEPARATE audit stage (`_audit_price_grid_stage`), which reports and never spends.
     need_main = not os.path.exists(_PRICES_CSV)
     need_supp = not os.path.exists(_PRICES_2025_CSV)
     if not need_main and not need_supp:
@@ -261,6 +265,48 @@ def run_price_fetch_stage(resdic, configdic, log):
             raise RuntimeError(_scrub(f"price fetch failed: {e}", api_key)) from None
     return {"main": _PRICES_CSV if os.path.exists(_PRICES_CSV) else None,
             "supp": _PRICES_2025_CSV if os.path.exists(_PRICES_2025_CSV) else None}
+
+
+def _panel_symbols(resdic):
+    """Tonight's scored names, for the price-grid audit.  Same two frames the fetch allow-list
+    reads, so the audit measures the grid against exactly the population that will be graded."""
+    syms = set()
+    for key, col in (("Tickers_df", "symbol"), ("cdx_df", "source")):
+        try:
+            syms |= set(resdic[key][col].dropna().astype(str))
+        except Exception:
+            continue
+    return syms
+
+
+def _audit_price_grid_stage(resdic, configdic, log):
+    """STALENESS DETECTION for the saved grading grid -- report only, NEVER a fetch.
+
+    THE DEFECT THIS CLOSES.  `run_price_fetch_stage` decides whether to fetch with
+    `not os.path.exists(...)`, a pure presence check, so a `real_prices.csv` written months ago
+    satisfied it for ever.  Measured (price_grid_audit against the run machine's grid and the
+    08-22 CUR6K panel): the grid dates from 2026-07-17, carries 10,205 symbols, and prices
+    4,221 of 5,819 panel names -- while SEVEN venues are unpriceable at EVERY anchor (`.PA` 569
+    names, `.KS` 327, `.OL` 224, `.KQ` 159, `.BR` 105, `.AS` 104, `.LS` 33), which is where
+    eight of the 08-22 top-20 live.  Every backtest figure below rode that grid and nothing
+    said so.  The audit measures THROUGH `returns_core.PriceSource`, so it cannot disagree with
+    the grader about what is priceable.
+
+    THE FETCH DECISION IS DELIBERATELY UNTOUCHED.  Absent -> fetch (as before); present -> no
+    fetch (as before).  Auto-refetching on staleness would spend money nobody authorised; a
+    silent stale grid and a surprise paid refetch are both unacceptable, so this is the third
+    option -- say so, unmissably, every run.  `configdic['price_grid_refuse_when_stale']`
+    turns the report into a refusal if the CEO wants that instead.
+    """
+    import price_grid_audit as pga
+    if not os.path.exists(_PRICES_CSV):
+        log("[price-audit] no grid on disk to audit (the fetch stage above reports on it).")
+        return None
+    return pga.run_audit(
+        _PRICES_CSV, _panel_symbols(resdic),
+        supp_csv=_PRICES_2025_CSV if os.path.exists(_PRICES_2025_CSV) else None,
+        log=log,
+        refuse_when_stale=bool(configdic.get("price_grid_refuse_when_stale", 0)))
 
 
 def _build_price_source(log):
@@ -630,6 +676,10 @@ def run_analysis_suite(resdic, configdic):
     # ---- Stage 1: prices (guarded) ----
     _run_stage("price-fetch (bulk-by-date, no-op if present)",
                run_price_fetch_stage, resdic, configdic, log)
+    #  Its OWN stage, deliberately: the audit must run whether or not the fetch stage did
+    #  anything, and a failure inside the audit must not be mistaken for a fetch failure.
+    _run_stage("price-grid staleness audit (report only, NO fetch)",
+               _audit_price_grid_stage, resdic, configdic, log)
     price_source = _run_stage("build-price-source", _build_price_source, log)
 
     # ---- Stage 2: model-vs-metric (dmdic only; independent of prices/PIT) ----

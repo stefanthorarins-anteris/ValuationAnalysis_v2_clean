@@ -76,6 +76,9 @@ _PRE_UNIVERSE_HEADER = [
     'entry_industry_median_n']
 
 
+NL = chr(10)
+
+
 def _read(path):
     with open(path, 'r', newline='', encoding='utf-8') as f:
         return f.read()
@@ -314,59 +317,201 @@ def test_missing_universe_stamp_warns_loudly_and_logs_unknown():
     print("  [ok] unstamped resdic -> loud banner + explicit unknown (rows still logged)")
 
 
-def test_old_schema_log_is_refused_not_migrated():
-    """A pre-2026-08-04 (no-universe-columns) pick_log.csv must be REFUSED, not appended to and
-    not migrated: the old bytes stay identical, no row is added, and the message says what to do."""
+#  --- SCHEMA DRIFT: AUTO-QUARANTINE (2026-08-22) --------------------------------------------
+#  These replace two tests that asserted the OPPOSITE (a RuntimeError refusal).  The refusal was
+#  the production defect: the run machine carried an 8-column pick_log.csv, so the stage raised
+#  on the 08-20 AND 08-22 runs and recorded ZERO forward picks both nights -- on the one artifact
+#  the pipeline cannot regenerate.  What the old tests were really protecting is the APPEND-ONLY
+#  invariant, and every assertion below still pins it: the old bytes must survive UNCHANGED, just
+#  at a different path.
+#
+#  THE 8-COLUMN CASE IS TESTED SEPARATELY FROM THE 15-COLUMN ONE ON PURPOSE.  15 -> 17 is the
+#  drift the previous author anticipated; 8 -> 17 is the one that actually happened, and only the
+#  second exercises the `preuniverse` reason slug through a header missing NINE columns, not two.
+_REAL_08_20_HEADER = ['as_of', 'logged_at', 'filter_commit', 'list', 'rank', 'ticker',
+                      'company', 'aggscore']
+
+
+def _quarantine_files(d):
+    qd = os.path.join(d, plog.QUARANTINE_DIRNAME)
+    if not os.path.isdir(qd):
+        return []
+    return sorted(os.path.join(qd, f) for f in os.listdir(qd))
+
+
+def _write_old_log(path, header, body_rows=()):
+    with open(path, 'w', encoding='utf-8', newline='') as f:
+        f.write(','.join(header) + NL)
+        for r in body_rows:
+            f.write(r + NL)
+    return _read(path)
+
+
+def test_drifted_log_is_quarantined_bytes_intact_and_a_fresh_log_is_written():
+    """THE PRODUCTION CASE: an 8-column pre-universe pick_log.csv.
+
+    Three things must ALL hold, and the third is the one the old refusal could not deliver:
+      1. the old file's BYTES survive, unchanged, at a `_quarantine/` path (no migration, no
+         backfill, no header edit -- the append-only contract, relocated);
+      2. the operator is told, loudly, that the record is now SPLIT;
+      3. THIS RUN'S PICKS ARE ACTUALLY RECORDED.  A refusal scored 1 and 2 and lost the picks.
+    """
+    import contextlib
+    import io as _io
     resdic = _fake_resdic()
     with tempfile.TemporaryDirectory() as d:
         path = os.path.join(d, 'pick_log.csv')
-        with open(path, 'w', encoding='utf-8', newline='') as f:
-            f.write(','.join(_PRE_UNIVERSE_HEADER) + '\n')
-            f.write('2026-08-04,T0,c0,GENERAL,1,OLY.TO,Olympia,0.61,CAD,119.0,16.3,6.2,0.46,,\n')
-        before = _read(path)
+        before = _write_old_log(
+            path, _REAL_08_20_HEADER,
+            ['2026-08-04,T0,c0,GENERAL,1,OLY.TO,Olympia,0.61'])
 
-        try:
+        buf = _io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            n = plog.write_pick_log(resdic, as_of='2026-08-05', path=path,
+                                    logged_at='T1', filter_commit='c1')
+        out = buf.getvalue()
+
+        # (3) the picks landed -- the whole point.
+        assert n > 20, n
+        fresh = pd.read_csv(path)
+        assert list(fresh.columns) == list(plog.PICK_LOG_COLUMNS), list(fresh.columns)
+        assert len(fresh) == n, (len(fresh), n)
+        assert 'GENERAL' in set(fresh['list'])
+        #  and NOT one row of the old log leaked into the new one.
+        assert 'OLY.TO' not in set(fresh['ticker']), 'old rows were migrated into the new log!'
+
+        # (1) the old bytes, intact, at exactly one quarantine path.
+        q = _quarantine_files(d)
+        assert len(q) == 1, q
+        assert _read(q[0]) == before, 'the quarantined file is NOT byte-identical!'
+        assert os.path.basename(q[0]).startswith('pick_log_preuniverse_'), q[0]
+        assert os.path.basename(q[0]).endswith('.csv'), q[0]
+        #  the quarantined file still describes ITSELF -- old header, old width, no padding.
+        qhdr = _read(q[0]).splitlines()[0].split(',')
+        assert qhdr == _REAL_08_20_HEADER, qhdr
+
+    # (2) the split is announced, on stdout, unmissably.
+    assert 'SCHEMA DRIFT' in out and 'QUARANTINED' in out, out[-900:]
+    assert 'SPLIT' in out, out[-900:]
+    assert 'moved to' in out, out[-900:]
+    print('  [ok] 8-col log quarantined byte-identical; fresh log written; picks recorded')
+
+
+def test_drift_without_the_universe_pair_uses_the_generic_reason_slug():
+    """A drift we did NOT diagnose must not be given a precise-sounding name.
+
+    `preuniverse` is a claim about WHICH ERA the moved file belongs to.  When the added columns
+    are not the universe pair we do not know that, so the slug has to say `schemadrift`."""
+    import contextlib
+    import io as _io
+    resdic = _fake_resdic()
+    #  A header carrying the universe pair but missing a LATER column: not the pre-universe era.
+    hdr = [c for c in plog.PICK_LOG_COLUMNS if c != 'entry_industry_median_n']
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, 'pick_log.csv')
+        before = _write_old_log(path, hdr)
+        with contextlib.redirect_stdout(_io.StringIO()):
             plog.write_pick_log(resdic, as_of='2026-08-05', path=path,
                                 logged_at='T1', filter_commit='c1')
-            raise AssertionError("old-schema log was APPENDED TO instead of refused!")
-        except RuntimeError as e:
-            msg = str(e)
-
-        after = _read(path)
-
-    assert after == before, "the old-schema file was MODIFIED -- it must be left untouched!"
-    assert 'SCHEMA DRIFT' in msg, msg
-    # names the mismatch concretely...
-    assert "'universe'" in msg and "'universe_fingerprint'" in msg, msg
-    assert '15' in msg and str(len(plog.PICK_LOG_COLUMNS)) in msg, msg
-    # ...and tells the operator what to do, without suggesting a hand-edit.
-    assert 'FIX:' in msg and 'move the existing log aside' in msg, msg
-    assert 'Do NOT hand-edit' in msg, msg
-    print("  [ok] old-schema log REFUSED, file byte-identical, message actionable")
+        q = _quarantine_files(d)
+        assert len(q) == 1, q
+        assert os.path.basename(q[0]).startswith('pick_log_schemadrift_'), q[0]
+        assert _read(q[0]) == before
+    print('  [ok] undiagnosed drift -> generic `schemadrift` slug, bytes intact')
 
 
-def test_old_schema_refusal_surfaces_through_the_guarded_stage():
-    """The refusal must actually REACH the operator: the pipeline stage swallows exceptions so a
-    pick-log problem can't kill the run, so it has to print the loud banner and return None --
-    otherwise the refusal would be silent, which is worse than the corruption it prevents."""
+def test_second_quarantine_same_day_never_overwrites_the_first():
+    """Two drifts on ONE DAY collide on the dated filename.  The second must NOT win.
+
+    This is the one failure the quarantine could introduce that the refusal never could:
+    silently destroying an already-quarantined forensic record.  Both files carry
+    distinguishable content, so the assertion is on VALUES, not on a count of files."""
     import contextlib
-    import io
+    import io as _io
     resdic = _fake_resdic()
     with tempfile.TemporaryDirectory() as d:
         path = os.path.join(d, 'pick_log.csv')
-        with open(path, 'w', encoding='utf-8', newline='') as f:
-            f.write(','.join(_PRE_UNIVERSE_HEADER) + '\n')
-        before = _read(path)
-        buf = io.StringIO()
+        first = _write_old_log(path, _REAL_08_20_HEADER,
+                               ['2026-08-01,T0,c0,GENERAL,1,FIRST.TO,First Co,0.11'])
+        with contextlib.redirect_stdout(_io.StringIO()):
+            plog.write_pick_log(resdic, as_of='2026-08-05', path=path,
+                                logged_at='T1', filter_commit='c1')
+        #  Second drift, same day: re-plant a DIFFERENT old-schema file at the live path.
+        os.remove(path)
+        second = _write_old_log(path, _REAL_08_20_HEADER,
+                                ['2026-08-02,T0,c0,GENERAL,1,SECOND.TO,Second Co,0.22'])
+        assert second != first
+        with contextlib.redirect_stdout(_io.StringIO()):
+            plog.write_pick_log(resdic, as_of='2026-08-05', path=path,
+                                logged_at='T2', filter_commit='c1')
+
+        q = _quarantine_files(d)
+        assert len(q) == 2, q
+        bodies = {_read(x) for x in q}
+        assert first in bodies, 'the FIRST quarantined record was destroyed by the second!'
+        assert second in bodies, bodies
+        assert any(os.path.basename(x).endswith('-2.csv') for x in q), q
+    print('  [ok] same-day second quarantine suffixed `-2`; neither record lost')
+
+
+def test_quarantine_that_cannot_move_the_file_refuses_and_touches_nothing():
+    """If the move itself fails -- realistically the log being open in a spreadsheet, which locks
+    it on Windows -- there must be NO append under the old header and NO silent pass.  The old
+    refusal semantics are still correct HERE, so they are still tested here."""
+    resdic = _fake_resdic()
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, 'pick_log.csv')
+        before = _write_old_log(path, _REAL_08_20_HEADER,
+                                ['2026-08-04,T0,c0,GENERAL,1,OLY.TO,Olympia,0.61'])
+
+        real_rename = os.rename
+
+        def _blocked(src, dst):
+            if os.path.abspath(src) == os.path.abspath(path):
+                raise PermissionError(13, 'file is open in another process')
+            return real_rename(src, dst)
+
+        os.rename = _blocked
+        try:
+            try:
+                plog.write_pick_log(resdic, as_of='2026-08-05', path=path,
+                                    logged_at='T1', filter_commit='c1')
+                raise AssertionError('an unmovable drifted log was appended to!')
+            except OSError as e:
+                msg = str(e)
+        finally:
+            os.rename = real_rename
+
+        assert _read(path) == before, 'the file was MODIFIED after a failed quarantine!'
+        assert _quarantine_files(d) == [], _quarantine_files(d)
+    assert 'QUARANTINE FAILED' in msg, msg
+    assert 'open in a spreadsheet' in msg, msg
+    assert 'do NOT hand-edit' in msg, msg
+    print('  [ok] failed move -> refuse, file untouched, message actionable')
+
+
+def test_drift_recovery_reaches_the_operator_through_the_guarded_stage():
+    """The stage swallows exceptions, so before the fix the refusal surfaced only as a banner and
+    the run lost its picks.  Now the stage must SUCCEED: return a row count, print the quarantine
+    banner, and NOT print the stage-failed banner."""
+    import contextlib
+    import io as _io
+    resdic = _fake_resdic()
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, 'pick_log.csv')
+        before = _write_old_log(path, _REAL_08_20_HEADER)
+        buf = _io.StringIO()
         with contextlib.redirect_stdout(buf):
             rv = plog.run_pick_log_stage(resdic, as_of='2026-08-05', path=path)
         out = buf.getvalue()
-        after = _read(path)
-    assert rv is None, rv
-    assert after == before, "the guarded stage still modified the old-schema file!"
-    assert 'PICK-LOG STAGE FAILED' in out, out[-800:]
-    assert 'SCHEMA DRIFT' in out, out[-800:]
-    print("  [ok] refusal surfaces via the guarded stage (loud banner, returns None, run lives)")
+        q = _quarantine_files(d)
+        assert len(q) == 1 and _read(q[0]) == before, q
+        assert isinstance(rv, int) and rv > 20, rv
+        assert len(pd.read_csv(path)) == rv
+    assert 'PICK-LOG STAGE FAILED' not in out, out[-900:]
+    assert 'NO FORWARD PICKS RECORDED' not in out, out[-900:]
+    assert 'QUARANTINED' in out and 'appended %d rows' % rv in out, out[-900:]
+    print('  [ok] guarded stage now RECOVERS: %d rows recorded, no stage-failure banner' % rv)
 
 
 def test_unreadable_header_is_refused():
@@ -539,8 +684,11 @@ if __name__ == '__main__':
     test_universe_provenance_on_every_row()
     test_test_universe_row_distinguishable_by_fingerprint()
     test_missing_universe_stamp_warns_loudly_and_logs_unknown()
-    test_old_schema_log_is_refused_not_migrated()
-    test_old_schema_refusal_surfaces_through_the_guarded_stage()
+    test_drifted_log_is_quarantined_bytes_intact_and_a_fresh_log_is_written()
+    test_drift_without_the_universe_pair_uses_the_generic_reason_slug()
+    test_second_quarantine_same_day_never_overwrites_the_first()
+    test_quarantine_that_cannot_move_the_file_refuses_and_touches_nothing()
+    test_drift_recovery_reaches_the_operator_through_the_guarded_stage()
     test_unreadable_header_is_refused()
     test_git_hash_never_raises()
     test_sbocker_wiring_present()

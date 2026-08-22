@@ -130,9 +130,13 @@ class FastPitContext:
             uni = dm.pit_universe(self.dmdic, self.registry, as_of=as_of)
             if self.carve == "on":
                 import depth_horizon_grid as dh
+                #  coverage_scope = the LIVE sources: `uni` is live UNION delisted and the
+                #  sector map is profile-derived, so the dead half is uncoverable by
+                #  construction (see carve_general_universe).
                 uni = sorted(dh.carve_general_universe(
                     uni, self.merged["cdx_df"], self.dmdic.get("Tickers_df"),
-                    lambda *a: None))
+                    lambda *a: None,
+                    coverage_scope=set(self.dmdic["cdx_df"]["source"].dropna().unique())))
             self._uni[as_of] = uni
         return self._uni[as_of]
 
@@ -375,9 +379,15 @@ class CohortPartition:
             import carveOut as co
             uni = dm.pit_universe(self.dmdic, self.registry, as_of=as_of)
             bs = pd.DataFrame({"source": sorted(uni), "score": 0.0})
+            #  coverage_scope = the LIVE sources: the PIT universe includes delisted
+            #  entities that a profile-derived sector map cannot cover (see
+            #  carveOut.partition_universe's coverage-guard block).
             part = co.partition_universe(bs, self.merged["cdx_df"],
                                          self.dmdic.get("Tickers_df"),
-                                         mcap_floor=25e6, cohort_head=25)
+                                         mcap_floor=25e6, cohort_head=25,
+                                         coverage_scope=set(
+                                             self.dmdic["cdx_df"]["source"]
+                                             .dropna().unique()))
             self._labels[as_of] = part["labels"]
         return self._labels[as_of]
 

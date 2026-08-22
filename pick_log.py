@@ -18,6 +18,16 @@ exists it appends (no header); if not it creates it with a header. Re-running th
 complete and duplicate re-runs stay VISIBLE, never lost. (An outcome grader later reads this
 log; the writer's sole contract is that no prior byte is ever mutated.)
 
+SCHEMA DRIFT SELF-HEALS BY MOVING, NEVER BY EDITING (2026-08-22). If PICK_LOG_COLUMNS no
+longer matches the header on disk, the writer MOVES the old file into `_quarantine/` under a
+dated name -- bytes untouched, no row rewritten, no value backfilled -- announces the split
+loudly on both streams, and starts a fresh log with the current header. It used to REFUSE,
+which on the CEO's run machine meant zero forward picks recorded on every run (08-20, 08-22)
+because the remedy was a manual file move only a human at that machine could perform. A
+grader must therefore read `_quarantine/pick_log_*.csv` alongside `pick_log.csv`; the
+history is complete across the pair, never inside one file. An UNREADABLE header still
+refuses -- see append_pick_log.
+
 ROBUSTNESS: run_pick_log_stage() -- the entry point Sbocker calls -- wraps the whole stage so
 a pick-log failure LOGS LOUDLY (a !!! banner + traceback on BOTH stdout and stderr, patterned
 on the carve-out fallback in postBo.py) but NEVER crashes the deliverable/run. A missing
@@ -525,6 +535,67 @@ def build_pick_log_rows(resdic, as_of=None, logged_at=None, filter_commit=None):
     return rows
 
 
+#  Directory a SUPERSEDED pick log is moved into when the writer's schema no longer matches
+#  the header on disk.  Sits beside the log, and is ALREADY gitignored (`.gitignore`
+#  `_quarantine/`), so a quarantined forensic record never enters git history.  The naming
+#  convention `pick_log_<reason>_<YYYY-MM-DD>.csv` matches what the pre-2026-08-22 refusal
+#  message told a human to do by hand, and what is already in there from the 2026-08-04
+#  TESTUNIVERSE quarantine -- so the auto-move is indistinguishable from the manual one.
+QUARANTINE_DIRNAME = '_quarantine'
+
+
+def _quarantine_target(path, reason, today=None, quarantine_dir=None):
+    """Destination for a superseded pick log: `<dir>/_quarantine/<stem>_<reason>_<date>.csv`.
+
+    NEVER RETURNS AN EXISTING PATH.  Two quarantines on the SAME DAY (two runs, or a
+    re-run after a partial recovery) would otherwise collide on the date, and the second
+    would destroy the first -- which is the one outcome this whole path exists to prevent.
+    On a collision the candidate is suffixed `-2`, `-3`, ... until it is free, so the
+    sequence is readable and no earlier record is ever the loser.
+    """
+    d = quarantine_dir or os.path.join(os.path.dirname(os.path.abspath(path)),
+                                       QUARANTINE_DIRNAME)
+    stem = os.path.splitext(os.path.basename(path))[0]
+    day = today or datetime.today().strftime('%Y-%m-%d')
+    base = '%s_%s_%s' % (stem, reason, day)
+    cand = os.path.join(d, base + '.csv')
+    n = 2
+    while os.path.exists(cand):
+        cand = os.path.join(d, '%s-%d.csv' % (base, n))
+        n += 1
+    return cand
+
+
+def quarantine_pick_log(path, reason, today=None, quarantine_dir=None):
+    """MOVE the existing log aside, BYTE-IDENTICAL, and return the destination path.
+
+    `os.rename` -- deliberately NOT `os.replace` and NOT copy-then-delete.  `os.replace`
+    silently clobbers an existing destination; a copy-then-delete has a window in which the
+    only copy of an append-only forensic record is a partial one.  `os.rename` moves the
+    inode within the filesystem (the quarantine dir is a sibling of the log, so this is
+    always same-filesystem) and, on Windows, RAISES rather than overwrites if the
+    destination appeared after `_quarantine_target` checked -- so the collision guard is
+    belt AND braces.
+
+    Raises OSError (with a message naming the manual fallback) if the move is refused --
+    the realistic case being the log open in a spreadsheet, which locks it on Windows.
+    Refusing here is correct: if the old file cannot be moved, the new header cannot be
+    written, and nothing may be appended under the old one.
+    """
+    dest = _quarantine_target(path, reason, today=today, quarantine_dir=quarantine_dir)
+    try:
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        os.rename(path, dest)
+    except OSError as e:
+        raise OSError(
+            'PICK-LOG QUARANTINE FAILED: could not move %s aside to %s (%s: %s). The '
+            'existing log is UNTOUCHED and NOTHING was written. The usual cause on Windows '
+            'is the file being open in a spreadsheet -- close it and re-run. Otherwise move '
+            'it by hand to that path; do NOT hand-edit its header or pad its rows.'
+            % (path, dest, type(e).__name__, e)) from None
+    return dest
+
+
 def append_pick_log(rows, path=PICK_LOG_PATH):
     """APPEND-ONLY write. Creates the file with a header if it does not exist (or is empty);
     otherwise appends rows with NO header. NEVER reads or rewrites existing content -- the
@@ -534,25 +605,37 @@ def append_pick_log(rows, path=PICK_LOG_PATH):
     size = os.path.getsize(path) if file_exists else 0
     write_header = (not file_exists) or (size == 0)
 
-    # HEADER-WIDTH GUARD (added 2026-07-29, while it was still free).  This file is APPEND-ONLY
-    # and has NO header on an append, so if PICK_LOG_COLUMNS ever gains or loses a column, every
-    # subsequent block silently mis-aligns against the header already on disk -- and because
-    # nothing may be rewritten, the damage is permanent.  Refuse instead: a run with no
-    # pick-log block is recoverable, a log whose columns mean different things in different
-    # blocks is not.  Checked ONLY on the append path (a fresh file writes its own header).
-    # This was added at the one moment it cost nothing: before any pick_log.csv existed.
+    # HEADER-WIDTH GUARD (added 2026-07-29; became a SELF-HEALING QUARANTINE 2026-08-22).
+    # This file is APPEND-ONLY and has NO header on an append, so if PICK_LOG_COLUMNS gains or
+    # loses a column, every subsequent block silently mis-aligns against the header already on
+    # disk -- and because nothing may be rewritten, the damage is permanent.  Checked ONLY on
+    # the append path (a fresh file writes its own header).
     #
-    # IT NOW HAS A REAL CASE TO CATCH (2026-08-04).  The universe columns widened the schema from
-    # 15 to 17, so a pick_log.csv written before that date -- on the CEO's home machine, or from a
-    # restored backup -- WILL trip this.  That is the intended outcome: REFUSE, never migrate
-    # silently.  A forensic record that stops and complains is recoverable; one that has been
-    # quietly half-migrated (old rows with no universe, new rows shifted two columns, nothing on
-    # disk saying which is which) is not, and nothing here is permitted to rewrite the old rows to
-    # find out.  Migration-with-backfill was considered and REJECTED: the only honest backfill
-    # value for a pre-2026-08-04 row is "unknown" -- it cannot be recovered from the row, because
-    # not knowing the universe is precisely the defect -- so a backfill buys a uniform schema at
-    # the cost of rewriting an append-only forensic file for no information gain. Moving the old
-    # file aside keeps its bytes intact and readable, which is strictly more than a backfill.
+    # WHAT CHANGED, AND WHY THE REFUSAL HAD TO GO.  From 2026-07-29 to 2026-08-22 the drift
+    # branch RAISED, on the reasoning that a stopped forensic record is recoverable and a
+    # half-migrated one is not.  The first half of that is still true; the second half turned
+    # out to be an argument for the wrong remedy.  The universe columns widened the schema from
+    # 8 to 17, so the CEO's run machine carried a pre-2026-08-04 pick_log.csv and the stage
+    # raised on EVERY run: the 08-20 and 08-22 runs both recorded ZERO forward picks.  The log
+    # is the ONE artifact the pipeline cannot regenerate -- a pick not stamped the night it was
+    # made can never be stamped honestly later -- and the fix (move the file aside) was only
+    # ever executable by a human standing at that machine.  So the refusal was not a pause; it
+    # was a permanent, silent-to-the-target outage that compounded one lost run per night.
+    #
+    # THE QUARANTINE IS NOT A MIGRATION, and that distinction is the whole point.  The invariant
+    # the refusal defended -- NO BYTE OF AN EXISTING ROW IS EVER REWRITTEN -- is preserved
+    # exactly: the old file is MOVED (os.rename, same filesystem, bytes untouched) into
+    # `_quarantine/` under a dated, collision-proof name, and stays a complete, readable record
+    # of its own era under its own header.  Then a fresh pick_log.csv is created with the
+    # current header.  Backfilling the old rows remains REJECTED for the original reason: the
+    # only honest value for a pre-2026-08-04 row's universe is "unknown", so a backfill buys a
+    # uniform schema by rewriting an append-only file for no information gain.
+    #
+    # WHAT IT COSTS, stated rather than hidden: the forward record is now SPLIT ACROSS FILES,
+    # so a grader must read `_quarantine/pick_log_*.csv` alongside `pick_log.csv` to see the
+    # whole history.  That is strictly better than the two alternatives on offer (a permanent
+    # hole in the record, or one file whose columns mean different things in different blocks),
+    # and the split is announced loudly on both streams every time it happens.
     if file_exists and size > 0 and not write_header:
         _hdr_err = None
         try:
@@ -561,35 +644,54 @@ def append_pick_log(rows, path=PICK_LOG_PATH):
         except Exception as _he:
             existing = None
             _hdr_err = '%s: %s' % (type(_he).__name__, _he)
-        # An UNREADABLE / absent header on a non-empty file is not a pass (tightened 2026-08-04).
-        # It used to fall through to the append, which is the same permanent mis-alignment the
-        # guard exists to prevent -- just arrived at by not knowing rather than by knowing.
-        # Cannot establish the on-disk schema => must not append to it.
+        # An UNREADABLE / absent header on a non-empty file STILL RAISES (tightened 2026-08-04;
+        # deliberately NOT converted to a quarantine 2026-08-22).  The drift case is a KNOWN,
+        # diagnosed schema change -- we know exactly what the old file is and that moving it
+        # loses nothing.  Here we know nothing: the file may be mid-write by another process, or
+        # the disk may be damaged, and moving a file we cannot read is a guess dressed as a
+        # remedy.  Cannot establish the on-disk schema => must not append to it, and must not
+        # quietly relocate it either.
         if not existing:
             raise RuntimeError(
                 'PICK-LOG HEADER UNREADABLE: %s is %d byte(s) long but no header row could be '
                 'read from it (%s). The on-disk schema therefore cannot be established, and '
                 'appending would risk permanently mis-aligning an append-only forensic record. '
-                'FIX: inspect the file by hand; move it aside (e.g. to '
-                '_quarantine/pick_log_<reason>_<YYYY-MM-DD>.csv) to let the next run create a '
-                'fresh log. Do NOT hand-edit it into shape.'
+                'This case is NOT auto-quarantined (unlike a schema drift): the file cannot be '
+                'read, so nothing here knows what it is. FIX: inspect it by hand; move it aside '
+                '(e.g. to _quarantine/pick_log_<reason>_<YYYY-MM-DD>.csv) to let the next run '
+                'create a fresh log. Do NOT hand-edit it into shape.'
                 % (path, size, _hdr_err or 'file has no parseable first row'))
         if list(existing) != list(PICK_LOG_COLUMNS):
             _missing = [c for c in existing if c not in PICK_LOG_COLUMNS]
             _added = [c for c in PICK_LOG_COLUMNS if c not in existing]
-            raise RuntimeError(
-                'PICK-LOG SCHEMA DRIFT: %s already has a header of %d column(s) but the writer '
-                'now has %d. Appending would mis-align every future row against a header that '
-                'can never be rewritten (append-only). Removed: %s. Added: %s. '
-                'NOTHING WAS WRITTEN and the existing file is UNTOUCHED. '
-                'FIX: move the existing log aside -- rename it to e.g. '
-                '_quarantine/pick_log_preuniverse_<YYYY-MM-DD>.csv -- and re-run; the writer '
-                'then creates a fresh pick_log.csv with the current header, and the old file '
-                'stays readable as its own complete record. Do NOT hand-edit the old header or '
-                'pad its rows: that rewrites an append-only forensic file. (If Added is exactly '
-                "['universe', 'universe_fingerprint'], this is a log written before 2026-08-04, "
-                'when universe provenance was added -- see PICK_LOG_COLUMNS.)'
-                % (path, len(existing), len(PICK_LOG_COLUMNS), _missing, _added))
+            # The reason slug names the ERA the quarantined file belongs to when we can
+            # recognise it, and says only "schemadrift" when we cannot -- a guessed-precise
+            # name on a file we did not diagnose would be worse than a vague true one.
+            _reason = ('preuniverse'
+                       if {'universe', 'universe_fingerprint'}.issubset(set(_added))
+                       else 'schemadrift')
+            _dest = quarantine_pick_log(path, _reason)
+            bang = '!' * 78
+            banner = '\n'.join([
+                '', bang,
+                '!!! PICK-LOG SCHEMA DRIFT -- EXISTING LOG QUARANTINED, FRESH LOG STARTED !!!',
+                '!!!   was : %s  (%d columns)' % (path, len(existing)),
+                '!!!   now : %s  (%d columns)' % ('writer schema', len(PICK_LOG_COLUMNS)),
+                '!!!   moved to: %s' % _dest,
+                '!!!   removed: %s' % _missing,
+                '!!!   added  : %s' % _added,
+                '!!! The moved file is BYTE-IDENTICAL and remains a complete record under its',
+                '!!! own header -- no row was rewritten, nothing was backfilled. A fresh',
+                '!!! pick_log.csv is being created with the current header.',
+                '!!! CONSEQUENCE FOR ANY GRADER: the forward record is now SPLIT. Read the',
+                '!!! quarantined file ALONGSIDE pick_log.csv or the history is incomplete.',
+                bang, ''])
+            print(banner, file=sys.stderr, flush=True)
+            print(banner, flush=True)
+            # The log no longer exists at `path`; this run creates it and writes the header.
+            file_exists = False
+            size = 0
+            write_header = True
 
     # LOW-2 -- trailing-partial-row seam: if a PRIOR run was crash-truncated mid-row (its
     # last byte is not a newline), pad ONE newline at EOF first, so this run's block cannot
