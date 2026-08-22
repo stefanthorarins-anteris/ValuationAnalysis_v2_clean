@@ -1,0 +1,936 @@
+dropped,survivor,name,orig_sector,propagated_sector,issuer_group,non_canonical_tag,dropped_price,dropped_shares,dropped_marketCap,decided_by,dropped_vol_t,survivor_vol_t,dropped_isin_t,survivor_isin_t,dropped_volAvg,dropped_volAvg_asof,survivor_volAvg,survivor_volAvg_asof
+000660.KS,SKHY,SK hynix Inc.,Technology,Technology,000660.KS|SKHY,,2650000.0,713481000.0,1890724650000000.0,shares,0,0,0,0,5814523.0,2026-08-21,41125006.0,2026-08-21
+0J3H.L,HIG,"The Hartford Financial Services Group, Inc.",Financial Services,Financial Services,0J3H.L|HFF.DE|HIG,lse-iob,134.9444,273300000.0,36880316000.0,canonicity,1,0,0,0,1560.0,2026-08-21,1709288.0,2026-08-21
+HFF.DE,HIG,"Hartford Insurance Group, Inc.",Financial Services,Financial Services,0J3H.L|HFF.DE|HIG,,154.1146,239304414.0,36880316000.0,shares,1,0,0,0,34.0,2026-08-21,1709288.0,2026-08-21
+KIN2.DE,KGC,Kinross Gold Corporation,Basic Materials,Basic Materials,K.TO|KGC|KIN2.DE,,23.62,1191629000.0,28146276980.0,punctuation,1,0,0,0,3414.0,2026-08-21,8401264.0,2026-08-21
+K.TO,KGC,Kinross Gold Corporation,Basic Materials,Basic Materials,K.TO|KGC|KIN2.DE,,23.62,1191629000.0,28146276980.0,punctuation,0,0,0,0,3485969.0,2026-08-21,8401264.0,2026-08-21
+SBI.TO,SRB.L,Serabi Gold plc,Basic Materials,Basic Materials,SBI.TO|SRB.L,,3.7009,75735000.0,280285540.92,symbol_length,0,0,0,0,33682.0,2026-08-21,274335.0,2026-08-21
+AEM.TO,AEM,Agnico Eagle Mines Limited,Basic Materials,Basic Materials,0R2J.L|AEM|AEM.TO,,155.13,501659000.0,77822360670.0,punctuation,0,0,0,0,1119609.0,2026-08-21,2934991.0,2026-08-21
+0R2J.L,AEM,Agnico Eagle Mines Limited,Basic Materials,Basic Materials,0R2J.L|AEM|AEM.TO,lse-iob,155.13,501659000.0,77822360670.0,canonicity,1,0,0,0,8013.0,2026-08-21,2934991.0,2026-08-21
+0VOA.L,WDO.TO,Wesdome Gold Mines Ltd.,Basic Materials,Basic Materials,0VOA.L|WDO.TO,lse-iob,24.35,147584000.0,3593670400.0,canonicity,1,0,0,0,2121.0,2026-08-21,656555.0,2026-08-21
+ABR0.DE,B,Barrick Mining Corporation,Basic Materials,Basic Materials,ABR0.DE|ABX.TO|B,,36.7136,1666000000.0,61164857600.0,punctuation,1,0,0,0,38291.0,2026-08-21,10971356.0,2026-08-21
+ABX.TO,B,Barrick Gold Corporation,Basic Materials,Basic Materials,ABR0.DE|ABX.TO|B,,36.7136,1666000000.0,61164857600.0,punctuation,0,0,0,0,4736626.0,2026-08-21,10971356.0,2026-08-21
+SU.TO,SU,Suncor Energy Inc.,Energy,Energy,SU|SU.TO,,76.3,1179000000.0,89957700000.0,punctuation,0,0,0,0,5763512.0,2026-08-21,4580919.0,2026-08-21
+0LJL.L,UHS,"Universal Health Services, Inc.",Healthcare,Healthcare,0LJL.L|UHS,lse-iob,148.6526,59657000.0,8868168980.0,canonicity,1,0,0,0,793.0,2026-08-21,1019538.0,2026-08-21
+NMM.DE,NEM,Newmont Corporation,Basic Materials,Basic Materials,0R28.L|NEM|NMM.DE,,93.4,1065000000.0,99471000000.0,punctuation,1,0,0,0,8361.0,2026-08-21,8126945.0,2026-08-21
+0R28.L,NEM,Newmont Corporation,Basic Materials,Basic Materials,0R28.L|NEM|NMM.DE,lse-iob,93.2249,1067000000.0,99471000000.0,canonicity,1,0,0,0,21521.0,2026-08-21,8126945.0,2026-08-21
+0QYM.L,FSM,Fortuna Mining Corp.,Basic Materials,Basic Materials,0QYM.L|FSM|FVI.TO,lse-iob,8.45,301010000.0,2543534500.0,canonicity,1,0,0,0,38704.0,2026-08-21,5285791.0,2026-08-21
+FVI.TO,FSM,Fortuna Mining Corp.,Basic Materials,Basic Materials,0QYM.L|FSM|FVI.TO,,8.45,301010000.0,2543534500.0,punctuation,0,0,0,0,725260.0,2026-08-21,5285791.0,2026-08-21
+PAAS,PAAS.TO,Pan American Silver Corp.,Basic Materials,Basic Materials,0R07.L|PAAS|PAAS.TO,,44.79,420271000.0,18823938090.0,shares,0,0,0,0,4459188.0,2026-08-21,928112.0,2026-08-21
+0R07.L,PAAS.TO,Pan American Silver Corp.,Basic Materials,Basic Materials,0R07.L|PAAS|PAAS.TO,lse-iob,44.7821,420345000.0,18823938090.0,canonicity,1,0,0,0,20151.0,2026-08-21,928112.0,2026-08-21
+HAFNIO.OL,HAFN,Hafnia Limited,Industrials,Industrials,HAFN|HAFNI.OL|HAFNIO.OL,symbol-extension,74.58,498567216.0,37183142969.28,canonicity,0,0,0,0,543226.0,2026-08-21,1620927.0,2026-08-21
+HAFNI.OL,HAFN,Hafnia Limited,Industrials,Industrials,HAFN|HAFNI.OL|HAFNIO.OL,,7.6,498567216.0,3789110841.6,punctuation,0,0,0,0,476140.0,2026-08-21,1620927.0,2026-08-21
+TFPM.TO,TFPM,Triple Flag Precious Metals Corp.,Basic Materials,Basic Materials,TFPM|TFPM.TO,,29.97,206295928.0,6182688962.16,punctuation,0,0,0,0,209085.0,2026-08-21,638383.0,2026-08-21
+005935.KS,005930.KS,"Samsung Electronics Co., Ltd.",Technology,Technology,005930.KS|005935.KS|BC94.L|SMSD.L|SMSN.L,korea-preferred,334000.0,6682013000.0,2231792342000000.0,canonicity,0,0,-1,-1,4627473.0,2026-08-21,30329611.0,2026-08-21
+SMSD.L,005930.KS,"Samsung Electronics Co., Ltd.",Technology,Technology,005930.KS|005935.KS|BC94.L|SMSD.L|SMSN.L,,13868955.6426,160920000.0,2231792342000000.0,shares,1,0,-1,-1,4933.0,2026-08-21,30329611.0,2026-08-21
+SMSN.L,005930.KS,"Samsung Electronics Co., Ltd.",Technology,Technology,005930.KS|005935.KS|BC94.L|SMSD.L|SMSN.L,,13868955.6426,160920000.0,2231792342000000.0,shares,1,0,-2,-1,28219.0,2026-08-21,30329611.0,2026-08-21
+BC94.L,005930.KS,"Samsung Electronics Co., Ltd.",Technology,Technology,005930.KS|005935.KS|BC94.L|SMSD.L|SMSN.L,,13868955.6426,160920000.0,2231792342000000.0,shares,1,0,-2,-1,14786.0,2026-08-21,30329611.0,2026-08-21
+0JSU.L,SIP.BR,Sipef N.V.,Consumer Defensive,Consumer Defensive,0JSU.L|SIP.BR,lse-iob,95.3767,10410000.0,992871530.28,canonicity,1,0,0,0,71.0,2026-08-21,4340.0,2026-08-21
+001065.KS,001060.KS,JW Pharmaceutical Corporation,Healthcare,Healthcare,001060.KS|001065.KS|001067.KS,korea-preferred,25700.0,23628000.0,607239600000.0,canonicity,1,0,0,0,315.0,2026-08-21,58297.0,2026-08-21
+001067.KS,001060.KS,JW Pharmaceutical Corporation,Healthcare,Healthcare,001060.KS|001065.KS|001067.KS,korea-preferred,25700.0,23628000.0,607239600000.0,canonicity,1,0,0,0,78.0,2026-08-21,58297.0,2026-08-21
+2PP.DE,PYPL,"PayPal Holdings, Inc.",Financial Services,Financial Services,2PP.DE|PYPL,,44.0662,877000000.0,38646100000.0,shares,1,0,0,0,31382.0,2026-08-21,16008841.0,2026-08-21
+PA9.DE,TRV,"Travelers Companies, Inc.",Financial Services,Financial Services,0R03.L|PA9.DE|TRV,,377.0168,184316060.0,69490260000.0,shares,1,0,0,0,10.0,2026-08-21,1961409.0,2026-08-21
+0R03.L,TRV,"The Travelers Companies, Inc.",Financial Services,Financial Services,0R03.L|PA9.DE|TRV,lse-iob,330.12,210500000.0,69490260000.0,canonicity,1,0,0,0,6010.0,2026-08-21,1961409.0,2026-08-21
+0HQU.L,CF,"CF Industries Holdings, Inc.",Basic Materials,Basic Materials,0HQU.L|CF,lse-iob,108.26,153600000.0,16628736000.0,canonicity,1,0,0,0,2460.0,2026-08-21,2571311.0,2026-08-21
+0VCO.L,PEY.TO,Peyto Exploration & Development Corp.,Energy,Energy,0VCO.L|PEY.TO,lse-iob,23.66,205212848.0,4855335983.68,canonicity,1,0,0,0,1305.0,2026-08-21,661780.0,2026-08-21
+HEN3.DE,HEN.DE,Henkel AG & Co. KGaA,Consumer Defensive,Consumer Defensive,HEN.DE|HEN3.DE,symbol-extension,73.54,405379367.0,29811598649.18,canonicity,0,0,0,0,419520.0,2026-08-21,107648.0,2026-08-21
+0RJ6.L,LOUP.PA,L.d.c. S.a.,Consumer Defensive,Consumer Defensive,0RJ6.L|LOUP.PA,lse-iob,100.6,35271000.0,3548262600.0,canonicity,1,0,0,0,59.0,2026-08-21,5272.0,2026-08-21
+0VL5.L,TXG.TO,Torex Gold Resources Inc.,Basic Materials,Basic Materials,0VL5.L|TXG.TO,lse-iob,39.7408,93363973.0,3710358978.1984,canonicity,1,0,0,0,472.0,2026-08-21,574333.0,2026-08-21
+0EAQ.L,TNK,Teekay Tankers Ltd.,Industrials,Industrials,0EAQ.L|TNK,lse-iob,64.87,34797239.0,2257296893.93,canonicity,1,0,0,0,1334.0,2026-08-21,368630.0,2026-08-21
+SHEL,SHEL.L,Shell plc,Energy,Energy,SHEL|SHEL.L|SHELL.AS,,77.7714,2794650000.0,217343921260.2,shares,0,0,-1,-2,6502139.0,2026-08-21,9510386.0,2026-08-21
+SHELL.AS,SHEL.L,Shell plc,Energy,Energy,SHEL|SHEL.L|SHELL.AS,,38.8857,5589300000.0,217343921260.2,symbol_length,0,0,-2,-2,4221744.0,2026-08-21,9510386.0,2026-08-21
+PSON.L,PSO,Pearson plc,Communication Services,Communication Services,PES.DE|PSO|PSON.L,,11.96,616300000.0,7370948000.0,punctuation,0,0,-2,-1,1997050.0,2026-08-21,817653.0,2026-08-21
+PES.DE,PSO,Pearson plc,Communication Services,Communication Services,PES.DE|PSO|PSON.L,,11.96,616300000.0,7370948000.0,punctuation,1,0,-2,-1,351.0,2026-08-21,817653.0,2026-08-21
+0KAN.L,OII,"Oceaneering International, Inc.",Energy,Energy,0KAN.L|OII,lse-iob,40.0429,100720000.0,4033117680.0,canonicity,1,0,0,0,346.0,2026-08-21,1099533.0,2026-08-21
+HBM.TO,HBM,Hudbay Minerals Inc.,Basic Materials,Basic Materials,0AHJ.L|HBM|HBM.TO,,23.61,400356079.0,9452407025.19,punctuation,0,0,0,0,2415847.0,2026-08-21,5394491.0,2026-08-21
+0AHJ.L,HBM,Hudbay Minerals Inc.,Basic Materials,Basic Materials,0AHJ.L|HBM|HBM.TO,lse-iob,23.61,400356079.0,9452407025.19,canonicity,1,0,0,0,3241.0,2026-08-21,5394491.0,2026-08-21
+RIO.L,RIO,Rio Tinto Group,Basic Materials,Basic Materials,RIO|RIO.L|RIO1.DE,,94.4235,1625800000.0,153513687280.8,punctuation,0,0,-2,-1,3130091.0,2026-08-21,2713056.0,2026-08-21
+RIO1.DE,RIO,Rio Tinto Group,Basic Materials,Basic Materials,RIO|RIO.L|RIO1.DE,,94.4235,1625800000.0,153513687280.8,punctuation,1,0,-2,-1,43081.0,2026-08-21,2713056.0,2026-08-21
+HCL.DE,HL,Hecla Mining Company,Basic Materials,Basic Materials,0R0A.L|HCL.DE|HL,,15.43,670763000.0,10349873090.0,punctuation,1,0,0,0,20088.0,2026-08-21,34485645.0,2026-08-21
+0R0A.L,HL,Hecla Mining Company,Basic Materials,Basic Materials,0R0A.L|HCL.DE|HL,lse-iob,15.43,670763000.0,10349873090.0,canonicity,1,0,0,0,37190.0,2026-08-21,34485645.0,2026-08-21
+0KGH.L,PAYC,"Paycom Software, Inc.",Technology,Technology,0KGH.L|PAYC,lse-iob,125.68,45800000.0,5756144000.0,canonicity,1,0,0,0,409.0,2026-08-21,948283.0,2026-08-21
+QIA.DE,QGEN,Qiagen N.V.,Healthcare,Healthcare,QGEN|QIA.DE,,39.1,206346000.0,8068128600.0,punctuation,0,0,0,0,684958.0,2026-08-21,2807082.0,2026-08-21
+ARIS.TO,ARIS,Aris Mining Corporation,Basic Materials,Basic Materials,ARIS|ARIS.TO,,14.8896,206398410.0,3073189765.536,punctuation,0,0,0,0,714379.0,2026-08-21,1510937.0,2026-08-21
+TCL-B.TO,TCL-A.TO,Transcontinental Inc.,Consumer Cyclical,Consumer Cyclical,TCL-A.TO|TCL-B.TO,,5.31,83600000.0,443916000.0,volavg,1,0,0,0,1177.0,2026-08-21,402874.0,2026-08-21
+0W89.L,FTK.DE,flatexDEGIRO AG,Financial Services,Financial Services,0W89.L|FTK.DE,lse-iob,37.5,110132000.0,4129950000.0,canonicity,0,0,0,0,136007.0,2026-08-21,280757.0,2026-08-21
+CVE.TO,CVE,Cenovus Energy Inc.,Energy,Energy,CVE|CVE.TO,,35.19,1860129000.0,65457939510.0,punctuation,0,0,0,0,5547987.0,2026-08-21,7702987.0,2026-08-21
+UNP.DE,UNP,Union Pacific Corporation,Industrials,Industrials,0R2E.L|UNP|UNP.DE,,272.0,593400000.0,161404800000.0,punctuation,1,0,0,0,128.0,2026-08-21,2939048.0,2026-08-21
+0R2E.L,UNP,Union Pacific Corporation,Industrials,Industrials,0R2E.L|UNP|UNP.DE,lse-iob,272.0,593400000.0,161404800000.0,canonicity,1,0,0,0,5371.0,2026-08-21,2939048.0,2026-08-21
+0GBU.L,STORY-B.ST,Storytel AB (publ),Communication Services,Communication Services,0GBU.L|STORY-B.ST,lse-iob,91.7334,77324988.0,7093285701.15,canonicity,1,0,0,0,2464.0,2026-08-21,229543.0,2026-08-21
+0IWV.L,VAN.BR,Van de Velde N.V.,Consumer Cyclical,Consumer Cyclical,0IWV.L|VAN.BR,lse-iob,30.1,12832000.0,386243200.0,canonicity,0,0,0,0,868.0,2026-08-21,2354.0,2026-08-21
+ERIC-A.ST,ERIC,Telefonaktiebolaget LM Ericsson (publ),Technology,Technology,ERCB.DE|ERCG.DE|ERIC|ERIC-A.ST|ERIC-B.ST,,108.15,3313000000.0,358300950000.0,punctuation,1,0,-2,-1,32888.0,2026-08-21,12163890.0,2026-08-21
+ERIC-B.ST,ERIC,Telefonaktiebolaget LM Ericsson (publ),Technology,Technology,ERCB.DE|ERCG.DE|ERIC|ERIC-A.ST|ERIC-B.ST,,108.15,3313000000.0,358300950000.0,punctuation,0,0,-2,-1,9416932.0,2026-08-21,12163890.0,2026-08-21
+ERCG.DE,ERIC,Telefonaktiebolaget LM Ericsson (publ),Technology,Technology,ERCB.DE|ERCG.DE|ERIC|ERIC-A.ST|ERIC-B.ST,,108.15,3313000000.0,358300950000.0,punctuation,1,0,-2,-1,338.0,2026-08-21,12163890.0,2026-08-21
+ERCB.DE,ERIC,Telefonaktiebolaget LM Ericsson (publ),Technology,Technology,ERCB.DE|ERCG.DE|ERIC|ERIC-A.ST|ERIC-B.ST,,108.15,3313000000.0,358300950000.0,punctuation,1,0,-2,-1,12262.0,2026-08-21,12163890.0,2026-08-21
+FB2A.DE,META,"Meta Platforms, Inc.",Communication Services,Communication Services,FB2A.DE|META,,563.29,2543000000.0,1432446470000.0,punctuation,1,0,0,0,11832.0,2026-08-21,18540474.0,2026-08-21
+FNV.TO,FNV,Franco-Nevada Corporation,Basic Materials,Basic Materials,0QYZ.L|FNV|FNV.TO,,208.8722,192900000.0,40291452000.0,shares,0,0,0,0,387030.0,2026-08-21,846662.0,2026-08-21
+0QYZ.L,FNV,Franco-Nevada Corporation,Basic Materials,Basic Materials,0QYZ.L|FNV|FNV.TO,lse-iob,208.8722,192900000.0,40291452000.0,canonicity,1,0,0,0,894.0,2026-08-21,846662.0,2026-08-21
+0KNY.L,TROW,"T. Rowe Price Group, Inc.",Financial Services,Financial Services,0KNY.L|TROW,lse-iob,113.69,214000000.0,24329660000.0,canonicity,1,0,0,0,2755.0,2026-08-21,2074411.0,2026-08-21
+0ZPV.L,JEN.DE,Jenoptik AG,Technology,Technology,0ZPV.L|JEN.DE,lse-iob,27.9559,57737931.0,1614114843.0,canonicity,0,0,0,0,65141.0,2026-08-21,184013.0,2026-08-21
+0R4M.L,LUG.TO,Lundin Gold Inc.,Basic Materials,Basic Materials,0R4M.L|LUG.ST|LUG.TO,lse-iob,53.863,241821813.0,13025257986.4915,canonicity,1,0,0,0,15569.0,2026-08-21,656132.0,2026-08-21
+LUG.ST,LUG.TO,Lundin Gold Inc.,Basic Materials,Basic Materials,0R4M.L|LUG.ST|LUG.TO,,53.863,241821813.0,13025257986.4915,volavg_raw,0,0,0,0,125417.0,2026-08-21,656132.0,2026-08-21
+0GX2.L,NRO.PA,Neurones S.A.,Technology,Technology,0GX2.L|NRO.PA,lse-iob,43.05,24328000.0,1047320400.0,canonicity,0,0,0,0,1232.0,2026-08-21,8269.0,2026-08-21
+0I4T.L,CRTO,Criteo S.A.,Communication Services,Communication Services,0I4T.L|CRTO,lse-iob,18.28,49664392.0,907865085.76,canonicity,1,0,0,0,342.0,2026-08-21,469841.0,2026-08-21
+GOOGL,GOOG,Alphabet Inc.,Communication Services,Communication Services,ABEA.DE|ABEC.DE|GOOG|GOOGL,symbol-extension,357.37,12151000000.0,4342402870000.0,canonicity,0,0,-2,-2,32133217.0,2026-08-21,22016991.0,2026-08-21
+ABEA.DE,GOOG,Alphabet Inc.,Communication Services,Communication Services,ABEA.DE|ABEC.DE|GOOG|GOOGL,,357.37,12151000000.0,4342402870000.0,punctuation,1,0,-2,-2,31120.0,2026-08-21,22016991.0,2026-08-21
+ABEC.DE,GOOG,Alphabet Inc.,Communication Services,Communication Services,ABEA.DE|ABEC.DE|GOOG|GOOGL,,357.37,12151000000.0,4342402870000.0,punctuation,1,0,-2,-2,6113.0,2026-08-21,22016991.0,2026-08-21
+0R0U.L,CDE,"Coeur Mining, Inc.",Basic Materials,Basic Materials,0R0U.L|CDE|CDM1.DE,lse-iob,16.32,1029300000.0,16798176000.0,canonicity,1,0,0,0,49798.0,2026-08-21,36650712.0,2026-08-21
+CDM1.DE,CDE,"Coeur Mining, Inc.",Basic Materials,Basic Materials,0R0U.L|CDE|CDM1.DE,,16.32,1029300000.0,16798176000.0,punctuation,1,0,0,0,14089.0,2026-08-21,36650712.0,2026-08-21
+YCP.DE,COP,ConocoPhillips,Energy,Energy,0QZA.L|COP|YCP.DE,,103.96,1213453000.0,126150573880.0,punctuation,1,0,0,0,826.0,2026-08-21,7162580.0,2026-08-21
+0QZA.L,COP,ConocoPhillips,Energy,Energy,0QZA.L|COP|YCP.DE,lse-iob,103.96,1213453000.0,126150573880.0,canonicity,1,0,0,0,56399.0,2026-08-21,7162580.0,2026-08-21
+T,SOBA.DE,AT&T Inc.,Communication Services,Communication Services,SOBA.DE|T,,20.7,6938000000.0,143616600000.0,shares,0,1,0,0,63412380.0,2026-08-21,7689.0,2026-08-21
+IMG.TO,IAG,Iamgold Corporation,Basic Materials,Basic Materials,IAG|IMG.TO,,15.84,578000000.0,9155520000.0,punctuation,0,0,0,0,1635517.0,2026-08-21,5625650.0,2026-08-21
+LUMI.ST,LUN.TO,Lundin Mining Corporation,Basic Materials,Basic Materials,LUMI.ST|LUN.TO,,24.3302,855344018.0,20810725240.5043,symbol_length,0,0,0,0,481262.0,2026-08-21,2428106.0,2026-08-21
+0Q4C.L,GSC1.DE,Gesco AG,Industrials,Industrials,0Q4C.L|GSC1.DE,lse-iob,13.1194,10373570.0,136094692.8,canonicity,1,0,0,0,31.0,2026-08-21,3237.0,2026-08-21
+0NNU.L,NEDAP.AS,Nedap N.V.,Technology,Technology,0NNU.L|NEDAP.AS,lse-iob,95.5,6623005.0,632496977.5,canonicity,1,0,0,0,88.0,2026-08-21,5447.0,2026-08-21
+0HF6.L,AMP,"Ameriprise Financial, Inc.",Financial Services,Financial Services,0HF6.L|A4S.DE|AMP,lse-iob,458.76,91800000.0,42114168000.0,canonicity,1,0,0,0,1720.0,2026-08-21,631909.0,2026-08-21
+A4S.DE,AMP,"Ameriprise Financial, Inc.",Financial Services,Financial Services,0HF6.L|A4S.DE|AMP,,523.9315,80381065.0,42114168000.0,shares,1,0,0,0,10.0,2026-08-21,631909.0,2026-08-21
+0JPO.L,KLAC,KLA Corporation,Technology,Technology,0JPO.L|KLA.DE|KLAC,lse-iob,302.8644,1306517000.0,395697492360.0,canonicity,1,0,0,0,4443.0,2026-08-21,12874777.0,2026-08-21
+KLA.DE,KLAC,KLA Corporation,Technology,Technology,0JPO.L|KLA.DE|KLAC,,302.8644,1306517000.0,395697492360.0,shares,1,0,0,0,3332.0,2026-08-21,12874777.0,2026-08-21
+0KV3.L,RF,Regions Financial Corporation,Financial Services,Financial Services,0KV3.L|RF,lse-iob,30.2,854000000.0,25790800000.0,canonicity,1,0,0,0,28097.0,2026-08-21,10038370.0,2026-08-21
+FME.DE,FMS,Fresenius Medical Care AG & Co. KGaA,Healthcare,Healthcare,FME.DE|FMS,,39.6,268438292.0,10630156363.2,shares,0,0,0,0,855038.0,2026-08-21,730601.0,2026-08-21
+0F6L.L,MAU.PA,Etablissements Maurel & Prom S.A.,Energy,Energy,0F6L.L|MAU.PA,lse-iob,8.8976,199665000.0,1776535749.963,canonicity,0,0,0,0,79773.0,2026-08-21,200736.0,2026-08-21
+0RR8.L,68V.DE,Baker Hughes Company,Energy,Energy,0RR8.L|68V.DE|BKR,lse-iob,55.4441,992000000.0,55000500000.0,canonicity,1,1,0,0,6348.0,2026-08-21,1785.0,2026-08-21
+BKR,68V.DE,Baker Hughes Company,Energy,Energy,0RR8.L|68V.DE|BKR,,55.5,991000000.0,55000500000.0,shares,0,1,0,0,8552537.0,2026-08-21,1785.0,2026-08-21
+AG.TO,AG,First Majestic Silver Corp.,Basic Materials,Basic Materials,AG|AG.TO,,16.9523,493335474.0,8363180822.5997,shares,0,0,0,0,1578330.0,2026-08-21,11112395.0,2026-08-21
+EQNR.OL,EQNR,Equinor ASA,Energy,Energy,EQNR|EQNR.OL,,31.629,2431000000.0,76890135465.0,punctuation,0,0,0,0,2908913.0,2026-08-21,3593853.0,2026-08-21
+SAP.DE,SAP,SAP SE,Technology,Technology,SAP|SAP.DE,,134.0,1153000000.0,154502000000.0,punctuation,0,0,0,0,2871930.0,2026-08-21,2999053.0,2026-08-21
+0DTF.L,BOI.PA,Boiron S.A.,Healthcare,Healthcare,0DTF.L|BOI.PA,lse-iob,30.3,17643000.0,534582900.0,canonicity,0,0,0,0,1067.0,2026-08-21,2183.0,2026-08-21
+0QZ5.L,CTSH,Cognizant Technology Solutions Corporation,Technology,Technology,0QZ5.L|COZ.DE|CTSH,lse-iob,38.73,466000000.0,18048180000.0,canonicity,1,0,0,0,6992.0,2026-08-21,10967137.0,2026-08-21
+COZ.DE,CTSH,Cognizant Technology Solutions Corporation,Technology,Technology,0QZ5.L|COZ.DE|CTSH,,38.73,466000000.0,18048180000.0,punctuation,1,0,0,0,286.0,2026-08-21,10967137.0,2026-08-21
+AMG.DE,AMGN,Amgen Inc.,Healthcare,Healthcare,AMG.DE|AMGN,,362.12,540000000.0,195544800000.0,punctuation,1,0,0,0,417.0,2026-08-21,2697977.0,2026-08-21
+BWLPG.OL,BWLP,BW LPG Limited,Industrials,Industrials,BWLP|BWLPG.OL,,17.37,151500000.0,2631555000.0,punctuation,0,0,0,0,333064.0,2026-08-21,406129.0,2026-08-21
+009155.KS,009150.KS,"Samsung Electro-Mechanics Co., Ltd.",Technology,Technology,009150.KS|009155.KS,korea-preferred,2184000.0,80698000.0,176244432000000.0,canonicity,1,0,0,0,92414.0,2026-08-21,1149193.0,2026-08-21
+SSRM.TO,SSRM,SSR Mining Inc.,Basic Materials,Basic Materials,0VGE.L|SSRM|SSRM.TO,,28.28,208014000.0,5882635920.0,punctuation,0,0,0,0,463800.0,2026-08-21,3140396.0,2026-08-21
+0VGE.L,SSRM,SSR Mining Inc.,Basic Materials,Basic Materials,0VGE.L|SSRM|SSRM.TO,lse-iob,28.28,208014000.0,5882635920.0,canonicity,1,0,0,0,67043.0,2026-08-21,3140396.0,2026-08-21
+0HC2.L,ALRM,"Alarm.com Holdings, Inc.",Technology,Technology,0HC2.L|ALRM,lse-iob,46.72,49328402.0,2304622941.44,canonicity,1,0,0,0,113.0,2026-08-21,500280.0,2026-08-21
+WPM.TO,WPM,Wheaton Precious Metals Corp.,Basic Materials,Basic Materials,SII.DE|WPM|WPM.L|WPM.TO,,112.32,454133000.0,51008218560.0,punctuation,0,0,0,0,836241.0,2026-08-21,2066709.0,2026-08-21
+WPM.L,WPM,Wheaton Precious Metals Corp.,Basic Materials,Basic Materials,SII.DE|WPM|WPM.L|WPM.TO,,112.32,454133000.0,51008218560.0,punctuation,1,0,0,0,8757.0,2026-08-21,2066709.0,2026-08-21
+SII.DE,WPM,Wheaton Precious Metals Corp.,Basic Materials,Basic Materials,SII.DE|WPM|WPM.L|WPM.TO,,112.32,454133000.0,51008218560.0,punctuation,1,0,0,0,1306.0,2026-08-21,2066709.0,2026-08-21
+0MT8.L,DRW3.DE,Drägerwerk AG & Co. KGaA,Healthcare,Healthcare,0MT8.L|DRW3.DE|DRW8.DE,lse-iob,82.5,18760000.0,1547700000.0,canonicity,1,0,-2,-1,114.0,2026-08-21,16108.0,2026-08-21
+DRW8.DE,DRW3.DE,Drägerwerk AG & Co. KGaA,Healthcare,Healthcare,0MT8.L|DRW3.DE|DRW8.DE,,82.5,18760000.0,1547700000.0,volavg,1,0,-2,-1,1509.0,2026-08-21,16108.0,2026-08-21
+0NCA.L,IVU.DE,IVU Traffic Technologies AG,Technology,Technology,0NCA.L|IVU.DE,lse-iob,18.05,17334000.0,312878700.0,canonicity,1,0,0,0,572.0,2026-08-21,10626.0,2026-08-21
+SLF.TO,SLF,Sun Life Financial Inc.,Financial Services,Financial Services,0VJA.L|SLF|SLF.TO,,111.35,554000000.0,61687900000.0,punctuation,0,0,0,0,1810204.0,2026-08-21,731970.0,2026-08-21
+0VJA.L,SLF,Sun Life Financial Inc.,Financial Services,Financial Services,0VJA.L|SLF|SLF.TO,lse-iob,111.35,554000000.0,61687900000.0,canonicity,1,0,0,0,350.0,2026-08-21,731970.0,2026-08-21
+CCL-A.TO,CCL-B.TO,CCL Industries Inc.,Consumer Cyclical,Consumer Cyclical,CCL-A.TO|CCL-B.TO,,92.47,170839694.0,15797546504.18,volavg,1,0,0,0,219.0,2026-08-21,426033.0,2026-08-21
+0QJQ.L,TIMA.DE,ZEAL Network SE,Consumer Cyclical,Consumer Cyclical,0QJQ.L|TIMA.DE,lse-iob,42.3,21151562.0,894711072.6,canonicity,0,0,0,0,1125.0,2026-08-21,3657.0,2026-08-21
+0J7X.L,MBB.DE,Mbb Se,Industrials,Industrials,0J7X.L|MBB.DE,lse-iob,172.8,5216720.0,901449216.0,canonicity,1,0,0,0,289.0,2026-08-21,2916.0,2026-08-21
+0N2Q.L,BIJ.DE,Bijou Brigitte modische Accessoires AG,Consumer Cyclical,Consumer Cyclical,0N2Q.L|BIJ.DE,lse-iob,41.3,7493226.0,309470233.8,canonicity,1,0,0,0,483.0,2026-08-21,4992.0,2026-08-21
+0N66.L,AOF.DE,ATOSS Software AG,Technology,Technology,0N66.L|AOF.DE,lse-iob,66.9,15947000.0,1066854300.0,canonicity,0,0,0,0,2692.0,2026-08-21,23252.0,2026-08-21
+0JCT.L,INTU,Intuit Inc.,Technology,Technology,0JCT.L|INTU|ITU.DE,lse-iob,388.5,276000000.0,107226000000.0,canonicity,1,0,0,0,21418.0,2026-08-21,5133762.0,2026-08-21
+ITU.DE,INTU,Intuit Inc.,Technology,Technology,0JCT.L|INTU|ITU.DE,,388.5,276000000.0,107226000000.0,punctuation,1,0,0,0,2020.0,2026-08-21,5133762.0,2026-08-21
+VX1.DE,VRTX,Vertex Pharmaceuticals Incorporated,Healthcare,Healthcare,0QZU.L|VRTX|VX1.DE,,497.1216,253700000.0,126119747000.0,shares,1,0,0,0,91.0,2026-08-21,1556327.0,2026-08-21
+0QZU.L,VRTX,Vertex Pharmaceuticals Incorporated,Healthcare,Healthcare,0QZU.L|VRTX|VX1.DE,lse-iob,497.1216,253700000.0,126119747000.0,canonicity,1,0,0,0,2907.0,2026-08-21,1556327.0,2026-08-21
+0R3D.L,EBAY,eBay Inc.,Consumer Cyclical,Consumer Cyclical,0R3D.L|EBA.DE|EBAY,lse-iob,112.2522,445000000.0,49952250000.0,canonicity,1,0,0,0,1851.0,2026-08-21,4050030.0,2026-08-21
+EBA.DE,EBAY,eBay Inc.,Consumer Cyclical,Consumer Cyclical,0R3D.L|EBA.DE|EBAY,,112.2522,445000000.0,49952250000.0,shares,1,0,0,0,329.0,2026-08-21,4050030.0,2026-08-21
+GIB-A.TO,GIB,CGI Inc.,Technology,Technology,0A18.L|GIB|GIB-A.TO,,91.67,207765623.0,19045874660.41,punctuation,0,0,0,0,645946.0,2026-08-21,484001.0,2026-08-21
+0A18.L,GIB,CGI Inc.,Technology,Technology,0A18.L|GIB|GIB-A.TO,lse-iob,91.67,207765623.0,19045874660.41,canonicity,1,0,0,0,142.0,2026-08-21,484001.0,2026-08-21
+0AH3.L,GWO.TO,Great-West Lifeco Inc.,Financial Services,Financial Services,0AH3.L|GWO.TO,lse-iob,90.37,896475776.0,81014515877.12,canonicity,1,0,0,0,350.0,2026-08-21,1541017.0,2026-08-21
+0QZX.L,FDX,FedEx Corporation,Industrials,Industrials,0QZX.L|FDX|FDX.DE,lse-iob,338.49,241000000.0,81576090000.0,canonicity,1,0,0,0,3339.0,2026-08-21,1927009.0,2026-08-21
+FDX.DE,FDX,FedEx Corporation,Industrials,Industrials,0QZX.L|FDX|FDX.DE,,338.49,241000000.0,81576090000.0,punctuation,1,0,0,0,86.0,2026-08-21,1927009.0,2026-08-21
+0JW2.L,MTB,M&T Bank Corporation,Financial Services,Financial Services,0JW2.L|MTB,lse-iob,253.8954,146758000.0,37261179530.0,canonicity,1,0,0,0,3721.0,2026-08-21,1105162.0,2026-08-21
+AFGB,AFG,"American Financial Group, Inc.",Financial Services,Financial Services,AFG|AFGB|AFGC|AFGD|AFGE,symbol-extension,139.94,83000000.0,11615020000.0,canonicity,1,0,0,0,8380.0,2026-08-21,467366.0,2026-08-21
+AFGD,AFG,"American Financial Group, Inc.",Financial Services,Financial Services,AFG|AFGB|AFGC|AFGD|AFGE,symbol-extension,139.94,83000000.0,11615020000.0,canonicity,1,0,0,0,9140.0,2026-08-21,467366.0,2026-08-21
+AFGE,AFG,"American Financial Group, Inc.",Financial Services,Financial Services,AFG|AFGB|AFGC|AFGD|AFGE,symbol-extension,139.94,83000000.0,11615020000.0,canonicity,1,0,0,0,8411.0,2026-08-21,467366.0,2026-08-21
+AFGC,AFG,"American Financial Group, Inc.",Financial Services,Financial Services,AFG|AFGB|AFGC|AFGD|AFGE,symbol-extension,139.94,83000000.0,11615020000.0,canonicity,1,0,0,0,10700.0,2026-08-21,467366.0,2026-08-21
+0KGE.L,PAYX,"Paychex, Inc.",Industrials,Industrials,0KGE.L|PAYX|PCX.DE,lse-iob,102.44,357600000.0,36632544000.0,canonicity,1,0,0,0,1086.0,2026-08-21,3259606.0,2026-08-21
+PCX.DE,PAYX,"Paychex, Inc.",Industrials,Industrials,0KGE.L|PAYX|PCX.DE,,102.44,357600000.0,36632544000.0,punctuation,1,0,0,0,86.0,2026-08-21,3259606.0,2026-08-21
+CMCSA,CCZ,Comcast Corporation,Communication Services,Communication Services,CCZ|CMCSA|CTP2.DE,,24.55,3570000000.0,87643500000.0,symbol_length,0,1,-2,-1,34413090.0,2026-08-21,151.0,2026-08-21
+CTP2.DE,CCZ,Comcast Corporation,Communication Services,Communication Services,CCZ|CMCSA|CTP2.DE,,24.5913,3564000000.0,87643500000.0,shares,1,1,-2,-1,7164.0,2026-08-21,151.0,2026-08-21
+ELD.TO,EGO,Eldorado Gold Corporation,Basic Materials,Basic Materials,EGO|ELD.TO,,31.09,251453420.0,7817686827.8,punctuation,0,0,0,0,707788.0,2026-08-21,2624750.0,2026-08-21
+0HW9.L,SINT.ST,SinterCast AB (publ),Industrials,Industrials,0HW9.L|SINT.ST,lse-iob,99.0,7042300.0,697187700.0,canonicity,1,0,0,0,80.0,2026-08-21,4754.0,2026-08-21
+0QYN.L,BTO.TO,B2Gold Corp.,Basic Materials,Basic Materials,0QYN.L|BTO.TO,lse-iob,3.7453,1331711000.0,4987630574.08,canonicity,1,0,0,0,25662.0,2026-08-21,4664849.0,2026-08-21
+0EEV.L,EXM.BR,Exmar N.V.,Energy,Energy,0EEV.L|EXM.BR,lse-iob,11.7107,79929000.0,936021526.9767,canonicity,0,0,0,0,4076.0,2026-08-21,1532.0,2026-08-21
+AGI.TO,AGI,Alamos Gold Inc.,Basic Materials,Basic Materials,0UGS.L|AGI|AGI.TO,,30.34,419694000.0,12733515960.0,punctuation,0,0,0,0,1405001.0,2026-08-21,4737374.0,2026-08-21
+0UGS.L,AGI,Alamos Gold Inc.,Basic Materials,Basic Materials,0UGS.L|AGI|AGI.TO,lse-iob,30.34,419694000.0,12733515960.0,canonicity,1,0,0,0,6624.0,2026-08-21,4737374.0,2026-08-21
+0HJI.L,ADP,"Automatic Data Processing, Inc.",Technology,Technology,0HJI.L|ADP|ADP.DE,lse-iob,224.303,398800000.0,89452028475.45,canonicity,1,0,0,0,38782.0,2026-08-21,2611782.0,2026-08-21
+ADP.DE,ADP,"Automatic Data Processing, Inc.",Technology,Technology,0HJI.L|ADP|ADP.DE,,224.303,398800000.0,89452028475.45,shares,1,0,0,0,155.0,2026-08-21,2611782.0,2026-08-21
+0LHY.L,USB,U.S. Bancorp,Financial Services,Financial Services,0LHY.L|UB5.DE|USB,lse-iob,60.4,1554000000.0,93861600000.0,canonicity,1,0,0,0,32309.0,2026-08-21,8353853.0,2026-08-21
+UB5.DE,USB,U.s. Bancorp R,Financial Services,Financial Services,0LHY.L|UB5.DE|USB,,68.9804,1360699000.0,93861600000.0,shares,1,0,0,0,83.0,2026-08-21,8353853.0,2026-08-21
+0HGC.L,APA,APA Corporation,Energy,Energy,0HGC.L|APA,lse-iob,32.57,353000000.0,11497210000.0,canonicity,1,0,0,0,5708.0,2026-08-21,5545620.0,2026-08-21
+ALS.DE,ALL,The Allstate Corporation,Financial Services,Financial Services,0HCZ.L|ALL|ALS.DE,,271.7418,224156349.0,60912640000.0,shares,1,0,0,0,14.0,2026-08-21,1757904.0,2026-08-21
+0HCZ.L,ALL,The Allstate Corporation,Financial Services,Financial Services,0HCZ.L|ALL|ALS.DE,lse-iob,235.0932,259100000.0,60912640000.0,canonicity,1,0,0,0,2106.0,2026-08-21,1757904.0,2026-08-21
+CNQ.TO,CNQ,Canadian Natural Resources Limited,Energy,Energy,CNQ|CNQ.TO,,56.12,2077894000.0,116611411280.0,punctuation,0,0,0,0,13701931.0,2026-08-21,8063290.0,2026-08-21
+WWIB.OL,WWI.OL,Wilh. Wilhelmsen Holding ASA,Industrials,Industrials,WWI.OL|WWIB.OL,symbol-extension,69.3114,41484933.0,2875380029.6842,canonicity,0,0,0,0,5373.0,2026-08-21,14445.0,2026-08-21
+0VQD.L,CB,Chubb Limited,Financial Services,Financial Services,0VQD.L|CB,lse-iob,342.2203,391300000.0,133910820000.0,canonicity,1,0,0,0,1785.0,2026-08-21,1833487.0,2026-08-21
+IC2.DE,ICE,"Intercontinental Exchange, Inc.",Financial Services,Financial Services,0JC3.L|IC2.DE|ICE,,140.599,493844456.0,69434040000.0,shares,1,0,0,0,53.0,2026-08-21,4581846.0,2026-08-21
+0JC3.L,ICE,"Intercontinental Exchange, Inc.",Financial Services,Financial Services,0JC3.L|IC2.DE|ICE,lse-iob,123.11,564000000.0,69434040000.0,canonicity,1,0,0,0,16132.0,2026-08-21,4581846.0,2026-08-21
+UT8.DE,UBER,"Uber Technologies, Inc.",Technology,Technology,UBER|UT8.DE,,72.16,2036458000.0,146950809280.0,punctuation,1,0,0,0,11704.0,2026-08-21,20778217.0,2026-08-21
+0D1X.L,ALGIL.PA,Groupe Guillin S.A.,Consumer Cyclical,Consumer Cyclical,0D1X.L|ALGIL.PA,lse-iob,26.7516,18485671.0,494521712.75,canonicity,1,0,0,0,97.0,2026-08-21,3062.0,2026-08-21
+ABL.DE,ABT,Abbott Laboratories,Healthcare,Healthcare,ABL.DE|ABT,,90.74,1743000000.0,158159820000.0,punctuation,1,0,0,0,1251.0,2026-08-21,11965333.0,2026-08-21
+0NJB.L,SHF.DE,SNP Schneider-Neureither & Partner SE,Technology,Technology,0NJB.L|SHF.DE,lse-iob,83.0,7289000.0,604987000.0,canonicity,1,0,0,0,14.0,2026-08-21,207.0,2026-08-21
+SAN.PA,SNY,Sanofi,Healthcare,Healthcare,SAN.PA|SNW.DE|SNY,,75.08,1196600000.0,89840728000.0,shares,0,0,-2,-1,2353039.0,2026-08-21,3404267.0,2026-08-21
+SNW.DE,SNY,Sanofi,Healthcare,Healthcare,SAN.PA|SNW.DE|SNY,,75.08,1196600000.0,89840728000.0,shares,1,0,-2,-1,15018.0,2026-08-21,3404267.0,2026-08-21
+HM-B.ST,HMSB.DE,H & M Hennes & Mauritz AB (publ),Consumer Cyclical,Consumer Cyclical,HM-B.ST|HMSB.DE,,162.15,1597601000.0,259051002150.0,punctuation,0,1,0,0,2216195.0,2026-08-21,395.0,2026-08-21
+ESSITY-A.ST,ESSITY-B.ST,Essity AB (publ),Consumer Defensive,Consumer Defensive,ESSITY-A.ST|ESSITY-B.ST,,274.3,680096000.0,186550332800.0,volavg,1,0,0,0,19785.0,2026-08-21,1265565.0,2026-08-21
+0UWL.L,FRU.TO,Freehold Royalties Ltd.,Energy,Energy,0UWL.L|FRU.TO,lse-iob,16.13,163960334.0,2644680187.42,canonicity,1,0,0,0,127.0,2026-08-21,612974.0,2026-08-21
+0RUJ.L,ALDLT.PA,Delta Plus Group,Consumer Cyclical,Consumer Cyclical,0RUJ.L|ALDLT.PA,lse-iob,49.3,7493000.0,369404900.0,canonicity,0,0,0,0,248.0,2026-08-21,1378.0,2026-08-21
+TECK-A.TO,TECK-B.TO,Teck Resources Limited,Basic Materials,Basic Materials,TECK-A.TO|TECK-B.TO,,84.4029,490100000.0,41365849233.54,volavg,1,0,0,0,7579.0,2026-08-21,1080308.0,2026-08-21
+MOH.DE,MC.PA,"LVMH Moët Hennessy - Louis Vuitton, Société Européenne",Consumer Cyclical,Consumer Cyclical,MC.PA|MOH.DE,,484.1,494587155.0,239429641735.5,symbol_length,1,0,0,0,4098.0,2026-08-21,556786.0,2026-08-21
+0O1O.L,VETO.PA,Vetoquinol S.A.,Healthcare,Healthcare,0O1O.L|VETO.PA,lse-iob,83.5,11974000.0,999829000.0,canonicity,1,0,0,0,141.0,2026-08-21,8679.0,2026-08-21
+CHV.DE,CVX,Chevron Corporation,Energy,Energy,CHV.DE|CVX,,165.76,1969868000.0,326525319680.0,punctuation,1,0,0,0,3386.0,2026-08-21,8693196.0,2026-08-21
+0R20.L,SCZM,Santacruz Silver Mining Ltd.,Basic Materials,Basic Materials,0R20.L|SCZM,lse-iob,8.6917,92176513.0,801174543.1969,canonicity,1,0,0,0,31962.0,2026-08-21,517161.0,2026-08-21
+0OQQ.L,INF.PA,Infotel S.A.,Technology,Technology,0OQQ.L|INF.PA,lse-iob,42.3,7973000.0,337257900.0,canonicity,1,0,0,0,35.0,2026-08-21,3675.0,2026-08-21
+0HYP.L,CFG,"Citizens Financial Group, Inc.",Financial Services,Financial Services,0HYP.L|CFG,lse-iob,70.07,422871137.0,29630580569.59,canonicity,1,0,0,0,1677.0,2026-08-21,4385430.0,2026-08-21
+AEC1.DE,AXP,American Express Company,Financial Services,Financial Services,AEC1.DE|AXP,,386.3018,593664080.0,229333500000.0,shares,1,0,0,0,208.0,2026-08-21,2992103.0,2026-08-21
+AA,185.DE,Alcoa Corporation,Basic Materials,Basic Materials,0HCB.L|185.DE|AA,,52.14,263769772.0,13752955912.08,shares,0,1,0,0,5814046.0,2026-08-21,1765.0,2026-08-21
+0HCB.L,185.DE,Alcoa Corporation,Basic Materials,Basic Materials,0HCB.L|185.DE|AA,lse-iob,52.1166,263888206.0,13752955912.08,canonicity,1,1,0,0,132849.0,2026-08-21,1765.0,2026-08-21
+0OAL.L,AIG,"American International Group, Inc.",Financial Services,Financial Services,0OAL.L|AIG|AINN.DE,lse-iob,75.1352,529500000.0,39784113925.47,canonicity,1,0,0,0,31672.0,2026-08-21,3742948.0,2026-08-21
+AINN.DE,AIG,"American International Group, Inc.",Financial Services,Financial Services,0OAL.L|AIG|AINN.DE,,85.809,463635886.0,39784113925.47,shares,1,0,0,0,87.0,2026-08-21,3742948.0,2026-08-21
+0ABJ.L,ALLEI.ST,Alleima AB (publ),Basic Materials,Basic Materials,0ABJ.L|ALLEI.ST,lse-iob,88.7,250273761.0,22199282600.7,canonicity,0,0,0,0,51489.0,2026-08-21,393593.0,2026-08-21
+0R2Z.L,MA,Mastercard Incorporated,Financial Services,Financial Services,0R2Z.L|M4I.DE|MA,lse-iob,513.6,882000000.0,452995200000.0,canonicity,1,0,0,0,7959.0,2026-08-21,3519564.0,2026-08-21
+M4I.DE,MA,Mastercard Incorporated,Financial Services,Financial Services,0R2Z.L|M4I.DE|MA,,513.6,882000000.0,452995200000.0,punctuation,1,0,0,0,688.0,2026-08-21,3519564.0,2026-08-21
+KEI.TO,KGEI,Kolibri Global Energy Inc.,Energy,Energy,KEI.TO|KGEI,,4.98,35642000.0,177497160.0,punctuation,0,0,0,0,20863.0,2026-08-21,190954.0,2026-08-21
+3V64.DE,V,Visa Inc.,Financial Services,Financial Services,3V64.DE|V,,352.2789,1863540000.0,656485903590.0,shares,1,0,0,0,2088.0,2026-08-21,8151979.0,2026-08-21
+0KEF.L,PNC,"The PNC Financial Services Group, Inc.",Financial Services,Financial Services,0KEF.L|PNC,lse-iob,246.8005,403000000.0,99460593622.0,canonicity,1,0,0,0,12108.0,2026-08-21,1963387.0,2026-08-21
+DSG.TO,DSGX,The Descartes Systems Group Inc.,Technology,Technology,DSG.TO|DSGX,,72.106,86019000.0,6202482315.183,punctuation,0,0,0,0,318022.0,2026-08-21,538796.0,2026-08-21
+KFI1.DE,KGF.L,Kingfisher plc,Consumer Cyclical,Consumer Cyclical,KFI1.DE|KGF.L,,3.375,1702128000.0,5744682000.0,symbol_length,1,0,0,0,966.0,2026-08-21,7111777.0,2026-08-21
+0YG7.L,BEIA-B.ST,Beijer Alma AB (publ),Industrials,Industrials,0YG7.L|BEIA-B.ST,lse-iob,296.5315,60262200.0,17869637907.0,canonicity,1,0,0,0,875.0,2026-08-21,31983.0,2026-08-21
+0M3Q.L,ZTS,Zoetis Inc.,Healthcare,Healthcare,0M3Q.L|ZOE.DE|ZTS,lse-iob,71.86,417600000.0,30008736000.0,canonicity,1,0,0,0,11709.0,2026-08-21,6767633.0,2026-08-21
+ZOE.DE,ZTS,Zoetis Inc.,Healthcare,Healthcare,0M3Q.L|ZOE.DE|ZTS,,71.86,417600000.0,30008736000.0,punctuation,1,0,0,0,2389.0,2026-08-21,6767633.0,2026-08-21
+0R06.L,FSLR,"First Solar, Inc.",Energy,Energy,0R06.L|F3A.DE|FSLR,lse-iob,235.96,107462000.0,25356733520.0,canonicity,1,0,0,0,4797.0,2026-08-21,2438220.0,2026-08-21
+F3A.DE,FSLR,"First Solar, Inc.",Energy,Energy,0R06.L|F3A.DE|FSLR,,235.96,107462000.0,25356733520.0,punctuation,1,0,0,0,849.0,2026-08-21,2438220.0,2026-08-21
+0R2L.L,TMUS,"T-Mobile US, Inc.",Communication Services,Communication Services,0R2L.L|TM5.DE|TMUS,lse-iob,167.73,1081771000.0,181445449830.0,canonicity,1,0,0,0,10904.0,2026-08-21,5285917.0,2026-08-21
+TM5.DE,TMUS,"T-Mobile US, Inc.",Communication Services,Communication Services,0R2L.L|TM5.DE|TMUS,,167.73,1081771000.0,181445449830.0,punctuation,1,0,0,0,1063.0,2026-08-21,5285917.0,2026-08-21
+0R9T.L,EQS.PA,Equasens S.A.,Technology,Technology,0R9T.L|EQS.PA,lse-iob,45000.0,15288.0,687960000.0,canonicity,1,0,0,0,1018.0,2026-08-21,10889.0,2026-08-21
+UU2.DE,BLK,"BlackRock, Inc.",Financial Services,Financial Services,0QZZ.L|BLK|UU2.DE,,1098.1592,135894786.0,149234112000.0,shares,1,0,0,0,250.0,2026-08-21,761556.0,2026-08-21
+0QZZ.L,BLK,"BlackRock, Inc.",Financial Services,Financial Services,0QZZ.L|BLK|UU2.DE,lse-iob,961.56,155200000.0,149234112000.0,canonicity,1,0,0,0,4596.0,2026-08-21,761556.0,2026-08-21
+0DZJ.L,CEN.PA,Groupe CRIT S.A.,Industrials,Industrials,0DZJ.L|CEN.PA,lse-iob,58.2,14130000.0,822366000.0,canonicity,1,0,0,0,2.0,2026-08-21,1505.0,2026-08-21
+BRM.DE,BMY,Bristol-Myers Squibb Company,Healthcare,Healthcare,BMY|BRM.DE,,57.62,2042000000.0,117660040000.0,punctuation,1,0,0,0,1664.0,2026-08-21,12447940.0,2026-08-21
+0IPY.L,AUB.PA,Aubay S.A.,Technology,Technology,0IPY.L|AUB.PA,lse-iob,57.1,12671000.0,723514100.0,canonicity,0,0,0,0,836.0,2026-08-21,7670.0,2026-08-21
+0LVJ.L,WU,The Western Union Company,Financial Services,Financial Services,0LVJ.L|WU,lse-iob,7.7,312800000.0,2408560000.0,canonicity,1,0,0,0,2259.0,2026-08-21,9975045.0,2026-08-21
+FIV.DE,FISV,"Fiserv, Inc.",Technology,Technology,0IP9.L|FISV|FIV.DE,,49.2932,533253986.0,26285769235.8,shares,1,0,0,0,2383.0,2026-08-21,15606482.3,2026-08-21
+0IP9.L,FISV,"Fiserv, Inc.",Technology,Technology,0IP9.L|FISV|FIV.DE,lse-iob,49.3537,532600000.0,26285769235.8,canonicity,1,0,0,0,7423.0,2026-08-21,15606482.3,2026-08-21
+0HDQ.L,SDG.PA,Synergie SE,Industrials,Industrials,0HDQ.L|SDG.PA,lse-iob,30.2,24361000.0,735702200.0,canonicity,1,0,0,0,21.0,2026-08-21,1298.0,2026-08-21
+0N0B.L,WAWI.OL,Wallenius Wilhelmsen ASA,Industrials,Industrials,0N0B.L|WAWI.OL,lse-iob,13.2469,422871121.0,5601713269.3167,canonicity,0,0,0,0,34279.0,2026-08-21,306216.0,2026-08-21
+NFC.DE,NFLX,"Netflix, Inc.",Communication Services,Communication Services,NFC.DE|NFLX,,71.4,4189303000.0,299116234200.0,punctuation,1,0,0,0,30647.0,2026-08-21,42942112.0,2026-08-21
+TTE.L,TTE,TotalEnergies SE,Energy,Energy,TOTB.DE|TTE|TTE.L|TTE.PA,,77.7025,2224189000.0,172825057783.1206,punctuation,0,0,0,0,1956100.0,2026-08-21,1578985.0,2026-08-21
+TTE.PA,TTE,TotalEnergies SE,Energy,Energy,TOTB.DE|TTE|TTE.L|TTE.PA,,77.7025,2224189000.0,172825057783.1206,punctuation,0,0,0,0,3940970.0,2026-08-21,1578985.0,2026-08-21
+TOTB.DE,TTE,TotalEnergies SE,Energy,Energy,TOTB.DE|TTE|TTE.L|TTE.PA,,77.7025,2224189000.0,172825057783.1206,punctuation,1,0,0,0,20651.0,2026-08-21,1578985.0,2026-08-21
+PTAL.L,TAL.TO,PetroTal Corp.,Energy,Energy,PTAL.L|TAL.TO,,0.3175,920328000.0,292204140.0,volavg_raw,0,0,0,0,449220.0,2026-08-21,657265.0,2026-08-21
+0Q76.L,CBOT.PA,CBo Territoria S.A.,Real Estate,Real Estate,0Q76.L|CBOT.PA,lse-iob,3.64,35023000.0,127483720.0,canonicity,1,0,0,0,246.0,2026-08-21,12546.0,2026-08-21
+REL.L,RELX,RELX Plc,Industrials,Industrials,RDEB.DE|REL.L|RELX|REN.AS,,23.66,1786500000.0,42268590000.0,punctuation,0,0,-3,-1,4899372.0,2026-08-21,2725727.0,2026-08-21
+RDEB.DE,RELX,RELX Plc,Industrials,Industrials,RDEB.DE|REL.L|RELX|REN.AS,,23.66,1786500000.0,42268590000.0,punctuation,1,0,-3,-1,2306.0,2026-08-21,2725727.0,2026-08-21
+REN.AS,RELX,RELX Plc,Industrials,Industrials,RDEB.DE|REL.L|RELX|REN.AS,,23.66,1786500000.0,42268590000.0,punctuation,0,0,-3,-1,1219515.0,2026-08-21,2725727.0,2026-08-21
+0RD1.L,CAMX.ST,Camurus AB,Healthcare,Healthcare,0RD1.L|CAMX.ST,lse-iob,565.5017,59509000.0,33652443552.0,canonicity,0,0,0,0,24529.0,2026-08-21,117663.0,2026-08-21
+OTEX.TO,OTEX,Open Text Corporation,Technology,Technology,OTEX|OTEX.TO,,22.742,242544000.0,5515925900.0,shares,0,0,0,0,1978420.0,2026-08-21,2120154.0,2026-08-21
+CNR.TO,CNI,Canadian National Railway Company,Industrials,Industrials,CNI|CNR.TO,,169.25,606500000.0,102650125000.0,punctuation,0,0,0,0,1610495.0,2026-08-21,1583617.0,2026-08-21
+FOO.DE,CRM,"Salesforce, Inc.",Technology,Technology,CRM|FOO.DE,,176.53,868000000.0,153228040000.0,punctuation,1,0,0,0,11722.0,2026-08-21,14970161.0,2026-08-21
+FPE3.DE,FPE.DE,Fuchs Petrolub SE,Basic Materials,Basic Materials,FPE.DE|FPE3.DE,symbol-extension,38.24,131000000.0,5009440000.0,canonicity,0,0,0,0,93395.0,2026-08-21,31932.0,2026-08-21
+0OCD.L,MEDI.OL,Medistim ASA,Healthcare,Healthcare,0OCD.L|MEDI.OL,lse-iob,211.0,18289310.0,3859044410.0,canonicity,1,0,0,0,98.0,2026-08-21,20010.0,2026-08-21
+0R2H.L,TXN,Texas Instruments Incorporated,Technology,Technology,0R2H.L|TII.DE|TXN,lse-iob,298.07,912000000.0,271839840000.0,canonicity,1,0,0,0,110234.0,2026-08-21,8582961.0,2026-08-21
+TII.DE,TXN,Texas Instruments Incorporated,Technology,Technology,0R2H.L|TII.DE|TXN,,298.07,912000000.0,271839840000.0,punctuation,1,0,0,0,1381.0,2026-08-21,8582961.0,2026-08-21
+AMZN,AMZ.DE,"Amazon.com, Inc.",Consumer Cyclical,Consumer Cyclical,AMZ.DE|AMZN,,238.34,10756000000.0,2563585040000.0,shares,0,1,0,0,49940203.0,2026-08-21,30570.0,2026-08-21
+GIS.DE,GILD,"Gilead Sciences, Inc.",Healthcare,Healthcare,GILD|GIS.DE,,126.34,1243000000.0,157040620000.0,punctuation,1,0,0,0,975.0,2026-08-21,7729014.0,2026-08-21
+0IWU.L,FAA.DE,Fabasoft AG,Technology,Technology,0IWU.L|FAA.DE,lse-iob,13.7645,10531202.0,144957136.9,canonicity,0,0,0,0,2216.0,2026-08-21,7560.0,2026-08-21
+KSB3.DE,KSB.DE,KSB SE & Co. KGaA,Industrials,Industrials,KSB.DE|KSB3.DE,symbol-extension,914.0,1751327.0,1600712878.0,canonicity,0,1,0,0,1825.0,2026-08-21,154.0,2026-08-21
+FGN,FG,"F&G Annuities & Life, Inc.",Financial Services,Financial Services,FG|FGN,symbol-extension,26.59,130000000.0,3456700000.0,canonicity,1,0,0,0,31896.0,2026-08-21,672312.0,2026-08-21
+0HPW.L,BR,"Broadridge Financial Solutions, Inc.",Technology,Technology,0HPW.L|BR,lse-iob,136.95,115000000.0,15749250000.0,canonicity,1,0,0,0,3491.0,2026-08-21,1405100.0,2026-08-21
+0RPZ.L,HMS.ST,HMS Networks AB (publ),Technology,Technology,0RPZ.L|HMS.ST,lse-iob,503.5,50194000.0,25272679000.0,canonicity,0,0,0,0,5442.0,2026-08-21,38103.0,2026-08-21
+PMTA.DE,PTC,PTC Inc.,Technology,Technology,PMTA.DE|PTC,,113.61,114677000.0,13028453970.0,punctuation,1,0,0,0,16.0,2026-08-21,1774180.0,2026-08-21
+DEO,DGE.L,Diageo plc,Consumer Defensive,Consumer Defensive,DEO|DGE.L,,60.8655,555930000.0,33836953500.0,shares,0,0,0,0,1184254.0,2026-08-21,5364772.0,2026-08-21
+0HFB.L,APH,Amphenol Corporation,Technology,Technology,0HFB.L|APH,lse-iob,176.2197,1230400000.0,216820704000.0,canonicity,1,0,0,0,6456.0,2026-08-21,8282798.0,2026-08-21
+OZKAP,OZK,Bank OZK,Financial Services,Financial Services,OZK|OZKAP,symbol-extension,53.338,109702000.0,5851280170.09,canonicity,1,0,0,0,24206.0,2026-08-21,1169743.0,2026-08-21
+FRO.OL,FRO,Frontline Plc,Industrials,Industrials,FRO|FRO.OL,,34.86,222622889.0,7760633910.54,punctuation,0,0,0,0,835648.0,2026-08-21,2703725.0,2026-08-21
+ERO.TO,ERO,Ero Copper Corp.,Basic Materials,Basic Materials,ERO|ERO.TO,,26.6605,104282548.0,2780222785.303,punctuation,0,0,0,0,439884.0,2026-08-21,1217766.0,2026-08-21
+0RP0.L,TKO.PA,Tikehau Capital,Financial Services,Financial Services,0RP0.L|TKO.PA,lse-iob,16.56,176527000.0,2923287120.0,canonicity,1,0,0,0,902.0,2026-08-21,62693.0,2026-08-21
+EDV.TO,EDV.L,Endeavour Mining plc,Basic Materials,Basic Materials,EDV.L|EDV.TO,,49.1076,242000000.0,11884046944.0,symbol_length,0,0,0,0,434353.0,2026-08-21,816251.0,2026-08-21
+0RQO.L,BONEX.ST,Bonesupport Holding AB (publ),Healthcare,Healthcare,0RQO.L|BONEX.ST,lse-iob,211.4,65858999.0,13922592600.0,canonicity,1,0,0,0,16823.0,2026-08-21,218487.0,2026-08-21
+VTAS.L,VTA.L,Volta Finance Limited,Financial Services,Financial Services,VTA.AS|VTA.L|VTAS.L,symbol-extension,7.643,31684451.0,242163439.6,canonicity,0,0,0,0,2736.0,2026-08-21,3437.0,2026-08-21
+VTA.AS,VTA.L,Volta Finance Limited,Financial Services,Financial Services,VTA.AS|VTA.L|VTAS.L,,6.62,36580580.0,242163439.6,symbol_length,0,0,0,0,10100.0,2026-08-21,3437.0,2026-08-21
+0OPJ.L,ABCA.PA,ABC arbitrage S.A.,Financial Services,Financial Services,0OPJ.L|ABCA.PA,lse-iob,5.4662,59976000.0,327839400.0,canonicity,0,0,0,0,34688.0,2026-08-21,38326.0,2026-08-21
+0KBI.L,KBX.DE,Knorr-Bremse AG,Consumer Cyclical,Consumer Cyclical,0KBI.L|KBX.DE,lse-iob,100.9254,161200000.0,16269170916.0,canonicity,0,0,0,0,141517.0,2026-08-21,163047.0,2026-08-21
+TEL2-A.ST,TEL2-B.ST,Tele2 AB (publ),Communication Services,Communication Services,TEL2-A.ST|TEL2-B.ST,,168.65,694053567.0,117052134074.55,volavg,1,0,0,0,1089.0,2026-08-21,2669290.0,2026-08-21
+0HTF.L,BNOR.OL,BlueNord ASA,Energy,Energy,0HTF.L|BNOR.OL,lse-iob,50.2937,25567202.0,1285868292.3753,canonicity,1,0,0,0,481.0,2026-08-21,198677.0,2026-08-21
+0PMJ.L,SHL.DE,Siemens Healthineers AG,Healthcare,Healthcare,0PMJ.L|SHL.DE,lse-iob,34.2,1119198976.0,38276604979.2,canonicity,0,0,0,0,464590.0,2026-08-21,999818.0,2026-08-21
+CAT1.DE,CAT,Caterpillar Inc.,Industrials,Industrials,CAT|CAT1.DE,,1064.9,460400000.0,490279960000.0001,punctuation,1,0,0,0,1072.0,2026-08-21,3278058.0,2026-08-21
+CSW-B.TO,CSW-A.TO,Corby Spirit and Wine Limited,Consumer Defensive,Consumer Defensive,CSW-A.TO|CSW-B.TO,,14.42,28468856.0,410520903.52,volavg_raw,0,0,0,0,5290.0,2026-08-21,17126.0,2026-08-21
+0HW4.L,CHTR,"Charter Communications, Inc.",Communication Services,Communication Services,0HW4.L|CHTR|CQD.DE,lse-iob,142.21,120121000.0,17082407410.0,canonicity,1,0,0,0,2065.0,2026-08-21,3317553.0,2026-08-21
+CQD.DE,CHTR,Charter Communications Inc,Communication Services,Communication Services,0HW4.L|CHTR|CQD.DE,,142.21,120121000.0,17082407410.0,punctuation,1,0,0,0,134.0,2026-08-21,3317553.0,2026-08-21
+0KXA.L,ROK,"Rockwell Automation, Inc.",Industrials,Industrials,0KXA.L|ROK|RWL.DE,lse-iob,499.5362,111100000.0,55498468000.0,canonicity,1,0,0,0,581.0,2026-08-21,822858.0,2026-08-21
+RWL.DE,ROK,"Rockwell Automation, Inc.",Industrials,Industrials,0KXA.L|ROK|RWL.DE,,499.5362,111100000.0,55498468000.0,shares,1,0,0,0,25.0,2026-08-21,822858.0,2026-08-21
+OET.OL,ECO,Okeanis Eco Tankers Corp.,Industrials,Industrials,ECO|OET.OL,,49.3352,39044655.0,1926276253.8025,punctuation,0,0,0,0,86915.0,2026-08-21,493541.0,2026-08-21
+0QUS.L,G5EN.ST,G5 Entertainment AB (publ),Technology,Technology,0QUS.L|G5EN.ST,lse-iob,65.8,7510000.0,494158000.0,canonicity,1,0,0,0,939.0,2026-08-21,18035.0,2026-08-21
+HBANL,HBAN,Huntington Bancshares Incorporated,Financial Services,Financial Services,0J72.L|HBAN|HBANL|HBANM,symbol-extension,17.73,1946000000.0,34502580000.0,canonicity,1,0,-1,-2,21695.0,2026-08-21,23987100.0,2026-08-21
+HBANM,HBAN,Huntington Bancshares Incorporated,Financial Services,Financial Services,0J72.L|HBAN|HBANL|HBANM,symbol-extension,17.73,1946000000.0,34502580000.0,canonicity,1,0,-1,-2,17056.0,2026-08-21,23987100.0,2026-08-21
+0J72.L,HBAN,Huntington Bancshares Incorporated,Financial Services,Financial Services,0J72.L|HBAN|HBANL|HBANM,lse-iob,17.072,2021000000.0,34502580000.0,canonicity,1,0,-2,-2,10919.0,2026-08-21,23987100.0,2026-08-21
+0R23.L,HAL,Halliburton Company,Energy,Energy,0R23.L|HAL|HAL.DE,lse-iob,33.95,836000000.0,28382200000.0,canonicity,1,0,0,0,10604.0,2026-08-21,11868069.0,2026-08-21
+HAL.DE,HAL,Halliburton Company,Energy,Energy,0R23.L|HAL|HAL.DE,,33.95,836000000.0,28382200000.0,punctuation,1,0,0,0,2818.0,2026-08-21,11868069.0,2026-08-21
+003555.KS,003550.KS,LG Corp.,Consumer Cyclical,Consumer Cyclical,003550.KS|003555.KS,korea-preferred,97300.0,176770000.0,17199721000000.0,canonicity,1,0,0,0,20428.0,2026-08-21,667451.0,2026-08-21
+0LNT.L,FUR.AS,Fugro N.V.,Industrials,Industrials,0LNT.L|FUR.AS,lse-iob,9.45,111334361.0,1052109711.45,canonicity,0,0,0,0,114860.0,2026-08-21,391113.0,2026-08-21
+0HR2.L,CME,CME Group Inc.,Financial Services,Financial Services,0HR2.L|CME,lse-iob,220.4143,360684000.0,79499904150.0,canonicity,1,0,0,0,31820.0,2026-08-21,3246211.0,2026-08-21
+BSP.DE,BA.L,BAE Systems plc,Industrials,Industrials,BA.L|BSP.DE,,18.44,2993000000.0,55190920000.0,symbol_length,1,0,0,0,75349.0,2026-08-21,6445566.0,2026-08-21
+0HDK.L,SYSR.ST,Systemair AB (publ),Industrials,Industrials,0HDK.L|SYSR.ST,lse-iob,71.0,207525448.0,14734306808.0,canonicity,1,0,0,0,1570.0,2026-08-21,161415.0,2026-08-21
+CRON.TO,CRON,Cronos Group Inc.,Healthcare,Healthcare,CRON|CRON.TO,,2.7597,373609102.0,1031041566.6074,shares,0,0,0,0,167769.0,2026-08-21,1153885.0,2026-08-21
+HOLM-A.ST,HOLM-B.ST,Holmen AB,Basic Materials,Basic Materials,HOLM-A.ST|HOLM-B.ST,,304.6,150434534.0,45822359056.4,volavg,1,0,0,0,4419.0,2026-08-21,282879.0,2026-08-21
+QBR-A.TO,QBR-B.TO,Quebecor Inc.,Communication Services,Communication Services,QBR-A.TO|QBR-B.TO,,67.69,224800000.0,15216712000.0,volavg,1,0,0,0,539.0,2026-08-21,968560.0,2026-08-21
+000815.KS,000810.KS,"Samsung Fire & Marine Insurance Co., Ltd.",Financial Services,Financial Services,000810.KS|000815.KS,korea-preferred,618000.0,49154000.0,30377172000000.0,canonicity,0,0,0,0,16121.0,2026-08-21,149477.0,2026-08-21
+SII.TO,SII,Sprott Inc.,Financial Services,Financial Services,SII|SII.TO,,159.8,25768000.0,4117726400.0,punctuation,0,0,0,0,71003.0,2026-08-21,190691.0,2026-08-21
+XYL,XY6.DE,Xylem Inc.,Industrials,Industrials,0M29.L|XY6.DE|XYL,,118.21,236276000.0,27930185960.0,shares,0,1,0,0,1903375.0,2026-08-21,506.0,2026-08-21
+0M29.L,XY6.DE,Xylem Inc.,Industrials,Industrials,0M29.L|XY6.DE|XYL,lse-iob,118.198,236300000.0,27930185960.0,canonicity,1,1,0,0,2025.0,2026-08-21,506.0,2026-08-21
+MG.TO,MGA,Magna International Inc.,Consumer Cyclical,Consumer Cyclical,MG.TO|MGA,,65.66,271200000.0,17806992000.0,punctuation,0,0,0,0,1159522.0,2026-08-21,1218090.0,2026-08-21
+MOG-B,MOG-A,Moog Inc.,Industrials,Industrials,MOG-A|MOG-B,,425.36,31654223.0,13464440295.28,volavg,1,0,0,0,280.0,2026-08-21,322216.0,2026-08-21
+0R2O.L,FCX,Freeport-McMoRan Inc.,Basic Materials,Basic Materials,0R2O.L|FCX|FPMB.DE,lse-iob,62.89,1443000000.0,90750270000.0,canonicity,1,0,0,0,27851.0,2026-08-21,14033009.0,2026-08-21
+FPMB.DE,FCX,Freeport-McMoRan Inc.,Basic Materials,Basic Materials,0R2O.L|FCX|FPMB.DE,,62.89,1443000000.0,90750270000.0,punctuation,1,0,0,0,7100.0,2026-08-21,14033009.0,2026-08-21
+MX.TO,MEOH,Methanex Corporation,Basic Materials,Basic Materials,MEOH|MX.TO,,46.15,77364263.0,3570360737.45,punctuation,0,0,0,0,262085.0,2026-08-21,898695.0,2026-08-21
+0F8V.L,AKW.PA,Akwel,Consumer Cyclical,Consumer Cyclical,0F8V.L|AKW.PA,lse-iob,8.2,27601000.0,226328200.0,canonicity,0,0,0,0,483.0,2026-08-21,4168.0,2026-08-21
+E,ENI.DE,Eni S.p.A.,Energy,Energy,E|ENI.DE,,41.24,1467300000.0,60511452000.0,shares,0,1,0,0,417035.0,2026-08-21,14596.0,2026-08-21
+0OJJ.L,ALATI.PA,ACTIA Group S.A.,Consumer Cyclical,Consumer Cyclical,0OJJ.L|ALATI.PA,lse-iob,3.25,21425000.0,69631250.0,canonicity,1,0,0,0,59.0,2026-08-21,9968.0,2026-08-21
+0KU1.L,RJF,"Raymond James Financial, Inc.",Financial Services,Financial Services,0KU1.L|RJF,lse-iob,152.03,194000000.0,29493820000.0,canonicity,1,0,0,0,3641.0,2026-08-21,1345785.0,2026-08-21
+0JMU.L,TTR1.DE,technotrans SE,Industrials,Industrials,0JMU.L|TTR1.DE,lse-iob,32.3254,6891549.0,222772196.25,canonicity,0,0,0,0,3676.0,2026-08-21,7871.0,2026-08-21
+090355.KS,090350.KS,"NOROO PAINT & COATINGS Co., Ltd.",Basic Materials,Basic Materials,090350.KS|090355.KS,korea-preferred,7320.0,20463000.0,149789160000.0,canonicity,1,0,0,0,332.0,2026-08-21,58363.0,2026-08-21
+0HS2.L,CDS.DE,"Cadence Design Systems, Inc.",Technology,Technology,0HS2.L|CDNS|CDS.DE,lse-iob,374.0281,273955000.0,102466863840.0,canonicity,1,1,0,0,2645.0,2026-08-21,233.0,2026-08-21
+CDNS,CDS.DE,"Cadence Design Systems, Inc.",Technology,Technology,0HS2.L|CDNS|CDS.DE,,375.32,273012000.0,102466863840.0,shares,0,1,0,0,2405685.0,2026-08-21,233.0,2026-08-21
+0KAK.L,OXY,Occidental Petroleum Corporation,Energy,Energy,0KAK.L|OPC.DE|OXY|OXY-WT,lse-iob,48.57,997100000.0,48429147000.0,canonicity,1,0,-3,-3,23588.0,2026-08-21,9399016.0,2026-08-21
+OXY-WT,OXY,Occidental Petroleum Corporation,Energy,Energy,0KAK.L|OPC.DE|OXY|OXY-WT,,48.57,997100000.0,48429147000.0,punctuation,1,0,-1,-3,57370.0,2026-08-21,9399016.0,2026-08-21
+OPC.DE,OXY,Occidental Petroleum Corporation,Energy,Energy,0KAK.L|OPC.DE|OXY|OXY-WT,,48.57,997100000.0,48429147000.0,punctuation,1,0,-3,-3,6946.0,2026-08-21,9399016.0,2026-08-21
+MSF.DE,MSFT,Microsoft Corporation,Technology,Technology,MSF.DE|MSFT,,373.1204,7427000000.0,2771165580000.0,shares,1,0,0,0,47024.0,2026-08-21,39897214.0,2026-08-21
+NOA3.DE,NOK,Nokia Oyj,Technology,Technology,NOA3.DE|NOK|NOKIA-SEK.ST,,11.56,5597472000.0,64706776320.0,punctuation,1,0,-2,-1,1116127.0,2026-08-21,103108706.0,2026-08-21
+NOKIA-SEK.ST,NOK,Nokia Oyj,Technology,Technology,NOA3.DE|NOK|NOKIA-SEK.ST,,11.7572,5503605000.0,64706776320.0,shares,1,0,-2,-1,1283856.0,2026-08-21,103108706.0,2026-08-21
+00806K.KS,008060.KS,"Daeduck Co.,Ltd.",Technology,Technology,008060.KS|00806K.KS,korea-preferred,16690.0,32499000.0,542408310000.0,canonicity,1,0,0,0,6683.0,2026-08-21,112516.0,2026-08-21
+0P59.L,CPA.DE,Colgate-Palmolive Company,Consumer Defensive,Consumer Defensive,0P59.L|CL|CPA.DE,lse-iob,91.3533,799400000.0,73027862056.32,canonicity,1,1,0,0,117963.0,2026-08-21,674.0,2026-08-21
+CL,CPA.DE,Colgate-Palmolive Company,Consumer Defensive,Consumer Defensive,0P59.L|CL|CPA.DE,,91.68,796551724.0,73027862056.32,shares,0,1,0,0,4926298.0,2026-08-21,674.0,2026-08-21
+2X0.DE,CTVA,Corteva Inc,Basic Materials,Basic Materials,2X0.DE|CTVA,,84.918,668600000.0,56776176000.0,shares,1,0,0,0,63.0,2026-08-21,4228040.0,2026-08-21
+0QY4.L,LVS,Las Vegas Sands Corp.,Consumer Cyclical,Consumer Cyclical,0QY4.L|LCR.DE|LVS,lse-iob,46.6844,654000000.0,30531590000.0,canonicity,1,0,0,0,3603.0,2026-08-21,4692682.0,2026-08-21
+LCR.DE,LVS,Las Vegas Sands Corp.,Consumer Cyclical,Consumer Cyclical,0QY4.L|LCR.DE|LVS,,46.6844,654000000.0,30531590000.0,shares,1,0,0,0,22.0,2026-08-21,4692682.0,2026-08-21
+BTE.TO,BTE,Baytex Energy Corp.,Energy,Energy,BTE|BTE.TO,,5.678,721197000.0,4094927718.12,punctuation,0,0,0,0,4241385.0,2026-08-21,17859217.0,2026-08-21
+0EWR.L,IXX.DE,init innovation in traffic systems SE,Technology,Technology,0EWR.L|IXX.DE,lse-iob,46.4,9962240.0,462247936.0,canonicity,1,0,0,0,346.0,2026-08-21,5351.0,2026-08-21
+0QRA.L,BUFAB.ST,Bufab AB (publ),Industrials,Industrials,0QRA.L|BUFAB.ST,lse-iob,126.8,189099000.0,23977753200.0,canonicity,1,0,0,0,5092.0,2026-08-21,134868.0,2026-08-21
+0G5B.L,STO3.DE,Sto SE & Co. KGaA,Basic Materials,Basic Materials,0G5B.L|STO3.DE,lse-iob,121.2,5673483.0,687626139.6,canonicity,0,0,0,0,670.0,2026-08-21,2259.0,2026-08-21
+0VBE.L,OR,OR Royalties Inc.,Basic Materials,Basic Materials,0VBE.L|OR|OR.TO,lse-iob,44.91,187714000.0,8430235740.0,canonicity,1,0,0,0,2084.0,2026-08-21,1018617.0,2026-08-21
+OR.TO,OR,OR Royalties Inc.,Basic Materials,Basic Materials,0VBE.L|OR|OR.TO,,44.91,187714000.0,8430235740.0,punctuation,0,0,0,0,421833.0,2026-08-21,1018617.0,2026-08-21
+2FE.DE,RACE,Ferrari N.V.,Consumer Cyclical,Consumer Cyclical,2FE.DE|RACE,,324.35,176228000.0,57159551800.0,digit_prefix,1,0,0,0,4548.0,2026-08-21,565420.0,2026-08-21
+LOR.DE,OR.PA,L'Oréal S.A.,Consumer Defensive,Consumer Defensive,LOR.DE|OR.PA,,383.65,533398000.0,204638142700.0,symbol_length,1,0,0,0,1141.0,2026-08-21,390139.0,2026-08-21
+0JXQ.L,MAIN,Main Street Capital Corporation,Financial Services,Financial Services,0JXQ.L|MAIN,lse-iob,51.1611,93253619.0,4770957380.12,canonicity,1,0,0,0,1605.0,2026-08-21,658896.0,2026-08-21
+0F2S.L,LIN.PA,Linedata Services S.A.,Technology,Technology,0F2S.L|LIN.PA,lse-iob,45.1803,4902327.0,221488800.0,canonicity,1,0,0,0,4.0,2026-08-21,890.0,2026-08-21
+0IX0.L,GLO.PA,GL Events S.A.,Industrials,Industrials,0IX0.L|GLO.PA,lse-iob,33.55,29448000.0,987980400.0,canonicity,0,0,0,0,1956.0,2026-08-21,10803.0,2026-08-21
+0KFZ.L,PH,Parker-Hannifin Corporation,Industrials,Industrials,0KFZ.L|PH,lse-iob,978.12,126100000.0,123340932000.0,canonicity,1,0,0,0,673.0,2026-08-21,687204.0,2026-08-21
+0HDU.L,BOUV.OL,Bouvet ASA,Technology,Technology,0HDU.L|BOUV.OL,lse-iob,42.95,102363052.0,4396493083.4,canonicity,1,0,0,0,869.0,2026-08-21,140043.0,2026-08-21
+0K10.L,MTD,Mettler-Toledo International Inc.,Healthcare,Healthcare,0K10.L|MTD,lse-iob,1277.51,20121564.0,25705499225.64,canonicity,1,0,0,0,64.0,2026-08-21,197361.0,2026-08-21
+0QAH.L,MRK,"Merck & Co., Inc.",Healthcare,Healthcare,0QAH.L|6MK.DE|MRK,lse-iob,128.604,2470000000.0,317652000000.0,canonicity,1,0,0,0,63990.0,2026-08-21,10776558.0,2026-08-21
+6MK.DE,MRK,"Merck & Co., Inc.",Healthcare,Healthcare,0QAH.L|6MK.DE|MRK,,128.604,2470000000.0,317652000000.0,shares,1,0,0,0,1759.0,2026-08-21,10776558.0,2026-08-21
+0OG6.L,SCHP.PA,Séché Environnement S.A.,Industrials,Industrials,0OG6.L|SCHP.PA,lse-iob,73.4,7720000.0,566648000.0,canonicity,1,0,0,0,320.0,2026-08-21,4025.0,2026-08-21
+0KIZ.L,NEWA-B.ST,New Wave Group AB (publ),Consumer Cyclical,Consumer Cyclical,0KIZ.L|NEWA-B.ST,lse-iob,96.25,132687086.0,12771132027.5,canonicity,0,0,0,0,23735.0,2026-08-21,203913.0,2026-08-21
+0R2S.L,SYK,Stryker Corporation,Healthcare,Healthcare,0R2S.L|SYK|SYK.DE,lse-iob,314.84,383500000.0,120741140000.0,canonicity,1,0,0,0,6578.0,2026-08-21,2568788.0,2026-08-21
+SYK.DE,SYK,Stryker Corporation,Healthcare,Healthcare,0R2S.L|SYK|SYK.DE,,314.84,383500000.0,120741140000.0,punctuation,1,0,0,0,345.0,2026-08-21,2568788.0,2026-08-21
+ARRD.DE,MT.AS,ArcelorMittal S.A.,Basic Materials,Basic Materials,ARRD.DE|MT|MT.AS,,60.1929,761000000.0,45806786246.0,symbol_length,1,0,-2,-2,18977.0,2026-08-21,1946851.0,2026-08-21
+MT,MT.AS,ArcelorMittal S.A.,Basic Materials,Basic Materials,ARRD.DE|MT|MT.AS,,60.2721,760000000.0,45806786246.0,shares,0,0,-1,-2,1774220.0,2026-08-21,1946851.0,2026-08-21
+INVE-A.ST,INVE-B.ST,Investor AB (publ),Financial Services,Financial Services,INVE-A.ST|INVE-B.ST,,402.55,3064080000.0,1233445404000.0,volavg_raw,0,0,0,0,391466.0,2026-08-21,2507289.0,2026-08-21
+CG.TO,CGAU,Centerra Gold Inc.,Basic Materials,Basic Materials,CG.TO|CGAU,,15.833,197544000.0,3127706250.24,punctuation,0,0,0,0,749260.0,2026-08-21,1580743.0,2026-08-21
+0NMK.L,VWSB.DE,Vestas Wind Systems A/S,Industrials,Industrials,0NMK.L|VWSB.DE,lse-iob,24.6792,999999999.0,24679174000.0,canonicity,0,1,0,0,434556.0,2026-08-21,28265.0,2026-08-21
+BP,BP.L,BP p.l.c.,Energy,Energy,BP|BP-A.L|BP-B.L|BP.L|BPE5.DE,,37.16,2587038833.0,96134312147.2776,shares,0,0,-1,-2,9186891.0,2026-08-21,44119969.0,2026-08-21
+BP-A.L,BP.L,BP p.l.c.,Energy,Energy,BP|BP-A.L|BP-B.L|BP.L|BPE5.DE,,6.1928,15523532000.0,96134312147.2776,punctuation,1,0,-1,-2,5705.0,2026-08-21,44119969.0,2026-08-21
+BP-B.L,BP.L,BP p.l.c.,Energy,Energy,BP|BP-A.L|BP-B.L|BP.L|BPE5.DE,,6.1928,15523532000.0,96134312147.2776,punctuation,1,0,-1,-2,3058.0,2026-08-21,44119969.0,2026-08-21
+BPE5.DE,BP.L,BP p.l.c.,Energy,Energy,BP|BP-A.L|BP-B.L|BP.L|BPE5.DE,,6.1928,15523532000.0,96134312147.2776,symbol_length,1,0,-2,-2,1446071.0,2026-08-21,44119969.0,2026-08-21
+PD.TO,PDS,Precision Drilling Corporation,Energy,Energy,PD.TO|PDS,,108.92,12927000.0,1408008840.0,punctuation,0,0,0,0,81301.0,2026-08-21,108700.0,2026-08-21
+MSON-A.ST,MSON-B.ST,Midsona AB (publ),Consumer Defensive,Consumer Defensive,MSON-A.ST|MSON-B.ST,,14.4,145428000.0,2094163200.0,volavg,1,0,0,0,96.0,2026-08-21,177400.0,2026-08-21
+OVV.TO,OVV,Ovintiv Inc,Energy,Energy,OVV|OVV.TO,,52.65,280000000.0,14742000000.0,punctuation,1,0,0,0,194120.0,2026-08-21,3343851.0,2026-08-21
+STN,STN.TO,Stantec Inc.,Industrials,Industrials,STN|STN.TO,,98.0371,113560104.0,11133104415.18,shares,0,0,0,0,460287.0,2026-08-21,527317.0,2026-08-21
+0MN5.L,SWP.PA,Sword Group S.E.,Technology,Technology,0MN5.L|SWP.PA,lse-iob,35.9,9455967.0,339469215.3,canonicity,1,0,0,0,792.0,2026-08-21,20923.0,2026-08-21
+0DTK.L,SAVE.PA,Savencia S.A.,Consumer Defensive,Consumer Defensive,0DTK.L|SAVE.PA,lse-iob,62.4,12240000.0,763776000.0,canonicity,1,0,0,0,23.0,2026-08-21,1160.0,2026-08-21
+PREVA.AS,VALUE.AS,Value8 N.V.,Financial Services,Financial Services,PREVA.AS|VALUE.AS,,4.75,9603887.0,45618463.25,volavg_raw,0,0,0,0,295.0,2026-08-21,1866.0,2026-08-21
+0NZY.L,BMW.DE,Eckert & Ziegler SE,Healthcare,Consumer Cyclical,0NZY.L|BMW.DE,lse-iob,14.62,62576168.0,914861120.0,canonicity,1,0,0,0,29056.0,2026-08-21,1580529.0,2026-08-21
+0QYU.L,MS,Morgan Stanley,Financial Services,Financial Services,0QYU.L|DWD.DE|MS,lse-iob,211.3268,1554000000.0,328401840000.0,canonicity,1,0,0,0,181505.0,2026-08-21,5734127.0,2026-08-21
+DWD.DE,MS,Morgan Stanley,Financial Services,Financial Services,0QYU.L|DWD.DE|MS,,241.3479,1360699000.0,328401840000.0,shares,1,0,0,0,563.0,2026-08-21,5734127.0,2026-08-21
+0IF3.L,EMN,Eastman Chemical Company,Basic Materials,Basic Materials,0IF3.L|EMN,lse-iob,66.98,114300000.0,7655814000.0,canonicity,1,0,0,0,1319.0,2026-08-21,1174395.0,2026-08-21
+004365.KS,004360.KS,"Sebang Co., Ltd",Industrials,Industrials,004360.KS|004365.KS,korea-preferred,12200.0,22020000.0,268644000000.0,canonicity,0,0,0,0,3499.0,2026-08-21,34319.0,2026-08-21
+CBE.PA,RBT.PA,Robertet S.A.,Basic Materials,Basic Materials,CBE.PA|RBT.PA,,878.0,2169000.0,1904382000.0,volavg,1,0,0,0,19.0,2026-08-21,995.0,2026-08-21
+CLS.TO,CLS,Celestica Inc.,Technology,Technology,CLS|CLS.TO,,364.8,115000000.0,41952000000.0,punctuation,0,0,0,0,424911.0,2026-08-21,2500601.0,2026-08-21
+AXA.DE,CS.PA,AXA S.A.,Financial Services,Financial Services,AXA.DE|CS.PA,,43.85,2033000000.0,89147050000.0,symbol_length,1,0,0,0,18786.0,2026-08-21,2911152.0,2026-08-21
+0R13.L,CHD,"Church & Dwight Co., Inc.",Consumer Defensive,Consumer Defensive,0R13.L|CHD|CXU.DE,lse-iob,96.88,236700000.0,22931496000.0,canonicity,1,0,0,0,3030.0,2026-08-21,1919309.0,2026-08-21
+CXU.DE,CHD,"Church & Dwight Co., Inc.",Consumer Defensive,Consumer Defensive,0R13.L|CHD|CXU.DE,,96.88,236700000.0,22931496000.0,punctuation,1,0,0,0,165.0,2026-08-21,1919309.0,2026-08-21
+HSHP.OL,HSHP,Himalaya Shipping Ltd.,Industrials,Industrials,HSHP|HSHP.OL,,13.3837,47008297.0,629144230.24,shares,0,0,0,0,178636.0,2026-08-21,316954.0,2026-08-21
+48Z.DE,HWM,Howmet Aerospace Inc.,Industrials,Industrials,48Z.DE|HWM,,268.86,400000000.0,107544000000.0,digit_prefix,1,0,0,0,239.0,2026-08-21,2673211.0,2026-08-21
+0J71.L,JBHT,"J.B. Hunt Transport Services, Inc.",Industrials,Industrials,0J71.L|JBHT,lse-iob,289.4391,94941000.0,27479641920.0,canonicity,1,0,0,0,937.0,2026-08-21,978320.0,2026-08-21
+GOB.DE,SGO.PA,Compagnie de Saint-Gobain S.A.,Basic Materials,Basic Materials,GOB.DE|SGO.PA,,79.16,489592544.0,38756145783.04,volavg,1,0,0,0,1895.0,2026-08-21,1054651.0,2026-08-21
+0QOW.L,RIG,Transocean Ltd.,Energy,Energy,0QOW.L|RIG,lse-iob,4.89,1120000000.0,5476800000.0,canonicity,1,0,0,0,29115.0,2026-08-21,38577180.0,2026-08-21
+0J46.L,HEI,HEICO Corporation,Industrials,Industrials,0J46.L|HEI|HEI-A,lse-iob,269.92,139561000.0,37670305120.0,canonicity,1,0,-2,-2,495.0,2026-08-21,513291.0,2026-08-21
+HEI-A,HEI,HEICO Corporation,Industrials,Industrials,0J46.L|HEI|HEI-A,,269.92,139561000.0,37670305120.0,punctuation,0,0,-1,-2,314769.0,2026-08-21,513291.0,2026-08-21
+CIT.DE,CTAS,Cintas Corp. R,Industrials,Industrials,0HYJ.L|CIT.DE|CTAS,,172.9,400216000.0,69197346400.0,punctuation,1,0,0,0,97.0,2026-08-21,2291117.0,2026-08-21
+0HYJ.L,CTAS,Cintas Corporation,Industrials,Industrials,0HYJ.L|CIT.DE|CTAS,lse-iob,172.9,400216000.0,69197346400.0,canonicity,1,0,0,0,1117.0,2026-08-21,2291117.0,2026-08-21
+INDU-A.ST,INDU-C.ST,AB Industrivärden (publ),Financial Services,Financial Services,INDU-A.ST|INDU-C.ST,,532.0,431899000.0,229770268000.0,volavg_raw,0,0,0,0,132875.0,2026-08-21,420010.0,2026-08-21
+0QZ2.L,SVM.TO,Silvercorp Metals Inc.,Basic Materials,Basic Materials,0QZ2.L|SVM.TO,lse-iob,10.1,221138685.0,2233500718.5,canonicity,1,0,0,0,8722.0,2026-08-21,885346.0,2026-08-21
+CTC-A.TO,CTC.TO,"Canadian Tire Corporation, Limited",Consumer Cyclical,Consumer Cyclical,CTC-A.TO|CTC.TO,,197.97,52578003.0,10408867253.91,marketCap,0,1,0,0,189012.0,2026-08-21,379.0,2026-08-21
+PUK,PRU.L,Prudential plc,Financial Services,Financial Services,PRU.DE|PRU.L|PUK,,22.8902,1283179000.0,29372173320.0,shares,0,0,-1,-2,1229687.0,2026-08-21,9239953.0,2026-08-21
+PRU.DE,PRU.L,Prudential plc,Financial Services,Financial Services,PRU.DE|PRU.L|PUK,,11.445,2566376000.0,29372173320.0,symbol_length,1,0,-2,-2,6953.0,2026-08-21,9239953.0,2026-08-21
+0SAY.L,DWS.DE,DWS Group GmbH & Co. KGaA,Financial Services,Financial Services,0SAY.L|DWS.DE,lse-iob,65.65,200000000.0,13130000000.0,canonicity,0,0,0,0,39558.0,2026-08-21,109492.0,2026-08-21
+002355.KS,002350.KS,Nexen Tire Corporation,Consumer Cyclical,Consumer Cyclical,002350.KS|002355.KS,korea-preferred,6790.0,104167000.0,707293930000.0,canonicity,1,0,0,0,12521.0,2026-08-21,125671.0,2026-08-21
+0K0E.L,MELI,"MercadoLibre, Inc.",Consumer Cyclical,Consumer Cyclical,0K0E.L|MELI|MLB1.DE,lse-iob,1697.39,50697171.0,86052871083.69,canonicity,1,0,0,0,523.0,2026-08-21,461530.0,2026-08-21
+MLB1.DE,MELI,"MercadoLibre, Inc.",Consumer Cyclical,Consumer Cyclical,0K0E.L|MELI|MLB1.DE,,1697.39,50697171.0,86052871083.69,punctuation,1,0,0,0,217.0,2026-08-21,461530.0,2026-08-21
+0LO3.L,VEEV,Veeva Systems Inc.,Technology,Technology,0LO3.L|VEE.DE|VEEV,lse-iob,155.97,163345000.0,25476919650.0,canonicity,1,0,0,0,1201.0,2026-08-21,2239520.0,2026-08-21
+VEE.DE,VEEV,Veeva Systems Inc.,Technology,Technology,0LO3.L|VEE.DE|VEEV,,155.97,163345000.0,25476919650.0,punctuation,1,0,0,0,315.0,2026-08-21,2239520.0,2026-08-21
+EFX.TO,EFXT,Enerflex Ltd.,Energy,Energy,EFX.TO|EFXT,,34.83,122086713.0,4252280213.79,punctuation,0,0,0,0,706057.0,2026-08-21,579424.0,2026-08-21
+AIR.DE,AIR.PA,Airbus SE,Industrials,Industrials,AIR.DE|AIR.PA,,194.54,789047619.0,153501323800.26,volavg_raw,0,0,0,0,242893.0,2026-08-21,1106233.0,2026-08-21
+MSN.DE,MRSH,"Marsh & McLennan Companies, Inc.",Financial Services,Financial Services,MRSH|MSN.DE,,191.1403,420293154.0,80334940000.0,shares,1,0,0,0,44.0,2026-08-21,2568783.0,2026-08-21
+BRYN.DE,BRK-B,Berkshire Hathaway Inc.,Financial Services,Financial Services,BRK-A|BRK-B|BRYN.DE,,500.3902,2154663000.0,1078172318960.0,shares,1,0,-2,-2,7293.0,2026-08-21,4788895.0,2026-08-21
+BRK-A,BRK-B,Berkshire Hathaway Inc.,Financial Services,Financial Services,BRK-A|BRK-B|BRYN.DE,,750816.3781,1436000.0,1078172318960.0,shares,1,0,-1,-2,196.0,2026-08-21,4788895.0,2026-08-21
+CH1A.DE,CHRW,"C.H. Robinson Worldwide, Inc.",Industrials,Industrials,0HQW.L|CH1A.DE|CHRW,,188.34,118565000.0,22330532100.0,punctuation,1,0,0,0,72.0,2026-08-21,1771125.0,2026-08-21
+0HQW.L,CHRW,"C.H. Robinson Worldwide, Inc.",Industrials,Industrials,0HQW.L|CH1A.DE|CHRW,lse-iob,188.34,118565000.0,22330532100.0,canonicity,1,0,0,0,1611.0,2026-08-21,1771125.0,2026-08-21
+0IUV.L,EC.PA,TotalEnergies EP Gabon S.A.,Energy,Energy,0IUV.L|EC.PA,lse-iob,219.061,4500000.0,985774657.5,canonicity,1,0,0,0,4.0,2026-08-21,997.0,2026-08-21
+0O80.L,BAIN.PA,Société Anonyme des Bains de Mer et du Cercle des Étrangers à Monaco,Consumer Cyclical,Consumer Cyclical,0O80.L|BAIN.PA,lse-iob,127.0,24515000.0,3113405000.0,canonicity,1,0,0,0,18.0,2026-08-21,590.0,2026-08-21
+0I6K.L,DHI,"D.R. Horton, Inc.",Consumer Cyclical,Consumer Cyclical,0I6K.L|DHI,lse-iob,165.9391,282200000.0,46828000000.0,canonicity,1,0,0,0,1980.0,2026-08-21,2365588.0,2026-08-21
+0RS2.L,MUM.DE,Mensch und Maschine Software SE,Technology,Technology,0RS2.L|MUM.DE,lse-iob,35.7,12348000.0,440823600.0,canonicity,1,0,0,0,1055.0,2026-08-21,11730.0,2026-08-21
+ADW-B.TO,ADW-A.TO,Andrew Peller Limited,Consumer Defensive,Consumer Defensive,ADW-A.TO|ADW-B.TO,,7.94,42993471.0,341368159.74,volavg,1,0,0,0,3059.0,2026-08-21,146990.0,2026-08-21
+0R2X.L,GLW.DE,Corning Inc,Technology,Technology,0R2X.L|GLW|GLW.DE,lse-iob,254.8374,862000000.0,219669800000.0,canonicity,1,1,0,0,8806.0,2026-08-21,5328.0,2026-08-21
+GLW,GLW.DE,Corning Inc,Technology,Technology,0R2X.L|GLW|GLW.DE,,255.43,860000000.0,219669800000.0,shares,0,1,0,0,14191172.0,2026-08-21,5328.0,2026-08-21
+HRS.DE,LHX,"L3Harris Technologies, Inc.",Industrials,Industrials,0L3H.L|HRS.DE|LHX,,303.1428,186200000.0,56445197119.98,shares,1,0,0,0,66.0,2026-08-21,1457390.0,2026-08-21
+0L3H.L,LHX,"L3Harris Technologies, Inc.",Industrials,Industrials,0L3H.L|HRS.DE|LHX,lse-iob,303.1428,186200000.0,56445197119.98,canonicity,1,0,0,0,321.0,2026-08-21,1457390.0,2026-08-21
+PHIA.AS,PHG,Koninklijke Philips N.V.,Healthcare,Healthcare,PHG|PHI1.DE|PHIA.AS,,23.76,955573000.0,22704414480.0,punctuation,0,0,-2,-1,1979752.0,2026-08-21,1137111.0,2026-08-21
+PHI1.DE,PHG,Koninklijke Philips N.V.,Healthcare,Healthcare,PHG|PHI1.DE|PHIA.AS,,23.76,955573000.0,22704414480.0,punctuation,1,0,-2,-1,8466.0,2026-08-21,1137111.0,2026-08-21
+SKF-A.ST,SKF-B.ST,AB SKF (publ),Industrials,Industrials,SKF-A.ST|SKF-B.ST,,249.5,455351068.0,113610091466.0,volavg,1,0,0,0,6199.0,2026-08-21,1076603.0,2026-08-21
+0KBK.L,OMC,Omnicom Group Inc,Communication Services,Communication Services,0KBK.L|OMC,lse-iob,53.3323,279809000.0,14922867000.0,canonicity,1,0,0,0,2136.0,2026-08-21,3686488.0,2026-08-21
+0QB4.L,ILM1.DE,Medios AG,Healthcare,Healthcare,0QB4.L|ILM1.DE,lse-iob,12.08,24505723.0,296029133.84,canonicity,0,0,0,0,8911.0,2026-08-21,33549.0,2026-08-21
+0HJH.L,ALV,"Autoliv, Inc.",Consumer Cyclical,Consumer Cyclical,0HJH.L|ALIV-SDB.ST|ALV,lse-iob,116.17,74100000.0,8608197000.0,canonicity,1,0,-2,-2,101.0,2026-08-21,694069.0,2026-08-21
+ALIV-SDB.ST,ALV,"Autoliv, Inc.",Consumer Cyclical,Consumer Cyclical,0HJH.L|ALIV-SDB.ST|ALV,,116.17,74100000.0,8608197000.0,punctuation,1,0,-1,-2,52868.0,2026-08-21,694069.0,2026-08-21
+0F2Z.L,LEI.DE,Leifheit AG,Consumer Defensive,Consumer Defensive,0F2Z.L|LEI.DE,lse-iob,13.5405,9133682.0,123675000.0,canonicity,0,0,0,0,3819.0,2026-08-21,5426.0,2026-08-21
+0LOZ.L,VRSN,"VeriSign, Inc.",Technology,Technology,0LOZ.L|VRS.DE|VRSN,lse-iob,251.56,90800000.0,22841648000.0,canonicity,1,0,0,0,818.0,2026-08-21,834258.0,2026-08-21
+VRS.DE,VRSN,"VeriSign, Inc.",Technology,Technology,0LOZ.L|VRS.DE|VRSN,,251.56,90800000.0,22841648000.0,punctuation,1,0,0,0,17.0,2026-08-21,834258.0,2026-08-21
+0RPY.L,BOOZT.ST,Boozt AB (publ),Consumer Cyclical,Consumer Cyclical,0RPY.L|BOOZT.ST,lse-iob,148.0,59030000.0,8736440000.0,canonicity,1,0,0,0,5470.0,2026-08-21,160484.0,2026-08-21
+0YP5.L,ADYEN.AS,Adyen N.V.,Technology,Technology,0YP5.L|1N8.DE|ADYEN.AS,lse-iob,820.4,31552696.0,25885831798.4,canonicity,0,0,0,0,41918.0,2026-08-21,159191.0,2026-08-21
+1N8.DE,ADYEN.AS,Adyen N.V.,Technology,Technology,0YP5.L|1N8.DE|ADYEN.AS,,820.4,31552696.0,25885831798.4,digit_prefix,1,0,0,0,878.0,2026-08-21,159191.0,2026-08-21
+PER.DE,RI.PA,Pernod Ricard S.A.,Consumer Defensive,Consumer Defensive,PER.DE|RI.PA,,73.1,251658714.0,18396251993.4,symbol_length,1,0,0,0,1894.0,2026-08-21,675656.0,2026-08-21
+SIX3.DE,SIX2.DE,Sixt SE,Industrials,Industrials,SIX2.DE|SIX3.DE,,63.7,46943358.0,2990291904.6,volavg_raw,0,0,0,0,22142.0,2026-08-21,36544.0,2026-08-21
+SND.DE,SU.PA,Schneider Electric S.E.,Industrials,Industrials,SND.DE|SU.PA,,285.4,562328074.0,160488432319.6,symbol_length,1,0,0,0,3840.0,2026-08-21,910505.0,2026-08-21
+0SGO.L,DBX,"Dropbox, Inc.",Technology,Technology,0SGO.L|DBX,lse-iob,27.47,224800000.0,6175256000.0,canonicity,1,0,0,0,9725.0,2026-08-21,4034170.0,2026-08-21
+AHOG.DE,AD.AS,Koninklijke Ahold Delhaize N.V.,Consumer Defensive,Consumer Defensive,AD.AS|AHOG.DE,,35.22,878000000.0,30923160000.0,symbol_length,1,0,0,0,3114.0,2026-08-21,2582225.0,2026-08-21
+003535.KS,003530.KS,"Hanwha Investment & Securities Co., Ltd.",Financial Services,Financial Services,003530.KS|003535.KS,korea-preferred,4875.0,219275000.0,1068965625000.0,canonicity,1,0,0,0,20417.0,2026-08-21,1278233.0,2026-08-21
+0OGG.L,ALCAT.PA,S.A. Catana Group,Consumer Cyclical,Consumer Cyclical,0OGG.L|ALCAT.PA,lse-iob,2.7,30769000.0,83076300.0,canonicity,0,0,0,0,9987.0,2026-08-21,45019.0,2026-08-21
+RTX,5UR.DE,RTX Corporation,Industrials,Industrials,5UR.DE|RTX,,189.73,1349200000.0,255983716000.0,shares,0,1,0,0,5169829.0,2026-08-21,752.0,2026-08-21
+006805.KS,006800.KS,Mirae Asset Securities Co. Ltd.,Financial Services,Financial Services,006800.KS|006805.KS|00680K.KS,korea-preferred,42750.0,707208000.0,30233142000000.0,canonicity,1,0,0,0,84703.0,2026-08-21,2547987.0,2026-08-21
+00680K.KS,006800.KS,"Mirae Asset Securities Co., Ltd.",Financial Services,Financial Services,006800.KS|006805.KS|00680K.KS,korea-preferred,42750.0,707208000.0,30233142000000.0,canonicity,0,0,0,0,570618.0,2026-08-21,2547987.0,2026-08-21
+MMM.DE,MMM,3M Company,Industrials,Industrials,MMM|MMM.DE,,163.3743,519700000.0,84905604000.0,shares,1,0,0,0,949.0,2026-08-21,3602454.0,2026-08-21
+ENJ,ENO,"Entergy New Orleans, LLC",Utilities,Utilities,ENJ|ENO,,21.33,458745729.0,9785046399.57,volavg_raw,0,0,0,0,1709.0,2026-08-21,7443.0,2026-08-21
+DCBO.TO,DCBO,Docebo Inc.,Technology,Technology,DCBO|DCBO.TO,,17.9,25455554.0,455654416.6,punctuation,0,0,0,0,82711.0,2026-08-21,98032.0,2026-08-21
+0JQZ.L,KMB,Kimberly-Clark Corporation,Consumer Defensive,Consumer Defensive,0JQZ.L|KMB|KMY.DE,lse-iob,128.9379,283155683.0,36509502000.0,canonicity,1,0,0,0,1625.0,2026-08-21,4212517.0,2026-08-21
+KMY.DE,KMB,Kimberly-Clark Corporation,Consumer Defensive,Consumer Defensive,0JQZ.L|KMB|KMY.DE,,110.0576,331730769.0,36509502000.0,shares,1,0,0,0,1121.0,2026-08-21,4212517.0,2026-08-21
+0RRC.L,2HRA.DE,H&R GmbH & Co. KGaA,Basic Materials,Basic Materials,0RRC.L|2HRA.DE,lse-iob,5.0562,37221746.0,188201583.36,canonicity,0,0,0,0,1156.0,2026-08-21,8507.0,2026-08-21
+0O33.L,SBT.PA,Oeneo S.A.,Consumer Defensive,Consumer Defensive,0O33.L|SBT.PA,lse-iob,9.24,63272000.0,584633280.0,canonicity,1,0,0,0,30.0,2026-08-21,3663.0,2026-08-21
+0JZS.L,MKC,"McCormick & Company, Incorporated",Consumer Defensive,Consumer Defensive,0JZS.L|MKC|MKC-V,lse-iob,46.58,269200000.0,12539336000.0,canonicity,1,0,-2,-2,6537.0,2026-08-21,3976556.0,2026-08-21
+MKC-V,MKC,"McCormick & Company, Incorporated",Consumer Defensive,Consumer Defensive,0JZS.L|MKC|MKC-V,,46.58,269200000.0,12539336000.0,punctuation,1,0,-1,-2,4724.0,2026-08-21,3976556.0,2026-08-21
+0K8M.L,NSC,Norfolk Southern Corporation,Industrials,Industrials,0K8M.L|NFS.DE|NSC,lse-iob,315.2944,224600000.0,70815115333.79,canonicity,1,0,0,0,2817.0,2026-08-21,1198769.0,2026-08-21
+NFS.DE,NSC,Norfolk Southern Corporation,Industrials,Industrials,0K8M.L|NFS.DE|NSC,,314.7338,225000000.0,70815115333.79,shares,1,0,0,0,20.0,2026-08-21,1198769.0,2026-08-21
+0J66.L,HST,"Host Hotels & Resorts, Inc.",Real Estate,Real Estate,0J66.L|HST,lse-iob,23.9731,684900000.0,16419175000.0,canonicity,1,0,0,0,5941.0,2026-08-21,9750983.0,2026-08-21
+0O2W.L,GFT.DE,GFT Technologies SE,Technology,Technology,0O2W.L|GFT.DE,lse-iob,20.6,25479000.0,524867400.0,canonicity,1,0,0,0,3552.0,2026-08-21,59230.0,2026-08-21
+0IQE.L,FLS,Flowserve Corporation,Industrials,Industrials,0IQE.L|FLS,lse-iob,74.16,127644000.0,9466079040.0,canonicity,1,0,0,0,165.0,2026-08-21,1904033.0,2026-08-21
+0JYA.L,MPC,Marathon Petroleum Corporation,Energy,Energy,0JYA.L|MPC|MPN.DE,lse-iob,257.4385,289001000.0,74399970000.0,canonicity,1,0,0,0,8347.0,2026-08-21,2368430.0,2026-08-21
+MPN.DE,MPC,Marathon Petroleum Corporation,Energy,Energy,0JYA.L|MPC|MPN.DE,,257.4385,289001000.0,74399970000.0,shares,1,0,0,0,82.0,2026-08-21,2368430.0,2026-08-21
+HMI.DE,RMS.PA,Hermès International Société en commandite par actions,Consumer Cyclical,Consumer Cyclical,HMI.DE|RMS.PA,,1598.0,104793239.0,167459595922.0,volavg,1,0,0,0,383.0,2026-08-21,98131.0,2026-08-21
+SWEC-A.ST,SWEC-B.ST,Sweco AB,Industrials,Industrials,SWEC-A.ST|SWEC-B.ST,,127.1,361092388.0,45894842514.8,volavg,1,0,0,0,1398.0,2026-08-21,336604.0,2026-08-21
+UPS,UPAB.DE,"United Parcel Service, Inc.",Industrials,Industrials,0R08.L|UPAB.DE|UPS,,107.5,850000000.0,91375000000.0,shares,0,1,0,0,5261804.0,2026-08-21,1263.0,2026-08-21
+0R08.L,UPAB.DE,"United Parcel Service, Inc.",Industrials,Industrials,0R08.L|UPAB.DE|UPS,lse-iob,107.3737,851000000.0,91375000000.0,canonicity,1,1,0,0,8756.0,2026-08-21,1263.0,2026-08-21
+0J51.L,HPE,Hewlett Packard Enterprise Company,Technology,Technology,0J51.L|2HP.DE|HPE,lse-iob,28.77,1335000000.0,38407950000.0,canonicity,1,0,0,0,59670.0,2026-08-21,26425467.0,2026-08-21
+2HP.DE,HPE,Hewlett Packard Enterprise Company,Technology,Technology,0J51.L|2HP.DE|HPE,,28.77,1335000000.0,38407950000.0,digit_prefix,1,0,0,0,9188.0,2026-08-21,26425467.0,2026-08-21
+FTE.DE,ORA.PA,Orange S.A.,Communication Services,Communication Services,FTE.DE|ORA.PA,,16.51,2949718000.0,48699844180.0,volavg,1,0,0,0,4559.0,2026-08-21,4478360.0,2026-08-21
+SSAB-A.ST,SSAB-B.ST,SSAB Ab,Basic Materials,Basic Materials,SSAB-A.ST|SSAB-B.ST,,89.58,996600000.0,89275428000.0,volavg_raw,0,0,0,0,755128.0,2026-08-21,2749314.0,2026-08-21
+LLY.DE,LLY,Eli Lilly and Company,Healthcare,Healthcare,LLY|LLY.DE,,1199.43,892400000.0,1070371332000.0,punctuation,1,0,0,0,1235.0,2026-08-21,2990488.0,2026-08-21
+0O0E.L,BIG.PA,BigBen Interactive,Technology,Technology,0O0E.L|BIG.PA,lse-iob,1.2206,18491649.0,22571237.08,canonicity,1,0,0,0,2941.0,2026-08-21,77600.0,2026-08-21
+PRG.DE,PG,Procter & Gamble Company,Consumer Defensive,Consumer Defensive,PG|PRG.DE,,149.3763,2378125000.0,355235399999.9999,shares,1,0,0,0,3981.0,2026-08-21,9197703.0,2026-08-21
+0OR2.L,LNA.PA,LNA Santé S.A.,Healthcare,Healthcare,0OR2.L|LNA.PA,lse-iob,24.5,10259000.0,251345500.0,canonicity,1,0,0,0,157.0,2026-08-21,3926.0,2026-08-21
+0I35.L,ED,"Consolidated Edison, Inc.",Utilities,Utilities,0I35.L|ED,lse-iob,110.63,368800000.0,40800344000.0,canonicity,1,0,0,0,2890.0,2026-08-21,2422988.0,2026-08-21
+EPI-B.ST,EPI-A.ST,Epiroc AB (publ),Industrials,Industrials,0YSU.L|EPI-A.ST|EPI-B.ST,,265.9,1209453000.0,321593552700.0,isin_plurality,0,0,-1,-2,404041.0,2026-08-21,1408636.0,2026-08-21
+0YSU.L,EPI-A.ST,Epiroc AB (publ),Industrials,Industrials,0YSU.L|EPI-A.ST|EPI-B.ST,lse-iob,265.7931,1209939512.0,321593552700.0,canonicity,0,0,-2,-2,652706.0,2026-08-21,1408636.0,2026-08-21
+PRH,PRU,"Prudential Financial, Inc. 5.95",Financial Services,Financial Services,0KRX.L|PRH|PRU,,107.93,323487544.0,34914010623.92,volavg,1,0,-1,-2,45767.0,2026-08-21,1856656.0,2026-08-21
+0KRX.L,PRU,"Prudential Financial, Inc.",Financial Services,Financial Services,0KRX.L|PRH|PRU,lse-iob,100.791,346400000.0,34914010623.92,canonicity,1,0,-2,-2,2748.0,2026-08-21,1856656.0,2026-08-21
+BAM,BAM.TO,Brookfield Asset Management Ltd.,Financial Services,Financial Services,BAM|BAM.TO,,44.85,1606500000.0,72051525000.0,shares,0,0,0,0,2788659.0,2026-08-21,1846404.0,2026-08-21
+TCBIO,TCBI,"Texas Capital Bancshares, Inc.",Financial Services,Financial Services,TCBI|TCBIO,symbol-extension,103.26,45021962.0,4648967796.12,canonicity,1,0,0,0,15333.0,2026-08-21,511295.0,2026-08-21
+0IIW.L,ETSY,"Etsy, Inc.",Consumer Cyclical,Consumer Cyclical,0IIW.L|3E2.DE|ETSY,lse-iob,75.33,94358000.0,7107988140.0,canonicity,1,0,0,0,25747.0,2026-08-21,2977045.0,2026-08-21
+3E2.DE,ETSY,"Etsy, Inc.",Consumer Cyclical,Consumer Cyclical,0IIW.L|3E2.DE|ETSY,,75.33,94358000.0,7107988140.0,digit_prefix,1,0,0,0,106.0,2026-08-21,2977045.0,2026-08-21
+0LS8.L,WPC,W. P. Carey Inc.,Real Estate,Real Estate,0LS8.L|WPC,lse-iob,71.5,225971719.0,16156977908.5,canonicity,1,0,0,0,903.0,2026-08-21,1498095.0,2026-08-21
+001795.KS,001790.KS,TS Corporation,Consumer Defensive,Consumer Defensive,001790.KS|001795.KS,korea-preferred,2345.0,86242000.0,202237490000.0,canonicity,0,0,0,0,91585.0,2026-08-21,463517.0,2026-08-21
+RNL.DE,RNO.PA,Renault S.A.,Consumer Cyclical,Consumer Cyclical,RNL.DE|RNO.PA,,25.6492,294979000.0,7565983920.0,shares,1,0,0,0,8992.0,2026-08-21,1383856.0,2026-08-21
+0DLI.L,ACOMO.AS,Acomo N.V.,Consumer Defensive,Consumer Defensive,0DLI.L|ACOMO.AS,lse-iob,22.55,29682696.0,669344794.8,canonicity,1,0,0,0,1080.0,2026-08-21,47683.0,2026-08-21
+0RVA.L,SMCP.PA,SMCP S.a.,Consumer Cyclical,Consumer Cyclical,0RVA.L|SMCP.PA,lse-iob,5.006,78626128.0,393600000.0,canonicity,1,0,0,0,8644.0,2026-08-21,91404.0,2026-08-21
+0R86.L,IVSO.ST,Invisio AB (publ),Technology,Technology,0R86.L|IVSO.ST,lse-iob,205.0,46180000.0,9466900000.0,canonicity,1,0,0,0,1366.0,2026-08-21,91266.0,2026-08-21
+VET.TO,VET,Vermilion Energy Inc.,Energy,Energy,VET|VET.TO,,13.27,153100000.0,2031637000.0,punctuation,0,0,0,0,1148984.0,2026-08-21,1476770.0,2026-08-21
+0P2J.L,ASCE.BR,Ascencio S.A.,Real Estate,Real Estate,0P2J.L|ASCE.BR,lse-iob,50.1,6595985.0,330458848.5,canonicity,1,0,0,0,351.0,2026-08-21,3615.0,2026-08-21
+0JZ1.L,MAS,Masco Corporation,Basic Materials,Basic Materials,0JZ1.L|MAS,lse-iob,81.2678,199000000.0,16172287500.0,canonicity,1,0,0,0,1374.0,2026-08-21,2471761.0,2026-08-21
+NOV.DE,NVO,Novo Nordisk A/S,Healthcare,Healthcare,NOV.DE|NVO,,314.6,4428059000.0,1393067361400.0,punctuation,1,0,0,0,183465.0,2026-08-21,12396472.0,2026-08-21
+VOLV-A.ST,VOLV-B.ST,AB Volvo,Industrials,Industrials,VOLV-A.ST|VOLV-B.ST,,330.2,2033000000.0,671296600000.0,volavg,1,0,0,0,90109.0,2026-08-21,2936987.0,2026-08-21
+SCA-A.ST,SCA-B.ST,Svenska Cellulosa Aktiebolaget SCA (publ),Basic Materials,Basic Materials,SCA-A.ST|SCA-B.ST,,99.2,702000000.0,69638400000.0,volavg,1,0,0,0,14399.0,2026-08-21,1703827.0,2026-08-21
+DOO.TO,DOO,BRP Inc.,Consumer Cyclical,Consumer Cyclical,DOO|DOO.TO,,76.01,73151257.0,5560227044.57,punctuation,0,0,0,0,278211.0,2026-08-21,241329.0,2026-08-21
+0R18.L,BBY,"Best Buy Co., Inc.",Consumer Cyclical,Consumer Cyclical,0R18.L|BBY,lse-iob,82.14,210700000.0,17306898000.0,canonicity,1,0,0,0,9806.0,2026-08-21,4064514.0,2026-08-21
+ACRI-A.ST,ACRI-B.ST,Acrinova AB (publ),Real Estate,Real Estate,ACRI-A.ST|ACRI-B.ST,,8.16,43537242.0,355263894.72,volavg_raw,0,0,0,0,4536.0,2026-08-21,33468.0,2026-08-21
+BCE.TO,BCE,BCE Inc.,Communication Services,Communication Services,BCE|BCE.TO,,30.55,932500000.0,28487875000.0,punctuation,0,0,0,0,4812982.0,2026-08-21,4030795.0,2026-08-21
+0F4O.L,LOTB.BR,Lotus Bakeries N.V.,Consumer Defensive,Consumer Defensive,0F4O.L|LOTB.BR,lse-iob,11612.3701,813255.0,9443818020.0,canonicity,0,0,0,0,230.0,2026-08-21,682.0,2026-08-21
+RY,RY.TO,Royal Bank of Canada,Financial Services,Financial Services,0QKU.L|RY|RY.TO,,332.0784,1025074000.0,340404940920.0,shares,0,0,0,0,1552716.0,2026-08-21,3213857.0,2026-08-21
+0QKU.L,RY.TO,Royal Bank of Canada,Financial Services,Financial Services,0QKU.L|RY|RY.TO,lse-iob,332.0784,1025074000.0,340404940920.0,canonicity,1,0,0,0,517.0,2026-08-21,3213857.0,2026-08-21
+0VFA.L,QSR,"Restaurant Brands International, Inc.",Consumer Cyclical,Consumer Cyclical,0VFA.L|QSP-UN.TO|QSR|QSR.TO,lse-iob,72.51,348000000.0,25233480000.0,canonicity,1,0,-3,-3,331.0,2026-08-21,2993541.0,2026-08-21
+QSR.TO,QSR,Restaurant Brands International Inc.,Consumer Cyclical,Consumer Cyclical,0VFA.L|QSP-UN.TO|QSR|QSR.TO,,72.51,348000000.0,25233480000.0,punctuation,0,0,-3,-3,992353.0,2026-08-21,2993541.0,2026-08-21
+QSP-UN.TO,QSR,Restaurant Brands International Limited Partnership,Consumer Cyclical,Consumer Cyclical,0VFA.L|QSP-UN.TO|QSR|QSR.TO,,72.51,348000000.0,25233480000.0,punctuation,1,0,-1,-3,11.0,2026-08-21,2993541.0,2026-08-21
+0IP1.L,BLC.PA,Bastide Le Confort Médical S.A.,Healthcare,Healthcare,0IP1.L|BLC.PA,lse-iob,24.0,7365000.0,176760000.0,canonicity,0,0,0,0,266.0,2026-08-21,2413.0,2026-08-21
+0HG8.L,ELV,"Elevance Health, Inc.",Healthcare,Healthcare,0HG8.L|ELV,lse-iob,386.73,217900000.0,84268467000.0,canonicity,1,0,0,0,8372.0,2026-08-21,1503814.0,2026-08-21
+0NY3.L,STF.PA,STEF S.a.,Industrials,Industrials,0NY3.L|STF.PA,lse-iob,131.4,12651000.0,1662341400.0,canonicity,1,0,0,0,51.0,2026-08-21,2195.0,2026-08-21
+AZN.L,AZN,AstraZeneca PLC,Healthcare,Healthcare,AZN|AZN.L,,186.9378,1551000000.0,289940527800.0001,punctuation,0,0,0,0,3056414.0,2026-08-21,2994422.0,2026-08-21
+BSN.DE,BN.PA,Danone S.A.,Consumer Defensive,Consumer Defensive,BN.PA|BSN.DE,,71.74,640757020.0,45967908614.8,symbol_length,1,0,0,0,3043.0,2026-08-21,1545903.0,2026-08-21
+005305.KS,005300.KS,"Lotte Chilsung Beverage Co., Ltd.",Consumer Defensive,Consumer Defensive,005300.KS|005305.KS,korea-preferred,98700.0,11075000.0,1093102500000.0,canonicity,1,0,0,0,1694.0,2026-08-21,23520.0,2026-08-21
+AIL.DE,AI.PA,L'Air Liquide S.A.,Basic Materials,Basic Materials,AI.PA|AIL.DE,,173.28,636603516.0,110310657252.48,symbol_length,1,0,0,0,954.0,2026-08-21,890710.0,2026-08-21
+0RU6.L,SPOL.OL,Sparebank 1 Ostlandet,Financial Services,Financial Services,0RU6.L|SPOL.OL,lse-iob,189.28,185844748.0,35176693901.44,canonicity,1,0,0,0,1620.0,2026-08-21,35478.0,2026-08-21
+0S9E.L,EXE.TO,Extendicare Inc.,Healthcare,Healthcare,0S9E.L|EXE.TO,lse-iob,35.0234,95638000.0,3349565018.52,canonicity,1,0,0,0,12.0,2026-08-21,506065.0,2026-08-21
+VOXR.TO,VOXR,Vox Royalty Corp.,Basic Materials,Basic Materials,VOXR|VOXR.TO,,4.73,71003870.0,335848305.1,punctuation,1,0,0,0,20292.0,2026-08-21,494200.0,2026-08-21
+0RGB.L,ORES.ST,Investment AB Öresund (publ),Financial Services,Financial Services,0RGB.L|ORES.ST,lse-iob,140.2,44570869.0,6248835833.8,canonicity,1,0,0,0,498.0,2026-08-21,45507.0,2026-08-21
+STMPA.PA,SGM.DE,STMicroelectronics N.V.,Technology,Technology,SGM.DE|STMPA.PA,,73.6592,888000000.0,65409359121.6,symbol_length,0,1,0,0,3289783.0,2026-08-21,29047.0,2026-08-21
+0Y7S.L,JCI,Johnson Controls International plc,Basic Materials,Basic Materials,0Y7S.L|JCI,lse-iob,145.853,608000000.0,88678643554.23,canonicity,1,0,0,0,12542.0,2026-08-21,4101085.0,2026-08-21
+001685.KS,001680.KS,Daesang Corporation,Consumer Defensive,Consumer Defensive,001680.KS|001685.KS,korea-preferred,16850.0,36018000.0,606903300000.0,canonicity,1,0,0,0,4181.0,2026-08-21,94529.0,2026-08-21
+VVD.DE,VIE.PA,Veolia Environnement S.A.,Industrials,Industrials,VIE.PA|VVD.DE,,36.9787,731697339.0,27057246600.0,shares,1,0,0,0,4049.0,2026-08-21,1683333.0,2026-08-21
+0IW5.L,HO.PA,Thales S.A.,Industrials,Industrials,0IW5.L|HO.PA,lse-iob,224.8,205505000.0,46197524000.0,canonicity,0,0,0,0,117314.0,2026-08-21,258507.0,2026-08-21
+0OHK.L,SNI.OL,Stolt-Nielsen Limited,Industrials,Industrials,0OHK.L|SNI.OL,lse-iob,32.0549,53121000.0,1702788953.7915,canonicity,0,0,0,0,6382.0,2026-08-21,33116.0,2026-08-21
+PPX.DE,KER.PA,Kering S.A.,Consumer Cyclical,Consumer Cyclical,KER.PA|PPX.DE,,247.3,122619696.0,30323850820.8,volavg,1,0,0,0,609.0,2026-08-21,308535.0,2026-08-21
+ABI.BR,BUD,Anheuser-Busch InBev SA/NV,Consumer Defensive,Consumer Defensive,1NBA.DE|ABI.BR|BUD,,82.9908,1975982000.0,163988324594.4216,shares,0,0,-2,-1,1912555.0,2026-08-21,1987429.0,2026-08-21
+1NBA.DE,BUD,Anheuser-Busch InBev SA/NV,Consumer Defensive,Consumer Defensive,1NBA.DE|ABI.BR|BUD,,82.9908,1975982000.0,163988324594.4216,shares,1,0,-2,-1,1598.0,2026-08-21,1987429.0,2026-08-21
+0OPN.L,ODET.PA,Compagnie de l'Odet,Industrials,Industrials,0OPN.L|ODET.PA,lse-iob,1342.0,6580000.0,8830360000.0,canonicity,0,0,0,0,57.0,2026-08-21,414.0,2026-08-21
+PCE1.DE,BKNG,Booking Holdings Inc.,Consumer Cyclical,Consumer Cyclical,0W2Y.L|BKNG|PCE1.DE,,178.24,768000000.0,136888320000.0,punctuation,1,0,0,0,1430.0,2026-08-21,7065062.0,2026-08-21
+0W2Y.L,BKNG,Booking Holdings Inc.,Consumer Cyclical,Consumer Cyclical,0W2Y.L|BKNG|PCE1.DE,lse-iob,178.24,768000000.0,136888320000.0,canonicity,1,0,0,0,567.0,2026-08-21,7065062.0,2026-08-21
+ULVR.L,UL,Unilever PLC,Consumer Defensive,Consumer Defensive,UL|ULVR.L|UNA.AS,,52.5679,2175100000.0,114340432764.7,punctuation,0,0,-2,-1,4247456.0,2026-08-21,4256454.0,2026-08-21
+UNA.AS,UL,Unilever PLC,Consumer Defensive,Consumer Defensive,UL|ULVR.L|UNA.AS,,52.5679,2175100000.0,114340432764.7,punctuation,0,0,-2,-1,1179713.0,2026-08-21,4256454.0,2026-08-21
+0DUI.L,BSL.DE,Basler AG,Technology,Technology,0DUI.L|BSL.DE,lse-iob,28.3003,30751627.0,870280694.4,canonicity,0,0,0,0,26056.0,2026-08-21,38847.0,2026-08-21
+NOA.TO,NOA,North American Construction Group Ltd.,Energy,Energy,NOA|NOA.TO,,18.86,27062861.0,510405558.46,punctuation,0,0,0,0,89763.0,2026-08-21,103137.0,2026-08-21
+CM,CM.TO,Canadian Imperial Bank of Commerce,Financial Services,Financial Services,CM|CM.TO,,206.0215,674932000.0,139050469570.0,shares,0,0,0,0,1341472.0,2026-08-21,2444098.0,2026-08-21
+BVA.L,BBVA,"Banco Bilbao Vizcaya Argentaria, S.A.",Financial Services,Financial Services,BBVA|BVA.L,,21.87,5504224000.0,120377378880.0,shares,0,0,0,0,2535999.0,2026-08-21,1604395.0,2026-08-21
+4I1.DE,PM,Philip Morris International Inc.,Consumer Defensive,Consumer Defensive,4I1.DE|PM,,181.3533,1559000000.0,282729859006.83,shares,1,0,0,0,444.0,2026-08-21,5011751.0,2026-08-21
+0A28.L,PRX.AS,Prosus N.V.,Communication Services,Communication Services,0A28.L|PRX.AS,lse-iob,45.0344,2176263000.0,98006640993.8568,canonicity,0,0,0,0,998217.0,2026-08-21,3390788.0,2026-08-21
+CDLR,CADLR.OL,Cadeler A/S,Industrials,Industrials,CADLR.OL|CDLR,,20.0737,88112500.0,1768747486.24,shares,0,0,0,0,84403.0,2026-08-21,503077.0,2026-08-21
+0LBP.L,SYP.DE,"Synopsys, Inc.",Technology,Technology,0LBP.L|SNPS|SYP.DE,lse-iob,480.2029,191464000.0,91941573800.0,canonicity,1,1,0,0,2691.0,2026-08-21,294.0,2026-08-21
+SNPS,SYP.DE,"Synopsys, Inc.",Technology,Technology,0LBP.L|SNPS|SYP.DE,,482.6,190513000.0,91941573800.0,shares,0,1,0,0,1961091.0,2026-08-21,294.0,2026-08-21
+0FRI.L,LBIRD.PA,Lumibird S.A.,Technology,Technology,0FRI.L|LBIRD.PA,lse-iob,21.2,22714000.0,481536800.0,canonicity,1,0,0,0,453.0,2026-08-21,34886.0,2026-08-21
+CGN.DE,CI,Cigna Corporation,Healthcare,Healthcare,CGN.DE|CI,,314.9044,231083000.0,72769044160.0,shares,1,0,0,0,29.0,2026-08-21,1697041.0,2026-08-21
+0OQ2.L,ALSOG.PA,Sogeclair S.A.,Industrials,Industrials,0OQ2.L|ALSOG.PA,lse-iob,25.8,3447000.0,88932600.0,canonicity,0,1,0,0,14984.0,2026-08-21,618.0,2026-08-21
+0IPT.L,AKAST.OL,Akastor ASA,Energy,Energy,0IPT.L|AKAST.OL,lse-iob,15.32,272558131.0,4175590566.92,canonicity,1,0,0,0,3675.0,2026-08-21,317839.0,2026-08-21
+0L98.L,STAG,"STAG Industrial, Inc.",Real Estate,Real Estate,0L98.L|STAG,lse-iob,38.0417,191180000.0,7272809280.0,canonicity,1,0,0,0,789.0,2026-08-21,1555364.0,2026-08-21
+0F0J.L,KIT.OL,Kitron ASA,Technology,Technology,0F0J.L|KIT.OL,lse-iob,104.4058,218702500.0,22833800000.0,canonicity,1,0,0,0,27755.0,2026-08-21,593554.0,2026-08-21
+SQU.DE,DG.PA,Vinci S.A.,Industrials,Industrials,DG.PA|SQU.DE,,127.8,561622000.0,71775291600.0,symbol_length,1,0,0,0,2395.0,2026-08-21,879926.0,2026-08-21
+0Y3K.L,ETN,Eaton Corp. Plc,Industrials,Industrials,0Y3K.L|ETN,lse-iob,426.12,388500000.0,165547620000.0,canonicity,1,0,0,0,1614.0,2026-08-21,2361164.0,2026-08-21
+0VHA.L,SHOP,Shopify Inc.,Technology,Technology,0VHA.L|SHOP|SHOP.TO,lse-iob,114.18,1295220307.0,147888254653.26,canonicity,1,0,0,0,34373.0,2026-08-21,9458406.0,2026-08-21
+SHOP.TO,SHOP,Shopify Inc.,Technology,Technology,0VHA.L|SHOP|SHOP.TO,,114.18,1295220307.0,147888254653.26,punctuation,0,0,0,0,2155011.0,2026-08-21,9458406.0,2026-08-21
+PHM7.DE,MO,"Altria Group, Inc.",Consumer Defensive,Consumer Defensive,MO|PHM7.DE,,72.0409,1669891235.0,120300400000.0,shares,1,0,0,0,2815.0,2026-08-21,8677624.0,2026-08-21
+HVT-A,HVT,"Haverty Furniture Companies, Inc.",Consumer Cyclical,Consumer Cyclical,HVT|HVT-A,,25.53,15741667.0,401884758.51,punctuation,1,0,0,0,1008.0,2026-08-21,113941.0,2026-08-21
+VBNK,VBNK.TO,VersaBank,Financial Services,Financial Services,VBNK|VBNK.TO,,32.989,23609905.0,778866942.39,shares,0,0,0,0,113198.0,2026-08-21,34477.0,2026-08-21
+0DH7.L,AFG.OL,AF Gruppen ASA,Industrials,Industrials,0DH7.L|AFG.OL,lse-iob,170.0,110326086.0,18755434620.0,canonicity,1,0,0,0,1906.0,2026-08-21,29748.0,2026-08-21
+PHAR,PHARM.AS,Pharming Group N.V.,Healthcare,Healthcare,PHAR|PHARM.AS,,12.1293,70140400.0,850753050.48,shares,1,0,0,0,13187.0,2026-08-21,10159650.0,2026-08-21
+TRI.TO,TRI,Thomson Reuters Corporation,Industrials,Industrials,TRI|TRI.TO,,81.6906,438500639.0,35821390914.58,shares,0,0,0,0,759619.0,2026-08-21,2078756.0,2026-08-21
+RATO-A.ST,RATO-B.ST,Ratos AB (publ),Financial Services,Financial Services,RATO-A.ST|RATO-B.ST,,33.24,327358491.0,10881396240.84,volavg,1,0,0,0,2335.0,2026-08-21,306705.0,2026-08-21
+LSPD.TO,LSPD,Lightspeed Commerce Inc.,Technology,Technology,LSPD|LSPD.TO,,10.49,138206060.0,1449781569.4,punctuation,0,0,0,0,716757.0,2026-08-21,1100885.0,2026-08-21
+005945.KS,005940.KS,"NH Investment & Securities Co., Ltd.",Financial Services,Financial Services,005940.KS|005945.KS,korea-preferred,29400.0,375113000.0,11028322200000.0,canonicity,1,0,0,0,56704.0,2026-08-21,822052.0,2026-08-21
+0UKH.L,BMO,Bank of Montreal,Financial Services,Financial Services,0UKH.L|BMO|BMO.TO,lse-iob,206.84,702670000.0,145340262800.0,canonicity,1,0,0,0,157.0,2026-08-21,768477.0,2026-08-21
+BMO.TO,BMO,Bank of Montreal,Financial Services,Financial Services,0UKH.L|BMO|BMO.TO,,206.84,702670000.0,145340262800.0,shares,0,0,0,0,2128590.0,2026-08-21,768477.0,2026-08-21
+ARGX.BR,KMI,argenx SE,Healthcare,Ambiguous (sector conflict),0JR2.L|0QW0.L|2KD.DE|ARGX|ARGX.BR|KMI,,811.4,62185445.0,50457270073.0,shares,1,0,-1,-4,95129.0,2026-08-21,9960924.0,2026-08-21
+0JR2.L,KMI,"Kinder Morgan, Inc.",Energy,Ambiguous (sector conflict),0JR2.L|0QW0.L|2KD.DE|ARGX|ARGX.BR|KMI,lse-iob,31.97,2225000000.0,71133250000.0,canonicity,1,0,-4,-4,28394.0,2026-08-21,9960924.0,2026-08-21
+0QW0.L,KMI,argenx SE,Healthcare,Ambiguous (sector conflict),0JR2.L|0QW0.L|2KD.DE|ARGX|ARGX.BR|KMI,lse-iob,783.3826,64409487.0,50457270073.0,canonicity,1,0,-4,-4,27754.0,2026-08-21,9960924.0,2026-08-21
+2KD.DE,KMI,"Kinder Morgan, Inc.",Energy,Ambiguous (sector conflict),0JR2.L|0QW0.L|2KD.DE|ARGX|ARGX.BR|KMI,,31.97,2225000000.0,71133250000.0,digit_prefix,1,0,-4,-4,1044.0,2026-08-21,9960924.0,2026-08-21
+ARGX,KMI,argenx SE,Healthcare,Ambiguous (sector conflict),0JR2.L|0QW0.L|2KD.DE|ARGX|ARGX.BR|KMI,,811.4,62185445.0,50457270073.0,shares,1,0,-1,-4,330912.0,2026-08-21,9960924.0,2026-08-21
+0NHS.L,NTR,Nutrien Ltd.,Basic Materials,Basic Materials,0NHS.L|NTR|NTR.TO,lse-iob,62.95,479600000.0,30190820000.0,canonicity,1,0,0,0,1419.0,2026-08-21,2759866.0,2026-08-21
+NTR.TO,NTR,Nutrien Ltd.,Basic Materials,Basic Materials,0NHS.L|NTR|NTR.TO,,62.95,479600000.0,30190820000.0,punctuation,0,0,0,0,1610019.0,2026-08-21,2759866.0,2026-08-21
+0UKI.L,BNS.TO,The Bank of Nova Scotia,Financial Services,Financial Services,0UKI.L|BNS|BNS.TO,lse-iob,105.68,1230000000.0,129986400000.0,canonicity,1,0,0,0,1680.0,2026-08-21,3877549.0,2026-08-21
+BNS,BNS.TO,The Bank of Nova Scotia,Financial Services,Financial Services,0UKI.L|BNS|BNS.TO,,143.6455,904911000.0,129986400000.0,shares,0,0,0,0,2579280.0,2026-08-21,3877549.0,2026-08-21
+0IKW.L,FAST,Fastenal Company,Industrials,Industrials,0IKW.L|FAS.DE|FAST,lse-iob,48.03,1147600000.0,55119228000.0,canonicity,1,0,0,0,5862.0,2026-08-21,7924082.0,2026-08-21
+FAS.DE,FAST,Fastenal Company,Industrials,Industrials,0IKW.L|FAS.DE|FAST,,48.03,1147600000.0,55119228000.0,punctuation,1,0,0,0,193.0,2026-08-21,7924082.0,2026-08-21
+0CHZ.L,QBY0.DE,q.beyond AG,Technology,Technology,0CHZ.L|QBY0.DE,lse-iob,3.48,24915897.0,86707321.56,canonicity,1,0,0,0,946.0,2026-08-21,23793.0,2026-08-21
+0OQX.L,GMM.DE,Grammer AG,Consumer Cyclical,Consumer Cyclical,0OQX.L|GMM.DE,lse-iob,8.85,15975905.0,141386759.25,canonicity,1,0,0,0,6.0,2026-08-21,1807.0,2026-08-21
+RCI-A.TO,RCI,Rogers Communications Inc.,Communication Services,Communication Services,RCI|RCI-A.TO|RCI-B.TO,,46.14,540000000.0,24915600000.0,punctuation,1,0,-1,-2,1825.0,2026-08-21,1280620.0,2026-08-21
+RCI-B.TO,RCI,Rogers Communications Inc.,Communication Services,Communication Services,RCI|RCI-A.TO|RCI-B.TO,,46.14,540000000.0,24915600000.0,punctuation,0,0,-2,-2,2132555.0,2026-08-21,1280620.0,2026-08-21
+GOS.DE,GS,"The Goldman Sachs Group, Inc.",Financial Services,Financial Services,GOS.DE|GS,,1155.0443,262771000.0,303512137000.0,shares,1,0,0,0,331.0,2026-08-21,2133643.0,2026-08-21
+LIN.DE,LIN,Linde plc,Basic Materials,Basic Materials,LIN|LIN.DE,,518.94,462525000.0,240022723500.0,punctuation,1,0,0,0,14913.0,2026-08-21,2322130.0,2026-08-21
+URB-A.TO,URB.TO,Urbana Corporation,Financial Services,Financial Services,URB-A.TO|URB.TO,,9.22,41395100.0,381662822.0,punctuation,0,0,0,0,11009.0,2026-08-21,1182.0,2026-08-21
+0I5O.L,BERG-B.ST,Bergman & Beving AB (publ),Industrials,Industrials,0I5O.L|BERG-B.ST,lse-iob,291.5,26662000.0,7771973000.0,canonicity,1,0,0,0,460.0,2026-08-21,16741.0,2026-08-21
+BH-A,BH,Biglari Holdings Inc.,Consumer Cyclical,Consumer Cyclical,BH|BH-A,,426.03,3139020.0,1337316690.6,punctuation,0,0,0,0,21924.0,2026-08-21,126000.0,2026-08-21
+460860.KS,001230.KS,Dongkuk Steel Mill Company Limited,Basic Materials,Basic Materials,001230.KS|460860.KS,,1751.0,155508000.0,272294508000.0,volavg_raw,0,0,0,0,238724.0,2026-08-21,746459.0,2026-08-21
+0GXK.L,VBG-B.ST,VBG Group AB (publ),Consumer Cyclical,Consumer Cyclical,0GXK.L|VBG-B.ST,lse-iob,317.5,25004048.0,7938785240.0,canonicity,1,0,0,0,678.0,2026-08-21,17624.0,2026-08-21
+0G67.L,SBNOR.OL,Sparebanken Vest,Financial Services,Financial Services,0G67.L|SBNOR.OL,lse-iob,199.52,173233322.0,34563512405.44,canonicity,1,0,0,0,2244.0,2026-08-21,144863.0,2026-08-21
+0Q3C.L,SMHN.DE,SÜSS MicroTec SE,Technology,Technology,0Q3C.L|SMHN.DE,lse-iob,93.05,19115538.0,1778700810.9,canonicity,1,0,0,0,5953.0,2026-08-21,102299.0,2026-08-21
+4PN.DE,CARR,Carrier Global Corp.,Industrials,Industrials,4PN.DE|CARR,,73.6512,828100000.0,60990525000.0,shares,1,0,0,0,625.0,2026-08-21,6394130.0,2026-08-21
+UNH.DE,UNH,UnitedHealth Group Incorporated,Healthcare,Healthcare,UNH|UNH.DE,,474.673,793303000.0,376559533110.0,shares,1,0,0,0,1426.0,2026-08-21,5862050.0,2026-08-21
+0LTG.L,WM,"Waste Management, Inc.",Industrials,Industrials,0LTG.L|UWS.DE|WM,lse-iob,223.3241,401500000.0,89664624000.0,canonicity,1,0,0,0,9595.0,2026-08-21,2123519.0,2026-08-21
+UWS.DE,WM,"Waste Management, Inc.",Industrials,Industrials,0LTG.L|UWS.DE|WM,,223.3241,401500000.0,89664624000.0,shares,1,0,0,0,553.0,2026-08-21,2123519.0,2026-08-21
+0RNQ.L,MIPS.ST,Mips AB (publ),Consumer Cyclical,Consumer Cyclical,0RNQ.L|MIPS.ST,lse-iob,258.2,26491000.0,6839976200.0,canonicity,1,0,0,0,9405.0,2026-08-21,128711.0,2026-08-21
+0NWC.L,YSN.DE,secunet Security Networks AG,Technology,Technology,0NWC.L|YSN.DE,lse-iob,168.8,6469502.0,1092051937.6,canonicity,1,0,0,0,359.0,2026-08-21,3622.0,2026-08-21
+0K80.L,NEE,"NextEra Energy, Inc.",Utilities,Utilities,0K80.L|NEE,lse-iob,87.6052,2092930000.0,183351530000.0,canonicity,1,0,0,0,17676.0,2026-08-21,11450125.0,2026-08-21
+3RB.DE,RKT.L,Reckitt Benckiser Group PLC,Consumer Defensive,Consumer Defensive,3RB.DE|RKT.L,,49.11,646400000.0,31744704000.0,digit_prefix,1,0,0,0,4657.0,2026-08-21,1588328.0,2026-08-21
+FSV.TO,FSV,FirstService Corporation,Real Estate,Real Estate,FSV|FSV.TO,,143.7555,45341000.0,6518017260.0,shares,0,0,0,0,145017.0,2026-08-21,215635.0,2026-08-21
+0QC9.L,LEG.DE,LEG Immobilien SE,Real Estate,Real Estate,0QC9.L|LEG.DE,lse-iob,55.25,75570800.0,4175286700.0,canonicity,0,0,0,0,53192.0,2026-08-21,362829.0,2026-08-21
+003465.KS,003460.KS,"Yuhwa Securities co.,ltd.",Financial Services,Financial Services,003460.KS|003465.KS,korea-preferred,3060.0,60633575.0,185538739500.0,canonicity,1,0,0,0,6383.0,2026-08-21,76618.0,2026-08-21
+AUD.DE,ADSK,"Autodesk, Inc.",Technology,Technology,0HJF.L|ADSK|AUD.DE,,237.0,211000000.0,50007000000.0,punctuation,1,0,0,0,439.0,2026-08-21,2644920.0,2026-08-21
+0HJF.L,ADSK,"Autodesk, Inc.",Technology,Technology,0HJF.L|ADSK|AUD.DE,lse-iob,237.0,211000000.0,50007000000.0,canonicity,1,0,0,0,5834.0,2026-08-21,2644920.0,2026-08-21
+PPL.TO,PBA,Pembina Pipeline Corporation,Energy,Energy,PBA|PPL.TO,,65.62,581000000.0,38125220000.0,punctuation,0,0,0,0,2547173.0,2026-08-21,1136633.0,2026-08-21
+0Q16.L,BAC,Bank of America Corporation,Financial Services,Financial Services,0Q16.L|BAC|NCB.DE,lse-iob,56.98,7151200000.0,407475376000.0,canonicity,1,0,0,0,125660.0,2026-08-21,34265362.0,2026-08-21
+NCB.DE,BAC,Bank of America Corporation,Financial Services,Financial Services,0Q16.L|BAC|NCB.DE,,65.0746,6261668000.0,407475376000.0,shares,1,0,0,0,1861.0,2026-08-21,34265362.0,2026-08-21
+0MUF.L,CSH.DE,Cenit AG,Technology,Technology,0MUF.L|CSH.DE,lse-iob,8.6963,8367758.0,72768245.28,canonicity,0,0,0,0,2091.0,2026-08-21,8371.0,2026-08-21
+SCT.DE,SSE.L,SSE Plc,Utilities,Utilities,SCT.DE|SSE.L,,25.95,1206053000.0,31297075350.0,symbol_length,1,0,0,0,601.0,2026-08-21,3441900.0,2026-08-21
+001755.KS,001750.KS,Hanyang Securities Co. Ltd.,Financial Services,Financial Services,001750.KS|001755.KS,korea-preferred,19700.0,12729000.0,250761300000.0,canonicity,1,0,0,0,2114.0,2026-08-21,23363.0,2026-08-21
+8GM.DE,GM,General Motors Company,Consumer Cyclical,Consumer Cyclical,8GM.DE|GM,,79.0968,896000000.0,70870743520.0,shares,1,0,0,0,127.0,2026-08-21,7511462.0,2026-08-21
+BATS.L,BTI,British American Tobacco p.l.c.,Consumer Defensive,Consumer Defensive,BATS.L|BMT.DE|BTI,,46.77,2165000000.0,101257050000.0,punctuation,0,0,-2,-1,3664172.0,2026-08-21,4217430.0,2026-08-21
+BMT.DE,BTI,British American Tobacco p.l.c.,Consumer Defensive,Consumer Defensive,BATS.L|BMT.DE|BTI,,46.77,2165000000.0,101257050000.0,punctuation,1,0,-2,-1,91822.0,2026-08-21,4217430.0,2026-08-21
+NKE.DE,NKE,"NIKE, Inc.",Consumer Cyclical,Consumer Cyclical,NKE|NKE.DE,,45.93,1482600000.0,68095818000.0,punctuation,1,0,0,0,52711.0,2026-08-21,24294556.0,2026-08-21
+FMC1.DE,F,Ford Motor Company,Consumer Cyclical,Consumer Cyclical,F|FMC1.DE,,13.9,3987000000.0,55419300000.0,punctuation,1,0,0,0,5884.0,2026-08-21,56736514.0,2026-08-21
+0LD9.L,TRGP,Targa Resources Corp.,Energy,Energy,0LD9.L|TRGP,lse-iob,268.6398,214600000.0,57650100000.0,canonicity,1,0,0,0,886.0,2026-08-21,1240517.0,2026-08-21
+0HHU.L,ARR,"ARMOUR Residential REIT, Inc.",Real Estate,Real Estate,0HHU.L|ARR,lse-iob,17.45,129125000.0,2253231250.0,canonicity,1,0,0,0,3786.0,2026-08-21,3748162.0,2026-08-21
+071055.KS,071050.KS,"Korea Investment Holdings Co., Ltd.",Financial Services,Financial Services,071050.KS|071055.KS,korea-preferred,221000.0,61739000.0,13644319000000.0,canonicity,1,0,0,0,18180.0,2026-08-21,262329.0,2026-08-21
+0QV6.L,HRPK.DE,7C Solarparken AG,Energy,Energy,0QV6.L|HRPK.DE,lse-iob,1.691,77815373.0,131582880.0,canonicity,0,0,0,0,17713.0,2026-08-21,36988.0,2026-08-21
+EJT1.DE,EZJ.L,easyJet plc,Industrials,Industrials,EJT1.DE|EZJ.L,,3.471,753000000.0,2613663000.0,symbol_length,1,0,0,0,126664.0,2026-08-21,8781871.0,2026-08-21
+0GN6.L,ARG.PA,Argan S.A.,Real Estate,Real Estate,0GN6.L|ARG.PA,lse-iob,60.4,25748171.0,1555189528.4,canonicity,0,0,0,0,4448.0,2026-08-21,20209.0,2026-08-21
+145995.KS,145990.KS,Samyang Corporation,Consumer Defensive,Consumer Defensive,145990.KS|145995.KS,korea-preferred,43800.0,10036000.0,439576800000.0,canonicity,1,0,0,0,882.0,2026-08-21,11997.0,2026-08-21
+CIGI,CIGI.TO,Colliers International Group Inc.,Real Estate,Real Estate,CIGI|CIGI.TO,,93.79,35977216.0,3374303088.64,shares,0,0,0,0,218383.0,2026-08-21,98977.0,2026-08-21
+WYR.DE,WYNN,"Wynn Resorts, Limited",Consumer Cyclical,Consumer Cyclical,0QYK.L|WYNN|WYR.DE,,97.3304,102574000.0,9983570520.0,shares,1,0,0,0,8.0,2026-08-21,1502504.0,2026-08-21
+0QYK.L,WYNN,"Wynn Resorts, Limited",Consumer Cyclical,Consumer Cyclical,0QYK.L|WYNN|WYR.DE,lse-iob,97.3304,102574000.0,9983570520.0,canonicity,1,0,0,0,3730.0,2026-08-21,1502504.0,2026-08-21
+ORIO.TO,ORIO,Orion Digital Corp.,Technology,Technology,ORIO|ORIO.TO,,1.24,23805000.0,29518200.0,punctuation,0,0,0,0,21425.0,2026-08-21,38574.0,2026-08-21
+BNP.DE,BNP.PA,BNP Paribas S.A.,Financial Services,Financial Services,BNP.DE|BNP.PA,,102.157,1098000000.0,112168411620.0,shares,1,0,0,0,6662.0,2026-08-21,1801615.0,2026-08-21
+005490.KS,PKX,POSCO Holdings Inc.,Basic Materials,Basic Materials,005490.KS|PKX,,317000.0,88564000.0,28074788000000.0,shares,0,0,0,0,361660.0,2026-08-21,393087.0,2026-08-21
+0G15.L,SKB.DE,Koenig & Bauer AG,Industrials,Industrials,0G15.L|SKB.DE,lse-iob,9.05,16524783.0,149549286.15,canonicity,1,0,0,0,28.0,2026-08-21,6623.0,2026-08-21
+0LBY.L,MONT.BR,Montea Comm. VA,Real Estate,Real Estate,0LBY.L|MONT.BR,lse-iob,65.4,23295111.0,1523500259.4,canonicity,0,0,0,0,4205.0,2026-08-21,26935.0,2026-08-21
+TPGXL,TPG,TPG Inc.,Financial Services,Financial Services,TPG|TPGXL,symbol-extension,99.8909,164670334.0,16449062926.4506,canonicity,1,0,0,0,25556.0,2026-08-21,2584814.0,2026-08-21
+0VL8.L,TD.TO,The Toronto-Dominion Bank,Financial Services,Financial Services,0VL8.L|TD|TD.TO,lse-iob,146.33,1660700000.0,243010231000.0,canonicity,1,0,0,0,677.0,2026-08-21,4823509.0,2026-08-21
+TD,TD.TO,The Toronto-Dominion Bank,Financial Services,Financial Services,0VL8.L|TD|TD.TO,,198.899,1221777000.0,243010231000.0,shares,0,0,0,0,2600475.0,2026-08-21,4823509.0,2026-08-21
+CP.TO,CP,Canadian Pacific Kansas City Ltd.,Industrials,Industrials,CP|CP.TO,,122.96,886400000.0,108991744000.0,punctuation,0,0,0,0,1285280.0,2026-08-21,2742200.0,2026-08-21
+0KKZ.L,MDB,"MongoDB, Inc.",Technology,Technology,0KKZ.L|MDB,lse-iob,250.83,80357498.0,20156071223.34,canonicity,1,0,0,0,1396.0,2026-08-21,1959854.0,2026-08-21
+PEO.DE,EXC,Exelon Corporation,Utilities,Utilities,0IJN.L|EXC|PEO.DE,,46.7976,1021111000.0,47785500000.0,shares,1,0,0,0,29.0,2026-08-21,8505520.0,2026-08-21
+0IJN.L,EXC,Exelon Corporation,Utilities,Utilities,0IJN.L|EXC|PEO.DE,lse-iob,46.7976,1021111000.0,47785500000.0,canonicity,1,0,0,0,4708.0,2026-08-21,8505520.0,2026-08-21
+0LF8.L,THO,"Thor Industries, Inc.",Consumer Cyclical,Consumer Cyclical,0LF8.L|THO,lse-iob,79.04,52240856.0,4129117258.24,canonicity,1,0,0,0,642.0,2026-08-21,728551.0,2026-08-21
+BHC.TO,BHC,Bausch Health Companies Inc.,Healthcare,Healthcare,BHC|BHC.TO,,4.93,375000000.0,1848750000.0,punctuation,0,0,0,0,623633.0,2026-08-21,3445883.0,2026-08-21
+MER.ST,MER.TO,Meren Energy Inc.,Energy,Energy,MER.ST|MER.TO,,1.3587,676115307.0,918651389.927,volavg_raw,0,0,0,0,784550.0,2026-08-21,807749.0,2026-08-21
+084695.KS,084690.KS,"Daesang Holdings Co., Ltd.",Consumer Defensive,Consumer Defensive,084690.KS|084695.KS,korea-preferred,7410.0,37126000.0,275103660000.0,canonicity,0,0,0,0,8276.0,2026-08-21,65980.0,2026-08-21
+0A0H.L,BEIJ-B.ST,Beijer Ref AB (publ),Industrials,Industrials,0A0H.L|BEIJ-B.ST,lse-iob,128.7698,507024313.0,65289431748.8,canonicity,0,0,0,0,171921.0,2026-08-21,1122006.0,2026-08-21
+0QSV.L,EKI.PA,Ekinops S.a.,Technology,Technology,0QSV.L|EKI.PA,lse-iob,2.73,27027000.0,73783710.0,canonicity,1,0,0,0,5637.0,2026-08-21,190232.0,2026-08-21
+0KJD.L,PLNT,"Planet Fitness, Inc.",Consumer Cyclical,Consumer Cyclical,0KJD.L|PLNT,lse-iob,52.17,77030000.0,4018655100.0,canonicity,1,0,0,0,1835.0,2026-08-21,1962116.0,2026-08-21
+NVJP.DE,UMI.BR,Umicore S.A.,Basic Materials,Basic Materials,NVJP.DE|UMI.BR,,20.24,240626902.0,4870288496.48,symbol_length,1,0,0,0,4435.0,2026-08-21,630496.0,2026-08-21
+LUC.ST,LUC.TO,Lucara Diamond Corp.,Basic Materials,Basic Materials,LUC.ST|LUC.TO,,0.1056,1156300000.0,122105280.0,volavg_raw,0,0,0,0,491690.0,2026-08-21,607980.0,2026-08-21
+0KGY.L,BTS-B.ST,BTS Group AB (publ),Industrials,Industrials,0KGY.L|BTS-B.ST,lse-iob,173.0,19396819.0,3355649687.0,canonicity,1,0,0,0,216.0,2026-08-21,15182.0,2026-08-21
+TFII.TO,TFII,TFI International Inc.,Industrials,Industrials,TFII|TFII.TO,,204.15,82190031.0,16779094828.65,punctuation,0,0,0,0,257053.0,2026-08-21,375043.0,2026-08-21
+RBA.TO,RBA,"RB Global, Inc.",Industrials,Industrials,RBA|RBA.TO,,116.2374,185800000.0,21596916352.0,punctuation,0,0,0,0,300782.0,2026-08-21,1417296.0,2026-08-21
+0TIQ.L,FICO,Fair Isaac Corporation,Technology,Technology,0TIQ.L|FICO,lse-iob,1194.78,22670000.0,27085662600.0,canonicity,1,0,0,0,202.0,2026-08-21,326522.0,2026-08-21
+0IMT.L,PHO.OL,Photocure ASA,Healthcare,Healthcare,0IMT.L|PHO.OL,lse-iob,59.3,26916610.0,1596154973.0,canonicity,1,0,0,0,2783.0,2026-08-21,67260.0,2026-08-21
+49GP.L,CRDA.L,Croda International Plc,Basic Materials,Basic Materials,49GP.L|50GP.L|CRDA.L,lse-iob,30.24,139354139.0,4214069163.36,canonicity,1,0,0,0,110.0,2026-08-21,390142.0,2026-08-21
+50GP.L,CRDA.L,Croda International Plc,Basic Materials,Basic Materials,49GP.L|50GP.L|CRDA.L,lse-iob,30.24,139354139.0,4214069163.36,canonicity,1,0,0,0,622.0,2026-08-21,390142.0,2026-08-21
+IBM,IBM.DE,International Business Machines Corporation,Technology,Technology,IBM|IBM.DE,,281.21,939900000.0,264309279000.0,shares,0,1,0,0,10949520.0,2026-08-21,11077.0,2026-08-21
+0RPS.L,MCOV-B.ST,Medicover AB (publ),Healthcare,Healthcare,0RPS.L|MCOV-B.ST,lse-iob,20.6338,151974274.0,3135810651.765,canonicity,1,0,0,0,6179.0,2026-08-21,71238.0,2026-08-21
+AEP.DE,AEP,American Electric Power Co Inc,Utilities,Utilities,0HEC.L|AEP|AEP.DE,,136.81,544163341.0,74446986682.21,punctuation,1,0,0,0,109.0,2026-08-21,4677370.0,2026-08-21
+0HEC.L,AEP,"American Electric Power Company, Inc.",Utilities,Utilities,0HEC.L|AEP|AEP.DE,lse-iob,136.81,544163341.0,74446986682.21,canonicity,1,0,0,0,1249.0,2026-08-21,4677370.0,2026-08-21
+0IFJ.L,EIX,Edison International,Utilities,Utilities,0IFJ.L|EIX,lse-iob,74.45,385000000.0,28663250000.0,canonicity,1,0,0,0,4405.0,2026-08-21,2747633.0,2026-08-21
+CVS,CVS.DE,CVS Health Corp.,Healthcare,Healthcare,0HRS.L|CVS|CVS.DE,,103.45,1276000000.0,132002200000.0,shares,0,1,0,0,8037466.0,2026-08-21,362.0,2026-08-21
+0HRS.L,CVS.DE,CVS Health Corporation,Healthcare,Healthcare,0HRS.L|CVS|CVS.DE,lse-iob,103.2073,1279000000.0,132002200000.0,canonicity,1,1,0,0,34797.0,2026-08-21,362.0,2026-08-21
+TRP.TO,TRP,TC Energy Corporation,Energy,Energy,TRP|TRP.TO,,93.92,1042000000.0,97864640000.0,punctuation,0,0,0,0,3829157.0,2026-08-21,2469137.0,2026-08-21
+0EV1.L,CCL,Carnival Corporation & plc,Consumer Cyclical,Consumer Cyclical,0EV1.L|CCL,lse-iob,27.51,1382000000.0,38018820000.0,canonicity,1,0,0,0,109089.0,2026-08-21,21311030.0,2026-08-21
+0OA4.L,VU.PA,VusionGroup,Technology,Technology,0OA4.L|VU.PA,lse-iob,204.2,16854000.0,3441586800.0,canonicity,1,0,0,0,5108.0,2026-08-21,57892.0,2026-08-21
+0L5V.L,SHW,The Sherwin-Williams Company,Basic Materials,Basic Materials,0L5V.L|SHW,lse-iob,345.5906,243900000.0,84289536000.0,canonicity,1,0,0,0,3922.0,2026-08-21,2284722.0,2026-08-21
+0KET.L,PCAR,PACCAR Inc,Industrials,Industrials,0KET.L|PAE.DE|PCAR,lse-iob,120.12,527000000.0,63303240000.0,canonicity,1,0,0,0,4319.0,2026-08-21,3401103.0,2026-08-21
+PAE.DE,PCAR,PACCAR Inc,Industrials,Industrials,0KET.L|PAE.DE|PCAR,,120.12,527000000.0,63303240000.0,punctuation,1,0,0,0,15.0,2026-08-21,3401103.0,2026-08-21
+TL0.DE,TSLA,"Tesla, Inc.",Consumer Cyclical,Consumer Cyclical,TL0.DE|TSLA,,420.6,3237000000.0,1361482200000.0,punctuation,1,0,0,0,22861.0,2026-08-21,41849067.0,2026-08-21
+0R7T.L,TINC.BR,TINC N.V.,Financial Services,Financial Services,0R7T.L|TINC.BR,lse-iob,10.58,49129000.0,519784820.0,canonicity,1,0,0,0,656.0,2026-08-21,14185.0,2026-08-21
+FTS,FTS.TO,Fortis Inc.,Utilities,Utilities,FTS|FTS.TO,,86.19,480769231.0,41437500000.0,shares,0,0,0,0,758174.0,2026-08-21,1491171.0,2026-08-21
+0L5A.L,SRE,Sempra,Utilities,Utilities,0L5A.L|SRE|SREA,lse-iob,92.71,654038000.0,60635862980.0,canonicity,1,0,-2,-2,6238.0,2026-08-21,3786811.0,2026-08-21
+SREA,SRE,Sempra,Utilities,Utilities,0L5A.L|SRE|SREA,symbol-extension,92.71,654038000.0,60635862980.0,canonicity,1,0,-1,-2,70427.0,2026-08-21,3786811.0,2026-08-21
+NWT.DE,WFC,Wells Fargo & Company,Financial Services,Financial Services,NWT.DE|WFC,,94.5505,2665359000.0,252011093200.0,shares,1,0,0,0,232.0,2026-08-21,15148906.0,2026-08-21
+0H38.L,PRIC-B.ST,Pricer AB (publ),Industrials,Industrials,0H38.L|PRIC-B.ST,lse-iob,3.36,164000000.0,551040000.0,canonicity,1,0,0,0,15522.0,2026-08-21,201012.0,2026-08-21
+000215.KS,000210.KS,DL Holdings Co. Ltd.,Basic Materials,Basic Materials,000210.KS|000215.KS,korea-preferred,43250.0,27625000.0,1194781250000.0,canonicity,1,0,0,0,3766.0,2026-08-21,98562.0,2026-08-21
+0HQ1.L,AZTA,"Azenta, Inc.",Healthcare,Healthcare,0HQ1.L|AZTA,lse-iob,25.52,45286000.0,1155698720.0,canonicity,1,0,0,0,79.0,2026-08-21,774500.0,2026-08-21
+0R43.L,NP3.ST,NP3 Fastigheter AB (publ),Real Estate,Real Estate,0R43.L|NP3.ST,lse-iob,266.5,61608000.0,16418532000.0,canonicity,0,0,0,0,4512.0,2026-08-21,31749.0,2026-08-21
+MDO.DE,MCD,McDonald's Corporation,Consumer Cyclical,Consumer Cyclical,MCD|MDO.DE,,271.4783,707641531.0,192109317000.0,shares,1,0,0,0,2776.0,2026-08-21,4584901.0,2026-08-21
+HNK1.DE,HEIA.AS,Heineken N.V.,Consumer Defensive,Consumer Defensive,HEIA.AS|HNK1.DE,,73.6,548420164.0,40363724070.4,volavg,1,0,0,0,586.0,2026-08-21,905058.0,2026-08-21
+0Q1F.L,JPM,JPMorgan Chase & Co.,Financial Services,Financial Services,0Q1F.L|CMC.DE|JPM,lse-iob,339.3528,2689900000.0,912825171000.0,canonicity,1,0,0,0,28417.0,2026-08-21,8797677.0,2026-08-21
+CMC.DE,JPM,JPMorgan Chase & Co.,Financial Services,Financial Services,0Q1F.L|CMC.DE|JPM,,387.5613,2355305000.0,912825171000.0,shares,1,0,0,0,882.0,2026-08-21,8797677.0,2026-08-21
+CCO.TO,CCJ,Cameco Corporation,Energy,Energy,0R35.L|CCJ|CCO.TO,,144.56,435533000.0,62960650480.0,punctuation,0,0,0,0,1022566.0,2026-08-21,3328387.0,2026-08-21
+0R35.L,CCJ,Cameco Corporation,Energy,Energy,0R35.L|CCJ|CCO.TO,lse-iob,144.56,435533000.0,62960650480.0,canonicity,1,0,0,0,25621.0,2026-08-21,3328387.0,2026-08-21
+CAE.TO,CAE,CAE Inc.,Industrials,Industrials,CAE|CAE.TO,,35.51,321508660.0,11416772516.6,shares,0,0,0,0,1002011.0,2026-08-21,774414.0,2026-08-21
+0ZQ7.L,INS.DE,Instone Real Estate Group SE,Real Estate,Real Estate,0ZQ7.L|INS.DE,lse-iob,7.46,43322575.0,323186409.5,canonicity,0,0,0,0,11342.0,2026-08-21,7097.0,2026-08-21
+0RCW.L,KID.OL,Kid ASA,Consumer Cyclical,Consumer Cyclical,0RCW.L|KID.OL,lse-iob,119.4,40646162.0,4853151742.8,canonicity,1,0,0,0,2440.0,2026-08-21,32267.0,2026-08-21
+0R1T.L,EXPE,"Expedia Group, Inc.",Consumer Cyclical,Consumer Cyclical,0R1T.L|E3X1.DE|EXPE,lse-iob,257.5912,120223000.0,30968388760.0,canonicity,1,0,0,0,3108.0,2026-08-21,1585800.0,2026-08-21
+E3X1.DE,EXPE,Expedia Group Inc. R,Consumer Cyclical,Consumer Cyclical,0R1T.L|E3X1.DE|EXPE,,257.5912,120223000.0,30968388760.0,shares,1,0,0,0,65.0,2026-08-21,1585800.0,2026-08-21
+HTFC,HRZN,Horizon Technology Finance Corp,Financial Services,Financial Services,HRZN|HTFC,,4.73,64974577.0,307329749.21,volavg,1,0,0,0,2848.0,2026-08-21,735164.0,2026-08-21
+STE-A.ST,STE-R.ST,Stora Enso Oyj,Consumer Cyclical,Consumer Cyclical,0CX9.L|STE-A.ST|STE-R.ST,,9.33,788600000.0,7357638000.0,volavg,1,0,0,0,2471.0,2026-08-21,249936.0,2026-08-21
+0CX9.L,STE-R.ST,Stora Enso Oyj,Consumer Cyclical,Consumer Cyclical,0CX9.L|STE-A.ST|STE-R.ST,lse-iob,9.3298,788619987.0,7357638000.0,canonicity,1,0,0,0,88.0,2026-08-21,249936.0,2026-08-21
+0RKL.L,XVIVO.ST,Xvivo Perfusion AB (publ),Healthcare,Healthcare,0RKL.L|XVIVO.ST,lse-iob,259.6,31499470.0,8177262412.0,canonicity,0,0,0,0,9843.0,2026-08-21,65357.0,2026-08-21
+0HW0.L,KOA.OL,Kongsberg Automotive ASA,Consumer Cyclical,Consumer Cyclical,0HW0.L|KOA.OL,lse-iob,0.0984,929428686.0,91414232.0,canonicity,1,0,0,0,89123.0,2026-08-21,1750034.0,2026-08-21
+000545.KS,000540.KS,"Heungkuk Fire&Marine Insurance Co., Ltd.",Financial Services,Financial Services,000540.KS|000545.KS,korea-preferred,3165.0,65011000.0,205759815000.0,canonicity,1,0,0,0,1641.0,2026-08-21,102660.0,2026-08-21
+0W1Q.L,93M1.DE,MPH Health Care AG,Financial Services,Financial Services,0W1Q.L|93M1.DE,lse-iob,22.0,4281000.0,94182000.0,canonicity,1,0,0,0,17.0,2026-08-21,3280.0,2026-08-21
+0N5I.L,ADN1.DE,adesso SE,Technology,Technology,0N5I.L|ADN1.DE,lse-iob,50.5,6407129.0,323560014.5,canonicity,0,0,0,0,1412.0,2026-08-21,13335.0,2026-08-21
+VRV.DE,VER.ST,Verve Group SE,Technology,Technology,VER.ST|VRV.DE,,1.4468,200117000.0,289521719.1821,volavg_raw,0,0,0,0,125544.0,2026-08-21,270205.0,2026-08-21
+0Z62.L,KDP,Keurig Dr Pepper Inc.,Consumer Defensive,Consumer Defensive,0Z62.L|KDP,lse-iob,32.73,1360600000.0,44532438000.0,canonicity,1,0,0,0,30019.0,2026-08-21,14132359.0,2026-08-21
+0P49.L,BULTEN.ST,Bulten AB (publ),Consumer Cyclical,Consumer Cyclical,0P49.L|BULTEN.ST,lse-iob,43.25,20988000.0,907731000.0,canonicity,1,0,0,0,1896.0,2026-08-21,44936.0,2026-08-21
+0IC9.L,D,"Dominion Energy, Inc.",Utilities,Utilities,0IC9.L|D,lse-iob,68.0887,882100000.0,60061055000.0,canonicity,1,0,0,0,9261.0,2026-08-21,5579896.0,2026-08-21
+0RQH.L,FAG.ST,Fagerhult Group AB,Industrials,Industrials,0RQH.L|FAG.ST,lse-iob,17.2,176332000.0,3032910400.0,canonicity,1,0,0,0,12183.0,2026-08-21,231359.0,2026-08-21
+0JQR.L,KEY,KeyCorp,Financial Services,Financial Services,0JQR.L|KEY,lse-iob,23.05,1071229000.0,24691828450.0,canonicity,1,0,0,0,13961.0,2026-08-21,11178341.0,2026-08-21
+0O84.L,DNB.OL,DNB Bank ASA,Financial Services,Financial Services,0O84.L|DNB.OL,lse-iob,294.5212,1446769000.0,426104077700.0,canonicity,0,0,0,0,385939.0,2026-08-21,1623311.0,2026-08-21
+NGL0.DE,AAL.L,Anglo American plc,Basic Materials,Basic Materials,AAL.L|NGL0.DE,,49.0148,1072000000.0,52543893472.0,symbol_length,1,0,0,0,9893.0,2026-08-21,5159887.0,2026-08-21
+0QZP.L,BBD-B.TO,Bombardier Inc.,Industrials,Industrials,0QZP.L|BBD-A.TO|BBD-B.TO,lse-iob,230.5974,98947000.0,22816922416.64,canonicity,1,0,-2,-2,253.0,2026-08-21,322426.0,2026-08-21
+BBD-A.TO,BBD-B.TO,Bombardier Inc.,Industrials,Industrials,0QZP.L|BBD-A.TO|BBD-B.TO,,229.8842,99254000.0,22816922416.64,volavg,1,0,-1,-2,5609.0,2026-08-21,322426.0,2026-08-21
+SAGA-A.ST,SAGA-D.ST,AB Sagax (publ),Real Estate,Real Estate,SAGA-A.ST|SAGA-B.ST|SAGA-D.ST,,154.2,338400131.0,52181300200.2,volavg,1,0,0,0,1651.0,2026-08-21,590235.0,2026-08-21
+SAGA-B.ST,SAGA-D.ST,AB Sagax (publ),Real Estate,Real Estate,SAGA-A.ST|SAGA-B.ST|SAGA-D.ST,,154.2,338400131.0,52181300200.2,volavg_raw,0,0,0,0,474063.0,2026-08-21,590235.0,2026-08-21
+0K2K.L,TPX-B.TO,Molson Coors Beverage Company,Consumer Defensive,Consumer Defensive,0K2K.L|TAP|TAP-A|TPX-B.TO,lse-iob,38.9185,187700000.0,7305000000.0,canonicity,1,1,-2,-1,443.0,2026-08-21,628.0,2026-08-21
+TAP,TPX-B.TO,Molson Coors Beverage Company,Consumer Defensive,Consumer Defensive,0K2K.L|TAP|TAP-A|TPX-B.TO,,38.96,187500000.0,7305000000.0,shares,0,1,-2,-1,3151901.0,2026-08-21,628.0,2026-08-21
+TAP-A,TPX-B.TO,Molson Coors Beverage Company,Consumer Defensive,Consumer Defensive,0K2K.L|TAP|TAP-A|TPX-B.TO,,38.96,187500000.0,7305000000.0,shares,1,1,-1,-1,111.0,2026-08-21,628.0,2026-08-21
+VODI.DE,VOD.L,Vodafone Group Plc,Communication Services,Communication Services,VOD.L|VODI.DE,,1.2971,23085169000.0,29943858586.7287,symbol_length,1,0,0,0,1285419.0,2026-08-21,93628362.0,2026-08-21
+0OA7.L,ASY.PA,Assystem S.A.,Industrials,Industrials,0OA7.L|ASY.PA,lse-iob,42.7,15000000.0,640500000.0,canonicity,0,0,0,0,1591.0,2026-08-21,3008.0,2026-08-21
+0RDI.L,VIT-B.ST,Vitec Software Group AB (publ),Technology,Technology,0RDI.L|VIT-B.ST,lse-iob,228.2,39579259.0,9031986903.8,canonicity,1,0,0,0,5702.0,2026-08-21,133944.0,2026-08-21
+0JQQ.L,ADM,Archer-Daniels-Midland Company,Consumer Defensive,Consumer Defensive,0JQQ.L|ADM,lse-iob,76.4,485000000.0,37054000000.0,canonicity,1,0,0,0,8386.0,2026-08-21,3663229.0,2026-08-21
+000725.KS,000720.KS,"Hyundai Engineering & Construction Co., Ltd.",Industrials,Industrials,000720.KS|000725.KS,korea-preferred,114200.0,151619000.0,17314889800000.0,canonicity,1,0,0,0,5065.0,2026-08-21,707136.0,2026-08-21
+0II4.L,EQIX,"Equinix, Inc.",Real Estate,Real Estate,0II4.L|EQIX,lse-iob,1042.39,98641000.0,102822391990.0,canonicity,1,0,0,0,1599.0,2026-08-21,606983.0,2026-08-21
+ETL.PA,ETL.L,Eutelsat Communications S.A.,Communication Services,Communication Services,ETL.L|ETL.PA,,1.71,567879904.0,971074635.84,shares,0,1,0,0,3370281.0,2026-08-21,98423.0,2026-08-21
+HUSQ-A.ST,HUSQ-B.ST,Husqvarna AB (publ),Industrials,Industrials,HUSQ-A.ST|HUSQ-B.ST,,37.76,571800000.0,21591168000.0,volavg,1,0,0,0,18354.0,2026-08-21,1155956.0,2026-08-21
+1QZ.DE,COIN,"Coinbase Global, Inc.",Financial Services,Financial Services,1QZ.DE|COIN,,146.19,263411999.0,38508200280.0,shares,1,0,0,0,17675.0,2026-08-21,8262051.0,2026-08-21
+0JZU.L,MCK,McKesson Corporation,Healthcare,Healthcare,0JZU.L|MCK,lse-iob,755.6,118700000.0,89689720000.0,canonicity,1,0,0,0,400.0,2026-08-21,1091908.0,2026-08-21
+MUX.TO,MUX,McEwen Mining Inc.,Basic Materials,Basic Materials,MUX|MUX.TO,,18.1773,59998000.0,1090600445.44,punctuation,1,0,0,0,50511.0,2026-08-21,1160479.0,2026-08-21
+MDA.TO,MDA,MDA Ltd.,Industrials,Industrials,MDA|MDA.TO,,58.6,138845290.0,8136333994.0,punctuation,0,0,0,0,1268017.0,2026-08-21,1614366.0,2026-08-21
+0QAG.L,IDL.PA,ID Logistics Group S.A.,Industrials,Industrials,0QAG.L|IDL.PA,lse-iob,411.0,6724000.0,2763564000.0,canonicity,1,0,0,0,452.0,2026-08-21,5350.0,2026-08-21
+ENGI.PA,GZF.DE,Engie S.A.,Utilities,Utilities,ENGI.PA|GZF.DE,,27.59,2539080000.0,70053217200.0,symbol_length,0,1,0,0,2954459.0,2026-08-21,5949.0,2026-08-21
+ITB.DE,IMB.L,Imperial Brands PLC,Consumer Defensive,Consumer Defensive,IMB.L|ITB.DE,,30.57,793300000.0,24251181000.0,symbol_length,1,0,0,0,21898.0,2026-08-21,2974448.0,2026-08-21
+0RWM.L,ADE.DE,Bitcoin Group SE,Financial Services,Financial Services,0RWM.L|ADE.DE,lse-iob,31.62,5000000.0,158100000.0,canonicity,0,0,0,0,1362.0,2026-08-21,11490.0,2026-08-21
+0RKK.L,VOLO.ST,Volati AB,Industrials,Industrials,0RKK.L|VOLO.ST,lse-iob,24.45,79406571.0,1941490660.95,canonicity,1,0,0,0,509.0,2026-08-21,95181.0,2026-08-21
+AXS.AS,AXS.L,Accsys Technologies PLC,Basic Materials,Basic Materials,AXS.AS|AXS.L,,0.7008,242075000.0,169652843.5892,symbol_length,0,0,0,0,117937.0,2026-08-21,68675.0,2026-08-21
+0OPA.L,VIB3.DE,Villeroy & Boch AG,Basic Materials,Basic Materials,0OPA.L|VIB3.DE,lse-iob,15.55,26773322.0,416325157.1,canonicity,1,0,0,0,156.0,2026-08-21,4223.0,2026-08-21
+0N9V.L,NAE.PA,North Atlantic Energies,Energy,Energy,0N9V.L|NAE.PA,lse-iob,43.482,12854000.0,558917051.44,canonicity,0,0,0,0,1043.0,2026-08-21,6964.0,2026-08-21
+0HUR.L,CE,Celanese Corporation,Basic Materials,Basic Materials,0HUR.L|CE,lse-iob,46.01,109776090.0,5050800000.0,canonicity,1,0,0,0,1291.0,2026-08-21,1788356.0,2026-08-21
+NCC-A.ST,NCC-B.ST,NCC AB (publ),Industrials,Industrials,NCC-A.ST|NCC-B.ST,,190.7,98000000.0,18688600000.0,volavg,1,0,0,0,3058.0,2026-08-21,237840.0,2026-08-21
+0RUM.L,AEIN.DE,Allgeier SE,Technology,Technology,0RUM.L|AEIN.DE,lse-iob,16.0,11055647.0,176890352.0,canonicity,0,0,0,0,5965.0,2026-08-21,8778.0,2026-08-21
+019175.KS,019170.KS,"Shinpoong Pharmaceutical Co.,Ltd",Healthcare,Healthcare,019170.KS|019175.KS,korea-preferred,8420.0,53699569.0,452150370980.0,canonicity,1,0,0,0,2947.0,2026-08-21,91176.0,2026-08-21
+NNGF.DE,NG.L,National Grid plc,Utilities,Utilities,NG.L|NGG|NNGF.DE,,12.695,4973465000.0,63138138175.0,symbol_length,1,0,-2,-2,249587.0,2026-08-21,11076078.0,2026-08-21
+NGG,NG.L,National Grid plc,Utilities,Utilities,NG.L|NGG|NNGF.DE,,63.4746,994699000.0,63138138175.0,shares,1,0,-1,-2,957764.0,2026-08-21,11076078.0,2026-08-21
+TRVC.DE,C,Citigroup Inc.,Financial Services,Financial Services,0R01.L|C|TRVC.DE,,159.8428,1489326000.0,238057964000.0,shares,1,0,0,0,1156.0,2026-08-21,11980562.0,2026-08-21
+0R01.L,C,Citigroup Inc.,Financial Services,Financial Services,0R01.L|C|TRVC.DE,lse-iob,137.1618,1735600000.0,238057964000.0,canonicity,1,0,0,0,13231.0,2026-08-21,11980562.0,2026-08-21
+0QVE.L,FOI-B.ST,Fenix Outdoor International AG,Consumer Cyclical,Consumer Cyclical,0QVE.L|FOI-B.ST,lse-iob,36.814,13454000.0,495296228.7,canonicity,1,0,0,0,19.0,2026-08-21,2327.0,2026-08-21
+0W19.L,D6H0.DE,Datagroup Se,Technology,Technology,0W19.L|D6H0.DE,lse-iob,74.0,8318678.0,615582172.0,canonicity,0,0,0,0,663.0,2026-08-21,1061.0,2026-08-21
+0JHU.L,PAH3.DE,Porsche Automobil Holding SE,Consumer Cyclical,Consumer Cyclical,0JHU.L|PAH3.DE,lse-iob,33690.0,306250.0,10317562500.0,canonicity,0,0,0,0,256414.0,2026-08-21,669762.0,2026-08-21
+VOW3.DE,VOW.DE,Volkswagen AG,Consumer Cyclical,Consumer Cyclical,VOW.DE|VOW3.DE,symbol-extension,70.1,501295000.0,35140779500.0,canonicity,0,1,0,0,995031.0,2026-08-21,74913.0,2026-08-21
+WMT.DE,WMT,Walmart Inc.,Consumer Defensive,Consumer Defensive,WMT|WMT.DE,,111.2,7954000000.0,884484800000.0,punctuation,1,0,0,0,4651.0,2026-08-21,24401617.0,2026-08-21
+0L9F.L,STWD,"Starwood Property Trust, Inc.",Real Estate,Real Estate,0L9F.L|STWD,lse-iob,16.3948,366401000.0,6007053780.0,canonicity,1,0,0,0,2264.0,2026-08-21,3918508.0,2026-08-21
+0JSZ.L,LADR,Ladder Capital Corp,Real Estate,Real Estate,0JSZ.L|LADR,lse-iob,9.95,124730611.0,1241069579.45,canonicity,1,0,0,0,315.0,2026-08-21,1108687.0,2026-08-21
+0SOM.L,BHG.ST,BHG Group AB (publ),Consumer Cyclical,Consumer Cyclical,0SOM.L|BHG.ST,lse-iob,21.78,179279014.0,3904696924.92,canonicity,1,0,0,0,18087.0,2026-08-21,357906.0,2026-08-21
+0NLY.L,VBK.DE,VERBIO Vereinigte BioEnergie AG,Basic Materials,Basic Materials,0NLY.L|VBK.DE,lse-iob,45.8,63712000.0,2918009600.0,canonicity,0,0,0,0,23052.0,2026-08-21,120079.0,2026-08-21
+TKO.TO,TKO.L,Trekor Metals Limited,Basic Materials,Basic Materials,TKO.L|TKO.TO,,6.88,365714000.0,2516112320.0,symbol_length,0,1,0,0,1191144.0,2026-08-21,9653.0,2026-08-21
+WCN.TO,WCN,"Waste Connections, Inc.",Industrials,Industrials,WCN|WCN.TO,,167.9332,253457489.0,42563922448.34,shares,0,0,0,0,388049.0,2026-08-21,1537017.0,2026-08-21
+0GMG.L,ANOD-B.ST,Addnode Group AB (publ),Technology,Technology,0GMG.L|ANOD-B.ST,lse-iob,41.0,135555412.0,5557771892.0,canonicity,1,0,0,0,20643.0,2026-08-21,584727.0,2026-08-21
+8TRA.ST,8TRA.DE,Traton SE,Industrials,Industrials,8TRA.DE|8TRA.ST,,33.18,500000000.0,16590000000.0,volavg_raw,0,0,0,0,131374.0,2026-08-21,156129.0,2026-08-21
+0KIT.L,PNW,Pinnacle West Capital Corporation,Utilities,Utilities,0KIT.L|PNW,lse-iob,107.0,121306000.0,12979742000.0,canonicity,1,0,0,0,3316.0,2026-08-21,1206741.0,2026-08-21
+0RL4.L,CAT-B.ST,Catella AB Class B,Financial Services,Financial Services,0RL4.L|CAT-A.ST|CAT-B.ST,lse-iob,20.6,87908215.0,1810909229.0,canonicity,1,0,-2,-2,1220.0,2026-08-21,122001.0,2026-08-21
+CAT-A.ST,CAT-B.ST,Catella AB (publ),Financial Services,Financial Services,0RL4.L|CAT-A.ST|CAT-B.ST,,20.6,87908215.0,1810909229.0,volavg,1,0,-1,-2,590.0,2026-08-21,122001.0,2026-08-21
+0HM0.L,VGP.BR,Vgp N.V.,Real Estate,Real Estate,0HM0.L|VGP.BR,lse-iob,84.2,28118690.0,2367593698.0,canonicity,0,0,0,0,8408.0,2026-08-21,19721.0,2026-08-21
+0UGP.L,AIM.TO,Aimia Inc.,Financial Services,Financial Services,0UGP.L|AIM.TO,lse-iob,2.69,88672380.0,238528702.2,canonicity,1,0,0,0,363.0,2026-08-21,56369.0,2026-08-21
+0ELV.L,GBT.PA,Guerbet S.A.,Healthcare,Healthcare,0ELV.L|GBT.PA,lse-iob,14.3,12641000.0,180766300.0,canonicity,0,0,0,0,1642.0,2026-08-21,13271.0,2026-08-21
+0LWG.L,WY,Weyerhaeuser Company,Real Estate,Real Estate,0LWG.L|WY,lse-iob,23.94,721421000.0,17270818740.0,canonicity,1,0,0,0,10997.0,2026-08-21,5510643.0,2026-08-21
+0L8A.L,SO,The Southern Company,Utilities,Utilities,0L8A.L|SO|SOMN|SOT.DE,lse-iob,95.4744,1139806000.0,108822270000.0,canonicity,1,0,-3,-3,3436.0,2026-08-21,5753937.0,2026-08-21
+SOMN,SO,The Southern Company,Utilities,Utilities,0L8A.L|SO|SOMN|SOT.DE,symbol-extension,95.71,1137000000.0,108822270000.0,canonicity,1,0,-1,-3,232332.0,2026-08-21,5753937.0,2026-08-21
+SOT.DE,SO,Southern Company,Utilities,Utilities,0L8A.L|SO|SOMN|SOT.DE,,95.71,1137000000.0,108822270000.0,punctuation,1,0,-3,-3,63.0,2026-08-21,5753937.0,2026-08-21
+KINV-A.ST,KINV-B.ST,Kinnevik AB,Financial Services,Financial Services,0RH1.L|KINV-A.ST|KINV-B.ST,,52.0,276972664.0,14402578528.0,volavg,1,0,-1,-2,9677.0,2026-08-21,1179239.0,2026-08-21
+0RH1.L,KINV-B.ST,Kinnevik AB,Financial Services,Financial Services,0RH1.L|KINV-A.ST|KINV-B.ST,lse-iob,52.0,276972664.0,14402578528.0,canonicity,0,0,-2,-2,220077.0,2026-08-21,1179239.0,2026-08-21
+0RAR.L,SBS.DE,Stratec SE,Healthcare,Healthcare,0RAR.L|SBS.DE,lse-iob,16.8,12155942.0,204219825.6,canonicity,0,0,0,0,2726.0,2026-08-21,12866.0,2026-08-21
+0DSJ.L,NRC.OL,NRC Group ASA,Industrials,Industrials,0DSJ.L|NRC.OL,lse-iob,8.56,172597243.0,1477432400.08,canonicity,1,0,0,0,3344.0,2026-08-21,329257.0,2026-08-21
+ELC,ETR,"Entergy Louisiana, LLC COLLATERAL TR MT",Utilities,Utilities,0IHP.L|ELC|ETR,,114.86,458745729.0,52691534432.94,volavg,1,0,-1,-2,18964.0,2026-08-21,2975895.0,2026-08-21
+0IHP.L,ETR,Entergy Corporation,Utilities,Utilities,0IHP.L|ELC|ETR,lse-iob,114.86,458745729.0,52691534432.94,canonicity,1,0,-2,-2,364.0,2026-08-21,2975895.0,2026-08-21
+0FH7.L,OHB.DE,OHB SE,Industrials,Industrials,0FH7.L|OHB.DE,lse-iob,282.5,19258770.0,5440602525.0,canonicity,1,0,0,0,137.0,2026-08-21,27569.0,2026-08-21
+0ROZ.L,XFAB.PA,X-FAB Silicon Foundries SE,Technology,Technology,0ROZ.L|XFAB.PA,lse-iob,9.0461,130631921.0,1181704926.82,canonicity,1,0,0,0,26672.0,2026-08-21,808696.0,2026-08-21
+0MKP.L,XD4.DE,Strabag SE,Industrials,Industrials,0MKP.L|XD4.DE,lse-iob,81.0,115442695.0,9350858943.0,canonicity,0,0,0,0,997.0,2026-08-21,599.0,2026-08-21
+0RI3.L,PARB.OL,Pareto Bank ASA,Financial Services,Financial Services,0RI3.L|PARB.OL,lse-iob,68.0,76782423.0,5221204764.0,canonicity,1,0,0,0,397.0,2026-08-21,74120.0,2026-08-21
+014915.KS,014910.KS,"Sungmoon Electronics Co., Ltd.",Technology,Technology,014910.KS|014915.KS,korea-preferred,2640.0,22110848.0,58372638720.0,canonicity,1,0,0,0,15861.0,2026-08-21,2101366.0,2026-08-21
+BRAG.TO,BRAG,Bragg Gaming Group Inc.,Technology,Technology,BRAG|BRAG.TO,,2.43,25600000.0,62208000.0,punctuation,0,0,0,0,9260.0,2026-08-21,29291.0,2026-08-21
+SGE.DE,GLE.PA,Société Générale S.A.,Financial Services,Financial Services,GLE.PA|SGE.DE,,77.37,742461000.0,57444207570.0,volavg,1,0,0,0,4176.0,2026-08-21,1640445.0,2026-08-21
+AOMD.DE,ALO.PA,Alstom S.A.,Industrials,Industrials,ALO.PA|AOMD.DE,,24.26,462017000.0,11208532420.0,symbol_length,1,0,0,0,6720.0,2026-08-21,1520787.0,2026-08-21
+0HXW.L,CMG,"Chipotle Mexican Grill, Inc.",Consumer Cyclical,Consumer Cyclical,0HXW.L|C9F.DE|CMG,lse-iob,34.2776,1277363000.0,43784928000.0,canonicity,1,0,0,0,158.0,2026-08-21,20140779.0,2026-08-21
+C9F.DE,CMG,"Chipotle Mexican Grill, Inc.",Consumer Cyclical,Consumer Cyclical,0HXW.L|C9F.DE|CMG,,34.2776,1277363000.0,43784928000.0,shares,1,0,0,0,1296.0,2026-08-21,20140779.0,2026-08-21
+0G68.L,KENDR.AS,Kendrion N.V.,Consumer Cyclical,Consumer Cyclical,0G68.L|KENDR.AS,lse-iob,16.9,15807427.0,267145516.3,canonicity,1,0,0,0,508.0,2026-08-21,17433.0,2026-08-21
+0OPY.L,PARRO.PA,Parrot S.A.,Technology,Technology,0OPY.L|PARRO.PA,lse-iob,10.1,32401000.0,327250100.0,canonicity,1,0,0,0,263.0,2026-08-21,56720.0,2026-08-21
+0O27.L,HNL.DE,Hoenle AG,Industrials,Industrials,0O27.L|HNL.DE,lse-iob,8.56,6061854.0,51889470.24,canonicity,0,0,0,0,5571.0,2026-08-21,1789.0,2026-08-21
+1SI.DE,SNAP,Snap Inc.,Communication Services,Communication Services,1SI.DE|SNAP,,4.4721,1663449000.0,7439144520.0,shares,1,0,0,0,13337.0,2026-08-21,41414319.0,2026-08-21
+0IQC.L,FLR,Fluor Corporation,Industrials,Industrials,0IQC.L|FLR,lse-iob,52.39,139000000.0,7282210000.0,canonicity,1,0,0,0,720.0,2026-08-21,2594454.0,2026-08-21
+FPAR-D.ST,FPAR-A.ST,FastPartner AB (publ),Real Estate,Real Estate,FPAR-A.ST|FPAR-D.ST,,38.05,250473848.0,9530529916.4,volavg_raw,0,0,0,0,24189.0,2026-08-21,163290.0,2026-08-21
+0E9V.L,EKT.DE,Energiekontor AG,Utilities,Utilities,0E9V.L|EKT.DE,lse-iob,39.0,13899462.0,542079018.0,canonicity,0,0,0,0,2903.0,2026-08-21,27551.0,2026-08-21
+0J2E.L,HPQ,HP Inc.,Technology,Technology,0J2E.L|7HP.DE|HPQ,lse-iob,20.86,922000000.0,19232920000.0,canonicity,1,0,0,0,10192.0,2026-08-21,18223095.0,2026-08-21
+7HP.DE,HPQ,HP Inc.,Technology,Technology,0J2E.L|7HP.DE|HPQ,,20.86,922000000.0,19232920000.0,digit_prefix,1,0,0,0,5445.0,2026-08-21,18223095.0,2026-08-21
+0K19.L,MCHP,Microchip Technology Incorporated,Technology,Technology,0K19.L|MCHP|MCP.DE,lse-iob,91.2,542500000.0,49476000000.0,canonicity,1,0,0,0,20120.0,2026-08-21,11741141.0,2026-08-21
+MCP.DE,MCHP,Microchip Technology Incorporated,Technology,Technology,0K19.L|MCHP|MCP.DE,,91.2,542500000.0,49476000000.0,punctuation,1,0,0,0,151.0,2026-08-21,11741141.0,2026-08-21
+BLCO.TO,BLCO,Bausch + Lomb Corporation,Healthcare,Healthcare,BLCO|BLCO.TO,,16.56,357100000.0,5913576000.0,punctuation,1,0,0,0,1976.0,2026-08-21,423114.0,2026-08-21
+0HBH.L,APD,"Air Products and Chemicals, Inc.",Basic Materials,Basic Materials,0HBH.L|APD,lse-iob,293.18,222800000.0,65320504000.0,canonicity,1,0,0,0,10858.0,2026-08-21,1260635.0,2026-08-21
+0R0G.L,KTF.DE,"Mondelez International, Inc. Class A",Consumer Defensive,Consumer Defensive,0R0G.L|KTF.DE,lse-iob,58.0652,1284000000.0,74555760000.0,canonicity,0,1,0,0,37840.0,2026-08-21,738.0,2026-08-21
+NRG,NRA.DE,"NRG Energy, Inc.",Utilities,Utilities,NRA.DE|NRG,,146.06,209000000.0,30526540000.0,shares,0,1,0,0,2752232.0,2026-08-21,46.0,2026-08-21
+0ND2.L,LPK.DE,LPKF Laser & Electronics SE,Industrials,Industrials,0ND2.L|LPK.DE,lse-iob,21.8,24803448.0,540715166.4,canonicity,1,0,0,0,7023.0,2026-08-21,279666.0,2026-08-21
+AWC.DE,AWK,"American Water Works Company, Inc.",Utilities,Utilities,0HEW.L|AWC.DE|AWK,,131.58,196000000.0,25789680000.0,punctuation,1,0,0,0,113.0,2026-08-21,2314830.0,2026-08-21
+0HEW.L,AWK,"American Water Works Company, Inc.",Utilities,Utilities,0HEW.L|AWC.DE|AWK,lse-iob,131.58,196000000.0,25789680000.0,canonicity,1,0,0,0,703.0,2026-08-21,2314830.0,2026-08-21
+SRT3.DE,SRT.DE,Sartorius AG,Healthcare,Healthcare,0NIQ.L|SRT.DE|SRT3.DE,symbol-extension,229.6,69052290.0,15854405784.0,canonicity,0,1,-1,-2,99456.0,2026-08-21,3922.0,2026-08-21
+0NIQ.L,SRT.DE,Sartorius AG,Healthcare,Healthcare,0NIQ.L|SRT.DE|SRT3.DE,lse-iob,367.2722,43168000.0,15854405784.0,canonicity,1,1,-2,-2,1652.0,2026-08-21,3922.0,2026-08-21
+5EA.DE,ELAN,"Elanco Animal Health, Inc.",Healthcare,Healthcare,5EA.DE|ELAN,,24.61,499500000.0,12292695000.0,digit_prefix,1,0,0,0,166.0,2026-08-21,6330129.0,2026-08-21
+0L8F.L,LUV,Southwest Airlines Co.,Industrials,Industrials,0L8F.L|LUV|SWN.DE,lse-iob,51.9458,489000000.0,25401480000.0,canonicity,1,0,0,0,9254.0,2026-08-21,5890801.0,2026-08-21
+SWN.DE,LUV,Southwest Airlines Co.,Industrials,Industrials,0L8F.L|LUV|SWN.DE,,51.9458,489000000.0,25401480000.0,shares,1,0,0,0,132.0,2026-08-21,5890801.0,2026-08-21
+OGI.TO,OGI,Organigram Global Inc.,Healthcare,Healthcare,OGI|OGI.TO,,1.45,135131882.0,195941228.9,punctuation,0,0,0,0,212225.0,2026-08-21,893598.0,2026-08-21
+0LXB.L,WMB,"The Williams Companies, Inc.",Energy,Energy,0LXB.L|WMB|WMB.DE,lse-iob,74.34,1224000000.0,90992160000.0,canonicity,1,0,0,0,3836.0,2026-08-21,6920456.0,2026-08-21
+WMB.DE,WMB,"The Williams Companies, Inc.",Energy,Energy,0LXB.L|WMB|WMB.DE,,74.34,1224000000.0,90992160000.0,punctuation,1,0,0,0,99.0,2026-08-21,6920456.0,2026-08-21
+AQNB,AQN,Algonquin Power & Utilities Corp.,Utilities,Utilities,AQN|AQN.TO|AQNB,symbol-extension,7.9916,565504241.0,4519260469.8278,canonicity,1,0,-1,-2,24980.0,2026-08-21,4369425.0,2026-08-21
+AQN.TO,AQN,Algonquin Power & Utilities Corp.,Utilities,Utilities,AQN|AQN.TO|AQNB,,5.8714,769712719.0,4519260469.8278,punctuation,0,0,-2,-2,2633074.0,2026-08-21,4369425.0,2026-08-21
+ORC.DE,ORCL,Oracle Corporation,Technology,Technology,ORC.DE|ORCL,,248.15,2878000000.0,714175700000.0,punctuation,1,0,0,0,29517.0,2026-08-21,32435101.0,2026-08-21
+0RS1.L,LUS1.DE,Lang & Schwarz AG,Financial Services,Financial Services,0RS1.L|LUS1.DE,lse-iob,22.2,9438000.0,209523600.0,canonicity,1,0,0,0,7.0,2026-08-21,23995.0,2026-08-21
+ACB.TO,ACB,Aurora Cannabis Inc.,Healthcare,Healthcare,ACB|ACB.TO,,3.9604,61678703.0,244270922.9189,punctuation,0,0,0,0,458812.0,2026-08-21,1347341.0,2026-08-21
+0EOF.L,HEX.OL,Hexagon Composites ASA,Consumer Cyclical,Consumer Cyclical,0EOF.L|HEX.OL,lse-iob,10.4895,241779342.0,2536136060.0,canonicity,1,0,0,0,109201.0,2026-08-21,2231008.0,2026-08-21
+0NL1.L,TPE.DE,PVA TePla AG,Technology,Technology,0NL1.L|TPE.DE,lse-iob,45.14,20718121.0,935215981.94,canonicity,0,0,0,0,16419.0,2026-08-21,93605.0,2026-08-21
+EMA.TO,EMA,Emera Incorporated,Utilities,Utilities,EMA|EMA.TO,,75.23,306400000.0,23050472000.0,punctuation,0,0,0,0,1097101.0,2026-08-21,498600.0,2026-08-21
+0K76.L,RITM,Rithm Capital Corp.,Real Estate,Real Estate,0K76.L|RITM,lse-iob,9.39,558346329.0,5242872029.31,canonicity,1,0,0,0,4212.0,2026-08-21,5424501.0,2026-08-21
+0IRK.L,ALTA.PA,Altarea SCA,Real Estate,Real Estate,0IRK.L|ALTA.PA,lse-iob,43.7893,23358009.0,1022830380.0,canonicity,1,0,0,0,654.0,2026-08-21,8449.0,2026-08-21
+0H14.L,NETI-B.ST,Net Insight AB (publ),Technology,Technology,0H14.L|NETI-B.ST,lse-iob,4.0,340376009.0,1361504000.0,canonicity,1,0,0,0,70587.0,2026-08-21,893697.0,2026-08-21
+IAG.L,INR.DE,International Consolidated Airlines Group S.A.,Industrials,Industrials,IAG.L|INR.DE,,5.6526,4420691767.0,24988374980.0,shares,0,1,0,0,14713255.0,2026-08-21,21875.0,2026-08-21
+0KTI.L,ENB.TO,Enbridge Inc.,Energy,Energy,0KTI.L|ENB|ENB.TO,lse-iob,76.91,2184000000.0,167971440000.0,canonicity,1,0,0,0,2793.0,2026-08-21,7999785.0,2026-08-21
+ENB,ENB.TO,Enbridge Inc.,Energy,Energy,0KTI.L|ENB|ENB.TO,,76.9805,2182000000.0,167971440000.0,shares,0,0,0,0,4290348.0,2026-08-21,7999785.0,2026-08-21
+BN.TO,BN,Brookfield Corporation,Financial Services,Financial Services,BN|BN.TO,,45.1316,2233700000.0,100810530000.0,shares,0,0,0,0,2729085.0,2026-08-21,4067211.0,2026-08-21
+4AB.DE,ABBV,AbbVie Inc.,Healthcare,Healthcare,0QCV.L|4AB.DE|ABBV,,251.64,1770992000.0,445652426880.0,digit_prefix,1,0,0,0,524.0,2026-08-21,6692766.0,2026-08-21
+0QCV.L,ABBV,AbbVie Inc.,Healthcare,Healthcare,0QCV.L|4AB.DE|ABBV,lse-iob,251.6389,1771000000.0,445652426880.0,canonicity,1,0,0,0,15066.0,2026-08-21,6692766.0,2026-08-21
+CAR.DE,CA.PA,Carrefour S.A.,Consumer Defensive,Consumer Defensive,CA.PA|CAR.DE,,16.25,707000000.0,11488750000.0,symbol_length,1,0,0,0,7151.0,2026-08-21,2252142.0,2026-08-21
+0K05.L,MED,"Medifast, Inc.",Consumer Cyclical,Consumer Cyclical,0K05.L|MED,lse-iob,10.61,11135000.0,118142350.0,canonicity,1,0,0,0,450.0,2026-08-21,220337.0,2026-08-21
+HIVE.TO,HIVE,HIVE Digital Technologies Ltd.,Technology,Technology,HIVE|HIVE.TO,,3.64,266251300.0,969154732.0,punctuation,0,0,0,0,4034531.0,2026-08-21,26555551.0,2026-08-21
+0GJS.L,ALXIL.PA,Xilam Animation,Communication Services,Communication Services,0GJS.L|ALXIL.PA,lse-iob,3.77,5893000.0,22216610.0,canonicity,0,0,0,0,1836.0,2026-08-21,16530.0,2026-08-21
+EDR.TO,EXK,Endeavour Silver Corp.,Basic Materials,Basic Materials,0R2C.L|EDR.TO|EXK,,8.28,296096000.0,2451674880.0,punctuation,0,0,0,0,886385.0,2026-08-21,6991788.0,2026-08-21
+0R2C.L,EXK,Endeavour Silver Corp.,Basic Materials,Basic Materials,0R2C.L|EDR.TO|EXK,lse-iob,8.28,296096000.0,2451674880.0,canonicity,1,0,0,0,28629.0,2026-08-21,6991788.0,2026-08-21
+0N08.L,PEN.OL,Panoro Energy ASA,Energy,Energy,0N08.L|PEN.OL,lse-iob,2.5979,132134667.0,343274963.756,canonicity,1,0,0,0,20997.0,2026-08-21,646287.0,2026-08-21
+0K87.L,NI,NiSource Inc,Utilities,Utilities,0K87.L|NI,lse-iob,47.55,479700000.0,22809735000.0,canonicity,1,0,0,0,43180.0,2026-08-21,4904543.0,2026-08-21
+RYAAY,RY4C.DE,Ryanair Holdings plc,Industrials,Industrials,RY4C.DE|RYAAY,,54.7,520650000.0,28479555000.0,shares,0,1,0,0,1389819.0,2026-08-21,17902.0,2026-08-21
+BCS,BCY.DE,Barclays PLC,Financial Services,Financial Services,BCS|BCY.DE,,20.2653,3431524000.0,69540982000.0,shares,0,1,0,0,4694091.0,2026-08-21,119477.0,2026-08-21
+BONAV-A.ST,BONAV-B.ST,Bonava AB (publ),Real Estate,Real Estate,BONAV-A.ST|BONAV-B.ST,,9.19,321600000.0,2955504000.0,volavg,1,0,0,0,1789.0,2026-08-21,313078.0,2026-08-21
+PPLC,PPL,PPL Corporation,Utilities,Utilities,0KEJ.L|PPL|PPLC,symbol-extension,49.07,752358000.0,36918207060.0,canonicity,1,0,-1,-2,261541.0,2026-08-21,9089825.0,2026-08-21
+0KEJ.L,PPL,PPL Corporation,Utilities,Utilities,0KEJ.L|PPL|PPLC,lse-iob,49.07,752358000.0,36918207060.0,canonicity,1,0,-2,-2,3596.0,2026-08-21,9089825.0,2026-08-21
+DTG,DTE,DTE Energy Company 2021 Series,Utilities,Utilities,0I6Q.L|DTE|DTG,,152.37,208000000.0,31692960000.0,volavg,1,0,-1,-2,38635.0,2026-08-21,1373053.0,2026-08-21
+0I6Q.L,DTE,DTE Energy Company,Utilities,Utilities,0I6Q.L|DTE|DTG,lse-iob,152.37,208000000.0,31692960000.0,canonicity,1,0,-2,-2,1656.0,2026-08-21,1373053.0,2026-08-21
+IPCO.TO,IPCO.ST,International Petroleum Corporation,Energy,Energy,IPCO.ST|IPCO.TO,,21.7108,112826752.0,2449556790.7866,volavg_raw,0,0,0,0,144088.0,2026-08-21,185486.0,2026-08-21
+T.TO,TU,TELUS Corporation,Communication Services,Communication Services,T.TO|TU,,15.0,1574000000.0,23610000000.0,punctuation,0,0,0,0,9288934.0,2026-08-21,7275575.0,2026-08-21
+AXJ.DE,EQH,"Equitable Holdings, Inc.",Financial Services,Financial Services,AXJ.DE|EQH,,50.1136,243682468.0,12211804000.0,shares,1,0,0,0,1.0,2026-08-21,3672195.0,2026-08-21
+SVOL-A.ST,SVOL-B.ST,Svolder AB (publ),Financial Services,Financial Services,SVOL-A.ST|SVOL-B.ST,,52.8,101658537.0,5367570753.6,volavg,1,0,0,0,35.0,2026-08-21,143466.0,2026-08-21
+0XVU.L,ZS,"Zscaler, Inc.",Technology,Technology,0XVU.L|ZS,lse-iob,130.68,160741000.0,21005633880.0,canonicity,1,0,0,0,5745.0,2026-08-21,4236293.0,2026-08-21
+0N7N.L,CDA.PA,Compagnie des Alpes S.A.,Consumer Cyclical,Consumer Cyclical,0N7N.L|CDA.PA,lse-iob,23.6,50693000.0,1196354800.0,canonicity,0,0,0,0,8924.0,2026-08-21,33215.0,2026-08-21
+0LK3.L,MTN,"Vail Resorts, Inc.",Consumer Cyclical,Consumer Cyclical,0LK3.L|MTN,lse-iob,128.1687,35633000.0,4567033800.0,canonicity,1,0,0,0,51.0,2026-08-21,748645.0,2026-08-21
+4PG.DE,OTIS,Otis Worldwide Corporation,Industrials,Industrials,4PG.DE|OTIS,,72.0866,382600000.0,27580320000.0,shares,1,0,0,0,84.0,2026-08-21,3622938.0,2026-08-21
+0HD2.L,DUL.DE,"Alnylam Pharmaceuticals, Inc.",Healthcare,Healthcare,0HD2.L|ALNY|DUL.DE,lse-iob,295.0481,135945454.0,40110441320.0,canonicity,1,1,0,0,1441.0,2026-08-21,74.0,2026-08-21
+ALNY,DUL.DE,"Alnylam Pharmaceuticals, Inc.",Healthcare,Healthcare,0HD2.L|ALNY|DUL.DE,,301.03,133244000.0,40110441320.0,shares,0,1,0,0,1689672.0,2026-08-21,74.0,2026-08-21
+STAR-A.ST,STAR-B.ST,Starbreeze AB,Technology,Technology,STAR-A.ST|STAR-B.ST,,0.0915,1624438244.0,148636099.326,volavg,1,0,0,0,52768.0,2026-08-21,2067352.0,2026-08-21
+0AAW.L,BKHT.DE,Brockhaus Technologies AG,Financial Services,Financial Services,0AAW.L|BKHT.DE,lse-iob,19.3,10447666.0,201639953.8,canonicity,0,0,0,0,1208.0,2026-08-21,9393.0,2026-08-21
+BIPC.TO,BIPC,Brookfield Infrastructure Corporation,Utilities,Utilities,BIPC|BIPC.TO,,38.5,122990668.0,4735140718.0,punctuation,0,0,0,0,262355.0,2026-08-21,1022306.0,2026-08-21
+0L7F.L,SJM,The J. M. Smucker Company,Consumer Defensive,Consumer Defensive,0L7F.L|JM2.DE|SJM,lse-iob,98.03,106700000.0,10459801000.0,canonicity,1,0,0,0,1529.0,2026-08-21,1500801.0,2026-08-21
+JM2.DE,SJM,J.M. Smucker Company,Consumer Defensive,Consumer Defensive,0L7F.L|JM2.DE|SJM,,98.03,106700000.0,10459801000.0,punctuation,1,0,0,0,3.0,2026-08-21,1500801.0,2026-08-21
+SHB-B.ST,SHB-A.ST,Svenska Handelsbanken AB (publ),Financial Services,Financial Services,SHB-A.ST|SHB-B.ST,,142.6,1980028000.0,282351992800.0,volavg,1,0,0,0,57993.0,2026-08-21,4305518.0,2026-08-21
+BLDP.TO,BLDP,Ballard Power Systems Inc.,Industrials,Industrials,BLDP|BLDP.TO,,3.89,301486701.0,1172783266.89,punctuation,0,0,0,0,1373457.0,2026-08-21,7086188.0,2026-08-21
+0R53.L,ELTEL.ST,Eltel AB (publ),Industrials,Industrials,0R53.L|ELTEL.ST,lse-iob,1.0878,156736781.0,170496703.004,canonicity,1,0,0,0,368.0,2026-08-21,79706.0,2026-08-21
+SBB-D.ST,SBB-B.ST,Samhällsbyggnadsbolaget i Norden AB (publ),Real Estate,Real Estate,SBB-B.ST|SBB-D.ST,,3.53,1619177579.0,5715696853.87,volavg,1,0,0,0,418880.0,2026-08-21,11744090.0,2026-08-21
+QEC.TO,QEC.OL,Questerre Energy Corporation,Energy,Energy,QEC.OL|QEC.TO,,0.24,452213000.0,108531120.0,volavg,1,0,0,0,26228.0,2026-08-21,483502.0,2026-08-21
+WFG.TO,WFG,West Fraser Timber Co. Ltd.,Basic Materials,Basic Materials,WFG|WFG.TO,,96.01,78304000.0,7517967040.0,punctuation,0,0,0,0,170842.0,2026-08-21,222208.0,2026-08-21
+0HVA.L,PIG.PA,Haulotte Group S.A.,Industrials,Industrials,0HVA.L|PIG.PA,lse-iob,2.23,33531000.0,74774130.0,canonicity,1,0,0,0,442.0,2026-08-21,7440.0,2026-08-21
+DBK.DE,DB,Deutsche Bank AG,Financial Services,Financial Services,DB|DBK.DE,,29.63,1910200000.0,56599226000.0,shares,0,0,0,0,4777357.0,2026-08-21,2351188.0,2026-08-21
+0DI7.L,AJAX.AS,AFC Ajax N.V.,Communication Services,Communication Services,0DI7.L|AJAX.AS,lse-iob,8.5,18333333.0,155833330.5,canonicity,1,0,0,0,27.0,2026-08-21,1798.0,2026-08-21
+CIMN,CIM,Chimera Investment Corporation,Real Estate,Real Estate,CIM|CIMN,symbol-extension,13.34,83813331.0,1118069835.54,canonicity,1,0,0,0,7272.0,2026-08-21,726143.0,2026-08-21
+0A39.L,KAR.ST,Karnov Group AB (publ),Industrials,Industrials,0A39.L|KAR.ST,lse-iob,71.2,105862000.0,7537374400.0,canonicity,0,0,0,0,36374.0,2026-08-21,227386.0,2026-08-21
+003075.KS,003070.KS,Kolon Global Corporation,Industrials,Industrials,003070.KS|003075.KS,korea-preferred,9540.0,25889000.0,246981060000.0,canonicity,1,0,0,0,1289.0,2026-08-21,36708.0,2026-08-21
+TXP.TO,TXP.L,Touchstone Exploration Inc.,Energy,Energy,TXP.L|TXP.TO,,0.0895,330879301.0,29610884.9654,symbol_length,0,0,0,0,149882.0,2026-08-21,406432.0,2026-08-21
+0Q19.L,CEVA,"CEVA, Inc.",Technology,Technology,0Q19.L|CEVA,lse-iob,47.16,27996000.0,1320291360.0,canonicity,1,0,0,0,82.0,2026-08-21,892141.0,2026-08-21
+0A6Y.L,XRX,Xerox Holdings Corporation,Technology,Technology,0A6Y.L|XRX,lse-iob,3.4195,130895000.0,447590000.0,canonicity,1,0,0,0,2426.0,2026-08-21,4346553.0,2026-08-21
+STC.TO,SANG,Sangoma Technologies Corporation,Technology,Technology,SANG|STC.TO,,5.48,33152692.0,181676752.16,punctuation,0,0,0,0,15174.0,2026-08-21,6670.0,2026-08-21
+ACT.TO,ADUR,Aduro Clean Technologies Inc.,Industrials,Industrials,ACT.TO|ADUR,,14.82,32945095.0,488246307.9,punctuation,1,0,0,0,21903.0,2026-08-21,557795.0,2026-08-21
+0Q92.L,SBO.OL,Selvaag Bolig ASA,Consumer Cyclical,Consumer Cyclical,0Q92.L|SBO.OL,lse-iob,33.5094,93694184.0,3139635170.2,canonicity,1,0,0,0,639.0,2026-08-21,24073.0,2026-08-21
+0QAU.L,VMX.PA,Verimatrix S.A.,Technology,Technology,0QAU.L|VMX.PA,lse-iob,0.2296,87721000.0,20138827.5278,canonicity,1,0,0,0,2515.0,2026-08-21,156696.0,2026-08-21
+0RHT.L,SIFG.AS,Sif Holding N.V.,Industrials,Industrials,0RHT.L|SIFG.AS,lse-iob,5.1,29888612.0,152431921.2,canonicity,1,0,0,0,1148.0,2026-08-21,105542.0,2026-08-21
+0JVD.L,LYV,"Live Nation Entertainment, Inc.",Communication Services,Communication Services,0JVD.L|3LN.DE|LYV,lse-iob,183.11,232838912.0,42635133176.32,canonicity,1,0,0,0,804.0,2026-08-21,2289101.0,2026-08-21
+3LN.DE,LYV,"Live Nation Entertainment, Inc.",Communication Services,Communication Services,0JVD.L|3LN.DE|LYV,,183.11,232838912.0,42635133176.32,digit_prefix,1,0,0,0,5.0,2026-08-21,2289101.0,2026-08-21
+0A1S.L,2OY.DE,Dow Inc.,Basic Materials,Basic Materials,0A1S.L|2OY.DE|DOW,lse-iob,26.8306,723500000.0,19411920000.0,canonicity,1,1,0,0,414.0,2026-08-21,3003.0,2026-08-21
+DOW,2OY.DE,Dow Inc.,Basic Materials,Basic Materials,0A1S.L|2OY.DE|DOW,,27.36,709500000.0,19411920000.0,shares,0,1,0,0,11157990.0,2026-08-21,3003.0,2026-08-21
+0QVW.L,ATEME.PA,Ateme S.A.,Technology,Technology,0QVW.L|ATEME.PA,lse-iob,7.0,11572363.0,81006541.0,canonicity,1,0,0,0,63.0,2026-08-21,16802.0,2026-08-21
+456040.KS,010060.KS,OCI Company Ltd.,Basic Materials,Basic Materials,010060.KS|456040.KS,,214500.0,23001000.0,4933714500000.0,volavg_raw,0,0,0,0,66587.0,2026-08-21,338448.0,2026-08-21
+IJ8.DE,ITM.L,ITM Power Plc,Industrials,Industrials,IJ8.DE|ITM.L,,0.79,617370989.0,487723081.31,symbol_length,1,0,0,0,353791.0,2026-08-21,4617989.0,2026-08-21
+ELVA.TO,ELVA,Electrovaya Inc.,Industrials,Industrials,ELVA|ELVA.TO,,10.5,49744052.0,522312546.0,punctuation,0,0,0,0,182266.0,2026-08-21,1041529.0,2026-08-21
+GTE.TO,GTE.L,Gran Tierra Energy Inc.,Energy,Energy,GTE.L|GTE.TO,,6.25,35368716.0,221054475.0,symbol_length,0,1,0,0,75111.0,2026-08-21,3195.0,2026-08-21
+0JBU.L,NTLA,"Intellia Therapeutics, Inc.",Healthcare,Healthcare,0JBU.L|NTLA,lse-iob,16.92,133479999.0,2258481600.0,canonicity,1,0,0,0,3135.0,2026-08-21,4963219.0,2026-08-21
+INGA.AS,ING,ING Groep N.V.,Financial Services,Financial Services,ING|INGA.AS,,27.67,2868700000.0,79376929000.0,shares,0,0,0,0,6473599.0,2026-08-21,3177574.0,2026-08-21
+0KDH.L,ORA,"Ormat Technologies, Inc.",Utilities,Utilities,0KDH.L|ORA,lse-iob,108.9,61484000.0,6695607600.0,canonicity,1,0,0,0,5831.0,2026-08-21,868237.0,2026-08-21
+EVT.DE,EVO,Evotec SE,Healthcare,Healthcare,EVO|EVT.DE,,5.0,177763790.0,888818950.0,shares,0,1,0,0,802870.0,2026-08-21,53554.0,2026-08-21
+0HWG.L,CC,The Chemours Company,Basic Materials,Basic Materials,0HWG.L|CC,lse-iob,20.5412,151225044.0,3106342531.8,canonicity,1,0,0,0,2053.0,2026-08-21,2646532.0,2026-08-21
+0K5R.L,NAVI,Navient Corporation,Financial Services,Financial Services,0K5R.L|NAVI,lse-iob,8.7312,92593000.0,808450000.0,canonicity,1,0,0,0,377.0,2026-08-21,1181311.0,2026-08-21
+0R3I.L,SCATC.OL,Scatec ASA,Utilities,Utilities,0R3I.L|SCATC.OL,lse-iob,130.6,159400000.0,20817640000.0,canonicity,0,0,0,0,39081.0,2026-08-21,337699.0,2026-08-21
+ELUX-A.ST,ELUX-B.ST,Electrolux AB,Consumer Cyclical,Consumer Cyclical,ELUX-A.ST|ELUX-B.ST,,30.67,519799999.0,15942265969.33,volavg,1,0,0,0,18239.0,2026-08-21,4022322.0,2026-08-21
+HUT.TO,HUT,Hut 8 Mining Corp.,Financial Services,Financial Services,HUT|HUT.TO,,65.24,111064728.0,7245862854.72,shares,0,0,0,0,460219.0,2026-08-21,4455537.0,2026-08-21
+LBRDA,LBRDK,Liberty Broadband Corporation,Communication Services,Communication Services,LBRDA|LBRDK|LBRDP,,33.28,143000000.0,4759040000.0,volavg_raw,0,0,0,0,242666.0,2026-08-21,2207083.0,2026-08-21
+LBRDP,LBRDK,Liberty Broadband Corporation,Communication Services,Communication Services,LBRDA|LBRDK|LBRDP,,33.28,143000000.0,4759040000.0,volavg,1,0,0,0,9733.0,2026-08-21,2207083.0,2026-08-21
+0J5I.L,HLT,Hilton Worldwide Holdings Inc.,Consumer Cyclical,Consumer Cyclical,0J5I.L|HLT,lse-iob,330.46,227000000.0,75014420000.0,canonicity,1,0,0,0,903.0,2026-08-21,2170582.0,2026-08-21
+0OQ0.L,VAC.PA,Pierre et Vacances S.A.,Consumer Cyclical,Consumer Cyclical,0OQ0.L|VAC.PA,lse-iob,1.61,462022000.0,743855420.0,canonicity,1,0,0,0,17660.0,2026-08-21,398279.0,2026-08-21
+AGN.AS,AEG,Aegon N.V.,Financial Services,Financial Services,AEG|AGN.AS,,6.64,1512525592.0,10043169930.88,punctuation,0,0,0,0,4359160.0,2026-08-21,4919453.0,2026-08-21
+BORR.OL,BORR,Borr Drilling Limited,Energy,Energy,BORR|BORR.OL,,4.13,307391018.0,1269524904.34,punctuation,1,0,0,0,138928.0,2026-08-21,6509816.0,2026-08-21
+FRX.TO,FENC,Fennec Pharmaceuticals Inc.,Healthcare,Healthcare,FENC|FRX.TO,,10.75,34545000.0,371358750.0,punctuation,1,0,0,0,734.0,2026-08-21,236925.0,2026-08-21
+IPC.L,IP,International Paper Company,Basic Materials,Basic Materials,IP|IPC.L,,38.1,529500000.0,20173950000.0,punctuation,1,0,0,0,51232.0,2026-08-21,5496432.0,2026-08-21
+0HSU.L,CWH,"Camping World Holdings, Inc.",Consumer Cyclical,Consumer Cyclical,0HSU.L|CWH,lse-iob,7.63,63668000.0,485786840.0,canonicity,1,0,0,0,311.0,2026-08-21,2308322.0,2026-08-21
+0KUR.L,PSAN.DE,PSI Software SE,Technology,Technology,0KUR.L|PSAN.DE,lse-iob,44.6,15596169.0,695589137.4,canonicity,0,0,0,0,1191.0,2026-08-21,651.0,2026-08-21
+0W4N.L,FYB.DE,Formycon AG,Healthcare,Healthcare,0W4N.L|FYB.DE,lse-iob,19.7,17672927.0,348156661.9,canonicity,0,0,0,0,783.0,2026-08-21,5776.0,2026-08-21
+CORE-A.ST,CORE-B.ST,Corem Property Group AB (publ),Real Estate,Real Estate,CORE-A.ST|CORE-B.ST|CORE-D.ST,,2.35,75922000.0,178416700.0,volavg,1,0,0,0,14362.0,2026-08-21,6743874.0,2026-08-21
+CORE-D.ST,CORE-B.ST,Corem Property Group AB (publ),Real Estate,Real Estate,CORE-A.ST|CORE-B.ST|CORE-D.ST,,2.35,75922000.0,178416700.0,volavg,1,0,0,0,10425.0,2026-08-21,6743874.0,2026-08-21
+0LEC.L,CDLX,"Cardlytics, Inc.",Communication Services,Communication Services,0LEC.L|CDLX,lse-iob,4.49,5759000.0,25857910.0,canonicity,0,0,0,0,13812.0,2026-08-21,65657.0,2026-08-21
+GFL.TO,GFL,GFL Environmental Inc.,Industrials,Industrials,GFL|GFL.TO,,52.15,361371647.0,18845531391.05,punctuation,0,0,0,0,783165.0,2026-08-21,2833785.0,2026-08-21
+ATS.TO,ATS,ATS Corporation,Industrials,Industrials,ATS|ATS.TO,,40.88,98116984.0,4011022305.92,punctuation,0,0,0,0,411579.0,2026-08-21,214795.0,2026-08-21
+LLOY.L,LLD.DE,Lloyds Banking Group plc,Financial Services,Financial Services,LLD.DE|LLOY.L,,1.111,58801000000.0,65327911000.0,shares,0,1,0,0,147600133.0,2026-08-21,148437.0,2026-08-21
+0R6H.L,CPINV.BR,Care Property Invest S.A.,Real Estate,Real Estate,0R6H.L|CPINV.BR,lse-iob,12.26,42272952.0,518266391.52,canonicity,1,0,0,0,1804.0,2026-08-21,42980.0,2026-08-21
+0JX5.L,MAC,The Macerich Company,Real Estate,Real Estate,0JX5.L|MAC,lse-iob,25.19,273715000.0,6894880850.0,canonicity,1,0,0,0,1996.0,2026-08-21,3587075.0,2026-08-21
+TA.TO,TAC,TransAlta Corporation,Utilities,Utilities,TA.TO|TAC,,19.62,302000000.0,5925240000.0,punctuation,0,0,0,0,2047304.0,2026-08-21,1780604.0,2026-08-21
+0K3W.L,MYGN,"Myriad Genetics, Inc.",Healthcare,Healthcare,0K3W.L|MYGN,lse-iob,5.71,94800000.0,541308000.0,canonicity,1,0,0,0,237.0,2026-08-21,1914296.0,2026-08-21
+0HK4.L,CAR,"Avis Budget Group, Inc.",Industrials,Industrials,0HK4.L|CAR,lse-iob,147.83,35300000.0,5218399000.0,canonicity,1,0,0,0,857.0,2026-08-21,656930.0,2026-08-21
+0UU0.L,EFR.TO,Energy Fuels Inc.,Energy,Energy,0UU0.L|EFR.TO,lse-iob,13.5335,249323000.0,3374215975.0,canonicity,1,0,0,0,20865.0,2026-08-21,743746.0,2026-08-21
+VPLAY-A.ST,VPLAY-B.ST,Viaplay Group AB (publ),Communication Services,Communication Services,VPLAY-A.ST|VPLAY-B.ST,,1.22,4538954137.0,5537524047.14,volavg,1,0,0,0,78.0,2026-08-21,8416763.0,2026-08-21
+002025.KS,002020.KS,Kolon Corporation,Industrials,Industrials,002020.KS|002025.KS,korea-preferred,46350.0,14057000.0,651541950000.0,canonicity,1,0,0,0,6687.0,2026-08-21,105751.0,2026-08-21
+BMNP,BMNR,"Bitmine Immersion Technologies, Inc.",Financial Services,Financial Services,BMNP|BMNR,,18.85,551788656.0,10401216165.6,volavg,1,0,0,0,61767.0,2026-08-21,36861350.0,2026-08-21
+KOS.L,KOS,Kosmos Energy Ltd.,Energy,Energy,KOS|KOS.L,,2.11,593441000.0,1252160510.0,punctuation,1,0,0,0,4284.0,2026-08-21,14452319.0,2026-08-21
+0RL9.L,PCZ.DE,ProCredit Holding AG & Co. KGaA,Financial Services,Financial Services,0RL9.L|PCZ.DE,lse-iob,8.0354,59812098.0,480611694.72,canonicity,1,0,0,0,229.0,2026-08-21,38904.0,2026-08-21
+WPRT,WPRT.TO,Westport Fuel Systems Inc.,Consumer Cyclical,Consumer Cyclical,WPRT|WPRT.TO,,2.26,17773465.0,40168030.9,shares,0,1,0,0,1053946.0,2026-08-21,11403.0,2026-08-21
+ENVIP.OL,ENVI.AS,Envipco Holding N.V.,Industrials,Industrials,ENVI.AS|ENVIP.OL,,3.635,66090000.0,240237150.0,symbol_length,0,0,0,0,199668.0,2026-08-21,68277.0,2026-08-21
+ALNOV.PA,NCYT.L,Novacyt S.A.,Healthcare,Healthcare,ALNOV.PA|NCYT.L,,0.391,70626248.0,27614862.968,symbol_length,0,0,0,0,402982.0,2026-08-21,119533.0,2026-08-21
+0UNL.L,NKTR,Nektar Therapeutics,Healthcare,Healthcare,0UNL.L|NKTR,lse-iob,69.81,33054865.0,2307560125.65,canonicity,1,0,0,0,1838.0,2026-08-21,944512.0,2026-08-21
+BEPC.TO,BEPC,Brookfield Renewable Corporation,Utilities,Utilities,BEPC|BEPC.TO,,37.12,182381589.0,6770004583.68,punctuation,0,0,0,0,349041.0,2026-08-21,1684856.0,2026-08-21
+0I0X.L,CDXS,"Codexis, Inc.",Healthcare,Healthcare,0I0X.L|CDXS,lse-iob,2.26,91053000.0,205779780.0,canonicity,1,0,0,0,21109.0,2026-08-21,1137385.0,2026-08-21
+0IV3.L,GERN,Geron Corporation,Healthcare,Healthcare,0IV3.L|GERN,lse-iob,1.28,670696000.0,858490880.0,canonicity,1,0,0,0,12482.0,2026-08-21,11670120.0,2026-08-21
+0RD8.L,XIOR.BR,Xior Student Housing N.V.,Real Estate,Real Estate,0RD8.L|XIOR.BR,lse-iob,26.3,46695094.0,1228080972.2,canonicity,1,0,0,0,1197.0,2026-08-21,47127.0,2026-08-21
+PLUN.DE,PLUG,Plug Power Inc.,Industrials,Industrials,PLUG|PLUN.DE,,2.71,1391212670.0,3770186335.7,punctuation,1,0,0,0,452779.0,2026-08-21,59391074.0,2026-08-21
+0QW7.L,VLTSA.PA,Voltalia S.A.,Utilities,Utilities,0QW7.L|VLTSA.PA,lse-iob,7.79,131325000.0,1023021750.0,canonicity,1,0,0,0,10050.0,2026-08-21,108726.0,2026-08-21
+0P07.L,FF.TO,First Mining Gold Corp.,Basic Materials,Basic Materials,0P07.L|FF.TO,lse-iob,0.62,1386727279.0,859770912.98,canonicity,1,0,0,0,24200.0,2026-08-21,3702539.0,2026-08-21
+WEED.TO,CGC,Canopy Growth Corporation,Healthcare,Healthcare,CGC|WEED.TO,,1.38,422264025.0,582724354.5,punctuation,0,0,0,0,1064403.0,2026-08-21,4758862.0,2026-08-21
+0OB3.L,VLA.PA,Valneva SE,Healthcare,Healthcare,0OB3.L|VALN|VLA.PA,lse-iob,2.26,189646915.0,428602027.9,canonicity,1,0,-2,-2,61823.0,2026-08-21,731221.0,2026-08-21
+VALN,VLA.PA,Valneva SE,Healthcare,Healthcare,0OB3.L|VALN|VLA.PA,,4.52,94823457.0,428602027.9,shares,0,0,-1,-2,78762.0,2026-08-21,731221.0,2026-08-21
+0J4V.L,HRTX,"Heron Therapeutics, Inc.",Healthcare,Healthcare,0J4V.L|HRTX,lse-iob,0.4268,190335000.0,81234978.0,canonicity,1,0,0,0,12412.0,2026-08-21,3531922.0,2026-08-21
+0DO7.L,AVT.PA,Avenir Telecom S.A.,Technology,Technology,0DO7.L|AVT.PA,lse-iob,0.0872,73880366.0,6442367.9152,canonicity,1,0,0,0,3612.0,2026-08-21,281803.0,2026-08-21
+ALCLS.PA,CLLS,Cellectis S.A.,Healthcare,Healthcare,ALCLS.PA|CLLS,,2.9468,100647451.0,296590364.4046,punctuation,0,0,0,0,193255.0,2026-08-21,30195.0,2026-08-21
+SYV.DE,DDD,3D Systems Corporation,Technology,Technology,0QYH.L|DDD|SYV.DE,,3.02,148968000.0,449883360.0,punctuation,1,0,0,0,13393.0,2026-08-21,4244332.0,2026-08-21
+0QYH.L,DDD,3D Systems Corporation,Technology,Technology,0QYH.L|DDD|SYV.DE,lse-iob,3.02,148968000.0,449883360.0,canonicity,1,0,0,0,8040.0,2026-08-21,4244332.0,2026-08-21
+0KDU.L,NXH,"Neighborhood Intelligence, Inc. Common Stock",Consumer Cyclical,Consumer Cyclical,0KDU.L|NXH,lse-iob,5.79,74308000.0,430243320.0,canonicity,1,0,0,0,2154.0,2026-08-21,2590348.0,2026-08-21
+BEP-UN.TO,BEP,Brookfield Renewable Partners L.P.,Utilities,Utilities,BEP|BEP-UN.TO|BEPI,,34.73,300111626.0,10422876770.98,punctuation,0,0,-2,-2,345029.0,2026-08-21,916667.0,2026-08-21
+BEPI,BEP,Brookfield Renewable Partners L.P.,Utilities,Utilities,BEP|BEP-UN.TO|BEPI,symbol-extension,34.73,300111626.0,10422876770.98,canonicity,1,0,-1,-2,25446.0,2026-08-21,916667.0,2026-08-21
+0G8X.L,IMMNOV.ST,Immunovia AB,Healthcare,Healthcare,0G8X.L|IMMNOV.ST,lse-iob,0.195,672666892.0,131170043.94,canonicity,1,0,0,0,21015.0,2026-08-21,2820118.0,2026-08-21
+0UYN.L,GOLD.TO,GoldMining Inc.,Basic Materials,Basic Materials,0UYN.L|GOLD.TO,lse-iob,1.55,214106198.0,331864606.9,canonicity,1,0,0,0,12472.0,2026-08-21,417909.0,2026-08-21
+PRN.TO,PROF,Profound Medical Corp.,Healthcare,Healthcare,PRN.TO|PROF,,6.6387,36350665.0,241321886.7488,punctuation,0,0,0,0,13009.0,2026-08-21,92130.0,2026-08-21
+BBUC.TO,BBUC,Brookfield Business Corporation,Industrials,Industrials,BBUC|BBUC.TO,,29.9732,206200000.0,6180472350.0,shares,0,0,0,0,145422.0,2026-08-21,459875.0,2026-08-21
+CRDL.TO,CRDL,Cardiol Therapeutics Inc.,Healthcare,Healthcare,CRDL|CRDL.TO,,1.49,114935371.0,171253702.79,punctuation,0,0,0,0,104706.0,2026-08-21,774290.0,2026-08-21
+0NFG.L,PGN.DE,paragon GmbH & Co. KGaA,Consumer Cyclical,Consumer Cyclical,0NFG.L|PGN.DE,lse-iob,2.88,4526266.0,13035646.08,canonicity,1,0,0,0,34.0,2026-08-21,378.0,2026-08-21
+BCO.DE,BA,The Boeing Company,Industrials,Industrials,BA|BCO.DE,,216.5918,790600000.0,171237462660.72,shares,1,0,0,0,3605.0,2026-08-21,5932617.0,2026-08-21
+0R3M.L,VVY.AS,Vivoryon Therapeutics N.V.,Healthcare,Healthcare,0R3M.L|VVY.AS,lse-iob,1.08,29614327.0,31983473.16,canonicity,1,0,0,0,3012.0,2026-08-21,62219.0,2026-08-21
+KEEL.TO,KEEL,Keel Infrastructure Corp.,Technology,Technology,KEEL|KEEL.TO,,5.74,605370634.0,3474827439.16,punctuation,1,0,0,0,5396500.0,2026-08-21,72545179.0,2026-08-21
+009415.KS,009410.KS,"Taeyoung Engineering & Construction Co.,Ltd.",Industrials,Industrials,009410.KS|009415.KS,korea-preferred,1675.0,297585000.0,498454875000.0,canonicity,1,0,0,0,11606.0,2026-08-21,352962.0,2026-08-21
+LGO.TO,LGO,Largo Inc.,Basic Materials,Basic Materials,LGO|LGO.TO,,0.88,103118000.0,90743840.0,punctuation,0,0,0,0,157396.0,2026-08-21,1522058.0,2026-08-21
+DBVT,DBV.PA,DBV Technologies S.A.,Healthcare,Healthcare,DBV.PA|DBVT,,16.3015,85660570.0,1396395083.1465,shares,0,0,0,0,320864.0,2026-08-21,1011712.0,2026-08-21
+0RNP.L,AVTX.AS,Avantium N.V.,Basic Materials,Basic Materials,0RNP.L|AVTX.AS,lse-iob,6.84,21347261.0,146015265.24,canonicity,1,0,0,0,5516.0,2026-08-21,187691.0,2026-08-21
+ASTL.TO,ASTL,Algoma Steel Group Inc.,Basic Materials,Basic Materials,ASTL|ASTL.TO,,5.7489,109300000.0,628358540.85,punctuation,0,0,0,0,557634.0,2026-08-21,1137416.0,2026-08-21
+004545.KS,004540.KS,"KleanNara Co., Ltd.",Basic Materials,Basic Materials,004540.KS|004545.KS,korea-preferred,1396.0,37601247.0,52491340812.0,canonicity,1,0,0,0,4219.0,2026-08-21,357719.0,2026-08-21
+0KCC.L,IMDX,Insight Molecular Diagnostics Inc.,Healthcare,Healthcare,0KCC.L|IMDX,lse-iob,5.9,36750000.0,216825000.0,canonicity,1,0,0,0,382.0,2026-08-21,239283.0,2026-08-21
+TLRY,TLRY.TO,"Tilray Brands, Inc.",Healthcare,Healthcare,TLRY|TLRY.TO,,5.49,111832375.0,613959738.75,shares,0,0,0,0,4051819.0,2026-08-21,503390.0,2026-08-21
+TSAT.TO,TSAT,Telesat Corporation,Communication Services,Communication Services,TSAT|TSAT.TO,,71.8546,15219358.0,1093580634.7932,punctuation,0,0,0,0,53200.0,2026-08-21,283524.0,2026-08-21
+A1G.DE,AAL,American Airlines Group Inc.,Industrials,Industrials,0HE6.L|A1G.DE|AAL,,18.07,662190000.0,11965773300.0,punctuation,1,0,0,0,15780.0,2026-08-21,108210779.0,2026-08-21
+0HE6.L,AAL,American Airlines Group Inc.,Industrials,Industrials,0HE6.L|A1G.DE|AAL,lse-iob,18.0698,662196065.0,11965773300.0,canonicity,1,0,0,0,55733.0,2026-08-21,108210779.0,2026-08-21
+EPRX,EPRX.TO,Eupraxia Pharmaceuticals Inc.,Healthcare,Healthcare,EPRX|EPRX.TO,,9.7881,62987000.0,616525097.65,shares,0,0,0,0,360075.0,2026-08-21,66742.0,2026-08-21
+SKE.TO,SKE,Skeena Resources Limited,Basic Materials,Basic Materials,SKE|SKE.TO,,37.8,123696000.0,4675708800.0,shares,0,0,0,0,371112.0,2026-08-21,781040.0,2026-08-21
+0VNO.L,VGZ.TO,Vista Gold Corp.,Basic Materials,Basic Materials,0VNO.L|VGZ.TO,lse-iob,1.91,145971000.0,278805270.86,canonicity,0,0,0,0,5667.0,2026-08-21,55798.0,2026-08-21
+0URY.L,DML.TO,Denison Mines Corp.,Energy,Energy,0URY.L|DML.TO,lse-iob,4.3499,904020935.0,3932373900.0,canonicity,1,0,0,0,59757.0,2026-08-21,3047406.0,2026-08-21
+0HX7.L,ACET,"Adicet Bio, Inc.",Healthcare,Healthcare,0HX7.L|ACET,lse-iob,8.64,10745553.0,92841577.92,canonicity,1,0,0,0,6355.0,2026-08-21,90582.0,2026-08-21
+0HH6.L,AQMS,"Aqua Metals, Inc.",Industrials,Industrials,0HH6.L|AQMS,lse-iob,2.89,3408273.0,9849908.97,canonicity,1,0,0,0,1981.0,2026-08-21,88862.0,2026-08-21
+LAC.TO,LAC,Lithium Americas Corp.,Basic Materials,Basic Materials,LAC|LAC.TO,,3.85,371790000.0,1431391500.0,punctuation,0,0,0,0,1230639.0,2026-08-21,10566929.0,2026-08-21
+0Q77.L,AB.PA,AB Science S.A.,Healthcare,Healthcare,0Q77.L|AB.PA,lse-iob,1.54,73126144.0,112614261.76,canonicity,1,0,0,0,5479.0,2026-08-21,454295.0,2026-08-21
+0QXX.L,MOLN,Molecular Partners AG,Healthcare,Healthcare,0QXX.L|MOLN,lse-iob,3.12,37502552.0,117007962.24,canonicity,0,0,0,0,6578.0,2026-08-21,4829.0,2026-08-21
+IVA.PA,IVA,Inventiva S.A.,Healthcare,Healthcare,0RNK.L|IVA|IVA.PA,,3.95,637084000.0,2516481800.0,shares,0,0,-2,-1,379877.0,2026-08-21,1038745.0,2026-08-21
+0RNK.L,IVA,Inventiva S.A.,Healthcare,Healthcare,0RNK.L|IVA|IVA.PA,lse-iob,3.95,637084000.0,2516481800.0,canonicity,1,0,-2,-1,1962.0,2026-08-21,1038745.0,2026-08-21
+0MTP.L,IDEX.OL,IDEX Biometrics ASA,Technology,Technology,0MTP.L|IDEX.OL,lse-iob,8.0,72120634.0,576965072.0,canonicity,0,0,0,0,59127.0,2026-08-21,133021.0,2026-08-21
+0MV8.L,VANTI.PA,Vantiva S.A.,Technology,Technology,0MV8.L|VANTI.PA,lse-iob,0.102,490267000.0,50007234.0,canonicity,0,0,0,0,27802.0,2026-08-21,72213.0,2026-08-21
+TC.TO,TCX,Tucows Inc.,Technology,Technology,TC.TO|TCX,,13.47,11148826.0,150174686.22,punctuation,1,0,0,0,5057.0,2026-08-21,72632.0,2026-08-21
+PPTA.TO,PPTA,Perpetua Resources Corp.,Basic Materials,Basic Materials,PPTA|PPTA.TO,,20.76,125085630.0,2596777678.8,punctuation,1,0,0,0,123926.0,2026-08-21,1527370.0,2026-08-21
+0QOI.L,NP5.DE,Newron Pharmaceuticals S.p.A.,Healthcare,Healthcare,0QOI.L|NP5.DE,lse-iob,25.6125,19963016.0,511303046.7452,canonicity,0,0,0,0,4223.0,2026-08-21,3788.0,2026-08-21
+SEA.TO,SA,Seabridge Gold Inc.,Basic Materials,Basic Materials,SA|SEA.TO,,36.6,107628783.0,3939213457.8,punctuation,0,0,0,0,114332.0,2026-08-21,766325.0,2026-08-21
+012205.KS,012200.KS,"Keyang Electric Machinery Co., Ltd.",Industrials,Industrials,012200.KS|012205.KS,korea-preferred,5009.77,29707551.0,148827997773.27,canonicity,0,0,0,0,192191.0,2026-08-21,1078409.0,2026-08-21
+NANO.PA,NBTX,Nanobiotix S.A.,Healthcare,Healthcare,0QAV.L|NANO.PA|NBTX,,19.5002,47418155.0,924661510.5,shares,0,0,-2,-1,151259.0,2026-08-21,110435.0,2026-08-21
+0QAV.L,NBTX,Nanobiotix S.A.,Healthcare,Healthcare,0QAV.L|NANO.PA|NBTX,lse-iob,19.1093,48387950.0,924661510.5,canonicity,1,0,-2,-1,8588.0,2026-08-21,110435.0,2026-08-21
+MSCL.TO,MSLE,Satellos Bioscience Inc.,Healthcare,Healthcare,MSCL.TO|MSLE,,10.66,20831350.0,222062191.0,punctuation,0,0,0,0,22482.0,2026-08-21,55603.0,2026-08-21
+4BB.L,88Q.DE,4basebio PLC,Healthcare,Healthcare,4BB.L|88Q.DE,lse-iob,6.15,15539000.0,95564850.0,canonicity,0,0,0,0,887.0,2026-08-21,162.0,2026-08-21
+0AH7.L,BYW.DE,BayWa AG,Industrials,Industrials,0AH7.L|BYW.DE|BYW6.DE,lse-iob,9.03,35767824.0,322983450.72,canonicity,1,1,-2,-1,1712.0,2026-08-21,175.0,2026-08-21
+BYW6.DE,BYW.DE,BayWa AG,Industrials,Industrials,0AH7.L|BYW.DE|BYW6.DE,symbol-extension,9.03,35767824.0,322983450.72,canonicity,0,1,-2,-1,26453.0,2026-08-21,175.0,2026-08-21
+NXE.TO,NXE,NexGen Energy Ltd.,Energy,Energy,0V9D.L|NXE|NXE.TO,,13.32,665698655.0,8867106084.6,punctuation,0,0,0,0,1565069.0,2026-08-21,5600311.0,2026-08-21
+0V9D.L,NXE,NexGen Energy Ltd.,Energy,Energy,0V9D.L|NXE|NXE.TO,lse-iob,13.32,665698655.0,8867106084.6,canonicity,1,0,0,0,19249.0,2026-08-21,5600311.0,2026-08-21
+ORTI-A.ST,ORTI-B.ST,Ortivus AB (publ),Technology,Technology,ORTI-A.ST|ORTI-B.ST,,1.41,886000000.0,1249260000.0,volavg,1,0,0,0,484.0,2026-08-21,5438.0,2026-08-21
+0OCQ.L,TNG.PA,Transgene S.A.,Healthcare,Healthcare,0OCQ.L|TNG.PA,lse-iob,0.96,159344000.0,152970240.0,canonicity,1,0,0,0,520.0,2026-08-21,50084.0,2026-08-21
+0IYU.L,AUMN.TO,Golden Minerals Company,Basic Materials,Basic Materials,0IYU.L|AUMN.TO,lse-iob,0.1937,16788213.0,3251876.8581,canonicity,0,0,0,0,8363.0,2026-08-21,15793.0,2026-08-21
+BCT.TO,BCTX,BriaCell Therapeutics Corp.,Healthcare,Healthcare,BCT.TO|BCTX,,5.7,7250487.0,41327775.9,punctuation,1,0,0,0,6269.0,2026-08-21,164266.0,2026-08-21
+0RH3.L,SNG.DE,Singulus Technologies AG,Industrials,Industrials,0RH3.L|SNG.DE,lse-iob,9.4,10000000.0,94000000.0,canonicity,1,0,0,0,300.0,2026-08-21,46374.0,2026-08-21
