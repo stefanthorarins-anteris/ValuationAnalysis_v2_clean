@@ -2,8 +2,11 @@
 # Re-run the POST-PICK analysis suite ad-hoc against a SAVED run (offline; no live pick,
 # no full pipeline). Parameterized by the fundamentals pickle path so it can be
 # re-pointed at the prior nightly pickle when the CEO provides it. Uses the FIXED code
-# paths: URTH force-added to the bulk-fetch allow-list (pipeline_analysis) and the
-# real_ic.ic_table None-eval guard (real_ic.py line 57).
+# paths: URTH force-added to the bulk-fetch allow-list (pipeline_analysis) and -- since
+# 2026-08-22 -- real_ic's ANCHOR RESOLUTION and its refusal to state a verdict off a
+# non-finite IC. The line that used to describe "the real_ic.ic_table None-eval guard" has
+# been removed because that guard was the defect: it swallowed a missing eval column and
+# returned an all-NaN table, and this script then printed "does NOT hold" from it.
 #
 # BENCHMARK (URTH) HANDLING -- chosen policy: DETECT-AND-INSTRUCT. The suite needs URTH
 # on the price grid. This script NEVER writes or deletes a price CSV (read-only). It
@@ -29,12 +32,29 @@ DEFAULT_PICKLE = os.path.join(
     _REPO, "Boresults_dic-fmp_stock_NA1_EU1_all_2026-01-09_len8106_manelim3692_fails1725.pickle")
 
 
-def _summ(tbl):
+def _summ(tbl, horizon_label, ric):
+    """(comp, best_metric, best_ic, verdict_line) -- RAISES if either side is not finite.
+
+    WHAT THIS REPLACES (2026-08-22, reviewer C3).  The last line used to be
+        return comp, best["metric"], float(best["IC_real"]), comp < float(best["IC_real"])
+    with NO finiteness guard, and the caller printed "does NOT hold" off it.  `nan < nan` is
+    False, so an all-NaN IC table produced a confident negative verdict -- the identical defect
+    that made the 08-20 and 08-22 pipeline runs print
+    "COMPOSITE IC_real=+nan vs best single (RoA) IC_real=+nan -> smoking gun DOES NOT hold".
+    This path was in fact MORE NaN-prone than the pipeline one, because its hardcoded pairs are
+    `date_requested` labels and `load_real` used to pivot on `date_actual`, so most pairs simply
+    were not columns.
+
+    It reuses `real_ic.verdict_line` rather than re-implementing the check: ONE guard, in one
+    place, so the two paths cannot drift into disagreeing about what counts as a measurement.
+    """
     singles = tbl[tbl["metric"] != "COMPOSITE"].sort_values(
         "IC_real", key=lambda s: s.abs(), ascending=False)
     comp = float(tbl[tbl["metric"] == "COMPOSITE"].iloc[0]["IC_real"])
     best = singles.iloc[0]
-    return comp, best["metric"], float(best["IC_real"]), comp < float(best["IC_real"])
+    bic = float(best["IC_real"])
+    line = ric.verdict_line(comp, best["metric"], bic, horizon_label)
+    return comp, best["metric"], bic, line
 
 
 def main():
@@ -112,17 +132,23 @@ def main():
             "36m": [("2018-12-31", "2021-12-31"), ("2021-12-31", "2024-12-31")],
         }
         for hz in ("12m", "24m", "36m"):
-            pairs = [(b, e) for b, e in HORIZONS[hz]
-                     if b in real.columns and e in real.columns]
+            #  RESOLVED, not silently filtered (reviewer C3).  `[p for p in pairs if b in
+            #  real.columns and e in real.columns]` dropped every unresolvable window without a
+            #  word and handed `ic_table` a SHORTER -- possibly EMPTY -- pair list, which comes
+            #  back all-NaN and reads exactly like a measurement.  resolve_anchors RAISES and
+            #  names what the grid does carry; the enclosing try/except records that as a stage
+            #  FAILURE, which is the honest outcome.
+            wanted = sorted({d for pr in HORIZONS[hz] for d in pr})
+            res = ric.resolve_anchors(real.columns, wanted, what=hz + " IC anchor")
+            pairs = [(res[b], res[e]) for b, e in HORIZONS[hz]]
             tbl, _ = ric.ic_table(panel, real, pairs, hz)
             tbl = tbl.sort_values("IC_real", key=lambda s: s.abs(), ascending=False)
-            comp, bm, bic, holds = _summ(tbl)
-            print("\n[" + hz + "]  windows=" + str(len(pairs)))
+            comp, bm, bic, vline = _summ(tbl, hz, ric)
+            holds = comp < bic
+            print("\n[" + hz + "]  windows=" + str(len(pairs)) + "  pairs=" + str(pairs))
             print(tbl.to_string(index=False, formatters={
                 "IC_real": "{:+.3f}".format, "IC_recon": "{:+.3f}".format}))
-            print("  -> COMPOSITE IC_real=" + format(comp, "+.3f") + "  vs best single "
-                  + str(bm) + " " + format(bic, "+.3f") + "  => composite-below-best "
-                  + ("HOLDS" if holds else "does NOT hold"))
+            print("  -> composite-below-best:" + vline)
             results["realIC_" + hz] = (comp, bm, bic, holds)
         results["real_ic"] = "OK"
     except Exception as e:

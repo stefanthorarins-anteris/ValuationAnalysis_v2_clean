@@ -3155,8 +3155,16 @@ def dedup_to_issuers(BoScore_df, cdx_df, sector_map, names):
 
 def partition_universe(BoScore_df, cdx_df, tickers_df,
                        sector_pickle='sectorsdic_fmp.pickle', industry_pickle=None,
-                       mcap_floor=25e6, cohort_head=25, dedup=True):
+                       mcap_floor=25e6, cohort_head=25, dedup=True,
+                       coverage_scope=None):
     """Partition the full BoScore-ranked universe.
+
+    `coverage_scope` -- the subset of `BoScore_df['source']` the SECTOR-MAP COVERAGE GUARD is
+    allowed to measure over.  `None` (default, and what production passes) means "the whole
+    pool", i.e. the guard is unchanged.  A caller passes a scope when part of its pool is a
+    population the sector map STRUCTURALLY CANNOT cover, so measuring coverage over the whole
+    pool asks the map for something no rebuild could ever provide.  See the guard block below
+    for the case that forced it and for the bias the scope admits in exchange.
 
     Returns dict:
       general      : BoScore_df rows for the general pool (size-floored, sorted)
@@ -3206,14 +3214,81 @@ def partition_universe(BoScore_df, cdx_df, tickers_df,
     #            empty-map abort: refuse to ship a pool that only LOOKS carved.
     #   < 75% -> WARN loudly and proceed. Well below the measured 87.1% norm, so this
     #            does not fire on a healthy run, but a real erosion becomes visible.
-    _pool = [s for s in symbols if isinstance(s, str)]
+    #
+    # COVERAGE IS MEASURED OVER `coverage_scope` WHEN ONE IS GIVEN (2026-08-22).  The guard
+    # above asks "does the map cover the pool", which silently assumes every pool member is a
+    # name the map COULD cover.  That assumption is false for the PIT/backtest carve:
+    # `depth_horizon_grid` ranks `dead_merge.pit_universe` = live survivors UNION delisted-
+    # registry entities, and the sector map is built from FMP company PROFILES, which a
+    # delisted entity does not have.  So the dead half of that pool is uncoverable BY
+    # CONSTRUCTION -- no rebuild, no re-fetch, no map repair can move it.
+    #
+    # THE MEASUREMENT THAT SETTLES IT (08-20 CUR3K and 08-22 CUR6K runs).  The abort fired at
+    # 39.8% and 45.9%, while the SAME map on the SAME run covered 90.8% of the active universe
+    # and 100.0% of the live scoring carve.  The uncovered count was 2,088 in BOTH runs even
+    # though the pools differed (3,470 vs 3,857) -- an invariant that identifies the registry,
+    # not the map.  The guard was therefore not detecting a degraded artifact; it was
+    # reporting the definition of the universe it had been handed, and refusing on it killed
+    # the grid stage and (by cascade) the beat-rate stage on every run.
+    #
+    # WHAT THE SCOPE COSTS, AND IT IS A REAL COST, NOT A TECHNICALITY.  The out-of-scope names
+    # are still IN the pool and still get carved -- with no sector, so they fall to `general`.
+    # A dead miner or a dead REIT therefore LEAKS into the backtest's "general" pool.  That is
+    # a KNOWN BIAS replacing a HARD REFUSAL, and it is the right trade only because a refusing
+    # stage produces nothing at all.  It is announced at runtime, every run, below: no reader
+    # of a backtest general pool may be left thinking it is sector-clean.  The domain-correct
+    # repair -- giving registry entities a sector at ingest -- is NOT done here.
+    _pool_all = [s for s in symbols if isinstance(s, str)]
+    if coverage_scope is None:
+        _pool = _pool_all
+        _out_of_scope = []
+    else:
+        _scope_set = set(coverage_scope)
+        _pool = [s for s in _pool_all if s in _scope_set]
+        _out_of_scope = [s for s in _pool_all if s not in _scope_set]
+        # A SCOPE THAT MATCHES NOTHING WOULD DISABLE THE GUARD, not relax it: an empty
+        # in-scope pool scores _frac = 1.0 and sails through both the abort and the warning.
+        # That is a caller bug (wrong key space -- symbols vs entity ids, say), never a data
+        # condition, so refuse rather than pass a universe nothing was checked on.
+        if _pool_all and not _pool:
+            raise ValueError(
+                'carveOut: coverage_scope was supplied but matches NONE of the %d pool '
+                'sources, so the sector-coverage guard would measure nothing and pass '
+                'vacuously. This is a caller error (most likely a different key space than '
+                "BoScore_df['source']), not a thin map. Pass the live sources, or None."
+                % len(_pool_all))
+        if _out_of_scope:
+            _obang = '!' * 78
+            _obanner = '\n'.join([
+                '', _obang,
+                '!!! CARVE-OUT COVERAGE SCOPED -- %d POOL NAME(S) CANNOT BE CARVED !!!'
+                % len(_out_of_scope),
+                '!!!   pool %d   in coverage scope %d   OUT of scope %d'
+                % (len(_pool_all), len(_pool), len(_out_of_scope)),
+                '!!! The out-of-scope names are NOT excluded: they are carved with NO sector,',
+                '!!! so every one of them falls to the GENERAL pool. Dead miners and dead',
+                '!!! REITs are therefore IN this general pool. It is NOT sector-clean, and any',
+                '!!! cohort count taken off it is UNDERSTATED by that leak.',
+                '!!! This is a deliberate, known bias accepted in place of a hard refusal (a',
+                '!!! refusing stage produces nothing). Do NOT read this pool as the live',
+                '!!! carve; the live carve measures 100% coverage and has no such leak.',
+                _obang, ''])
+            print(_obanner, file=sys.stderr, flush=True)
+            print(_obanner, flush=True)
     _covered = sum(1 for s in _pool if s in sector_map)
     _frac = (_covered / len(_pool)) if _pool else 1.0
+    # Every coverage readout below says WHAT IT MEASURED OVER, so a scoped percentage can
+    # never be mistaken for a whole-pool one.
+    _scope_note = ('' if coverage_scope is None else
+                   ' [SCOPED: measured over %d of %d pool names; %d uncarvable name(s) '
+                   'excluded from the measurement and leaking into general]'
+                   % (len(_pool), len(_pool_all), len(_out_of_scope)))
     if _pool and _frac < SECTOR_COVERAGE_ABORT_BELOW:
         msg = ("carveOut: sector map covers only %d of %d pool sources (%.1f%%) -- far "
                "below the ~87%% a healthy run shows. The map on disk was almost "
                "certainly built from a DIFFERENT (smaller) universe than the one being "
-               "scored; rebuild it from a full universe." % (_covered, len(_pool), 100 * _frac))
+               "scored; rebuild it from a full universe.%s"
+               % (_covered, len(_pool), 100 * _frac, _scope_note))
         bang = "!" * 78
         banner = "\n".join([
             "", bang,
@@ -3237,8 +3312,9 @@ def partition_universe(BoScore_df, cdx_df, tickers_df,
         wbanner = "\n".join([
             "", bang,
             "!!! CARVE-OUT WARNING -- THIN SECTOR-MAP COVERAGE !!!",
-            "!!!   %d of %d pool sources have a sector (%.1f%%); healthy ~%.0f%%."
-            % (_covered, len(_pool), 100 * _frac, 100 * SECTOR_COVERAGE_HEALTHY_REF),
+            "!!!   %d of %d pool sources have a sector (%.1f%%); healthy ~%.0f%%.%s"
+            % (_covered, len(_pool), 100 * _frac, 100 * SECTOR_COVERAGE_HEALTHY_REF,
+               _scope_note),
             "!!! Uncovered names cannot be carved and fall to the GENERAL pool, so",
             "!!! some miners/REITs are probably leaking. Run PROCEEDS -- but treat",
             "!!! the cohort counts as understated and consider rebuilding the map.",
@@ -3246,8 +3322,8 @@ def partition_universe(BoScore_df, cdx_df, tickers_df,
         print(wbanner, file=sys.stderr, flush=True)
         print(wbanner, flush=True)
     else:
-        print('CARVE-OUT sector-map coverage: %d of %d pool sources (%.1f%%).'
-              % (_covered, len(_pool), 100 * _frac), flush=True)
+        print('CARVE-OUT sector-map coverage: %d of %d pool sources (%.1f%%).%s'
+              % (_covered, len(_pool), 100 * _frac, _scope_note), flush=True)
 
     industry_map = _load_industry_map(industry_pickle)
     if not industry_map:
@@ -3537,6 +3613,13 @@ def partition_universe(BoScore_df, cdx_df, tickers_df,
         'floor_currency_pending': bool(_floor_pending),
         'n_kept_currency_unknown_raw_below_floor': n_kept_unknown_raw_below,
         'industry_coverage': (_ind_cov, len(symbols)),   # (names with a real industry, universe)
+        # SECTOR-COVERAGE PROVENANCE (2026-08-22). `sector_coverage` is what the guard
+        # actually measured; `n_coverage_out_of_scope` is how many pool names it was NOT
+        # allowed to ask about -- i.e. how many uncarvable names leaked into `general`. A
+        # consumer reading `n_general` off a scoped carve needs the second number to know the
+        # first one is inflated; 0 means the pool was measured whole (production).
+        'sector_coverage': (_covered, len(_pool)),
+        'n_coverage_out_of_scope': len(_out_of_scope),
         'vehicle_caught': veh,             # FIN-1 pre-floor; `below_floor` reconciles to post-floor
         'finmanager_caught': _caught(FIN2_MANAGER),
         'balancesheet_caught': _caught(FIN3_BALSHEET),

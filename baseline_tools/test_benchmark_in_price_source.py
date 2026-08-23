@@ -11,6 +11,7 @@ import os
 import sys
 
 import numpy as np
+import pytest
 import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -84,10 +85,20 @@ def test_benchmark_series_resolves(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
-# Test 3: real_ic.ic_table does not raise when the eval-date price column is     #
-#         missing (re is None); the real IC is simply omitted.                   #
+# Test 3: real_ic.ic_table REFUSES a missing eval-date price column.             #
+#                                                                               #
+# THIS TEST USED TO ASSERT THE EXACT OPPOSITE, and that is worth recording.  It  #
+# read "does not raise when the eval-date price column is missing; the real IC   #
+# is simply omitted", and it asserted `tbl["IC_real"].isna().all()` as the       #
+# CORRECT outcome.  It therefore PINNED THE DEFECT: on the 08-20 and 08-22 runs  #
+# every anchor was missing (the module's hardcoded dates were not columns of the #
+# grid it was handed), so the whole table came back NaN -- passing this test --   #
+# and the stage printed "COMPOSITE IC_real=+nan vs best single (RoA)             #
+# IC_real=+nan -> smoking gun DOES NOT hold".  A silently-omitted leg is         #
+# indistinguishable downstream from a leg that measured nothing, which is why    #
+# the leniency had to go rather than be documented.                             #
 # --------------------------------------------------------------------------- #
-def test_ic_table_missing_eval_column():
+def test_ic_table_REFUSES_a_missing_eval_column():
     sources = [f"S{i}" for i in range(5)]
     buy, ev = "2018-12-31", "2020-12-28"
     panel = pd.DataFrame({"source": sources, "date": pd.Timestamp(buy)})
@@ -95,13 +106,15 @@ def test_ic_table_missing_eval_column():
         panel[mm] = np.arange(len(sources), dtype=float)
     panel["_price"] = np.arange(1, len(sources) + 1, dtype=float)
 
-    # `real` has the BUY column but NOT the eval column -> re resolves to None.
+    # `real` has the BUY column but NOT the eval column.
     real = pd.DataFrame({buy: np.arange(1, len(sources) + 1, dtype=float)}, index=sources)
     assert ev not in real.columns
 
-    tbl, label = ric.ic_table(panel, real, [(buy, ev)], "t")  # must NOT raise
-    assert set(tbl["metric"]) >= set(mvm.METRICS)
-    assert tbl["IC_real"].isna().all()   # real leg omitted, not crashed
+    with pytest.raises(KeyError) as e:
+        ric.ic_table(panel, real, [(buy, ev)], "t")
+    assert ev in str(e.value)
+    # the message must point at the fix, not just at the symptom
+    assert "resolve_anchors" in str(e.value)
 
 
 if __name__ == "__main__":

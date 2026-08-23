@@ -1129,6 +1129,170 @@ def test_carve_WARNS_but_proceeds_on_thin_coverage_and_is_QUIET_when_healthy(
 
 
 # --------------------------------------------------------------------------- #
+#  COVERAGE SCOPE -- the PIT/backtest carve (2026-08-22)                        #
+# --------------------------------------------------------------------------- #
+#  THE BUG THESE PIN.  The guard above measures coverage over the WHOLE pool, which assumes
+#  every pool member is a name the map COULD cover.  For the PIT/backtest carve that is false:
+#  `depth_horizon_grid` ranks live survivors UNION delisted-registry entities, and the sector
+#  map is built from FMP company PROFILES, which a delisted entity has none of.  So the guard
+#  aborted the grid stage on the 08-20 (39.8%) and 08-22 (45.9%) runs -- with the SAME map
+#  measuring 90.8% of the active universe and 100.0% of the LIVE carve on those same runs.
+#  Uncovered was 2,088 in both runs on pools of 3,470 and 3,857: an invariant of the registry,
+#  not a property of the map.
+#
+#  THE SHAPE OF THESE TESTS IS DELIBERATE.  Asserting "no exception" would pass on a guard that
+#  had simply been deleted, so each one asserts (a) the abort still fires when the map really is
+#  the wrong artifact FOR THE NAMES IT CAN SPEAK ABOUT, and (b) the leak the scope admits is
+#  announced and counted, never silent.
+def _pit_carve_inputs(n_live, n_dead, live_covered):
+    """A PIT-shaped pool: live names (the map can cover them) + dead ones (it cannot).
+
+    Mirrors the real proportions rather than a toy: 45% live / 55% dead is the 08-22 run
+    (1,769 covered of 3,857), and the live half is FULLY covered, as the live carve measured.
+    """
+    live = ['L%04d' % i for i in range(n_live)]
+    dead = ['D%04d' % i for i in range(n_dead)]
+    pool = live + dead
+    bo = pd.DataFrame({'source': pool, 'BoScore': [1.0] * len(pool)})
+    tickers = pd.DataFrame({'symbol': pool, 'name': ['N' + s for s in pool]})
+    cdx = pd.DataFrame({'source': pool, 'date': pd.Timestamp('2025-01-01'),
+                        'marketCap': 1e8, 'totalStockholdersEquity': 5e7,
+                        'totalAssets': 1e8, 'revenue': 5e7,
+                        'weightedAverageShsOut': 1e6, 'netIncome': 1e6})
+    smap = {s: 'Technology' for s in live[:live_covered]}
+    return bo, cdx, tickers, set(live), smap
+
+
+def test_whole_pool_measurement_still_ABORTS_on_a_pit_pool_when_no_scope_is_given(
+        tmp_path, monkeypatch):
+    """The pre-fix behaviour, kept as the control: with coverage_scope=None nothing changed.
+
+    This is what the pipeline hit.  If this test ever stops raising, the fix has silently
+    become a general relaxation of the guard instead of a scoped measurement."""
+    monkeypatch.chdir(tmp_path)
+    bo, cdx, tickers, live, smap = _pit_carve_inputs(1769, 2088, 1769)
+    monkeypatch.setattr(co, '_load_sector_map', lambda *a, **k: smap)
+    monkeypatch.setattr(co, '_load_industry_map', lambda *a, **k: {})
+    with pytest.raises(RuntimeError) as e:
+        co.partition_universe(bo, cdx, tickers)
+    assert 'covers only' in str(e.value)
+    assert '1769 of 3857' in str(e.value), str(e.value)
+
+
+def test_scoping_coverage_to_the_live_sources_lets_the_pit_carve_RUN(tmp_path, monkeypatch,
+                                                                    capsys):
+    """The fix.  Same inputs, same map, scope = the live sources -> 100% and no abort."""
+    monkeypatch.chdir(tmp_path)
+    bo, cdx, tickers, live, smap = _pit_carve_inputs(1769, 2088, 1769)
+    monkeypatch.setattr(co, '_load_sector_map', lambda *a, **k: smap)
+    monkeypatch.setattr(co, '_load_industry_map', lambda *a, **k: {})
+
+    part = co.partition_universe(bo, cdx, tickers, coverage_scope=live)
+    out = capsys.readouterr().out
+
+    d = part['diagnostics']
+    assert d['sector_coverage'] == (1769, 1769), d['sector_coverage']
+    assert d['n_coverage_out_of_scope'] == 2088, d['n_coverage_out_of_scope']
+    assert 'coverage: 1769 of 1769' in out, out[-1200:]
+    assert 'SCOPED' in out, out[-1200:]
+
+
+def test_the_scoped_carve_ANNOUNCES_the_sectorless_leak_into_general(tmp_path, monkeypatch,
+                                                                    capsys):
+    """The COST of the scope, asserted as a fact about the returned pool -- not as a log line.
+
+    The out-of-scope names are not excluded: with no sector they are labelled `general`.  A
+    reader must not be able to mistake this pool for a sector-clean one, so the leak has to be
+    (a) really in the pool and (b) named at runtime."""
+    monkeypatch.chdir(tmp_path)
+    bo, cdx, tickers, live, smap = _pit_carve_inputs(100, 40, 100)
+    monkeypatch.setattr(co, '_load_sector_map', lambda *a, **k: smap)
+    monkeypatch.setattr(co, '_load_industry_map', lambda *a, **k: {})
+
+    #  dedup=False so the assertion is about LABELLING, not about issuer collapse: every
+    #  synthetic name here carries the identical market cap, so the issuer de-dup legitimately
+    #  folds them into one survivor and would hide the leak this test is measuring.
+    part = co.partition_universe(bo, cdx, tickers, coverage_scope=live, dedup=False)
+    out = capsys.readouterr().out
+
+    gen = set(part['general']['source'])
+    dead_in_general = {s for s in gen if s.startswith('D')}
+    #  (a) the leak is real and total: every uncoverable name is in `general`.
+    assert len(dead_in_general) == 40, len(dead_in_general)
+    #  (b) and the run said so, on stdout, in the loud form.
+    assert 'CANNOT BE CARVED' in out, out[-1500:]
+    assert 'NOT sector-clean' in out, out[-1500:]
+    assert '40' in out
+
+
+def test_a_genuinely_poisoned_map_still_ABORTS_even_with_a_scope(tmp_path, monkeypatch):
+    """The scope must not be a way to survive the failure the guard exists for.
+
+    Same PIT pool, but the map now covers only 1.6% of the LIVE names -- the test-universe
+    poisoning case.  Scoped or not, that is the wrong artifact and must refuse."""
+    monkeypatch.chdir(tmp_path)
+    bo, cdx, tickers, live, smap = _pit_carve_inputs(1000, 1000, 16)
+    monkeypatch.setattr(co, '_load_sector_map', lambda *a, **k: smap)
+    monkeypatch.setattr(co, '_load_industry_map', lambda *a, **k: {})
+    with pytest.raises(RuntimeError) as e:
+        co.partition_universe(bo, cdx, tickers, coverage_scope=live)
+    assert 'covers only' in str(e.value)
+    assert '16 of 1000' in str(e.value), str(e.value)
+
+
+def test_thin_coverage_inside_the_scope_still_WARNS(tmp_path, monkeypatch, capsys):
+    """Between abort and healthy the warning must still fire, measured over the scope."""
+    monkeypatch.chdir(tmp_path)
+    bo, cdx, tickers, live, smap = _pit_carve_inputs(1000, 500, 600)   # 60% of the live names
+    monkeypatch.setattr(co, '_load_sector_map', lambda *a, **k: smap)
+    monkeypatch.setattr(co, '_load_industry_map', lambda *a, **k: {})
+    co.partition_universe(bo, cdx, tickers, coverage_scope=live)
+    out = capsys.readouterr().out
+    assert 'THIN SECTOR-MAP COVERAGE' in out, out[-1200:]
+    assert '600 of 1000' in out, out[-1200:]
+
+
+def test_a_scope_that_matches_nothing_is_REFUSED_not_passed_vacuously(tmp_path, monkeypatch):
+    """The one way the scope could disable the guard rather than aim it.
+
+    An empty intersection scores frac = 1.0 and would sail through both the abort and the
+    warning, so a caller that passed the wrong key space would get a universe nothing had
+    checked -- exactly the silent substitution the guard exists to prevent."""
+    monkeypatch.chdir(tmp_path)
+    bo, cdx, tickers, live, smap = _pit_carve_inputs(50, 50, 50)
+    monkeypatch.setattr(co, '_load_sector_map', lambda *a, **k: smap)
+    monkeypatch.setattr(co, '_load_industry_map', lambda *a, **k: {})
+    with pytest.raises(ValueError) as e:
+        co.partition_universe(bo, cdx, tickers, coverage_scope={'NOT_A_SOURCE'})
+    assert 'matches NONE' in str(e.value), str(e.value)
+
+
+def test_the_pit_carve_caller_actually_passes_the_live_sources(monkeypatch):
+    """AST guard on the WIRING, because the fix is only a fix at the call site.
+
+    carveOut's default is unchanged, so `depth_horizon_grid.rank_all_anchors` passing nothing
+    would leave the grid stage exactly as broken while every carveOut test above passed."""
+    import ast as _ast
+    import inspect
+    import pathlib
+    src = (pathlib.Path(__file__).resolve().parent / 'baseline_tools'
+           / 'depth_horizon_grid.py').read_text(encoding='utf-8')
+    tree = _ast.parse(src)
+    fn = next(n for n in _ast.walk(tree)
+              if isinstance(n, _ast.FunctionDef) and n.name == 'rank_all_anchors')
+    calls = [c for c in _ast.walk(fn)
+             if isinstance(c, _ast.Call)
+             and getattr(c.func, 'id', None) == 'carve_general_universe']
+    assert len(calls) == 1, 'expected exactly one carve call in rank_all_anchors'
+    kw = {k.arg: k for k in calls[0].keywords}
+    assert 'coverage_scope' in kw, (
+        'rank_all_anchors calls carve_general_universe WITHOUT coverage_scope -- the PIT '
+        'abort is back, whatever carveOut can do')
+    assert getattr(kw['coverage_scope'].value, 'id', None) == 'live_sources', (
+        'coverage_scope must be the LIVE sources; anything else re-measures the wrong set')
+
+
+# --------------------------------------------------------------------------- #
 #  THE INSTRUMENT FILTER IS UNIVERSE-INDEPENDENT (review item 3)                 #
 # --------------------------------------------------------------------------- #
 def test_the_instrument_filter_is_as_strong_on_a_SUBSET_as_on_the_WHOLE(offline_wrapper):

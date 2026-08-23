@@ -109,7 +109,8 @@ def build_weight_override(mode):
     raise ValueError(f"unknown weights mode: {mode!r}")
 
 
-def carve_general_universe(pit_universe, merged_cdx, tickers_df, log):
+def carve_general_universe(pit_universe, merged_cdx, tickers_df, log,
+                           coverage_scope=None):
     """Filter a survivorship PIT universe to carveOut's GENERAL pool (REIT/Mining/
     Financial cohorts routed out, issuer de-dup, $25M mcap floor) BEFORE ranking.
 
@@ -119,17 +120,40 @@ def carve_general_universe(pit_universe, merged_cdx, tickers_df, log):
     partition_universe's MEMBERSHIP decision is score-independent (dedup by
     sector/mcap/symbol-shape, carve by sector, floor by mcap), so a placeholder score
     column yields the identical general set -- verified against carveOut.py.
+
+    `coverage_scope` -- THE NAMES THE SECTOR MAP COULD POSSIBLY COVER, i.e. the LIVE
+    sources.  `pit_universe` is `dead_merge.pit_universe` = live survivors UNION
+    delisted-registry entities, and the map is built from company PROFILES, which a
+    delisted entity does not have.  Measuring coverage over the whole PIT pool therefore
+    asked the map for something no rebuild could supply and aborted the stage on both the
+    08-20 and 08-22 runs (45.9% / 39.8%, uncovered = 2,088 in both).  Passing the live
+    sources measures the guard's real question -- "is the map the right artifact for the
+    names it can speak about" -- and keeps the abort live for a genuinely poisoned map.
+    Leaving it None restores the old whole-pool measurement (and the abort).
+
+    THE COST IS LOGGED, NOT HIDDEN: the uncarvable names still enter the ranking and,
+    having no sector, land in `general`.  So the returned pool CONTAINS dead miners and
+    dead REITs.  carveOut banners this on both streams and the count is echoed on the
+    carve line below.
     """
     import carveOut as co
     bs = pd.DataFrame({"source": sorted(pit_universe), "score": 0.0})
     part = co.partition_universe(bs, merged_cdx, tickers_df,
-                                 mcap_floor=25e6, cohort_head=25)
+                                 mcap_floor=25e6, cohort_head=25,
+                                 coverage_scope=coverage_scope)
     general = set(part["general"]["source"])
     d = part["diagnostics"]
+    _cov = d.get("sector_coverage")
+    _oos = d.get("n_coverage_out_of_scope", 0)
     log(f"    carve: {d['n_universe']} -> general={d['n_general']} "
         f"(REIT={d['n_REIT']} Mining={d['n_Mining']} "
         f"FIN1={d['n_InvestmentVehicle']} FIN2={d.get('n_FinManager',0)} "
         f"FIN3={d.get('n_BalanceSheetFin',0)} below_floor={d['n_below_floor']})")
+    if _oos:
+        log(f"    carve: SECTORLESS LEAK -- {_oos} uncarvable name(s) (no profile, so no "
+            f"sector) are inside general={d['n_general']}; sector coverage was measured "
+            f"over {_cov[0]} of {_cov[1]} measurable names. This general pool is NOT "
+            f"sector-clean and its cohort counts are understated.")
     return general
 
 
@@ -223,7 +247,10 @@ def rank_all_anchors(inputs, log, weights="default", carve="off"):
             f"(weights={weights}, carve={carve}) ...")
         uni = dm.pit_universe(dmdic, registry, as_of=buy)
         if carve == "on":
-            uni = sorted(carve_general_universe(uni, merged["cdx_df"], tickers_df, log))
+            #  coverage_scope=live_sources: `uni` is live UNION dead, and the sector map can
+            #  only ever describe the live half (see carve_general_universe).
+            uni = sorted(carve_general_universe(uni, merged["cdx_df"], tickers_df, log,
+                                                coverage_scope=live_sources))
         res = s2.reproduce_pit_top(merged, buy, universe_override=uni,
                                    weight_override=weight_override)
         if res is None:

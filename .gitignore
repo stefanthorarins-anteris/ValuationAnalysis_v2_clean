@@ -108,3 +108,9 @@ delisted_tickers_*.csv
 # each, and full of progress-bar noise. The SCRIPT is tracked; its output is not.
 baseline_tools/nan_policy_report_*.txt
 baseline_tools/cache_nanpolicy_*.pickle
+
+# pick_log.csv is a PER-MACHINE append-only forensic record, not source.
+# It was tracked until 2026-08-22, which collided with the auto-quarantine added in ce52e73:
+# a local run renames it into the gitignored _quarantine/, so git saw a tracked file vanish
+# and a restore would trigger a second quarantine with a -2 suffix. Untracked deliberately.
+pick_log.csv
