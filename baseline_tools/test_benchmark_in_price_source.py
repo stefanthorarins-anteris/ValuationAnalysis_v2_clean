@@ -28,6 +28,20 @@ import model_vs_metric as mvm
 # --------------------------------------------------------------------------- #
 def test_bulk_fetch_keeps_benchmark(monkeypatch, tmp_path):
     import delisted_ingest as di
+    import fetch_prices as fp
+
+    #  PAYLOAD FLOOR LOWERED FOR THIS TEST, DELIBERATELY (2026-08-22).  The fetch path now
+    #  rejects a body below `fetch_prices.MIN_PAYLOAD_ROWS` (20,000) because three saved
+    #  pulls contained truncated bodies that `if rows:` accepted.  This test's fake market is
+    #  five rows, so the floor correctly refuses it and nothing is written -- which has
+    #  nothing to do with what the test is about.  THIS TEST IS ABOUT THE ALLOW-LIST: that
+    #  the benchmark ETF survives a filter built from the stock universe.  Lowering the floor
+    #  keeps the subject intact rather than fabricating 20,000 fake rows to tunnel through a
+    #  guard this test is not examining.  The floor has its own coverage in
+    #  test_fetch_prices.py and test_pipeline_fetch_guards.py, including that it is measured
+    #  on the PAYLOAD rather than on the kept rows -- which is the interaction that could
+    #  otherwise hide here.
+    monkeypatch.setattr(fp, "MIN_PAYLOAD_ROWS", 1)
 
     # Stock universe = three ordinary names; the benchmark ETF is deliberately NOT here.
     universe = ["AAA", "BBB", "CCC"]

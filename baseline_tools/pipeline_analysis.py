@@ -102,49 +102,212 @@ class _ScrubStream:
         self._base.flush()
 
 
+#  A reference venue must carry at least this many rows for "absent from the new body" to be
+#  a fact about the fetch rather than about a handful of names.  Declared here rather than
+#  reusing `price_grid_audit.VENUE_MIN_PANEL_NAMES` because that one counts PANEL names and
+#  this counts REFERENCE-GRID rows -- same number today, different quantity, and tying them
+#  together would make one move when only the other was meant to.
+VENUE_MIN_REFERENCE_ROWS = 10
+
+#  A venue surviving at less than this share of its reference count is treated as absent.
+#  The same 0.5 as `fetch_prices.SHORT_BODY_MEDIAN_FRACTION`, for the same reason: less than
+#  half of a known population is not that population.  It IS a threshold, unlike the
+#  categorical zeros `price_grid_audit` restricts itself to -- said out loud because this
+#  module does not otherwise carry one.
+VENUE_MIN_SURVIVING_SHARE = 0.5
+
+
+def _venue_of(symbol):
+    """`092730.KQ` -> `.KQ`, `META` -> `(none)`.  The same venue key price_grid_audit uses."""
+    t = str(symbol)
+    return "." + t.rsplit(".", 1)[1] if "." in t else "(none)"
+
+
+def _venue_reference(candidate_paths, log):
+    """{date_requested: {venue: n_rows}} from the FIRST readable previous grid on disk.
+
+    THE COMPARISON IS ANCHOR-MATCHED, AND THAT IS THE WHOLE DESIGN.  A within-run test --
+    "every venue seen at another anchor of this run must appear at this one" -- was the
+    obvious instrument and it is wrong twice over: it FALSE-POSITIVES on genuine year-end
+    venue holidays (.DE/.ST/.IC are legitimately zero at 2018-12-31), and it is SILENT on
+    the seven venues the grid never had at any anchor, which are the 1,421 names the whole
+    exercise is about.  Matching a PREVIOUS grid anchor by anchor fixes the first problem for
+    free: the reference encodes each venue own trading calendar, so a venue that was
+    legitimately shut on that date carries no expectation.
+
+    It does NOT fix the second, and cannot -- see the caller for the full blindness list.
+    """
+    import pandas as pd
+    for path in candidate_paths:
+        if not path or not os.path.exists(path):
+            continue
+        try:
+            df = pd.read_csv(path, usecols=["date_requested", "symbol"])
+        except Exception as e:      # a truncated or garbled reference is no reference
+            log(f"[price-fetch] venue reference {os.path.basename(str(path))} unreadable "
+                f"({type(e).__name__}) -- skipped")
+            continue
+        ref = {}
+        venues = df["symbol"].map(_venue_of)
+        for (anchor, venue), n in df.groupby([df["date_requested"], venues]).size().items():
+            ref.setdefault(str(anchor), {})[venue] = int(n)
+        log(f"[price-fetch] venue reference: {os.path.basename(str(path))} "
+            f"({len(ref)} anchor(s), {venues.nunique()} venue(s))")
+        return ref, str(path)
+    log("[price-fetch] NO previous grid on disk -- the per-venue completeness test is "
+        "INERT this run (it has no external reference to compare against)")
+    return {}, None
+
+
+def _venue_shortfall(kept_symbols, ref_for_anchor):
+    """Venues the reference had at this anchor and this body effectively does not.
+
+    Returns [(venue, n_now, n_ref)], biggest loss first.  `kept_symbols` is what survived the
+    local allow-list, so the comparison is like-for-like with the reference, which was
+    written through the same filter.
+    """
+    if not ref_for_anchor:
+        return []
+    now = {}
+    for sym in kept_symbols:
+        v = _venue_of(sym)
+        now[v] = now.get(v, 0) + 1
+    out = []
+    for venue, n_ref in ref_for_anchor.items():
+        if n_ref < VENUE_MIN_REFERENCE_ROWS:
+            continue
+        n_now = now.get(venue, 0)
+        if n_now < VENUE_MIN_SURVIVING_SHARE * n_ref:
+            out.append((venue, n_now, n_ref))
+    return sorted(out, key=lambda t: t[2] - t[1], reverse=True)
+
+
 def _fetch_bulk_scrubbed(baseurl, api_key, anchors, symbols_filter, out_path, log,
-                         max_lookback=4):
+                         max_lookback=4, reference_paths=None):
     """BULK-BY-DATE fetch that CANNOT leak the api_key.  One call per anchor date (whole
     universe per call; NEVER per-symbol), stepping back up to `max_lookback` days on an
-    empty/holiday response.  The HTTP call goes through delisted_ingest.safe_get_bulk_csv,
-    which strips apikey from the URL and from any exception/warning text.  Reuses ONLY
-    fetch_prices' KEY-FREE pure helpers (row parsing); fetch_prices.py is NOT modified.
-    Writes the same schema fetch_prices produced.  Returns (calls, rows_written)."""
+    unusable response.  The HTTP call goes through delisted_ingest.safe_get_bulk_csv, which
+    strips apikey from the URL and from any exception or warning text.  Reuses fetch_prices'
+    KEY-FREE pure helpers -- row parsing AND the payload-acceptance rule, which lives there
+    in ONE definition.  Writes the same schema fetch_prices produced.
+    Returns (calls, rows_written, refused, venue_findings).
+
+    THIS IS THE PATH THE PIPELINE TAKES, and until 2026-08-22 it was the one WITHOUT any
+    completeness test.  `fetch_prices.run_bulk` grew a payload floor and a weekend guard
+    while this function -- the only fetch `run_price_fetch_stage` actually calls -- still
+    read `if rows:`.  The guard was protecting code production does not execute.  Three
+    acceptance tests now apply here, all sourced from `fetch_prices`:
+
+      1. WEEKEND candidates are never requested (no call spent).
+      2. ABSOLUTE payload floor, in-line, so the existing step-back moves past a short body.
+      3. PER-VENUE completeness against the PREVIOUS GRID at the SAME anchor, in-line, so a
+         venue-clustered truncation is stepped past too.
+    plus the DEFERRED relative-median floor at write time, which costs no call.
+
+    WHAT (3) CANNOT SEE -- state this beside any green fetch:
+      * NOTHING AT ALL when there is no previous grid, which is the pipeline own common
+        case: `run_price_fetch_stage` fetches only when the file is ABSENT, so a first fetch
+        on a fresh machine has no reference and this test is inert.
+      * A venue the REFERENCE also lacks.  The run machine grid holds only
+        ['(none)', '.DE', '.IC', '.L', '.ST', '.TO'], so .PA/.KS/.OL/.KQ/.BR/.AS/.LS --
+        1,421 names -- carry no expectation and their absence stays silent.  This test can
+        DEFEND a venue set; it cannot BOOTSTRAP one.  Only widening the fetch own symbol
+        universe does that.
+      * An anchor the reference does not cover (a new year), or a venue newly listed since.
+      * A venue legitimately delisted since the reference -- that reads as a shortfall and
+        would reject every candidate for the anchor, leaving it with NO body.  That is the
+        one way this test can cost data, so it has an explicit off-switch:
+        `configdic['price_grid_venue_check'] = 0`.  The finding names the venue first, so
+        repointing `configdic['price_grid_reference']` is usually the better move.
+      * Wrong PRICES.  Every test here is about presence and count.
+
+    ONE PROPERTY WORTH KNOWING, because it makes a bad reference safe: the test only fires
+    when the NEW body has FEWER rows for a venue than the reference.  A reference that is
+    itself truncated therefore makes this test WEAKER, never spuriously stricter -- so
+    pointing it at the very file about to be overwritten (which may be the corrupted one)
+    cannot reject a good body.  It degrades toward silence, which is the correct direction
+    for a guard that can drop an anchor.
+    """
     import delisted_ingest as di
     import fetch_prices as fp
 
-    os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
+    ref, ref_path = _venue_reference(reference_paths or [], log)
+    ref_label = os.path.basename(str(ref_path)) if ref_path else "no-reference"
     calls = written = 0
+    accepted = []
+    venue_findings = []
+
+    for anchor in anchors:
+        a_str = anchor.strftime("%Y-%m-%d")
+        got = False
+        for back in range(max_lookback + 1):
+            d = anchor - timedelta(days=back)
+            ds = d.strftime("%Y-%m-%d")
+            if fp.is_weekend(d):
+                #  NO CALL SPENT.  The endpoint answers a weekend with a small NON-empty
+                #  body (2024-12-28, a Saturday: 3,589 rows, 93.8% crypto pairs) and the old
+                #  `if rows:` accepted it as the 2024-12-31 anchor.
+                log(f"[price-fetch]   skip {ds}: {d.strftime('%A')} -- not requested")
+                continue
+            url = (f"{baseurl}v4/batch-request-end-of-day-prices"
+                   f"?date={ds}&apikey={api_key}")
+            calls += 1
+            log(f"[price-fetch] bulk call {calls}: date={ds} "
+                f"(anchor {anchor.isoformat()})")
+            rows = di.safe_get_bulk_csv(url)  # key-scrubbed on ANY error/warning
+            n_payload = len(rows or [])
+            if not fp.body_is_acceptable(n_payload):
+                log(f"[price-fetch]   REJECTED {ds}: {n_payload} rows is below the absolute "
+                    f"floor {fp.MIN_PAYLOAD_ROWS} -- stepping back")
+                continue
+            kept = []
+            for row in rows:
+                sym, adj = fp._extract(row)
+                if not sym or adj in (None, "", "null"):
+                    continue
+                if symbols_filter and sym not in symbols_filter:
+                    continue
+                kept.append((sym, adj))
+            short = _venue_shortfall([sym for sym, _a in kept], ref.get(a_str))
+            if short:
+                detail = "; ".join(f"{v}: {n} now vs {r} in {ref_label}"
+                                   for v, n, r in short)
+                log(f"[price-fetch]   REJECTED {ds}: venue shortfall at anchor {a_str} -- "
+                    f"{detail} -- stepping back")
+                venue_findings.append({"anchor": a_str, "date": ds, "shortfall": short,
+                                       "reference": ref_label})
+                continue
+            accepted.append({"anchor": a_str, "date": ds, "n_payload": n_payload,
+                             "rows": kept})
+            got = True
+            log(f"[price-fetch]   OK: {n_payload} rows for {ds} ({len(kept)} kept)")
+            break
+        if not got:
+            log(f"[price-fetch]   WARNING: no usable body for anchor "
+                f"{anchor.isoformat()} within {max_lookback} lookback days")
+
+    #  DEFERRED relative floor.  It costs no call, so it runs at write time rather than
+    #  re-entering the step-back loop and spending calls nobody planned.
+    refused_idx = fp.refusals_against_median([a["n_payload"] for a in accepted])
+    refused = []
+
+    os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
     with open(out_path, "w", newline="") as fout:
         w = _csv.writer(fout)
         w.writerow(["date_requested", "date_actual", "symbol", "adjClose"])
-        for anchor in anchors:
-            got = False
-            for back in range(max_lookback + 1):
-                d = anchor - timedelta(days=back)
-                ds = d.strftime("%Y-%m-%d")
-                url = (f"{baseurl}v4/batch-request-end-of-day-prices"
-                       f"?date={ds}&apikey={api_key}")
-                calls += 1
-                log(f"[price-fetch] bulk call {calls}: date={ds} "
-                    f"(anchor {anchor.isoformat()})")
-                rows = di.safe_get_bulk_csv(url)  # key-scrubbed on ANY error/warning
-                if rows:
-                    for row in rows:
-                        sym, adj = fp._extract(row)
-                        if not sym or adj in (None, "", "null"):
-                            continue
-                        if symbols_filter and sym not in symbols_filter:
-                            continue
-                        w.writerow([anchor.strftime("%Y-%m-%d"), ds, sym, adj])
-                        written += 1
-                    got = True
-                    log(f"[price-fetch]   OK: {len(rows)} rows for {ds}")
-                    break
-            if not got:
-                log(f"[price-fetch]   WARNING: no data for anchor "
-                    f"{anchor.isoformat()} within {max_lookback} lookback days")
-    return calls, written
+        for i, a in enumerate(accepted):
+            if i in refused_idx:
+                med = refused_idx[i]
+                log(f"[price-fetch]   REFUSED at write time: anchor {a['anchor']} body "
+                    f"{a['date']} has {a['n_payload']} rows vs a median of {med:.0f} for "
+                    f"the run other bodies -- NOT written")
+                refused.append({"anchor": a["anchor"], "date": a["date"],
+                                "n_payload": a["n_payload"], "median_of_others": med})
+                continue
+            for sym, adj in a["rows"]:
+                w.writerow([a["anchor"], a["date"], sym, adj])
+                written += 1
+    return calls, written, refused, venue_findings
 
 
 def _banner(title, cause=None):
@@ -182,6 +345,51 @@ def _run_stage(name, fn, *args, **kwargs):
         return None
 
 
+def _reference_paths(configdic, out_path):
+    """Candidate previous grids for the per-venue completeness test, best first.
+
+    THE PIPELINE OFTEN HAS NONE, and that is the honest headline: this stage fetches only
+    when `out_path` is ABSENT, so the overwrite case -- the one that actually corrupted
+    `real_prices.csv` by hand -- belongs to the standalone script, not here.  The candidates
+    are therefore (1) whatever the operator names, (2) `out_path` itself for a caller that
+    does overwrite, (3) a sibling `.bak`, which is how a previous grid survives on this
+    machine today.  No candidate resolving means the test is inert and says so.
+
+    `configdic['price_grid_venue_check'] = 0` returns NO candidates, which disables the test.
+    It exists because this is the one guard here that can leave an anchor with no body at
+    all (a venue legitimately delisted since the reference reads as a shortfall), and a
+    guard with that consequence should be switchable without editing code.
+    """
+    if str(configdic.get("price_grid_venue_check", 1)) in ("0", "False", "false"):
+        return []
+    named = configdic.get("price_grid_reference")
+    return [named, out_path, out_path + ".bak"]
+
+
+def _report_fetch_refusals(label, refused, venue_findings, log):
+    """Say what was thrown away, unmissably.  A refusal that only shows up as a smaller file
+    is the same silent-partial-grid failure the floor exists to prevent."""
+    if not refused and not venue_findings:
+        return
+    bang = "!" * 78
+    lines = ["", bang, f"!!! {label} PRICE FETCH REFUSED CONTENT -- the grid is INCOMPLETE"]
+    for r in refused:
+        lines.append(f"!!!   anchor {r['anchor']} body {r['date']}: {r['n_payload']} rows "
+                     f"vs median-of-others {r['median_of_others']:.0f} -- NOT WRITTEN")
+    for v in venue_findings:
+        detail = "; ".join(f"{ven}: {n} vs {ref}" for ven, n, ref in v["shortfall"])
+        lines.append(f"!!!   anchor {v['anchor']} body {v['date']}: venue shortfall vs "
+                     f"{v['reference']} -- {detail} -- stepped back")
+    lines += ["!!! Re-fetch those anchors deliberately.  Do NOT paste a short body into the",
+              "!!! canonical grid by hand -- that is how the file acquired two payloads for",
+              "!!! one anchor and lost its provenance.", bang, ""]
+    text = chr(10).join(lines)
+    print(text, file=sys.stderr, flush=True)
+    print(text, flush=True)
+    log(f"[price-fetch] {label}: {len(refused)} refused body(ies), "
+        f"{len(venue_findings)} venue shortfall(s)")
+
+
 # --------------------------------------------------------------------------- #
 #  Stage 1: guarded BULK-BY-DATE price fetch (no-op/top-up when present)       #
 # --------------------------------------------------------------------------- #
@@ -191,9 +399,18 @@ def run_price_fetch_stage(resdic, configdic, log):
     NO-OP/top-up when the files are already present (the common case -- prices are
     checked into neither git nor moved out-of-band, but exist on the run machine).  When
     ABSENT, fetch them BULK-BY-DATE ONLY (one call per year-end anchor, whole universe
-    per call) via fetch_prices.run_bulk, so the downstream analysis is machine-
-    independent.  The api_key is read from configdic (fallback fmpAPIkey.txt) and NEVER
-    printed (masked).  Returns dict(main=..., supp=...) of resolved paths (or None)."""
+    per call) via `_fetch_bulk_scrubbed` in THIS module.  The api_key is read from
+    configdic (fallback fmpAPIkey.txt) and NEVER printed (masked).  Returns
+    dict(main=..., supp=...) of resolved paths (or None).
+
+    THE DOCSTRING USED TO SAY "via fetch_prices.run_bulk" AND THAT WAS FALSE.  `run_bulk`
+    is called from nowhere in this module; `_fetch_bulk_scrubbed` is the fetch, and it
+    exists because it cannot leak the api_key.  The claim mattered: a payload floor and a
+    weekend guard were added to `run_bulk` and, on the strength of that sentence, believed
+    to be protecting this stage.  They were not.  Both now run here, from the same
+    definitions in `fetch_prices`, and `test_fetch_prices` pins the wiring so the sentence
+    cannot go stale again.
+    """
     import fetch_prices as fp  # KEY-FREE pure helpers only (build_anchor_dates, ...)
 
     #  PRESENCE, NOT FRESHNESS -- and that is now a stated decision rather than an oversight.
@@ -247,18 +464,25 @@ def run_price_fetch_stage(resdic, configdic, log):
                 log(f"[price-fetch] MAIN grid absent -> bulk-by-date fetch, "
                     f"{len(anchors)} anchor dates (~{len(anchors)} calls): "
                     f"{[a.isoformat() for a in anchors]}")
-                calls, written = _fetch_bulk_scrubbed(baseurl, api_key, anchors, syms,
-                                                      _PRICES_CSV, log)
+                calls, written, refused, vf = _fetch_bulk_scrubbed(
+                    baseurl, api_key, anchors, syms, _PRICES_CSV, log,
+                    reference_paths=_reference_paths(configdic, _PRICES_CSV))
                 log(f"[price-fetch] MAIN done: {calls} calls, {written} rows -> "
                     f"{os.path.basename(_PRICES_CSV)}")
+                _report_fetch_refusals("MAIN", refused, vf, log)
             if need_supp:
                 d2025 = fp.nearest_weekday_on_or_before(datetime(2025, 12, 31).date())
                 log(f"[price-fetch] SUPP 2025 anchor absent -> bulk-by-date fetch 1 "
                     f"date ({d2025.isoformat()})")
-                calls, written = _fetch_bulk_scrubbed(baseurl, api_key, [d2025], syms,
-                                                      _PRICES_2025_CSV, log)
+                #  ONE anchor, so the relative-median floor is vacuous by construction and
+                #  only the absolute floor and the venue test can fire here.  That is exactly
+                #  the hole the absolute backstop was put in for.
+                calls, written, refused, vf = _fetch_bulk_scrubbed(
+                    baseurl, api_key, [d2025], syms, _PRICES_2025_CSV, log,
+                    reference_paths=_reference_paths(configdic, _PRICES_2025_CSV))
                 log(f"[price-fetch] SUPP done: {calls} calls, {written} rows -> "
                     f"{os.path.basename(_PRICES_2025_CSV)}")
+                _report_fetch_refusals("SUPP", refused, vf, log)
         except Exception as e:
             # Re-raise with a SCRUBBED message so the guard banner (printed to the REAL
             # streams outside this context) can never carry the key.
@@ -306,18 +530,65 @@ def _audit_price_grid_stage(resdic, configdic, log):
         _PRICES_CSV, _panel_symbols(resdic),
         supp_csv=_PRICES_2025_CSV if os.path.exists(_PRICES_2025_CSV) else None,
         log=log,
-        refuse_when_stale=bool(configdic.get("price_grid_refuse_when_stale", 0)))
+        refuse_when_stale=bool(configdic.get("price_grid_refuse_when_stale", 0)),
+        #  The audit's headline claim is about what the STAGES compute on, so it has to be
+        #  told which route they will use.  Same configdic key `_build_price_source` reads,
+        #  so the two cannot disagree.
+        price_route=str(configdic.get("price_route", "real") or "real"))
 
 
-def _build_price_source(log):
+def _build_price_source(log, configdic=None):
+    """The outcome-variable price source for the whole analysis suite.
+
+    'real' IS AND REMAINS THE DEFAULT.  `configdic['price_route']` selects another route
+    explicitly -- 'real+derived' is the gap-fill (real wherever real has a price, the
+    fundamentals-panel total-return leg only where it is empty), which is the one the CEO
+    asked for while the price refetch stays deferred.  See derived_prices.GapFillPriceSource,
+    and read its refusal report: on the run machine's grid it fills 1,187 names and REFUSES
+    ~120 on the listing-currency guard, and those refusals are the correct output rather than
+    a gap to paper over.
+
+    THE PANEL IS AN EXTRA INPUT.  A non-real route needs the deep fundamentals panel; if it
+    is absent this FALLS BACK TO 'real' with a loud line rather than killing five analysis
+    stages over a configuration choice.
+    """
     import returns_core as rc
+    configdic = configdic or {}
     supp = _PRICES_2025_CSV if os.path.exists(_PRICES_2025_CSV) else None
     if not os.path.exists(_PRICES_CSV):
         raise RuntimeError(f"real price grid absent: {_PRICES_CSV} "
                            "(price-fetch stage did not produce it)")
-    ps = rc.PriceSource(_PRICES_CSV, supp_csv=supp)
-    log(f"[price-source] PriceSource built from {os.path.basename(_PRICES_CSV)}"
-        + (f" + {os.path.basename(_PRICES_2025_CSV)}" if supp else " (no 2025 supp)"))
+    route = str(configdic.get("price_route", "real") or "real")
+    if route == "real":
+        ps = rc.PriceSource(_PRICES_CSV, supp_csv=supp)
+        log(f"[price-source] route=real  PriceSource built from "
+            f"{os.path.basename(_PRICES_CSV)}"
+            + (f" + {os.path.basename(_PRICES_2025_CSV)}" if supp else " (no 2025 supp)"))
+        return ps
+
+    import derived_prices as dpx
+    if route not in dpx.PRICE_ROUTES:
+        raise RuntimeError(f"configdic['price_route']={route!r} is not one of "
+                           f"{dpx.PRICE_ROUTES}")
+    panel = configdic.get("price_route_panel") or dpx.DEFAULT_PANEL_GLOB
+    try:
+        ps = dpx.build_price_source(route, prices_csv=_PRICES_CSV, supp_csv=supp,
+                                    panel=panel)
+    except (FileNotFoundError, KeyError) as e:
+        #  NOTE THE ORDERING LIMITATION, stated rather than hidden: the price-grid audit
+        #  stage runs BEFORE this one and has already printed a banner naming the CONFIGURED
+        #  route, so on a fallback the banner and reality disagree for one run.  This line is
+        #  the correction, and it is why it says "every number below" explicitly.
+        log(f"[price-source] route={route} UNAVAILABLE ({type(e).__name__}: {e}) -- "
+            f"FALLING BACK to route=real.  Every number below is on the real grid, and the "
+            f"price-grid audit banner above named {route!r} -- THIS line is the correct one.")
+        return rc.PriceSource(_PRICES_CSV, supp_csv=supp)
+    log(f"[price-source] route={route}  (real grid "
+        f"{os.path.basename(_PRICES_CSV)} + panel {os.path.basename(str(panel))})")
+    for k, v in ps.diagnostics().items():
+        if k in ("route", "n_tickers_gapfilled", "n_tickers_real_priceable",
+                 "n_tickers_derived_priceable", "leg_selection", "bias_measurability"):
+            log(f"[price-source]   {k} = {v}")
     return ps
 
 
@@ -680,7 +951,7 @@ def run_analysis_suite(resdic, configdic):
     #  anything, and a failure inside the audit must not be mistaken for a fetch failure.
     _run_stage("price-grid staleness audit (report only, NO fetch)",
                _audit_price_grid_stage, resdic, configdic, log)
-    price_source = _run_stage("build-price-source", _build_price_source, log)
+    price_source = _run_stage("build-price-source", _build_price_source, log, configdic)
 
     # ---- Stage 2: model-vs-metric (dmdic only; independent of prices/PIT) ----
     def _mvm():
@@ -700,6 +971,47 @@ def run_analysis_suite(resdic, configdic):
                      _build_pit_inputs, dmdic, configdic, log)
     merged, registry, clean = (pit if pit else (dmdic, None, False))
 
+    # ---- PIT universe exchange scope, resolved ONCE and shared by the two PIT stages.
+    #  DEFAULT IS UNCHANGED AND MUST STAY THAT WAY: absent key -> None -> NA1
+    #  (NYSE/NASDAQ/TSX), which is what every grid and skill number printed so far was
+    #  computed on.  `configdic['pit_exchange_filter'] = 'all'` opens the backtest to the
+    #  universe the deployed filter actually scores (KOSPI/KOSDAQ/LSE/XETRA/PAR/STO/OSL/BRU).
+    #
+    #  ============================================================================
+    #  DO NOT SWITCH THIS ON WITHOUT THE PRICE REFETCH.  Three costs, biggest first;
+    #  all measured 2026-08-22 against the run machine's grid + the 08-22 CUR6K panel.
+    #  ============================================================================
+    #
+    #  1. no_buy COLLAPSE -- THE REASON THE KNOB STAYS OFF, and the one an earlier version of
+    #     this comment understated by an order of magnitude.  The refetch is deferred, so the
+    #     Korean/Oslo/Paris names entering the universe have NO price at any anchor.  They
+    #     still COMPETE for top-20 slots and then contribute nothing, so the shipped top-20
+    #     loses 12 to 19 of its 20 names to `no_buy` (17 of 20 at buy2024 -- a headline
+    #     resting on THREE names), and top-20 overlap with the NA1 pick set falls to 4-12 of
+    #     20.  The number that comes out is not a wider measurement of the same thing; it is
+    #     a three-name average wearing a top-20 label.
+    #
+    #  2. INTERIOR PRICE HOLES DO REACH THE -1.0 FLOOR, and the earlier claim that the floor
+    #     was unreachable was wrong -- it was true only of the WHOLLY-unpriced venues.  A name
+    #     priced at the buy anchor and missing at the eval anchor gets status='terminal':
+    #     `total_return_floor` puts it at -100% and the default beat-rate policy
+    #     (missing='fail') scores it a miss.  Roughly 200 names on the widened scope are in
+    #     that state, 164 of them `.L`, and 18 of the 29 `.L` cases at 2021->2024 are priced
+    #     again at 2025-12-31 -- provably alive, scored as total losses.  At PICK level the
+    #     bite is small (3 picks at depth 100, 1 at depth 50, ZERO at depth <= 20, i.e. about
+    #     -2pp on one cell) and at the NA1 default it is ZERO at every anchor, horizon and
+    #     depth.  Small, but not nothing, and not "unreachable".
+    #
+    #  3. COST.  The PIT reproduction goes from ~1,767 to ~4,954 scored live names per anchor.
+    #     Not measured -- it needs a pipeline run.
+    #
+    #  What the widened scope is GOOD for: seeing which names the filter would rank if the
+    #  grid could price them.  That is a diagnostic, not a grading run.
+    import dead_merge as _dm_scope
+    pit_exch = _dm_scope.resolve_exchange_filter(configdic.get("pit_exchange_filter"))
+    log("[universe] PIT exchange scope = "
+        + ("NA1 (NYSE/NASDAQ/TSX) -- default" if pit_exch is None else str(pit_exch)))
+
     # ---- Stage 4: depth x horizon grid (returns per_anchor for reuse) ----
     def _grid():
         if price_source is None or registry is None:
@@ -710,7 +1022,7 @@ def run_analysis_suite(resdic, configdic):
         # the beat-rate stage.  (A carve-off view is available via skill_baseline /
         # -run_estimation; not re-run here to avoid a second ~6min PIT reproduction.)
         return dhg.run_in_pipeline(dmdic, merged, registry, price_source, log=log,
-                                   carve="on")
+                                   carve="on", exchange_filter=pit_exch)
     grid_out = _run_stage("depth x horizon avg-TR grid (DEPLOYED, carve-ON)", _grid)
     per_anchor = grid_out[1] if grid_out else None
 
@@ -728,7 +1040,8 @@ def run_analysis_suite(resdic, configdic):
         import skill_baseline as sb
         res = sb.run_skill_baseline(dmdic, merged, registry, price_source,
                                     cadence_months=36, pick_n=20, oracle_ns=(3, 20),
-                                    n_draws=1000, seed=0, log=log)
+                                    n_draws=1000, seed=0,
+                                    exchange_filter=pit_exch, log=log)
         print("\n" + "#" * 72)
         print("# SKILL BASELINE  (oracle-best-N ceiling + random floor + ladder)")
         print("#" * 72)

@@ -688,14 +688,20 @@ def test_composite_diagnostics_declare_the_seam():
     assert d["route"] == "derived+real composite"
 
 
-def test_composite_route_needs_both_inputs():
+@pytest.mark.parametrize("route", ["derived+real", "real+derived"])
+def test_composite_route_needs_both_inputs(route):
     """Both legs are mandatory -- a silent single-leg fallback is exactly the survivorship
-    failure this route exists to prevent."""
+    failure these routes exist to prevent.
+
+    Parameterised over BOTH composites (2026-08-22).  The message says "the other leg" rather
+    than "the fallback leg" because which leg is the fallback differs between them: on
+    'derived+real' the real leg backs up the derived one, on 'real+derived' it is the reverse.
+    """
     with pytest.raises(ValueError, match="needs panel"):
-        dpx.build_price_source("derived+real")
-    with pytest.raises(ValueError, match="needs prices_csv for the fallback leg"):
+        dpx.build_price_source(route)
+    with pytest.raises(ValueError, match="needs prices_csv for the other leg"):
         dpx.build_price_source(
-            "derived+real",
+            route,
             panel=panel([("X", "2018-12-31", 1000.0, 10.0, 0.0, "USD")]))
 
 

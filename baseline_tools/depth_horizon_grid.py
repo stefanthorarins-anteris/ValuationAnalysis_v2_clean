@@ -60,7 +60,9 @@ DEFAULT_DEAD = os.path.join(_HOME, "delisted_out", "dead_fundamentals_20260713_1
 DEFAULT_REGISTRY = os.path.join(_HOME, "delisted_out", "delisted_registry.csv")
 DEFAULT_PRICES = os.path.join(_HERE, "price_data", "real_prices.csv")
 # Supplementary 2025 prices, merged in-memory to add the 2025-12-31 anchor WITHOUT
-# mutating the canonical real_prices.csv (see returns_core.PriceSource._merge_supplementary).
+# mutating the canonical real_prices.csv.  The 2025-12-30 -> 2025-12-31 holiday union that
+# used to be hardcoded for this file alone is now the GENERAL per-anchor fill layer
+# (returns_core.PriceSource._fill_from_neighbour_dates).
 DEFAULT_PRICES_2025 = os.path.join(_HERE, "price_data", "real_prices_2025.csv")
 
 ANCHORS = rc.DEFAULT_ANCHORS
@@ -199,7 +201,7 @@ def inputs_from_memory(dmdic, merged, registry, log):
 
 
 def run_in_pipeline(dmdic, merged, registry, price_source, log=None,
-                    weights="default", carve="off"):
+                    weights="default", carve="off", exchange_filter=None):
     """IN-MEMORY entry point for the automatic pipeline (post-pick analysis suite).
 
     Reproduces the PIT ranking as-of each historical buy anchor USING TONIGHT's model
@@ -214,7 +216,8 @@ def run_in_pipeline(dmdic, merged, registry, price_source, log=None,
     """
     log = log or (lambda *a: None)
     inputs = inputs_from_memory(dmdic, merged, registry, log)
-    per_anchor = rank_all_anchors(inputs, log, weights=weights, carve=carve)
+    per_anchor = rank_all_anchors(inputs, log, weights=weights, carve=carve,
+                                  exchange_filter=exchange_filter)
     cells, pooled, pooled_clean = compute_grid(per_anchor, price_source)
     text = build_report(per_anchor, cells, pooled, pooled_clean)
     print("\n" + "#" * 72)
@@ -228,13 +231,19 @@ def run_in_pipeline(dmdic, merged, registry, price_source, log=None,
 # --------------------------------------------------------------------------- #
 #  Ranking: once per buy anchor (full ordering to depth 100)                  #
 # --------------------------------------------------------------------------- #
-def rank_all_anchors(inputs, log, weights="default", carve="off"):
+def rank_all_anchors(inputs, log, weights="default", carve="off", exchange_filter=None):
     """Rank all buy anchors under one scoring config.
 
     weights : 'default' (production weights) | 'equal' (all metric weights = 1).
     carve   : 'off' (full un-carved survivorship universe -- current behaviour) |
               'on'  (universe filtered to carveOut general pool BEFORE ranking).
-    weights='default' + carve='off' reproduces the baseline grid bit-for-bit.
+    exchange_filter : passed straight to `dead_merge.pit_universe`.  None keeps the NA1
+              (NYSE/NASDAQ/TSX) default this grid has always run on; `dm.ALL_EXCHANGES`
+              opens it to the universe the deployed filter actually scores.  Threaded
+              2026-08-22 -- until then this call passed nothing, so every grid number ever
+              printed was NA1-only while the shipped top-20 contained KOSPI/OSL/PAR names.
+    weights='default' + carve='off' + exchange_filter=None reproduces the baseline grid
+    bit-for-bit.
     """
     dmdic, registry, merged = inputs["dmdic"], inputs["registry"], inputs["merged"]
     live_sources, bm_all = inputs["live_sources"], inputs["bm_all"]
@@ -245,7 +254,8 @@ def rank_all_anchors(inputs, log, weights="default", carve="off"):
     for wid, buy in BUY_ANCHORS:
         log(f"[{wid}] pit_universe + reproducing PIT ranking as-of {buy} "
             f"(weights={weights}, carve={carve}) ...")
-        uni = dm.pit_universe(dmdic, registry, as_of=buy)
+        uni = dm.pit_universe(dmdic, registry, as_of=buy,
+                              exchange_filter=exchange_filter)
         if carve == "on":
             #  coverage_scope=live_sources: `uni` is live UNION dead, and the sector map can
             #  only ever describe the live half (see carve_general_universe).
@@ -526,6 +536,13 @@ def main():
                     help="metric weight vector (default=production, equal=all weights 1)")
     ap.add_argument("--carve", choices=["off", "on"], default="off",
                     help="filter universe to carveOut general pool BEFORE ranking")
+    #  EXCHANGE SCOPE of the PIT universe.  Default 'na1' is what this grid has always run,
+    #  so the certified numbers are untouched unless this is passed explicitly.
+    ap.add_argument("--exchanges", default="na1",
+                    help="PIT universe exchange scope: 'na1' (default: NYSE/NASDAQ/TSX, "
+                         "unchanged), 'all' (no restriction -- the universe the deployed "
+                         "filter actually scores), or a comma-separated "
+                         "exchangeShortName list")
     #  OUTCOME-VARIABLE ROUTE.  'real' is the default and is bit-for-bit unchanged, so the
     #  certified grid is untouched unless this is passed explicitly.  'derived' swaps in
     #  the panel-based TOTAL-RETURN leg (deeper coverage, dividend-inclusive) -- see
@@ -534,7 +551,11 @@ def main():
     ap.add_argument("--price-route", dest="price_route",
                     choices=list(dpx.PRICE_ROUTES), default="real",
                     help="outcome-variable price source: 'real' = real_prices*.csv "
-                         "(default, unchanged); 'derived' = panel total-return leg")
+                         "(default, unchanged); 'derived' = panel total-return leg "
+                         "(SURVIVORS-ONLY); 'derived+real' = derived preferred, real as "
+                         "fallback; 'real+derived' = REAL preferred, derived only as a "
+                         "GAP FILL where the real grid has no price at all (publishes a "
+                         "per-venue refusal instead of substituting a number)")
     ap.add_argument("--panel", default=dpx.DEFAULT_PANEL_GLOB,
                     help="fundamentals panel (pickle path or glob) for --price-route=derived")
     ap.add_argument("--derived-max-lag-days", dest="derived_max_lag_days", type=int,
@@ -577,7 +598,10 @@ def main():
         sys.exit(2)
     #  The real leg is built either way: on the derived route it still supplies the URTH
     #  benchmark, which can never be derived (the panel holds no ETF rows).
-    uses_panel = args.price_route in ("derived", "derived+real")
+    #  Every route except the bare real one needs the panel.  Derived from PRICE_ROUTES
+    #  rather than listed, so adding a route (e.g. 'real+derived') cannot silently leave
+    #  this behind and hand `panel=None` to a source that requires it.
+    uses_panel = args.price_route != "real"
     price_source = dpx.build_price_source(
         args.price_route, prices_csv=args.prices, supp_csv=supp,
         panel=(args.panel if uses_panel else None),
@@ -600,7 +624,11 @@ def main():
         for line in price_source.timing_report().to_string(index=False).splitlines():
             log(f"[price-source]   {line}")
     inputs = load_inputs(args.pickle, args.dead, args.registry, log)
-    per_anchor = rank_all_anchors(inputs, log, weights=args.weights, carve=args.carve)
+    exch = dm.resolve_exchange_filter(args.exchanges)
+    log(f"[universe] exchange scope = {args.exchanges!r} -> "
+        f"{'NA1 (NYSE/NASDAQ/TSX)' if exch is None else exch}")
+    per_anchor = rank_all_anchors(inputs, log, weights=args.weights, carve=args.carve,
+                                  exchange_filter=exch)
     cells, pooled, pooled_clean = compute_grid(per_anchor, price_source)
 
     text = build_report(per_anchor, cells, pooled, pooled_clean)

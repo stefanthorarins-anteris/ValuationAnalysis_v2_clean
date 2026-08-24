@@ -452,15 +452,58 @@ class DerivedPriceSource:
         if missing:
             raise KeyError("panel cdx_df missing required column(s): %s" % (missing,))
 
-        df = self._clean(cdx)
+        #  WHY EACH SOURCE WAS LOST, not just how many.  The guards below are RESTRICTIONS,
+        #  so a name this leg cannot price is a name a composite hands back to the real leg
+        #  -- and when the real leg is empty too, that is a REFUSAL that has to be
+        #  publishable with a reason rather than appearing as a silent absence.  An
+        #  aggregate count cannot say "Oslo refuses because its issuers report in USD on
+        #  NOK-listed lines", and that sentence is the whole output of the gap-fill route
+        #  on Oslo.
+        self._drop_reason = {}
+        self._n_panel_sources = int(cdx["source"].nunique())
+        self._stage_remaining = set(cdx["source"].dropna().unique())
+
+        df = self._stage("unusable_rows", self._clean(cdx))
         df, self._n_currency_switch_sources = self._guard_currency(df, strict_currency)
+        df = self._stage("reporting_currency_switch", df)
         df, self._n_listing_mismatch_rows, self._n_listing_mismatch_sources =             self._guard_listing_currency(df, self.require_listing_currency_match)
+        df = self._stage("currency_mismatch", df)
         df, self._n_backfill_rows = self._guard_repeated_price(df,
                                                               self.reject_repeated_price)
+        df = self._stage("prelisting_backfill", df)
         df, self._n_yield_rejected = self._build_level(df)
         self._lut, self._lag = self._pick_anchors(df)
         self._n_rows = len(df)
         self._n_sources = int(df["source"].nunique())
+        #  Survived every guard and still has no usable level at any anchor: an all-NaN or
+        #  non-positive level, or every candidate pick past the staleness / carry-forward cap.
+        for src in self._stage_remaining - {t for (t, _a) in self._lut}:
+            self._drop_reason.setdefault(src, "no_anchor_pick")
+
+    def _stage(self, reason, frame):
+        """Record every source that disappeared at this guard, then advance the frontier."""
+        now = set(frame["source"].dropna().unique())
+        for src in self._stage_remaining - now:
+            self._drop_reason[src] = reason
+        self._stage_remaining = now
+        return frame
+
+    def drop_reason(self, ticker):
+        """Why this leg cannot price `ticker` -- None if it can.
+
+        'unusable_rows' | 'reporting_currency_switch' | 'currency_mismatch' |
+        'prelisting_backfill' | 'no_anchor_pick' | 'not_in_panel'.
+        """
+        if any((ticker, a) in self._lut for a in self.anchors):
+            return None
+        return self._drop_reason.get(ticker, "not_in_panel")
+
+    def drop_reason_counts(self):
+        """{reason: n_sources} over the panel, biggest first."""
+        out = {}
+        for r in self._drop_reason.values():
+            out[r] = out.get(r, 0) + 1
+        return dict(sorted(out.items(), key=lambda kv: -kv[1]))
 
     # ----------------------------------------------------------------- build #
     @staticmethod
@@ -837,12 +880,158 @@ class CompositePriceSource:
         return self.derived.timing_report()
 
 
+def _venue_of(symbol):
+    """`'092730.KQ' -> '.KQ'`, `'META' -> '(none)'`.  The same venue key
+    `price_grid_audit.suffix_of` uses, so the two modules' venue tables line up."""
+    t = str(symbol)
+    return "." + t.rsplit(".", 1)[1] if "." in t else "(none)"
+
+
+def venue_listing_currency(venue):
+    """Listing currency for a VENUE KEY rather than a symbol: `'.ST' -> 'SEK'`,
+    `'(none)' -> 'USD'`, an unrecognised suffix -> None.
+
+    A thin wrapper over `_listing_currency` so callers reporting per venue do not have to
+    fabricate a symbol to look one up -- which is what the venue tables were doing, and it
+    read as a typo rather than as a lookup.
+    """
+    return _listing_currency("X" if venue == "(none)" else "X" + venue)
+
+
+class GapFillPriceSource:
+    """REAL leg everywhere it has a price; derived leg ONLY where the real leg is EMPTY.
+
+    THIS IS NOT `CompositePriceSource`.  That class prefers the DERIVED leg wherever the
+    derived leg exists, which reassigns ~2,000 names the real file prices perfectly well --
+    and is why its headline had to be reconciled to -0.0003 against the real route before
+    anyone could trust it.  This class is the CEO's instruction ("wire it in where real is
+    empty") read literally: the real route is untouched on every name it can price, and the
+    derived leg is a GAP FILL.
+
+    THE ASSIGNMENT IS PER TICKER AND THE TWO SETS ARE DISJOINT BY CONSTRUCTION.  A ticker
+    goes to the derived leg only if the real leg prices it at NO anchor.  So a window can
+    never take one leg from each source -- which matters because the real leg's `adjClose`
+    is already back-adjusted for dividends while the derived level chain-links them again,
+    so a mixed window DOUBLE-COUNTS the dividend (measured IC residual +0.0554 mixed against
+    +0.0028 consistent).  `CompositePriceSource` has to enforce that with an all-or-nothing
+    rule; here it is free, because the derived-assigned set and the real-priceable set do
+    not intersect at all.
+
+    THE REFUSAL IS THE OUTPUT, NOT A FAILURE.  A real-empty ticker the derived leg also
+    cannot price is REFUSED, and `assignment_report` names the reason.  The dominant reason
+    is the listing-currency guard, and it stays on: it fixed a measured -0.1234 mean log gap
+    on the 22.2% currency-mismatched subpopulation.  Oslo is full of USD reporters on
+    NOK-listed lines, so Oslo refuses.  Substituting a number there would reintroduce
+    exactly the defect that guard exists to remove.
+
+    WHAT NOBODY CAN CHECK, AND IT IS THE HONEST LIMIT OF THE WHOLE ROUTE.  The derived leg's
+    bias against the real leg is measurable ONLY on the OVERLAP -- names both legs price.
+    This route uses the derived leg ONLY where the real leg is empty, i.e. exactly OFF that
+    overlap.  The population where the bias is MEASURED and the population where the leg is
+    USED are DISJOINT, so any bias correction carried across is an EXTRAPOLATION and must be
+    labelled one.  `derived_price_validate.venue_currency_bias_table` exists to make that
+    extrapolation inspectable: if the bias is flat across every measurable venue sharing a
+    currency, carrying it to an unmeasured venue in that same currency is at least a
+    supported guess; if it varies venue to venue, it is not.  NO CORRECTION IS APPLIED HERE.
+    """
+
+    def __init__(self, real, derived):
+        self.real, self.derived = real, derived
+        self.anchors = list(real.anchors)
+        self._real_tickers = {t for (t, _a) in real._lut}
+        self._derived_tickers = {t for (t, _a) in derived._lut}
+        #  DISJOINT from _real_tickers by construction -- see the class docstring.
+        self._gapfilled = self._derived_tickers - self._real_tickers
+
+    def _for(self, ticker):
+        return self.derived if ticker in self._gapfilled else self.real
+
+    def price(self, ticker, anchor):
+        return self._for(ticker).price(ticker, anchor)
+
+    def last_before(self, ticker, anchor):
+        return self._for(ticker).last_before(ticker, anchor)
+
+    def benchmark_series(self, symbol=rc.BENCHMARK_SYMBOL):
+        """Always the REAL leg: URTH is an ETF and files no statements."""
+        return self.real.benchmark_series(symbol)
+
+    def assignment_report(self, tickers):
+        """Per ticker: which leg serves it, or WHY it is refused.
+
+        DataFrame[ticker, venue, leg, reason]; `leg` is 'real' | 'derived_fill' | 'REFUSED'.
+        `tickers` is the caller's universe, because a price source does not have one -- pass
+        the panel's sources or the scored universe and the answer is about that population.
+        """
+        rows = []
+        for t in tickers:
+            if t in self._real_tickers:
+                rows.append((t, _venue_of(t), "real", ""))
+            elif t in self._gapfilled:
+                rows.append((t, _venue_of(t), "derived_fill", ""))
+            else:
+                rows.append((t, _venue_of(t), "REFUSED",
+                             self.derived.drop_reason(t) or "unknown"))
+        return pd.DataFrame(rows, columns=["ticker", "venue", "leg", "reason"])
+
+    def per_venue_counts(self, tickers):
+        """The clear/refuse table per venue -- the number the CEO asked to see.
+
+        `n_real_empty` is the only column this route can act on at all: where the real file
+        has a price the route is inert by design, so a venue with n_real_empty == 0 tells you
+        nothing about the derived leg either way.
+        """
+        rep = self.assignment_report(tickers)
+        wide = (rep.pivot_table(index="venue", columns="leg", values="ticker",
+                                aggfunc="count", fill_value=0)
+                   .reindex(columns=["real", "derived_fill", "REFUSED"], fill_value=0)
+                   .reset_index())
+        wide["n_panel"] = wide[["real", "derived_fill", "REFUSED"]].sum(axis=1)
+        wide["n_real_empty"] = wide["derived_fill"] + wide["REFUSED"]
+        wide["pct_cleared_of_real_empty"] = [
+            round(100.0 * d / e, 1) if e else float("nan")
+            for d, e in zip(wide["derived_fill"], wide["n_real_empty"])]
+        return wide.sort_values("n_real_empty", ascending=False).reset_index(drop=True)
+
+    def refusal_reasons(self, tickers):
+        """Refusal counts by (venue, reason).  A PUBLISHED refusal, not a substitution."""
+        rep = self.assignment_report(tickers)
+        ref = rep[rep["leg"] == "REFUSED"]
+        if ref.empty:
+            return pd.DataFrame(columns=["venue", "reason", "n"])
+        return (ref.groupby(["venue", "reason"]).size().rename("n").reset_index()
+                   .sort_values("n", ascending=False).reset_index(drop=True))
+
+    def diagnostics(self):
+        d = dict(self.derived.diagnostics())
+        d["route"] = "real+derived gap-fill"
+        d["n_tickers_real_priceable"] = len(self._real_tickers)
+        d["n_tickers_derived_priceable"] = len(self._derived_tickers)
+        d["n_tickers_gapfilled"] = len(self._gapfilled)
+        d["leg_selection"] = ("REAL wherever the real leg prices the ticker at ANY anchor; "
+                              "derived ONLY where it does not.  The two sets are disjoint, "
+                              "so no window can mix legs.")
+        d["bias_measurability"] = ("the derived-vs-real bias is measurable only on the "
+                                   "OVERLAP, and this route uses the derived leg only OFF "
+                                   "that overlap -- any correction carried across is an "
+                                   "EXTRAPOLATION, never a measurement.  None is applied.")
+        return d
+
+    def timing_report(self):
+        return self.derived.timing_report()
+
+
 # --------------------------------------------------------------------------- #
 #  ROUTE SELECTOR -- the side-by-side switch                                  #
 # --------------------------------------------------------------------------- #
-#  'derived+real' is the route to use for a UNIVERSE-WIDE backtest; bare 'derived' is the
-#  clean single-leg route for auditing the derived leg itself, and is survivors-only.
-PRICE_ROUTES = ("real", "derived", "derived+real")
+#  'derived+real' is the derived-PREFERRED composite; bare 'derived' is the clean single-leg
+#  route for auditing the derived leg itself, and is survivors-only.  'real+derived' is the
+#  GAP-FILL route -- real wherever real has a price, derived only where it does not.  The
+#  LEADING leg is the preferred one in both composite names.
+#
+#  'real' REMAINS THE DEFAULT EVERYWHERE.  A second route existing does not change which one
+#  runs; it has to be selected explicitly (`--price-route`, or configdic['price_route']).
+PRICE_ROUTES = ("real", "derived", "derived+real", "real+derived")
 
 
 def build_price_source(route, prices_csv=None, supp_csv=None, panel=None, anchors=None,
@@ -859,6 +1048,12 @@ def build_price_source(route, prices_csv=None, supp_csv=None, panel=None, anchor
               -> CompositePriceSource: the derived leg per ticker where it exists, the real
                  leg for everything else (i.e. the delisted half).  This is the route for a
                  universe-wide backtest.
+    'real+derived'
+              -> GapFillPriceSource: the REAL leg wherever it prices the ticker, the derived
+                 leg ONLY where the real leg is empty.  Strictly less invasive than
+                 'derived+real' -- it cannot move a name the real file already prices -- and
+                 it is the route for "the refetch is deferred, fill what can be filled".
+                 Read GapFillPriceSource on why its REFUSALS are the output.
 
     Keeping all three selectable is the point: it is what makes the derived leg's fidelity
     against the real leg auditable instead of asserted.
@@ -879,5 +1074,7 @@ def build_price_source(route, prices_csv=None, supp_csv=None, panel=None, anchor
     if route == "derived":
         return derived
     if real is None:
-        raise ValueError("route='derived+real' needs prices_csv for the fallback leg")
+        raise ValueError("route=%r needs prices_csv for the other leg" % (route,))
+    if route == "real+derived":
+        return GapFillPriceSource(real, derived)
     return CompositePriceSource(derived, real)
