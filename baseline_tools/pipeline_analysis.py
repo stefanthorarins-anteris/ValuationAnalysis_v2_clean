@@ -559,7 +559,19 @@ def _build_price_source(log, configdic=None):
         raise RuntimeError(f"real price grid absent: {_PRICES_CSV} "
                            "(price-fetch stage did not produce it)")
     route = str(configdic.get("price_route", "real") or "real")
-    if route == "real":
+    #  INTERIOR-HOLE FILL (D1).  Default OFF: it MOVES MEASURED NUMBERS, on windows that
+    #  currently read -100% for a name a later price proves was alive.  Turning it on needs
+    #  the fundamentals panel, so it forces a non-real route internally even when the
+    #  route is 'real'.
+    #
+    #  MEASURED BEFORE YOU TURN IT ON: on the run machine's grid it fills 10 holes and
+    #  REFUSES 693, 692 of them because the survivors-only panel cannot bridge the gap
+    #  (614 of those on `.L`, which is mostly depositary lines the panel does not carry).
+    #  So the mechanism is correct and proven and the DATA barely feeds it -- 1.4% of the
+    #  hole population.  It is also INERT on the shipped top-20 grading: zero imputed cells
+    #  among the graded picks at either clean 36-month anchor, in either exchange scope.
+    fill_holes = str(configdic.get("fill_interior_holes", 0)) in ("1", "True", "true")
+    if route == "real" and not fill_holes:
         ps = rc.PriceSource(_PRICES_CSV, supp_csv=supp)
         log(f"[price-source] route=real  PriceSource built from "
             f"{os.path.basename(_PRICES_CSV)}"
@@ -573,7 +585,7 @@ def _build_price_source(log, configdic=None):
     panel = configdic.get("price_route_panel") or dpx.DEFAULT_PANEL_GLOB
     try:
         ps = dpx.build_price_source(route, prices_csv=_PRICES_CSV, supp_csv=supp,
-                                    panel=panel)
+                                    panel=panel, fill_interior_holes=fill_holes)
     except (FileNotFoundError, KeyError) as e:
         #  NOTE THE ORDERING LIMITATION, stated rather than hidden: the price-grid audit
         #  stage runs BEFORE this one and has already printed a banner naming the CONFIGURED
@@ -583,8 +595,17 @@ def _build_price_source(log, configdic=None):
             f"FALLING BACK to route=real.  Every number below is on the real grid, and the "
             f"price-grid audit banner above named {route!r} -- THIS line is the correct one.")
         return rc.PriceSource(_PRICES_CSV, supp_csv=supp)
-    log(f"[price-source] route={route}  (real grid "
+    log(f"[price-source] route={route}  fill_interior_holes={fill_holes}  (real grid "
         f"{os.path.basename(_PRICES_CSV)} + panel {os.path.basename(str(panel))})")
+    inner = getattr(ps, "real", None)
+    if hasattr(inner, "imputation_report"):
+        d = inner.diagnostics()
+        log(f"[price-source]   holes filled={d['n_holes_filled']} "
+            f"refused={d['n_holes_refused']} {d['refusal_reasons']}")
+    elif hasattr(ps, "imputation_report"):
+        d = ps.diagnostics()
+        log(f"[price-source]   holes filled={d['n_holes_filled']} "
+            f"refused={d['n_holes_refused']} {d['refusal_reasons']}")
     for k, v in ps.diagnostics().items():
         if k in ("route", "n_tickers_gapfilled", "n_tickers_real_priceable",
                  "n_tickers_derived_priceable", "leg_selection", "bias_measurability"):
@@ -607,6 +628,70 @@ def _resolve_delisted_dir(configdic):
                 deads.sort()
                 return os.path.join(c, deads[-1]), reg
     return None, None
+
+
+def run_level_break_referee_stage(resdic, configdic, log):
+    """LEVEL-BREAK REFEREE (D2) -- report only, and it changes NO number.
+
+    Where the real leg makes an extreme single-period move the derived leg does not
+    corroborate, the real price is suspect.  `SIMINN.IC` steps 0.2256 -> 9.23 across one
+    anchor and reads +36,787% over 36 months; the derived leg reads +25.4%.
+
+    DEFAULT ON, because it prints and nothing else -- no price is overridden.  Set
+    `configdic['level_break_referee'] = 0` to silence it.  It needs the fundamentals panel;
+    absent that it SKIPS with a line rather than failing the run.
+
+    ITS COST, STATED RATHER THAN HIDDEN: on the default 'real' route nothing else in this
+    suite loads the panel, so this stage ADDS a ~276 MB pickle read (tens of seconds) to
+    every run.  That is the price of a second opinion and it buys nothing on a clean run.
+    If that becomes the wrong trade, turn it off by config -- but turn it off deliberately,
+    because a detector defaulted to silent detects nothing.
+
+    PREVENTIVE, NOT CORRECTIVE, and the reason is measured: of the 17 cells flagged on the
+    run machine's grid, THREE are the derived leg's own fault (g_derived == 1.000000 exactly,
+    both ends priced off the same filing) -- so an automatic "trust the derived leg" rule
+    would ship three known-wrong corrections.  None of the 461 names with a >= 5x step
+    reaches a top-100 pick in either exchange scope today, so nothing is on fire; this exists
+    so the next one is seen before it lands in a headline.
+    """
+    if str(configdic.get("level_break_referee", 1)) in ("0", "False", "false"):
+        log("[referee] level_break_referee disabled by config -- skipped")
+        return None
+    import derived_prices as dpx
+    import returns_core as rc
+    if not os.path.exists(_PRICES_CSV):
+        log("[referee] no price grid on disk -- skipped")
+        return None
+    supp = _PRICES_2025_CSV if os.path.exists(_PRICES_2025_CSV) else None
+    panel = configdic.get("price_route_panel") or dpx.DEFAULT_PANEL_GLOB
+    try:
+        real = rc.PriceSource(_PRICES_CSV, supp_csv=supp)
+        derived = dpx.DerivedPriceSource(panel, benchmark_source=real)
+    except (FileNotFoundError, KeyError) as e:
+        log(f"[referee] panel unavailable ({type(e).__name__}) -- skipped.  The referee "
+            f"needs TWO legs; with one it has no second opinion to offer.")
+        return None
+    cand = dpx.level_break_candidates(real, derived)
+    rep = dpx.level_break_report(real, derived)
+    print("\n" + "#" * 72)
+    print("# LEVEL-BREAK REFEREE  --  real leg vs derived leg, single-period disagreement")
+    print("#" * 72)
+    print(f"  corpus: {rep['n_symbols_both_legs_price']} symbols BOTH legs price "
+          f"(cut: real step >= {rep['min_real_step']}x AND |log gap| >= "
+          f"{rep['min_log_gap']})")
+    print(f"  flagged: {rep['n_cells_flagged']} cell(s) / {rep['n_symbols_flagged']} "
+          f"symbol(s) -- {rep['n_legs_disagree']} genuine disagreement, "
+          f"{rep['n_derived_uninformative']} where the DERIVED leg has no opinion")
+    if len(cand):
+        print(cand.to_string(index=False))
+    else:
+        print("  (none at this cut)")
+    print(f"  ACTION: {rep['action']}")
+    print(f"  BLIND TO: {rep['blind_to']}", flush=True)
+    if rep["n_legs_disagree"]:
+        log(f"[referee] {rep['n_legs_disagree']} suspect real-price step(s) -- see the "
+            f"block above; NOTHING was overridden")
+    return rep
 
 
 def _build_pit_inputs(dmdic, configdic, log):
@@ -951,6 +1036,10 @@ def run_analysis_suite(resdic, configdic):
     #  anything, and a failure inside the audit must not be mistaken for a fetch failure.
     _run_stage("price-grid staleness audit (report only, NO fetch)",
                _audit_price_grid_stage, resdic, configdic, log)
+    #  Referee BEFORE the price source is built: it is about whether the real grid can be
+    #  trusted, so its finding belongs above every number that rides on it.
+    _run_stage("level-break referee (report only, NO override)",
+               run_level_break_referee_stage, resdic, configdic, log)
     price_source = _run_stage("build-price-source", _build_price_source, log, configdic)
 
     # ---- Stage 2: model-vs-metric (dmdic only; independent of prices/PIT) ----

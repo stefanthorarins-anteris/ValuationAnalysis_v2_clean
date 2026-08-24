@@ -714,6 +714,21 @@ Drops the ENTIRE run, head included -- see REJECT_REPEATED_PRICE for why keeping
         """Days between the picked period end and the anchor's Dec-31 (None if no pick)."""
         return self._lag.get((ticker, anchor))
 
+    def picked_period_end(self, ticker, anchor):
+        """The STATEMENT DATE this leg priced `anchor` off (None if no pick).
+
+        Exposed because "which filing did you use" is a different question from "how stale is
+        it", and one consumer needs the identity rather than the distance: the anchor rule is
+        "newest period end <= Dec-31", so a name that skipped a filing is priced at TWO
+        anchors off the SAME statement.  The growth between those anchors is then exactly
+        1.0 -- not a measurement that the price did not move, but no measurement at all.
+        `HoleFilledPriceSource` refuses on that identity, which needs no threshold.
+        """
+        lag = self._lag.get((ticker, anchor))
+        if lag is None:
+            return None
+        return self._anchor_cutoff(anchor) - pd.Timedelta(days=int(lag))
+
     def coverage(self):
         """DataFrame[anchor, n_names] -- the priced universe this leg offers per anchor."""
         counts = {a: 0 for a in self.anchors}
@@ -898,6 +913,248 @@ def venue_listing_currency(venue):
     return _listing_currency("X" if venue == "(none)" else "X" + venue)
 
 
+class HoleFilledPriceSource:
+    """The REAL leg with INTERIOR holes imputed from the derived leg -- as a GROWTH RATIO,
+    never as a level.  Default OFF; it moves measured numbers.
+
+    WHAT IT IS FOR (CEO, 2026-08-22).  A name priced at the buy anchor and missing at the
+    eval anchor fires the terminal policy: `total_return_floor` reads -100% and the default
+    beat-rate policy scores it a miss.  For an INTERIOR hole -- priced before AND after the
+    gap -- a later price PROVES the company did not die, so that -100% is not a punishment
+    for missing data, it is a FALSE READING that sandbags our own measured track record.
+    177 names / 291 anchor-cells are in that state on the run machine's grid.
+
+    WHY IT CANNOT INSERT THE DERIVED PRICE, WHICH IS WHAT WAS ASKED FOR
+    ------------------------------------------------------------------
+    A return is a RATIO, so both legs of it must be on ONE scale.  They are not.  `adjClose`
+    is BACK-adjusted -- its level is today's price scaled backwards through the split and
+    dividend chain -- while the derived level is `price * cumprod(1+y)`, accumulated FORWARD
+    from the start of the panel.  Both are legitimate total-return levels and neither level
+    means anything on its own.  MEASURED on the 18,108 (ticker, anchor) cells both legs
+    price:
+
+        derived_level / adjClose     p1 0.0100   p25 1.0000   p50 1.1690
+                                     p75 1.5900  p99 9.4600
+                                     min 0.0037  max 338.53
+        share within +/-10% of 1.0:  36.06%
+
+    So splicing a derived LEVEL into a real series manufactures a return of up to ~338x at
+    the splice, on the very window the fix is meant to rescue.  That is the same defect class
+    as the dividend double-counting `CompositePriceSource` had to be built around, and it is
+    why this class exists in this shape instead.
+
+    WHAT IT DOES INSTEAD -- THE DERIVED LEG SUPPLIES A RATIO
+    -------------------------------------------------------
+    For a hole at anchor H, with P = the latest real-priced anchor before H:
+
+        g          = derived(H) / derived(P)          <- scale-free, both from ONE leg
+        imputed(H) = real(P) * g                      <- expressed on the REAL scale
+
+    A ratio of two derived levels cancels the derived scale exactly, so `g` is a pure
+    total-return growth factor and `imputed(H)` lands on the real leg's own scale.
+
+    THREE PROPERTIES, AND THE SECOND IS THE CORRECTNESS PROOF
+    --------------------------------------------------------
+    1. r(P -> H) == g - 1 exactly: the window that used to read -100% now reads the derived
+       total return, which is what was asked for.
+    2. RETURN-PRESERVING ACROSS THE HOLE.  For any later real anchor N,
+
+           (1 + r(P->H)) * (1 + r(H->N)) == 1 + r(P->N)
+
+       identically, because r(H->N) = real(N)/(real(P)*g) - 1.  So a window SPANNING the
+       hole is bit-for-bit unchanged, and the derived leg only decides how the outer return
+       is SPLIT between the two sub-windows.  It can therefore never INJECT return into the
+       sample -- any error is a reallocation between adjacent sub-periods, bounded by the
+       outer return.  Had any basis mixing crept in, this identity would fail; the test
+       suite asserts it numerically rather than trusting the algebra written here.
+    3. Both sub-window returns are ratios of same-scale quantities, so no dividend is
+       counted twice: each factor covers a DISJOINT interval -- dividends in (P,H] land in
+       `g`, dividends in (H,N] land in the complement.
+
+    THE DISJOINTNESS ARGUMENT FOR GapFillPriceSource SURVIVES, and it had to be re-derived
+    rather than assumed.  That class assigns whole TICKERS: derived only where the real leg
+    prices the name at NO anchor.  This class only ever touches a ticker the real leg prices
+    at TWO OR MORE anchors.  The two populations are disjoint by construction, so per-ticker
+    exclusivity is untouched -- and inside this class every value is on the real scale, so
+    there is no second basis for a window to mix.  Compose in this order: hole-fill the real
+    leg FIRST, then hand the result to `GapFillPriceSource` as its real leg.
+
+    WHAT IT DELIBERATELY DOES NOT TOUCH
+    -----------------------------------
+      * A name with NO real price at all -> no P to scale from -> stays `no_buy`.
+      * A TRAILING gap (the series genuinely ends) -> no later real price, so it is not an
+        interior hole -> stays `terminal`.  That distinction is the whole point of
+        `terminal` and this must not erase it.
+      * A LEADING gap (not yet listed) -> same, untouched.
+      * A hole the derived leg cannot bridge (it must price BOTH P and H) -> left as a hole
+        and counted as a refusal.
+
+    WHAT IT CANNOT SEE
+    ------------------
+      * Whether the derived `g` is RIGHT.  Property 2 bounds the damage to a reallocation,
+        not to zero.
+      * A hole whose true return is dominated by something the panel misses entirely -- a
+        delisting-and-relisting, or a reverse split the vendor mis-stamped.
+      * Anything on the seven venues the real leg cannot price at all: those names have no
+        real price anywhere, so they have no INTERIOR holes and are out of scope here by
+        construction.  They are `GapFillPriceSource`'s business.
+    """
+
+    def __init__(self, real, derived):
+        self.real, self.derived = real, derived
+        self.anchors = list(real.anchors)
+        self._idx = {a: i for i, a in enumerate(self.anchors)}
+        self._lut = dict(real._lut)
+        self._imputed = {}      # (ticker, anchor) -> dict(from_anchor, g, real_prev)
+        self._refused = {}      # (ticker, anchor) -> reason
+        self._fill()
+
+    # ------------------------------------------------------------------ build #
+    def _real_holes(self):
+        """{ticker: [interior hole anchors]} -- priced BEFORE and AFTER the gap.
+
+        Leading and trailing gaps are excluded HERE, at construction, rather than filtered
+        downstream, so the `no_buy` / `terminal` distinction cannot be lost by an oversight
+        somewhere else.
+        """
+        by_ticker = {}
+        for (t, a) in self.real._lut:
+            by_ticker.setdefault(t, set()).add(a)
+        holes = {}
+        for t, priced in by_ticker.items():
+            idxs = sorted(self._idx[a] for a in priced if a in self._idx)
+            if len(idxs) < 2:
+                continue
+            gap = [self.anchors[i] for i in range(idxs[0], idxs[-1] + 1)
+                   if self.anchors[i] not in priced]
+            if gap:
+                holes[t] = gap
+        return holes
+
+    def _prev_real(self, ticker, anchor):
+        """Latest anchor strictly before `anchor` where the REAL leg has a price."""
+        j = self._idx[anchor]
+        for k in range(j - 1, -1, -1):
+            a = self.anchors[k]
+            if (ticker, a) in self.real._lut:
+                return a
+        return None
+
+    def _fill(self):
+        for t, gaps in self._real_holes().items():
+            for h in gaps:
+                p = self._prev_real(t, h)
+                if p is None:               # unreachable for an interior hole; belt
+                    self._refused[(t, h)] = "no_prior_real_anchor"
+                    continue
+                d_h, d_p = self.derived.price(t, h), self.derived.price(t, p)
+                if d_h is None or d_p is None:
+                    self._refused[(t, h)] = "derived_leg_cannot_bridge"
+                    continue
+                if not (d_p > 0 and d_h > 0):
+                    self._refused[(t, h)] = "non_positive_derived_level"
+                    continue
+                g = d_h / d_p
+                if not np.isfinite(g) or g <= 0:
+                    self._refused[(t, h)] = "non_finite_growth"
+                    continue
+                #  SAME-FILING REFUSAL.  The derived anchor rule is "newest period end <=
+                #  Dec-31", so a name that skipped a filing is priced at BOTH anchors off the
+                #  SAME statement and g comes out exactly 1.0.  That is not a measurement
+                #  that the price held flat, it is NO measurement -- and imputing it would
+                #  hand the hole a fabricated 0% return wearing the same clothes as a real
+                #  one.  Caught on the identity of the filing, so there is no threshold to
+                #  argue about; found by test_a_hole_the_derived_leg_cannot_bridge, which
+                #  read 10.0 where it expected None.
+                pe_h = getattr(self.derived, "picked_period_end", lambda *_a: None)(t, h)
+                pe_p = getattr(self.derived, "picked_period_end", lambda *_a: None)(t, p)
+                if pe_h is not None and pe_p is not None and pe_h == pe_p:
+                    self._refused[(t, h)] = "same_filing_as_base_anchor"
+                    continue
+                base = self.real._lut[(t, p)]
+                self._lut[(t, h)] = float(base * g)
+                self._imputed[(t, h)] = {"from_anchor": p, "g": float(g),
+                                         "real_prev": float(base)}
+
+    # --------------------------------------------------------------- protocol #
+    def price(self, ticker, anchor):
+        return self._lut.get((ticker, anchor))
+
+    def last_before(self, ticker, anchor):
+        j = self._idx.get(anchor)
+        if j is None:
+            return None
+        for k in range(j - 1, -1, -1):
+            a = self.anchors[k]
+            v = self._lut.get((ticker, a))
+            if v is not None:
+                return a, v
+        return None
+
+    def benchmark_series(self, symbol=rc.BENCHMARK_SYMBOL):
+        """Always the REAL leg.  URTH is an ETF and is never hole-filled."""
+        return self.real.benchmark_series(symbol)
+
+    # ------------------------------------------------------------ diagnostics #
+    def is_imputed(self, ticker, anchor):
+        return (ticker, anchor) in self._imputed
+
+    def imputation_report(self):
+        """Per venue: holes filled, holes refused, and the growth factors applied.
+
+        The `g` distribution is the thing to read.  A `g` far from 1 is not automatically
+        wrong -- these are 12-month steps and some names really do triple -- but the tails
+        are where an unmeasurable derived leg would show up, so they are reported rather
+        than summarised away.
+        """
+        import pandas as pd
+        rows = {}
+
+        def _slot(sym):
+            v = _venue_of(sym)
+            return rows.setdefault(v, {"venue": v, "filled": 0, "refused": 0, "g": []})
+
+        for (t, _a), rec in self._imputed.items():
+            r = _slot(t)
+            r["filled"] += 1
+            r["g"].append(rec["g"])
+        for (t, _a) in self._refused:
+            _slot(t)["refused"] += 1
+        out = []
+        nan = float("nan")
+        for v, r in rows.items():
+            g = np.asarray(r["g"], dtype=float)
+            out.append({"venue": v, "filled": r["filled"], "refused": r["refused"],
+                        "g_median": round(float(np.median(g)), 4) if g.size else nan,
+                        "g_p05": round(float(np.percentile(g, 5)), 4) if g.size else nan,
+                        "g_p95": round(float(np.percentile(g, 95)), 4) if g.size else nan,
+                        "g_max": round(float(g.max()), 4) if g.size else nan})
+        return (pd.DataFrame(out).sort_values("filled", ascending=False)
+                  .reset_index(drop=True))
+
+    def refusal_counts(self):
+        out = {}
+        for reason in self._refused.values():
+            out[reason] = out.get(reason, 0) + 1
+        return dict(sorted(out.items(), key=lambda kv: -kv[1]))
+
+    def diagnostics(self):
+        return {
+            "route": "real, interior holes imputed from the derived GROWTH RATIO",
+            "n_holes_filled": len(self._imputed),
+            "n_holes_refused": len(self._refused),
+            "refusal_reasons": self.refusal_counts(),
+            "basis": ("imputed = real(prev_anchor) * derived(hole)/derived(prev_anchor); a "
+                      "RATIO of two derived levels, so the derived scale cancels and every "
+                      "value in this source is on the REAL scale"),
+            "invariant": ("return-preserving across the hole: a window SPANNING a filled "
+                          "hole is bit-for-bit unchanged, so this cannot inject return into "
+                          "the sample -- only reallocate it between sub-periods"),
+            "untouched": ("no_buy names (no prior real anchor) and TRAILING gaps (the series "
+                          "genuinely ends) are deliberately left alone"),
+        }
+
+
 class GapFillPriceSource:
     """REAL leg everywhere it has a price; derived leg ONLY where the real leg is EMPTY.
 
@@ -1022,6 +1279,163 @@ class GapFillPriceSource:
 
 
 # --------------------------------------------------------------------------- #
+#  LEVEL-BREAK REFEREE -- the derived leg as a second opinion on the real leg   #
+# --------------------------------------------------------------------------- #
+#
+#  WHAT IT IS FOR (CEO, 2026-08-22, chosen over extending `contam_return_cap`, over
+#  abstention, and over leaving it).  `SIMINN.IC` adjClose steps 0.2256 -> 9.23 across one
+#  anchor and reads a +36,787% 36-month return; the derived leg reads +25.4% and is the sane
+#  number.  A cap needs an invented threshold on the RETURN; a second leg DETECTS instead.
+#
+#  IT DETECTS AND PUBLISHES.  IT DOES NOT CORRECT.  That is a deliberate departure from the
+#  instruction ("treat the real leg as suspect"), and it is measured, not cautious:
+#
+#   * OF THE 17 FLAGGED CELLS, 3 ARE THE DERIVED LEG'S FAULT.  `SNYR` 2021->2022,
+#     `MAXENT-B.ST` 2023->2024 and `OBD.L` 2024->2025 all show g_derived == 1.000000
+#     EXACTLY -- the derived anchor rule priced both ends off the SAME filing, so the derived
+#     leg has no opinion at all.  Overriding the real leg there would corrupt a good price
+#     with a fabricated flat.  Those three are separated out exactly, on the identity of the
+#     filing (see `DerivedPriceSource.picked_period_end`), not by a threshold.
+#   * AND AMONG THE 14 SURVIVORS IT IS STILL NOT ALWAYS THE REAL LEG.  `GDHG` 2023->2024 is
+#     g_real 0.0557 against g_derived 0.0069: both legs collapse and they disagree only about
+#     how far.  Nothing here can say which is right.
+#
+#  So a verdict column says which leg looks suspect and WHY, and the caller decides.  A
+#  silent auto-override would have shipped three known-wrong corrections.
+#
+#  THE THRESHOLDS ARE A CHOICE, NOT A DISCOVERED BAND -- and this is where the method that
+#  produced MIN_PAYLOAD_ROWS does NOT transfer.  There, two populations were genuinely
+#  separated: bad bodies topped out at 15,441 and good ones started at 45,662, a factor of
+#  3.0 with nothing in between.  Here the disagreement distribution is CONTINUOUS.  Measured
+#  on 15,530 single-period cells (2,555 symbols) where both legs price both ends:
+#
+#      |log(g_real) - log(g_derived)|   p50 0.0156  p90 0.1358  p99 0.6611
+#                                       p99.5 0.8630  p99.9 1.9693  max 5.5114
+#      widest jump in the top 0.5%      0.78, between 4.06 and 4.84  <- density thinning,
+#                                                                        not a band
+#
+#  A big REAL move is usually real: of the 392 cells whose real step is >= 5x, 354 (90.3%)
+#  have a log gap below 0.5, i.e. the derived leg corroborates them.  That is what makes the
+#  CONJUNCTION the right instrument -- extremeness alone flags 392 cells, almost all of them
+#  genuine volatility.  But within the >= 5x population the gap is continuous too, so where
+#  the line falls is a judgement.  It is set where the flagged set stays small enough to read
+#  by hand and still contains the case that motivated the work:
+#
+#      step >= 5 AND |log gap| >= 1.0  ->  17 cells / 15 symbols / 0.109% of the corpus
+#      the same rule at |log gap| >= 0.5 ->  272 cells / 150 symbols / 1.751%   (too many
+#                                            to inspect, and mostly corroborated moves)
+#
+#  `SIMINN.IC` 2022->2023 sits at 3.783, comfortably inside.
+#
+#  THE CURRENCY GUARD STAYS ON, and the warning that it must not was checked and refuted.
+#  The concern was that the guard is a MATCH test rather than a MAGNITUDE test, so it could
+#  hide the case that motivated the referee.  It does not: `SIMINN.IC` reports ISK on an
+#  ISK-listed line, so it is currency-MATCHED and survives the guard.  Measured both ways --
+#  guard ON flags 17 cells / 15 symbols; guard OFF flags 30 / 28, and ALL 13 of the added
+#  names are currency-MISMATCHED, i.e. their "disagreement" is the FX move over the period
+#  and not a level break at all.  Un-gating the referee would therefore add 13 false
+#  positives to catch nothing.
+LEVEL_BREAK_MIN_REAL_STEP = 5.0
+LEVEL_BREAK_MIN_LOG_GAP = 1.0
+
+
+def level_break_candidates(real, derived, anchors=None,
+                           min_real_step=LEVEL_BREAK_MIN_REAL_STEP,
+                           min_log_gap=LEVEL_BREAK_MIN_LOG_GAP):
+    """Single-period cells where the REAL leg makes an extreme move the derived leg does not
+    corroborate.  A DETECTOR: it returns evidence and a verdict, and corrects nothing.
+
+    Returns DataFrame[symbol, venue, from_anchor, to_anchor, g_real, g_derived, log_gap,
+    real_step, derived_same_filing, verdict] sorted by |log_gap| descending.
+
+    verdict is one of:
+      'derived_uninformative' -- the derived leg priced BOTH ends off the same filing, so
+                                 g_derived is spuriously ~1.0 and it has no opinion.  Do NOT
+                                 act on the real leg here.
+      'legs_disagree'         -- a genuine two-leg disagreement.  The real leg is the usual
+                                 suspect (that is the motivating case) but this does not
+                                 establish it: among these, GDHG 2023->2024 has both legs
+                                 collapsing and disagreeing only about how far.
+
+    WHAT IT CANNOT SEE
+    ------------------
+      * ANY name only one leg prices -- which is most of the seven venues the real grid
+        cannot price at all.  The corpus is 2,555 of the panel's 4,954 sources, and
+        `.PA/.KS/.OL/.KQ/.BR/.AS/.LS` contribute ZERO cells.  A referee needs two opinions;
+        there is only one there.
+      * WHICH leg is wrong.  It reports a disagreement.  3 of the 17 flagged cells are the
+        derived leg's fault and are labelled as such; the rest are not adjudicated.
+      * A break both legs share -- a vendor error that hits marketCap and adjClose together
+        moves them in lockstep and reads as agreement.
+      * A break SPREAD over more than one period: this compares ADJACENT anchors only, so a
+        two-step break is diluted below the threshold at each step.
+      * Anything below the thresholds, which are a choice on a continuous distribution and
+        not a separating band.  The count at the shipped cut is 0.109% of cells; nothing
+        makes that the right number rather than a readable one.
+    """
+    import pandas as pd
+    anchors = list(anchors if anchors is not None else real.anchors)
+    rows = []
+    for i in range(len(anchors) - 1):
+        a, b = anchors[i], anchors[i + 1]
+        for t in {t for (t, an) in derived._lut if an == a}:
+            r_a, r_b = real.price(t, a), real.price(t, b)
+            d_a, d_b = derived.price(t, a), derived.price(t, b)
+            if None in (r_a, r_b, d_a, d_b):
+                continue
+            if min(r_a, r_b, d_a, d_b) <= 0:
+                continue
+            g_real, g_der = r_b / r_a, d_b / d_a
+            step = max(g_real, 1.0 / g_real)
+            gap = abs(np.log(g_real) - np.log(g_der))
+            if step < min_real_step or gap < min_log_gap:
+                continue
+            pe_a = getattr(derived, "picked_period_end", lambda *_x: None)(t, a)
+            pe_b = getattr(derived, "picked_period_end", lambda *_x: None)(t, b)
+            stale = bool(pe_a is not None and pe_b is not None and pe_a == pe_b)
+            rows.append({
+                "symbol": t, "venue": _venue_of(t), "from_anchor": a, "to_anchor": b,
+                "g_real": round(float(g_real), 6), "g_derived": round(float(g_der), 6),
+                "log_gap": round(float(gap), 4), "real_step": round(float(step), 3),
+                "derived_same_filing": stale,
+                "verdict": "derived_uninformative" if stale else "legs_disagree",
+            })
+    df = pd.DataFrame(rows, columns=["symbol", "venue", "from_anchor", "to_anchor",
+                                     "g_real", "g_derived", "log_gap", "real_step",
+                                     "derived_same_filing", "verdict"])
+    if df.empty:
+        return df
+    return df.sort_values("log_gap", ascending=False).reset_index(drop=True)
+
+
+def level_break_report(real, derived, anchors=None, **kw):
+    """The referee's headline: how many cells, how many are actionable, and the corpus it
+    could see at all.  Reported so a small flagged count is never read as a clean bill --
+    it may just mean the referee had no second opinion to offer."""
+    cand = level_break_candidates(real, derived, anchors=anchors, **kw)
+    corpus = {t for (t, _a) in derived._lut} & {t for (t, _a) in real._lut}
+    return {
+        "n_cells_flagged": int(len(cand)),
+        "n_symbols_flagged": int(cand["symbol"].nunique()) if len(cand) else 0,
+        "n_legs_disagree": int((cand["verdict"] == "legs_disagree").sum()) if len(cand) else 0,
+        "n_derived_uninformative": (int((cand["verdict"] == "derived_uninformative").sum())
+                                    if len(cand) else 0),
+        "n_symbols_both_legs_price": len(corpus),
+        "min_real_step": kw.get("min_real_step", LEVEL_BREAK_MIN_REAL_STEP),
+        "min_log_gap": kw.get("min_log_gap", LEVEL_BREAK_MIN_LOG_GAP),
+        "action": ("DETECT AND PUBLISH ONLY.  No price is overridden: 3 of the 17 cells on "
+                   "the run machine grid are the DERIVED leg's fault (g_derived == 1.0 "
+                   "exactly, same filing both ends), so an automatic 'real is suspect' rule "
+                   "would ship known-wrong corrections."),
+        "blind_to": ("any name only ONE leg prices -- including all seven venues the real "
+                     "grid cannot price, which contribute zero cells; a break both legs "
+                     "share; a break spread across more than one period; and everything "
+                     "below a threshold that is a choice on a continuous distribution, not "
+                     "a separating band."),
+    }
+
+
+# --------------------------------------------------------------------------- #
 #  ROUTE SELECTOR -- the side-by-side switch                                  #
 # --------------------------------------------------------------------------- #
 #  'derived+real' is the derived-PREFERRED composite; bare 'derived' is the clean single-leg
@@ -1035,7 +1449,7 @@ PRICE_ROUTES = ("real", "derived", "derived+real", "real+derived")
 
 
 def build_price_source(route, prices_csv=None, supp_csv=None, panel=None, anchors=None,
-                       **derived_kw):
+                       fill_interior_holes=False, **derived_kw):
     """Build the outcome-variable price source for `route`.
 
     'real'    -> returns_core.PriceSource over real_prices*.csv.  UNCHANGED and still the
@@ -1055,7 +1469,16 @@ def build_price_source(route, prices_csv=None, supp_csv=None, panel=None, anchor
                  it is the route for "the refetch is deferred, fill what can be filled".
                  Read GapFillPriceSource on why its REFUSALS are the output.
 
-    Keeping all three selectable is the point: it is what makes the derived leg's fidelity
+    `fill_interior_holes` (default FALSE, because it MOVES MEASURED NUMBERS) wraps the real
+    leg in HoleFilledPriceSource first: an anchor the real leg is missing BETWEEN two it has
+    is imputed from the derived leg's GROWTH RATIO, so a name a later price proves was alive
+    stops reading -100%.  It applies on 'real' and on 'real+derived'; the composition order
+    is hole-fill FIRST, then gap-fill, and the two populations are disjoint by construction
+    (hole-fill needs >= 2 real anchors, gap-fill needs ZERO), so per-ticker exclusivity
+    holds.  On the derived-preferred routes it is refused rather than silently ignored --
+    there the derived leg already owns those names and a hole fill would be meaningless.
+
+    Keeping all routes selectable is the point: it is what makes the derived leg's fidelity
     against the real leg auditable instead of asserted.
     """
     if route not in PRICE_ROUTES:
@@ -1063,7 +1486,14 @@ def build_price_source(route, prices_csv=None, supp_csv=None, panel=None, anchor
     real = None
     if prices_csv is not None:
         real = rc.PriceSource(prices_csv, anchors=anchors, supp_csv=supp_csv)
-    if route == "real":
+    if fill_interior_holes and route in ("derived", "derived+real"):
+        #  REFUSED, not ignored.  On a derived-preferred route the derived leg already owns
+        #  every ticker it can price, so "fill the real leg's holes" is either a no-op or an
+        #  instruction whose meaning nobody has defined.  Silently dropping the flag would
+        #  let a caller believe holes were filled when they were not.
+        raise ValueError("fill_interior_holes is only meaningful on a REAL-preferred route "
+                         "('real' or 'real+derived'), got %r" % (route,))
+    if route == "real" and not fill_interior_holes:
         if real is None:
             raise ValueError("route='real' needs prices_csv")
         return real
@@ -1075,6 +1505,15 @@ def build_price_source(route, prices_csv=None, supp_csv=None, panel=None, anchor
         return derived
     if real is None:
         raise ValueError("route=%r needs prices_csv for the other leg" % (route,))
+    #  HOLE-FILL FIRST.  Gap-fill assigns whole tickers off the real leg's coverage, so it
+    #  must see the POST-fill real leg or it would judge coverage on a stale picture.  (In
+    #  fact hole-fill never changes WHICH tickers the real leg prices, only at which
+    #  anchors, so the order is belt-and-braces -- but the dependency runs this way and
+    #  writing it in the other order would be a latent bug the day that changes.)
+    if fill_interior_holes:
+        real = HoleFilledPriceSource(real, derived)
+    if route == "real":
+        return real
     if route == "real+derived":
         return GapFillPriceSource(real, derived)
     return CompositePriceSource(derived, real)
