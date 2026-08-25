@@ -148,6 +148,14 @@ def transfer_outputs_to_drive(transfer_dir, configdic, verbose=True):
         #  reaches neither the RunProvenance sidecar (which carries counts, not names) nor the
         #  postRank pickle.  Written at root for the reason stated above.
         'Stage1VetoEjections_*.csv',
+        #  The TRADED-VALUE FLOOR LIST (CEO, 2026-08-24) -- the names the $1M/day floor
+        #  ejected, with the reading that ejected them, plus the names it KEPT because it had
+        #  no reading at all.  Ships by exactly the rule stated above, and more sharply than
+        #  most: an ejected name leaves NO trace in any other artifact -- it is not in the
+        #  top-100, not in a cohort, not in the postRank pickle, not in the deck -- so if this
+        #  file does not travel, the largest deletion the carve makes is unauditable off the
+        #  run machine.  Written at root for the reason stated above.
+        'DollarVolumeFloor_*.csv',
         #  THE INPUT-SANITY REFUSALS (2026-08-14) -- every cell the cross-field impossibility
         #  guard (nan_policy section 5) refused, with the relation, the ratio that fired and
         #  the ORIGINAL value.  It ships by exactly the rule stated above: it is the SOLE

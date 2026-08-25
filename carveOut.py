@@ -1972,12 +1972,19 @@ def _volavg_liquidity_term(sym, group, volavg_map):
     here, so nothing is at risk -- but the attribution should not be relied on until the
     first run with a profile build measures both maps.
 
-    POSITION IN THE KEY.  This is term 6, BELOW every canonicity marker and ABOVE ISIN
-    plurality, immediately above the alphabetical last resort.  Terms 1-5 are
-    byte-unchanged, so any group decided today by canonicity, share count, market cap or
-    symbol shape is decided IDENTICALLY.  The only groups volume can move are the ones that
-    fall past those -- 381 of 1,282 (29.7%) reach the raw alphabet today -- which is
-    precisely the failure surface.
+    POSITION IN THE KEY -- MOVED 2026-08-24 (CEO).  This is now TERM 2: below the canonicity
+    marker and ABOVE share count, market cap, the symbol-shape tail, ISIN plurality and the
+    alphabet.  It was term 6 (above ISIN, below share count) from 2026-08-06 until then.
+    The safety argument for the move is monotone and is written out in full in
+    `_investability_key` under "THE DECADE VOLUME TERM OUTRANKS SHARE COUNT" -- in short, an
+    abstaining group is decided exactly as before and a group whose survivor is within 10x of
+    the most liquid line keeps that survivor, so the only groups that can move are the ones
+    whose survivor is >=10x less liquid than a line it beat.  Measured on the 2026-08-22
+    CUR6K run: 20 groups change survivor.
+    THE PRE-MOVE ARGUMENT, KEPT because it is still the argument for the term EXISTING: the
+    only groups volume could reach at term 6 were the ones that fall past canonicity, share
+    count, market cap and symbol shape -- 381 of 1,282 (29.7%) reach the raw alphabet -- and
+    that was already the failure surface for the K-1 groups this term was added for.
 
     VOLUME OUTRANKS ISIN, BY CEO RULING (2026-08-06).  The first cut placed it BELOW ISIN
     as the conservative choice and flagged that as not obviously correct; the CEO chose
@@ -2080,10 +2087,12 @@ def _volavg_raw_liquidity_term(sym, group, volavg_map):
     this term's justification lapses with it. A group decided on a 1.03x volume difference
     must be visible AS a 1.03x difference, or the false confidence is real.
 
-    POSITION: term 8 -- BELOW the decade term, BELOW ISIN plurality, and IMMEDIATELY ABOVE
+    POSITION: term 7 -- BELOW the decade term, BELOW ISIN plurality, and IMMEDIATELY ABOVE
     the alphabetical last resort.  So it reaches EXACTLY the groups that today fall to raw
-    alphabet and nothing else: every canonicity marker, share count, market cap, the
-    symbol-shape tail, the decade term and ISIN all still outrank it byte-unchanged.
+    alphabet and nothing else: every canonicity marker, the decade term, share count, market
+    cap, the symbol-shape tail and ISIN all still outrank it byte-unchanged.  UNMOVED by the
+    2026-08-24 promotion of the DECADE term to position 2, and deliberately so: a 1.03x
+    volume difference must not outrank a share count -- only a >=10x one may.
 
     SAME ABSTENTION GUARD AS THE DECADE TERM, deliberately, and it matters MORE here.  The
     guard is `_volavg_comparable_values`, shared:
@@ -2241,12 +2250,35 @@ def volavg_report_frame(symbols, volavg_map=None):
 #  #####################################################################################
 #
 #  REPORT, NEVER SCREEN -- the same standing ruling as `volavg_report_frame` (register
-#  J-1, CEO 2026-08-06).  Nothing here filters, sorts or scores; it is appended to
-#  already-selected, already-ordered frames.  A liquidity FLOOR remains a decision nobody
-#  has taken, and this function must not become one by the back door.
+#  J-1, CEO 2026-08-06).  Nothing IN THIS FUNCTION filters, sorts or scores; it is appended
+#  to already-selected, already-ordered frames.  *** THE SECOND HALF OF THIS RULING LAPSED
+#  ON 2026-08-24: a liquidity floor is no longer "a decision nobody has taken". ***  It was
+#  taken at the front door, by the CEO, at $1M/day -- see `DOLLAR_VOLUME_FLOOR_USD` below
+#  and its application in `partition_universe`.  This function is still report-only and must
+#  stay that way: the screen reads its OUTPUT, it is not built into it.
 #
 #  ABSENCE IS NOT ZERO, and the KIND of absence is named, exactly as `volAvg_asof` does
 #  it -- a name we could not price and a name that trades $0 must not look alike.
+#  ###################################################################################
+#  ##  THE $1M/DAY TRADED-VALUE FLOOR (CEO, 2026-08-24).  THE STANDING "REPORT, NEVER  ##
+#  ##  SCREEN" RULING ABOVE IS SUPERSEDED FOR THIS ONE NUMBER AND NOTHING ELSE.        ##
+#  ###################################################################################
+#  The note above said "a liquidity FLOOR remains a decision nobody has taken, and this
+#  function must not become one by the back door".  The decision has now been taken, at
+#  the front door: the CEO set the level explicitly, having been shown that it cuts 9 of
+#  the current top 20 INCLUDING RANK 1 and that it shifts the list toward US and large-cap.
+#  `dollar_volume_frame` itself is UNCHANGED and still only reports -- the screen lives
+#  in `partition_universe`, beside the $25M market-cap floor, which is where every other
+#  "is this even investable" gate lives.
+#
+#  WHY $1M/DAY IS A REAL CUT AND NOT A ROUNDING.  Measured on the 2026-08-22 CUR6K
+#  general top-100: 29 of 100 names are under $1M/day, 18 under $250k, 10 under $100k;
+#  p50 $8.28M, p25 $578,705, p10 $108,740, p1 $9,851.  The nine it takes out of the top 20
+#  are EIOF.OL $30,964, 216050.KQ $136,127, 058630.KQ $202,609, 069730.KS $244,246,
+#  007700.KS $246,887 (RANK 1), 234080.KS $268,508, EIN.DE $297,300, LOUP.PA $690,787 and
+#  092730.KQ $980,255.
+DOLLAR_VOLUME_FLOOR_USD = 1_000_000.0
+
 DOLLARVOL_STATUS_NO_PRICE = 'no-price'                 # entry has no usable profile price
 DOLLARVOL_STATUS_NO_CURRENCY = 'no-currency'           # entry predates the currency capture
 DOLLARVOL_STATUS_FX_UNRESOLVED = 'fx-unresolved:%s'    # currency known, rate refused/absent
@@ -2473,29 +2505,92 @@ def _investability_key(sym, val_fn, sector_map=None, names=None, group=(), isin_
                        volavg_map=None):
     """Deterministic "most investable line" ordering key for an issuer's listings.
 
-    CANONICITY CLASS FIRST, then the CEO's share count. Lowest sorts first:
+    CANONICITY CLASS FIRST, then the DECADE VOLUME TERM, then the CEO's share count.
+    Lowest sorts first:
       1. `_non_canonical_tag(...)` -> 0 if the line shows no non-common marker, 1 if it
          does. THE dominant term.
-      2. -weightedAverageShsOut  -- the CEO's size discriminator, INSIDE a canonicity
+      2. volAvg liquidity, as a ratio against the group's most liquid line
+         (`_volavg_liquidity_term`) -- ADDED 2026-08-06, MOVED HERE FROM POSITION 7 ON
+         2026-08-24 (CEO). It ABSTAINS (constant 0) unless some member is a full order of
+         magnitude behind the group's most liquid line. See "THE DECADE VOLUME TERM
+         OUTRANKS SHARE COUNT" below for why the move is safe and what it costs.
+      3. -weightedAverageShsOut  -- the CEO's size discriminator, INSIDE a canonicity
          tier, which is the only place it works.
-      3. -marketCap.
-      4. digit-prefix, punctuation count, length -- the previous tail, unchanged.
-      5. volAvg liquidity, as a ratio against the group's most liquid line
-         (`_volavg_liquidity_term`) -- ADDED 2026-08-06. ABOVE ISIN by CEO ruling
-         (2026-08-06): volume is directional by construction, ISIN plurality is an
-         identity inference that can point the wrong way. See the note on that function.
+      4. -marketCap.
+      5. digit-prefix, punctuation count, length -- the previous tail, unchanged.
       6. ISIN plurality within the group (`_isin_plurality_term`) -- ADDED 2026-08-05,
-         see below.
+         see below. BELOW volume by CEO ruling (2026-08-06): volume is directional by
+         construction, ISIN plurality is an identity inference that can point the wrong
+         way. See the note on that function.
       7. RAW volAvg, descending (`_volavg_raw_liquidity_term`) -- ADDED 2026-08-08 by CEO
          ruling, as a weak tiebreak BELOW everything above and ABOVE the alphabet only.
-         Term 5 ties everything inside one order of magnitude; those groups used to land on
-         the raw alphabet, which correlates with nothing. Same abstention guard as term 5.
+         Term 2 ties everything inside one order of magnitude; those groups used to land on
+         the raw alphabet, which correlates with nothing. Same abstention guard as term 2.
+         DELIBERATELY LEFT WHERE IT IS by the 2026-08-24 move: a 1.03x volume difference
+         must not outrank a share count, only a >=10x one may.
       8. alphabetical -- the last resort, unchanged.
 
-    Terms 5, 6 and 7 all return a CONSTANT 0 for the whole group when their map is
+    Terms 2, 6 and 7 all return a CONSTANT 0 for the whole group when their map is
     absent, and a constant cannot move a sort -- so every pre-2026-08-05 artifact and every
-    existing pickle resolves through this key bit-identically, and the 5/6/7 ORDER is
-    unobservable on any of them.
+    existing pickle resolves through this key bit-identically, and the ORDER of those three
+    is unobservable on any of them.
+
+    *** THE DECADE VOLUME TERM OUTRANKS SHARE COUNT (CEO, 2026-08-24). ***
+    THE DEFECT.  FMP serves the ISSUER's own filed share count to every one of its lines,
+    so `weightedAverageShsOut` is identical across a cross-listing group up to filing-vintage
+    rounding noise -- and where the noise is non-zero, term 3 decides on the noise. Measured
+    on the 2026-08-22 CUR6K `DedupSurvivorReport`: of 935 dropped lines, 104 have a survivor
+    that is LESS LIQUID than the line it beat, and 45 of those are a full order of magnitude
+    or more apart (27 are 100x or more). `CMCSA` (34.4M shares/day) losing to `CCZ` (151/day
+    -- a Comcast exchangeable NOTE) is the shape of it, and `IBM` losing to `IBM.DE` (10.9M
+    vs 11.1k) is how ordinary it is.
+
+    WHY THE MOVE IS SAFE, AND IT IS A MONOTONE ARGUMENT, NOT AN EMPIRICAL ONE.  The decade
+    term returns 0 for EVERY member of a group unless some member is >=10x behind the group
+    maximum, and 0 for any member that is itself within 10x of that maximum. So:
+      * a group where the term abstains is decided EXACTLY as before, at every position;
+      * a group whose CURRENT survivor is within 10x of the most liquid line keeps that
+        survivor -- it still scores 0, every rival scoring 0 is compared on terms 3..8
+        exactly as before, and rivals scoring 1 are only ever DEMOTED.
+    So the only groups this can move are the ones whose survivor is >=10x less liquid than
+    a line it beat -- which is precisely the defect. MEASURED on the same report: 39 groups
+    are in that state, 19 of them were decided by CANONICITY (which still outranks volume and
+    still wins), so **20 groups change survivor**: 13 decided by `shares`, 4 by
+    `symbol_length`, 1 by `shares;symbol_length`, 1 by `punctuation`, 1 by `marketCap`.
+
+    WHY NOT THE OTHER OPTION -- GATE `shares` ON A >1% MATERIALITY MARGIN.  Rejected, and
+    the evidence is already in this docstring: the measured filing-vintage wobble runs to
+    **1.6%** (0KV3.L reads 1.3% more shares than RF), so a 1% margin leaves the wobble
+    deciding in exactly the cases it was introduced to stop, while adding a tuned constant
+    that nothing calibrates. It also does nothing for the 6 of these 20 groups that are
+    decided by `symbol_length` / `punctuation` / `marketCap` rather than by `shares`.
+
+    *** WHAT THIS ORDER CANNOT DETECT, STATED SO NOBODY HAS TO INFER IT. ***
+      * A group whose MOST LIQUID line is genuinely the non-common and carries NO canonicity
+        marker. Term 1 still outranks volume, so every marker (a)-(e) is unaffected -- but
+        where no marker fires and the derived line really is the liquid one, this key now
+        picks the derived line CONFIDENTLY where it previously picked arbitrarily. A US-listed
+        ADR that out-trades a thin home-market common is the realistic shape; `CTC-A.TO`
+        (Canadian Tire non-voting, 189k/day) now beats `CTC.TO` (voting common, 379/day),
+        which is right for an INVESTABILITY key and wrong for a "which line is the common"
+        key. This key is the former -- see its name -- but the two are not the same question
+        and this term widens the gap between them.
+      * The 59 dropped lines whose survivor is less liquid by LESS than 10x. The term
+        abstains there BY DESIGN and the SURVIVOR CHOICE is unchanged; `volavg_raw` still
+        reaches only the groups that fall all the way to the alphabet.
+        *** "UNCHANGED" IS NO LONGER THE SAME AS "HARMLESS", AND THIS BLIND SPOT AND C1'S
+        WERE JOINTLY INCOMPLETE EVEN THOUGH EACH WAS INDIVIDUALLY HONEST (reviewer,
+        2026-08-24). ***  Once a $/day FLOOR exists beside this key, a group this term ties
+        can have its survivor EJECTED -- and if the floor runs after the de-dup, the issuer
+        goes with it even though a tradable sibling existed.  Measured on the 2026-08-22
+        run: 348 of 752 multi-line groups are decided by a term this one does not outrank,
+        and 41 of those have a survivor less liquid than a dropped sibling by under 10x.
+        That is why the floor is applied BEFORE `dedup_to_issuers` -- see the placement note
+        at the floor block.  The tie itself is still correct; what changed is that something
+        downstream now acts on the line this term declined to judge.
+      * Anything about a group where the volavg map has a missing or mixed-date reading:
+        `_volavg_comparable_values` abstains the whole group, so the term is silent and
+        cannot be read as "this group is fine".
 
     WHY NOT SHARE COUNT FIRST, WHICH IS WHAT THE BRIEF ASSUMED. Because it was measured
     and it is a bad rule. FMP serves the ISSUER's own filed share count to every one of
@@ -2588,9 +2683,11 @@ def _investability_key(sym, val_fn, sector_map=None, names=None, group=(), isin_
     vmap = _volavg_map_cached() if volavg_map is None else volavg_map
     vol_t = _volavg_liquidity_term(sym, group, vmap)
     volraw_t = _volavg_raw_liquidity_term(sym, group, vmap)
-    #  vol_t BEFORE isin_t -- CEO ruling 2026-08-06; see the term list above.
+    #  vol_t IMMEDIATELY BELOW canonicity and ABOVE `-sh` -- CEO ruling 2026-08-24; see
+    #  "THE DECADE VOLUME TERM OUTRANKS SHARE COUNT" in the term list above.
+    #  vol_t BEFORE isin_t -- CEO ruling 2026-08-06.
     #  volraw_t AFTER isin_t and immediately before `sym` -- CEO ruling 2026-08-08.
-    return (noncanon, -sh, -mc, digitpfx, punct, len(sym), vol_t, isin_t, volraw_t, sym)
+    return (noncanon, vol_t, -sh, -mc, digitpfx, punct, len(sym), isin_t, volraw_t, sym)
 
 
 #  THE SURVIVOR-KEY TERM NAMES, IN KEY ORDER.  One name per element of the tuple
@@ -2598,8 +2695,8 @@ def _investability_key(sym, val_fn, sector_map=None, names=None, group=(), isin_
 #  group instead of leaving an operator to reconstruct it from the values.  Kept adjacent
 #  to the key itself: adding a term without adding its name here is a bug the assertion in
 #  `_deciding_term` turns into an exception rather than a silently mislabelled column.
-_KEY_TERM_NAMES = ('canonicity', 'shares', 'marketCap', 'digit_prefix', 'punctuation',
-                   'symbol_length', 'volavg', 'isin_plurality', 'volavg_raw',
+_KEY_TERM_NAMES = ('canonicity', 'volavg', 'shares', 'marketCap', 'digit_prefix',
+                   'punctuation', 'symbol_length', 'isin_plurality', 'volavg_raw',
                    'alphabetical')
 _VOL_TERM_IX = _KEY_TERM_NAMES.index('volavg')
 _ISIN_TERM_IX = _KEY_TERM_NAMES.index('isin_plurality')
@@ -3156,7 +3253,8 @@ def dedup_to_issuers(BoScore_df, cdx_df, sector_map, names):
 def partition_universe(BoScore_df, cdx_df, tickers_df,
                        sector_pickle='sectorsdic_fmp.pickle', industry_pickle=None,
                        mcap_floor=25e6, cohort_head=25, dedup=True,
-                       coverage_scope=None):
+                       coverage_scope=None,
+                       dollarvol_floor=None):
     """Partition the full BoScore-ranked universe.
 
     `coverage_scope` -- the subset of `BoScore_df['source']` the SECTOR-MAP COVERAGE GUARD is
@@ -3165,6 +3263,63 @@ def partition_universe(BoScore_df, cdx_df, tickers_df,
     population the sector map STRUCTURALLY CANNOT cover, so measuring coverage over the whole
     pool asks the map for something no rebuild could ever provide.  See the guard block below
     for the case that forced it and for the bias the scope admits in exchange.
+
+    `dollarvol_floor` -- the $/day TRADED-VALUE floor (CEO, 2026-08-24).  Applied here, in
+    the same place and for the same reason as `mcap_floor`: BOTH are "is this even
+    investable" gates, and both must run BEFORE `postBo`'s `head(100)` or they shrink the
+    shortlist instead of promoting a replacement.
+
+    *** IT DEFAULTS TO **OFF** AND THE LIVE CALLER OPTS IN, WHICH IS THE OPPOSITE OF
+    `mcap_floor` AND IS DELIBERATE.  A market cap is a POINT-IN-TIME fact carried in the
+    panel; a volAvg reading is not -- `dollar_volume_frame` reads whatever `volavgdic_fmp_*`
+    capture is newest ON DISK, i.e. TODAY's liquidity.  Applying today's liquidity to a
+    point-in-time 2018 pool would inject a lookahead straight into the backtest, and the
+    backtest is the thing that measures whether any of this works. ***
+    THE DISCRIMINATOR IS THE CALL SITE, NOT A HEURISTIC.  An earlier cut keyed it on
+    `coverage_scope is not None` -- and that is WRONG: `baseline_tools/refit.py` carves a
+    point-in-time `cdx_pit` WITHOUT passing a scope, so it would have been floored on
+    today's volumes.  `postBo.postBoWrapper` is the only caller that ever asks for the floor;
+    every offline/PIT/tuning caller of THIS function is untouched and bit-identical.  Pass 0
+    or None to disable.
+
+    *** AND `postBoWrapper` ASKING IS NOT THE SAME AS THE LIVE RUN ASKING -- AN EARLIER
+    VERSION OF THIS PARAGRAPH SAID "the one LIVE caller" AND THAT WAS THE WHOLE DEFECT
+    (reviewer, 2026-08-24). ***  `postBoWrapper` is ITSELF a point-in-time entry point: it
+    takes `as_of` (threaded from the documented `-asof` production flag), and two more
+    re-entrants score date-filtered panels with `as_of=None`.  So "only postBo asks" was true
+    while every PIT re-entrant inherited the ask.  The decision now lives in
+    `postBo._resolve_dollarvol_floor` and is per-scoring-pass, not per-module; see the note
+    at the top of `postBoWrapper` for the three paths and how each is closed.
+
+    *** PLACEMENT IS THE DECISION, NOT THE LEVEL, AND IT IS DELIBERATE. ***  The floor
+    EJECTS -- the name is never reachable -- rather than ranking below.  Two reasons:
+      * `head(100)` is downstream of here, so ejecting BACKFILLS: 29 of the 2026-08-22
+        general top-100 fall, and the next 29 general-pool names by BoScore take their
+        places.  A floor applied AFTER `head(100)` would ship a 71-name shortlist.
+      * the top-100 IS the pool every Stage-2 metric z-normalises against, so a name that
+        can never be bought must not be in it: it moves the mean and the sigma that price
+        every OTHER name's earnings yield.  "Rank below" leaves it in that pool.
+    An untradable line is not a weak candidate, it is not a candidate -- the same argument
+    the $25M market-cap floor already rests on.
+
+    *** AND IT RUNS BEFORE `dedup_to_issuers`, WHICH IS A SECOND PLACEMENT DECISION THE
+    FIRST CUT OF THIS DOCSTRING DID NOT EVEN MENTION (reviewer, 2026-08-24). ***  Arguing
+    placement only against `head(100)` is not enough: run AFTER the dedup, the floor sees
+    one line per issuer, so ejecting it deletes an issuer that still had an investable
+    sibling.  That is not hypothetical -- it lands squarely in the 1x-10x band the decade
+    volume tiebreak deliberately abstains on, where a 1.3% share-count wobble can hand the
+    group to the thin line.  See the long note at the floor block itself for the reproduced
+    case.  Order is therefore: FLOOR (which lines are investable) -> DEDUP (which of the
+    investable lines represents the issuer) -> market-cap floor -> carve -> head(100).
+
+    ABSENCE IS NOT ILLIQUIDITY.  A name with NO usable traded-value reading is KEPT, exactly
+    as a name with no market cap is kept by the floor above.  `dollar_volume_frame`
+    returns NaN for a name it cannot price, cannot convert or has no volAvg capture for, and
+    a floor that read NaN as $0/day would delete names for a missing profile capture rather
+    than for illiquidity -- invisibly, since an excluded name leaves no trace downstream.
+    Those names are counted, named, and handed to `diagnostics['dollarvol_unknown']` so the
+    ad-hoc penalty bucket can CHARGE them instead (the floor cannot judge them; the bucket
+    can say so).
 
     Returns dict:
       general      : BoScore_df rows for the general pool (size-floored, sorted)
@@ -3344,6 +3499,138 @@ def partition_universe(BoScore_df, cdx_df, tickers_df,
     cols = getattr(tickers_df, 'columns', [])
     if tickers_df is not None and 'symbol' in cols and 'name' in cols:
         names = dict(zip(tickers_df['symbol'], tickers_df['name']))
+
+    # --- TRADED-VALUE FLOOR, $/day (CEO, 2026-08-24) --------------------------------
+    # Second of the two investability gates.  Two placement facts, both load-bearing:
+    #
+    # 1. BEFORE THE GENERAL/COHORT SPLIT AND BEFORE `postBo`'s `head(100)`, so it floors
+    #    every pool uniformly AND its ejections are BACKFILLED -- the pool it leaves is
+    #    longer than the cut taken from it, so `head(100)` reaches deeper by exactly the
+    #    number ejected.  A floor applied after `head(100)` would ship a 71-name shortlist
+    #    instead of replacing the 29 thinnest names.
+    #
+    # 2. *** BEFORE `dedup_to_issuers`, NOT AFTER IT -- AND THE FIRST CUT HAD THIS WRONG
+    #    (reviewer, 2026-08-24). ***  Run after the dedup, this floor sees ONE line per
+    #    issuer, so ejecting that line deletes the WHOLE ISSUER even when a perfectly
+    #    tradable sibling line existed and was collapsed away moments earlier.  The
+    #    reproduced case sits exactly in the band the decade volume tiebreak deliberately
+    #    ABSTAINS on: a $3.0M/day line and a $400k/day line are 7.5x apart, so
+    #    `_volavg_liquidity_term` says nothing and `-shares` decides -- and the thin line
+    #    reading 1.3% more shares (the TOP of the measured 0.1-1.6% filing-vintage wobble)
+    #    wins the group.  The dedup then hands the floor a $400k/day survivor, the floor
+    #    ejects it, and an issuer with a $3M/day line vanishes from the universe leaving no
+    #    trace in any artifact.
+    #    RUN HERE, the illiquid LINES leave their groups first, `_investability_key` then
+    #    chooses among the lines that survive the floor, and the issuer survives on its
+    #    tradable line.  This also makes the two gates compose the way they read: C2 decides
+    #    WHICH LINE of an issuer, C1 decides WHETHER A LINE IS INVESTABLE AT ALL, and the
+    #    second question is prior to the first.
+    #    CONSEQUENCE FOR THE COUNTS: `n_below_dollarvol` now counts LINES, not issuers, and
+    #    is therefore larger than it was -- most of the extra are secondary listings the
+    #    dedup would have collapsed anyway.  Read it as "lines removed from the universe",
+    #    which is what it is.
+    dv_below_sources, dv_unknown_sources = set(), set()
+    dv_enforced = False
+    n_below_dv = n_unknown_dv = 0
+    if dollarvol_floor and float(dollarvol_floor) > 0:
+        try:
+            _dv = dollar_volume_frame(list(bs['source']))
+            _dvv = pd.to_numeric(_dv['dollarVolume_usd'], errors='coerce')
+            _dvv.index = bs.index
+            #  ENFORCED means the reading mechanism ANSWERED FOR SOMEBODY.  Same shape as
+            #  `floor_enforced` on the market-cap floor and for the same reason: with no
+            #  volavgdic capture every value is NaN, the floor excludes nothing, and a
+            #  downstream banner claiming "$1M/day floor" would be asserting a filter that
+            #  never ran.
+            dv_enforced = bool(_dvv.notna().any())
+            _dv_below = _dvv.notna() & (_dvv < float(dollarvol_floor))
+            _dv_unknown = _dvv.isna()
+            dv_below_sources = set(bs.loc[_dv_below, 'source'])
+            dv_unknown_sources = set(bs.loc[_dv_unknown, 'source'])
+            n_below_dv = int(_dv_below.sum())
+            n_unknown_dv = int(_dv_unknown.sum())
+            #  EVIDENCE FIRST, THEN THE CUT.  An ejected name leaves no trace anywhere
+            #  downstream -- it is not in the top-100, not in a cohort, not in the postRank
+            #  pickle, not in the deck -- so the list of what this floor deleted has to be
+            #  written here or it does not exist.  Repo root, same directory and same
+            #  argument as the dedup survivor report (`transfer_utils.EVIDENCE_DIR`).
+            #
+            #  *** BUILT ROW-WISE FROM THE MASK, NOT FROM THE SETS (reviewer, 2026-08-24).
+            #  The first cut paired `sorted(dv_below_sources)` -- a SET, so de-duplicated --
+            #  with `['ejected_below_floor'] * n_below_dv` -- a ROW COUNT.  One duplicate
+            #  `source` anywhere in the pool made the two column lengths disagree, pandas
+            #  raised, and the `except` below swallowed it into a one-line WARNING: the
+            #  banner would then claim N ejected while the file naming them did not exist,
+            #  and `n_below_dollarvol` would disagree with `dollarvol_below` with nothing
+            #  saying so.  For the sole record of the biggest cut this function makes, a
+            #  silent write failure is the worst available failure mode.  Row-wise, the
+            #  columns cannot disagree -- they are slices of ONE frame under ONE mask. ***
+            try:
+                _fl_mask = _dv_below | _dv_unknown
+                if bool(_fl_mask.any()):
+                    _fl = pd.DataFrame({
+                        'source': bs.loc[_fl_mask, 'source'].values,
+                        'verdict': np.where(_dv_below[_fl_mask].values,
+                                            'ejected_below_floor', 'kept_no_reading'),
+                        'dollarVolume_usd': _dvv[_fl_mask].values,
+                        'dollarVolume_basis': _dv['dollarVolume_basis'].values[
+                            _fl_mask.values],
+                        'floor_usd': float(dollarvol_floor)})
+                    os.makedirs(_tu.EVIDENCE_DIR, exist_ok=True)
+                    _fl_fn = os.path.join(
+                        _tu.EVIDENCE_DIR, 'DollarVolumeFloor_%s.csv'
+                        % pd.Timestamp.today().strftime('%Y-%m-%d'))
+                    _fl.to_csv(_fl_fn, index=False)
+                    print('  traded-value floor list written to: %s (%d row(s))'
+                          % (_fl_fn, len(_fl)), flush=True)
+            except Exception as _fe:
+                #  LOUD, not a one-liner: this file is the only record of the cut, so a
+                #  failure to write it has to be as visible as the cut itself.
+                _febang = '!' * 78
+                print('\n'.join(['', _febang,
+                                 '!!! TRADED-VALUE FLOOR EVIDENCE CSV NOT WRITTEN !!!',
+                                 '!!!   %s: %s' % (type(_fe).__name__, _fe),
+                                 '!!!   %d line(s) were ejected and %d kept-with-no-reading,'
+                                 % (n_below_dv, n_unknown_dv),
+                                 '!!!   and THIS RUN SHIPS NO LIST OF THEM. The names are in',
+                                 "!!!   diagnostics['dollarvol_below'] in memory only.",
+                                 _febang, '']), file=sys.stderr, flush=True)
+                print('WARNING: traded-value floor evidence CSV not written (%s: %s)'
+                      % (type(_fe).__name__, _fe), flush=True)
+            bs = bs[~_dv_below].reset_index(drop=True)
+            #  `symbols` is read by the industry-coverage count and by `classify` further
+            #  down, and it was captured BEFORE this cut.  Refresh it here: the dedup block
+            #  below refreshes it too, but only when `dedup=True`, and a `dedup=False` caller
+            #  would otherwise measure coverage over names this floor already removed.
+            symbols = list(bs['source'])
+        except Exception as _de:
+            #  A reading failure must not be able to delete the universe, and it must not be
+            #  able to look like a clean one either.  The floor stands down, LOUDLY.
+            print('WARNING: traded-value floor NOT APPLIED (%s: %s) -- this run ships an '
+                  'UNFLOORED pool. Not a finding that every name clears $%.0f/day.'
+                  % (type(_de).__name__, _de, float(dollarvol_floor)), flush=True)
+            dv_enforced = False
+    if dollarvol_floor and float(dollarvol_floor) > 0:
+        if not dv_enforced:
+            _dbang = '!' * 78
+            print('\n'.join(['', _dbang,
+                             '!!! TRADED-VALUE FLOOR NOT ENFORCED -- NO NAME HAS A READING !!!',
+                             '!!!   asked for $%.0f/day; every dollarVolume_usd is NaN, so the'
+                             % float(dollarvol_floor),
+                             '!!!   floor excluded 0 names. This is what a run with no',
+                             '!!!   volavgdic profile capture looks like. It is NOT a finding',
+                             '!!!   that the pool is liquid.', _dbang, '']), flush=True)
+        else:
+            print('carveOut traded-value floor: EJECTED %d LINE(S) below $%.0f/day -- BEFORE '
+                  'the issuer de-dup, so an issuer with a tradable sibling line keeps it; '
+                  'KEPT %d line(s) with NO reading (absence is not illiquidity -- they are '
+                  'charged to the ad-hoc penalty bucket instead, see postBo)'
+                  % (n_below_dv, float(dollarvol_floor), n_unknown_dv), flush=True)
+            if n_below_dv:
+                _eb = sorted(dv_below_sources)
+                print('  EJECTED (%d): %s%s'
+                      % (len(_eb), ', '.join(_eb[:40]),
+                         '' if len(_eb) <= 40 else ' ... (full list in the CSV)'), flush=True)
 
     # --- issuer-level de-dup FIRST (before carve-out) so secondary listings
     # collapse to one survivor and inherit the issuer's propagated sector, plugging
@@ -3605,6 +3892,17 @@ def partition_universe(BoScore_df, cdx_df, tickers_df,
         'n_below_floor': n_below,
         'n_unknown_mcap': n_unknown_mcap,
         'mcap_floor': mcap_floor,
+        # --- traded-value floor (CEO, 2026-08-24).  Same three-part provenance the
+        # market-cap floor carries: what was ASKED, what it DID, and whether it ran at all.
+        # `dollarvol_unknown` is the set the floor COULD NOT JUDGE -- consumed by postBo to
+        # charge the ad-hoc penalty bucket, because "no reading" and "clears the floor" must
+        # not read the same downstream.
+        'dollarvol_floor': float(dollarvol_floor) if dollarvol_floor else 0.0,
+        'dollarvol_floor_enforced': bool(dv_enforced),
+        'n_below_dollarvol': n_below_dv,
+        'n_unknown_dollarvol': n_unknown_dv,
+        'dollarvol_below': sorted(dv_below_sources),
+        'dollarvol_unknown': sorted(dv_unknown_sources),
         # --- floor provenance (gating, 2026-08-06). `mcap_floor` alone says what the floor
         # WAS ASKED to be; these three say what it ACTUALLY DID, so no consumer can present
         # a "$25M-floored universe" that was never floored. generate_presentation reads

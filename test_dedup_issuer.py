@@ -1843,8 +1843,13 @@ def _pre_volraw_key(sym, val_fn, names=None, group=(), isin_map=None, volavg_map
     punct = sum(ch in '-.' for ch in sym)
     imap = {} if isin_map is None else isin_map
     vmap = {} if volavg_map is None else volavg_map
-    return (noncanon, -sh, -mc, digitpfx, punct, len(sym),
+    #  TERM ORDER TRACKS `_investability_key` (decade volume promoted to position 2 on
+    #  2026-08-24).  Duplicated, so it has to be moved by hand when the key moves -- which is
+    #  the point: this helper exists to be an INDEPENDENT statement of the order, and
+    #  deriving it from the key would make every assertion below vacuous.
+    return (noncanon,
             co._volavg_liquidity_term(sym, group, vmap),
+            -sh, -mc, digitpfx, punct, len(sym),
             co._isin_plurality_term(sym, group, imap), sym)
 
 
@@ -1942,22 +1947,42 @@ def test_volraw_under_a_POPULATED_map_cannot_outrank_ANY_term_above_it(panel):
 
 
 def test_volraw_under_a_POPULATED_map_only_ever_takes_groups_from_the_ALPHABET(panel):
-    """The other half of F3's missing coverage, stated as the promise the CEO was given:
-    the volume terms reach EXACTLY the groups that would otherwise fall to raw alphabet.  So
-    for every group, the deciding term with the map populated must either be UNCHANGED from
-    the no-map run, or be one of the two VOLUME terms where the no-map run said
-    `alphabetical` -- never a term above, and never a group that some real marker had
-    already decided.
+    """WHICH GROUPS EACH VOLUME TERM IS ALLOWED TO TAKE.  *** REWRITTEN 2026-08-24 with the
+    promotion of the DECADE term to position 2 -- the two terms no longer share one rule, and
+    asserting the old joint rule ("a volume term may only take an ALPHABETICAL group") would
+    now pin the very defect the promotion removes. ***
 
-    BOTH volume terms are legitimate takers here and the test counts them separately: a
-    dense map over three decades leaves some groups more than 10x apart (the confident
-    `volavg` term takes those) and others inside one decade (`volavg_raw` takes those).
-    Requiring `volavg_raw` alone was wrong and this test caught it -- FPAR-D.ST/FPAR-A.ST
-    clears the decade gap under the synthetic map."""
+    `volavg_raw` (term 7): UNCHANGED, and this is still the whole safety argument for a weak
+    signal -- it may only ever take a group the no-map run decided on the raw ALPHABET.
+
+    `volavg` (the decade term, now term 2): may take a group from any term BELOW it, which is
+    the point of the move -- 20 groups on the 2026-08-22 CUR6K run were decided by `shares` /
+    `symbol_length` / `punctuation` / `marketCap` on a survivor 10x-227,901x less liquid than
+    a line it beat.  Two things it may still NEVER do, and both are asserted:
+      (a) it may not take a group `canonicity` decided -- term 1 still outranks it, so the
+          measured 0.47% canonicity-first failure rate cannot regress; and
+      (b) it may only move a group whose NO-MAP survivor is itself at least
+          `_VOLAVG_DECIDING_RATIO` behind the group's most liquid line.  That is the monotone
+          property the promotion rests on: a survivor within a decade of the maximum scores 0,
+          every rival scoring 0 is compared on terms 3..8 exactly as before, and rivals scoring
+          1 are only ever demoted -- so no other group can move.  (b) is what makes this a
+          statement about the DEFECT rather than a restatement of the ordering.
+
+    SCOPE: THE SURVIVOR, NOT THE `decided_by` LABEL.  A group can keep its survivor and still
+    change label -- the decade term demotes a LOSER and the second-place line underneath an
+    unmoved winner changes (['0QYD.L','TGR.DE','YUM'] and ['REL.L','RELX','RDEB.DE'] on the
+    synthetic map are both that).  Loser order is deliberately NOT asserted here: it is not a
+    claim this promotion makes, and asserting it would fail on legitimate reordering.
+
+    WHAT THIS TEST CANNOT DETECT: whether the line volume promotes is the RIGHT one.  It pins
+    WHICH survivors may move, not WHETHER the more liquid line is the common -- and where no
+    canonicity marker fires and the derived line is genuinely the liquid one (CTC-A.TO over
+    CTC.TO), this key now picks the derived line and nothing here objects.  See the
+    "WHAT THIS ORDER CANNOT DETECT" block in `carveOut._investability_key`."""
     val, names = panel['val'], panel['names']
     all_syms = {s for m in panel['comps'].values() for s in m}
     vmap = _synthetic_volavg_map(all_syms)
-    n_taken = 0
+    n_moved = 0
     taken_by = {}
     for m in panel['comps'].values():
         if len(m) < 2:
@@ -1966,22 +1991,102 @@ def test_volraw_under_a_POPULATED_map_only_ever_takes_groups_from_the_ALPHABET(p
         full = {s: co._investability_key(s, val, None, names, m, {}, vmap) for s in m}
         b_ord = sorted(m, key=bare.__getitem__)
         f_ord = sorted(m, key=full.__getitem__)
-        b_dec = co._deciding_term(bare[b_ord[0]], bare[b_ord[1]])
-        f_dec = co._deciding_term(full[f_ord[0]], full[f_ord[1]])
-        if f_dec == b_dec:
+        if b_ord[0] == f_ord[0]:
             continue
-        assert b_dec == 'alphabetical', (
-            'group %r was decided by %r without the map and by %r with it -- a volume term '
-            'took a group that a real marker had already decided' % (m, b_dec, f_dec))
-        assert f_dec in ('volavg', 'volavg_raw'), (
-            'group %r changed deciding term to %r, which is neither volume tiebreak'
-            % (m, f_dec))
-        taken_by[f_dec] = taken_by.get(f_dec, 0) + 1
-        n_taken += 1
-    assert n_taken > 0, 'no volume term took an alphabetical group -- test is vacuous'
+        b_dec = co._deciding_term(bare[b_ord[0]], bare[b_ord[1]])
+        #  WHICH volume term did it is read off the TERM ITSELF, not off `_deciding_term` of
+        #  the new order.  `_deciding_term` names the term separating the new TOP TWO, which
+        #  after a demotion is whatever separates the two survivors left standing --
+        #  `symbol_length` for ['REL.L','RELX','RDEB.DE'] once the decade term demotes RELX.
+        #  Reading the label there would attribute the decade term's work to `symbol_length`.
+        demoted = co._volavg_liquidity_term(b_ord[0], m, vmap) == 1
+        if demoted:
+            which = 'volavg'
+            assert b_dec != 'canonicity', (
+                'the decade volume term unseated the survivor of group %r, which CANONICITY '
+                'had decided -- term 2 outranked term 1' % m)
+            vals = co._volavg_comparable_values(m, vmap)
+            assert vals is not None, (
+                'group %r changed survivor under the decade term while the group ABSTAINS -- '
+                'an abstaining term is a constant 0 and cannot move a sort' % m)
+            top = max(vals.values())
+            assert top / vals[b_ord[0]] >= co._VOLAVG_DECIDING_RATIO, (
+                'the decade term unseated the survivor of group %r whose no-map survivor %r is '
+                'only %.2fx behind the most liquid line -- it may only unseat a survivor at '
+                'least %.0fx behind, or the monotone safety argument for promoting it above '
+                '`shares` is false'
+                % (m, b_ord[0], top / vals[b_ord[0]], co._VOLAVG_DECIDING_RATIO))
+        else:
+            #  The decade term left the old survivor at 0, so the only thing left in the key
+            #  that the map can move is `volavg_raw` -- and it may only take a group the
+            #  no-map run decided on the raw ALPHABET.
+            which = 'volavg_raw'
+            assert b_dec == 'alphabetical', (
+                'the survivor of group %r changed from %r to %r under a populated map without '
+                'the decade term demoting %r, so only the WEAK RAW term can have done it -- but '
+                'the group was decided by %r, a term above it'
+                % (m, b_ord[0], f_ord[0], b_ord[0], b_dec))
+        taken_by[which] = taken_by.get(which, 0) + 1
+        n_moved += 1
+    assert n_moved > 0, 'no volume term unseated any survivor -- test is vacuous'
     assert taken_by.get('volavg_raw', 0) > 0, (
-        'the WEAK RAW term took no group at all (%r) -- this test would then be covering '
-        'only the decade term, which is exactly the gap F3 reported' % taken_by)
+        'the WEAK RAW term unseated no survivor at all (%r) -- this test would then be '
+        'covering only the decade term, which is exactly the gap F3 reported' % taken_by)
+    assert taken_by.get('volavg', 0) > 0, (
+        'the DECADE term unseated no survivor at all (%r) -- the half of this test that '
+        'covers the 2026-08-24 promotion would then be asserting nothing' % taken_by)
+
+
+def test_the_decade_term_outranks_share_count_on_the_CMCSA_CCZ_SHAPE():
+    """*** THE DEFECT THE 2026-08-24 PROMOTION EXISTS FOR, AS A BEHAVIOURAL TEST. ***
+
+    A cross-listing group where NO canonicity marker fires, the vendor serves the ISSUER's
+    share count to every line with a filing-vintage wobble, and the wobble hands the group to
+    the line nobody can trade.  Measured shape (2026-08-22 CUR6K `DedupSurvivorReport`):
+    `CMCSA` 34,413,090 shares/day lost to `CCZ` 151/day -- a Comcast exchangeable NOTE.
+
+    THE FIXTURE USES A WOBBLE, NOT A TIE, DELIBERATELY.  With identical share counts the term
+    is a tie and the group falls through to market cap and the symbol tail, so a passing test
+    would prove nothing about `shares`.  Here `CCZ` reads 1.3% MORE shares -- the top of the
+    measured 0.1-1.6% wobble band, and the exact margin that a ">1% materiality gate on
+    shares" (the option NOT taken) would still let decide.
+
+    BEFORE the promotion this asserted `CCZ`; the pre-promotion order is exercised directly
+    below so this test cannot pass vacuously on a key that ignores volume."""
+    group = ['CMCSA', 'CCZ']
+    shares = {'CMCSA': 3.80e9, 'CCZ': 3.8494e9}      # +1.3%: inside a >1% materiality gate
+    fake = {s: {'weightedAverageShsOut': shares[s], 'marketCap': 1.5e11} for s in group}
+    vf = lambda sym, field: fake[sym][field]
+    names = {'CMCSA': 'Comcast Corporation', 'CCZ': 'Comcast Corporation'}
+    vmap = {'CMCSA': (34413090.0, '2026-08-21'), 'CCZ': (151.0, '2026-08-21')}
+    #  The fixture must genuinely be a no-marker group, or canonicity decides it and the
+    #  volume term is never reached -- which would make this test about something else.
+    assert not any(co._non_canonical_tag(s, names[s], group) for s in group),         'fixture broke: a canonicity marker now fires, so this no longer tests term 2 vs term 3'
+    #  And `shares` must genuinely point the WRONG way without the map.
+    assert sorted(group, key=lambda s: co._investability_key(
+        s, vf, None, names, group, {}, {}))[0] == 'CCZ',         'fixture broke: share count no longer picks the illiquid line, so there is nothing to fix'
+    assert sorted(group, key=lambda s: co._investability_key(
+        s, vf, None, names, group, {}, vmap))[0] == 'CMCSA', (
+        'the decade volume term did not outrank share count: a 227,901x liquidity gap lost to '
+        'a 1.3% filing-vintage wobble')
+
+
+def test_a_share_count_wobble_still_decides_INSIDE_one_decade():
+    """THE OTHER SIDE OF THE SAME RULING, so the promotion is not read as "volume always wins".
+    The decade term ABSTAINS inside one order of magnitude, so a group whose lines are 3x apart
+    is still decided by share count exactly as it was before 2026-08-24.  This is what makes
+    `volavg_raw` (term 7, unmoved) the only thing that speaks to a near-tie."""
+    group = ['AAA', 'BBB']
+    fake = {'AAA': {'weightedAverageShsOut': 1.0e9, 'marketCap': 1.0e10},
+            'BBB': {'weightedAverageShsOut': 1.02e9, 'marketCap': 1.0e10}}
+    vf = lambda sym, field: fake[sym][field]
+    names = {'AAA': 'Widget PLC', 'BBB': 'Widget PLC'}
+    vmap = {'AAA': (3.0e6, '2026-08-21'), 'BBB': (1.0e6, '2026-08-21')}   # 3x, inside a decade
+    assert {co._volavg_liquidity_term(s, group, vmap) for s in group} == {0},         'fixture broke: the decade term must ABSTAIN here or this proves nothing'
+    assert sorted(group, key=lambda s: co._investability_key(
+        s, vf, None, names, group, {}, vmap))[0] == 'BBB', (
+        'the decade term spoke inside one order of magnitude -- it must tie there and leave '
+        'share count in charge')
 
 
 def test_volraw_decides_a_group_the_DECADE_term_ties():

@@ -1056,6 +1056,24 @@ def test_the_volavg_pickle_still_has_exactly_ONE_reading_seam():
     would see the raw entries and the argument silently lapses.  So the set of modules
     naming the artifact is pinned: findAllSectors WRITES it, carveOut LOADS it, Sbocker
     SHIPS it, and there is no fourth.
+
+    *** WHAT THIS ASSERTION CANNOT TELL APART, recorded 2026-08-24 after it fired on a
+    COMMENT. ***  It is a SUBSTRING SCAN over raw file text, so it counts any module that
+    MENTIONS the artifact, not any module that READS it.  It went red when `postBo` acquired
+    a prose comment naming the glob while explaining that the traded-value floor must not run
+    on a point-in-time panel -- a note ABOUT the reader, in a module that does not read.  The
+    scan stays (a crude over-broad guard on a capture-only guarantee is the right trade, and
+    the noise is one comment every few months), and the comment was reworded rather than the
+    module set widened: widening it to include `postBo` would have retired the guard for a
+    module that might one day genuinely read the pickle.
+    *** AND WHAT IT STRUCTURALLY CANNOT SEE AT ALL: a second reader INSIDE an already-listed
+    module. ***  `carveOut` has had two independent loaders since 2026-08-13 --
+    `_load_volavg_map` (narrow, capture-only, feeds the dedup tie-breaks) and
+    `_load_volavg_profile_map` (wide, feeds `dollar_volume_frame`) -- and this test counts
+    modules, so it has never had an opinion about them.  Two independent "newest on disk"
+    resolutions that disagreed would be a vintage mismatch of exactly the kind this guard
+    exists to prevent, one level down.  `test_the_two_volavg_loaders_resolve_to_the_SAME_file`
+    below is the assertion that actually covers it.
     """
     import pathlib
     root = pathlib.Path(__file__).resolve().parent
@@ -1066,6 +1084,43 @@ def test_the_volavg_pickle_still_has_exactly_ONE_reading_seam():
         'the volavgdic artifact gained or lost a naming module (%s) -- if a NEW module '
         'reads it directly, the capture-only guarantee no longer follows from '
         '_load_volavg_map alone' % sorted(naming))
+
+
+def test_the_two_volavg_loaders_resolve_to_the_SAME_file(tmp_path, monkeypatch):
+    """*** THE GAP THE MODULE-COUNT SEAM TEST STRUCTURALLY CANNOT SEE (2026-08-24). ***
+
+    `carveOut` holds TWO independent readers of the volAvg capture: `_load_volavg_map`
+    (narrow -- drops every profile field, which is what makes "capturing extra keys cannot
+    affect the dedup tie-breaks" a property rather than a hope) and
+    `_load_volavg_profile_map` (wide -- price and currency, which is what
+    `dollar_volume_frame` needs).  Two readers is DELIBERATE and is the right design; two
+    readers that each resolve "newest on disk" INDEPENDENTLY is the risk, because a run whose
+    dedup used one capture and whose $1M/day floor used another would screen names on a
+    different day's liquidity than it de-duplicated them with -- silently, and in the same
+    vintage-mismatch class as the point-in-time lookahead the floor already had to close.
+
+    Today they cannot disagree: the two resolution blocks are the same four lines (repo root
+    first, then CWD, `sorted(...)[-1]`).  Nothing asserts that, so this does -- over a
+    directory holding SEVERAL dated captures, which is the only state in which a divergence
+    could show.
+
+    WHAT THIS CANNOT DETECT: a disagreement caused by a file appearing BETWEEN the two calls,
+    and whether the file both of them choose is the RIGHT one for the run (that is
+    `profile_map_for_run`, which takes the run date explicitly and is a different question)."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(co, '_MODULE_DIR', str(tmp_path))
+    for d in ('2026-08-13', '2026-08-19', '2026-08-22'):
+        pd.to_pickle({'AAA': {'volAvg': 1000, 'asof': d, 'price': 1.0, 'currency': 'USD'}},
+                     tmp_path / ('volavgdic_fmp_%s.pickle' % d))
+    narrow = co._load_volavg_map()
+    wide = co._load_volavg_profile_map()
+    assert narrow and wide, 'neither loader found a capture -- the fixture proves nothing'
+    #  Both must have read the SAME (newest) capture.  The as-of date is the observable that
+    #  says which file each one opened.
+    assert narrow['AAA'][1] == wide['AAA']['asof'] == '2026-08-22', (
+        'the two volAvg loaders resolved to DIFFERENT captures (narrow=%r, wide=%r) -- the '
+        'de-dup and the traded-value floor would be reading two different days'
+        % (narrow['AAA'][1], wide['AAA']['asof']))
 
 
 # --------------------------------------------------------------------------- #
