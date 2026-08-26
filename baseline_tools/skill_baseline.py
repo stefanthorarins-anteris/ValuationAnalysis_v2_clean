@@ -166,16 +166,22 @@ def _pit_bm(merged, universe, D):
     return bm.sort_values(["source", "date"], ascending=[True, False])
 
 
-def window_sets(dmdic, merged, registry, buy, nq_stage1=8):
+def window_sets(dmdic, merged, registry, buy, nq_stage1=8, exchange_filter=None):
     """Return (rung_sets, filter_res, universe) for one buy anchor.
 
     rung_sets  : {'universe': [...], 'top200': [...], 'top100': [...]}  (Stage-1 order)
     filter_res : the reproduce_pit_top result dict (its 'top20' = filter pick, its
                  'pool_after_norm' = the oracle shortlist).
     universe   : the exact as-of-D scored-universe scope (dm.pit_universe).
+    exchange_filter : passed to dm.pit_universe.  None = the NA1 default this baseline has
+                 always run on; dm.ALL_EXCHANGES opens it to the scored universe.  Threaded
+                 2026-08-22; before that the random/oracle rungs were drawn from an
+                 NA1-only universe while the filter they are benchmarked against picks from
+                 a much wider one -- so the "random floor" was a floor for a different game.
     """
     D = pd.Timestamp(buy)
-    universe = dm.pit_universe(dmdic, registry, as_of=buy)
+    universe = dm.pit_universe(dmdic, registry, as_of=buy,
+                               exchange_filter=exchange_filter)
     bm_pit = _pit_bm(merged, set(universe), D)
     # cdx PIT slice passed so Stage-1 reads the `period`-derived frequency map, in
     # LOCKSTEP with live postBo (review S3): cdx is the only frame that carries `period`.
@@ -404,7 +410,8 @@ def run_skill_baseline(dmdic, merged, registry, price_source, *,
                        n_draws=1000, threshold=0.10, missing="fail", seed=0,
                        contam_return_cap=DEFAULT_CONTAM_RETURN_CAP,
                        winsor=DEFAULT_WINSOR, nq_stage1=8,
-                       guard_short_history_eps=False, log=None):
+                       guard_short_history_eps=False, exchange_filter=None,
+                       log=None):
     """In-memory skill baseline.  All inputs are OBJECTS (no file paths, no pickle load).
 
     Parameters
@@ -424,6 +431,8 @@ def run_skill_baseline(dmdic, merged, registry, price_source, *,
     threshold     : beat margin (0.10 = +10pp vs URTH).
     missing       : missing-eval policy ('fail' = delisted-at-eval counts as not beating).
     seed          : RNG seed (fixed -> reproducible).
+    exchange_filter : PIT universe exchange scope (None = NA1 default, dm.ALL_EXCHANGES =
+                    no restriction, or an explicit exchangeShortName iterable).
 
     Returns a structured dict (see module docstring); every number is derived from the
     certified primitives.
@@ -442,7 +451,9 @@ def run_skill_baseline(dmdic, merged, registry, price_source, *,
     with short_history_eps_guard(enabled=guard_short_history_eps):
         for buy, ev in windows:
             log(f"[skill_baseline] window {buy} -> {ev}: sets + filter top-{pick_n} ...")
-            sets, res, _uni = window_sets(dmdic, merged, registry, buy, nq_stage1=nq_stage1)
+            sets, res, _uni = window_sets(dmdic, merged, registry, buy,
+                                          nq_stage1=nq_stage1,
+                                          exchange_filter=exchange_filter)
             per_window_ctx.append((buy, ev, res, sets))
     if _short_history_eps_sources:
         log(f"[skill_baseline] short-history-EPS guard fired for "
@@ -507,6 +518,17 @@ def run_skill_baseline(dmdic, merged, registry, price_source, *,
             "n_draws": n_draws, "threshold": threshold, "missing": missing, "seed": seed,
             "contam_return_cap": contam_return_cap, "winsor": winsor,
             "clean_buy_anchors": CLEAN_BUY_ANCHORS,
+            #  RECORDED because it silently changes what "the universe" means, and a
+            #  report that does not say which exchanges it drew from cannot be compared
+            #  with one that drew from a different set.
+            #  isinstance-guarded: a bare `== dm.ALL_EXCHANGES` against a numpy array or a
+            #  pandas Index is ELEMENTWISE and the conditional raises "truth value of an
+            #  array is ambiguous", which would kill the whole report at the last line.
+            "exchange_filter": (
+                "na1 (NYSE/NASDAQ/TSX)" if exchange_filter is None
+                else ("all" if (isinstance(exchange_filter, str)
+                                and exchange_filter == dm.ALL_EXCHANGES)
+                      else list(exchange_filter))),
             "note": ("pre-2021 buy anchors EXCLUDED (universe-degenerate). "
                      "oracle shortlist = the Stage-2 pool the top-N is chosen from "
                      "(reproduce_pit_top pool_after_norm)."),
@@ -568,6 +590,7 @@ def format_report(result):
          f"seed={c['seed']}  threshold=+{c['threshold']*100:.0f}pp vs URTH  "
          f"missing='{c['missing']}'",
          f"windows: {c['windows']}",
+         f"PIT universe exchange scope: {c['exchange_filter']}",
          ""]
     f = result["filter"]
     L.append(f"FILTER  top-{c['pick_n']}  beat-rate = {f['beat_rate']['pooled']*100:5.1f}% "
@@ -633,6 +656,10 @@ def main():
     ap.add_argument("--pick-n", type=int, default=20)
     ap.add_argument("--draws", type=int, default=1000)
     ap.add_argument("--seed", type=int, default=0)
+    #  Default 'na1' = the scope this baseline has always run; see dm.pit_universe.
+    ap.add_argument("--exchanges", default="na1",
+                    help="PIT universe exchange scope: 'na1' (default, unchanged), 'all', "
+                         "or a comma-separated exchangeShortName list")
     args = ap.parse_args()
 
     log = lambda *a: print(*a, file=sys.stderr, flush=True)
@@ -644,9 +671,12 @@ def main():
 
     dmdic, merged, registry, ps = load_inputs(
         args.pickle, args.dead, args.registry, args.prices, args.prices_2025, log=log)
+    exch = dm.resolve_exchange_filter(args.exchanges)
+    log(f"[universe] exchange scope = {args.exchanges!r} -> "
+        f"{'NA1 (NYSE/NASDAQ/TSX)' if exch is None else exch}")
     result = run_skill_baseline(dmdic, merged, registry, ps, cadence_months=args.cadence,
                                 pick_n=args.pick_n, n_draws=args.draws, seed=args.seed,
-                                oracle_ns=(3, args.pick_n), log=log)
+                                oracle_ns=(3, args.pick_n), exchange_filter=exch, log=log)
     print(format_report(result))
 
 

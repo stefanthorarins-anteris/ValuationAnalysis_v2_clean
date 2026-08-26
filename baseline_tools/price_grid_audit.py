@@ -21,10 +21,11 @@ analysis suite printed rode that frozen grid and nothing said so.
 
 (On the repo-local dev grid the shape is different and worth knowing: coverage is 98.7% but
 `.DE`/`.ST`/`.IC` are empty at 2018-12-31, 2019-12-31, 2021-12-31 and 2024-12-31 and `.KS`/`.KQ`
-additionally at 2023-12-29 -- venue holidays on those year-ends.  `_merge_supplementary` unions
-a holiday-adjacent day into the anchor for 2025 ONLY, so the same calendar problem is unfixed at
-every earlier anchor.  The audit surfaces it; generalising that union is a separate, already-
-authorised change and is NOT done here.)
+additionally at 2023-12-29 -- venue holidays on those year-ends.  The holiday union has since
+been GENERALISED to every anchor, per symbol (returns_core.PriceSource._fill_from_neighbour_
+dates, 2026-08-22), but it is INERT on both grids on disk because neither carries a
+neighbouring body to fill from at the damaged anchors -- so the audit still reports these,
+correctly.  The remaining fix is fetch-side.)
 
 WHAT THIS MODULE DOES, AND DELIBERATELY DOES NOT DO
 ---------------------------------------------------
@@ -50,10 +51,13 @@ IT MEASURES THROUGH THE GRADER, NOT THROUGH THE FILE (2026-08-22, reviewer C2)
 The first version harvested its own anchor axis out of the CSV's `date_requested` column and
 counted rows itself.  That made it capable of DISAGREEING WITH THE THING IT IS AUDITING, and it
 did: the local grid carries 9 `date_requested` values including `2025-12-30`, while the grader
-works over 8 anchors, because `returns_core.PriceSource._merge_supplementary` deliberately
-UNIONS `2025-12-30` into the `2025-12-31` anchor -- precisely for the venues that do not trade
-on the 31st.  So the audit reported `venue .T has 3787 panel name(s) but ZERO priced at
-anchor(s) 2025-12-31` (and `.KS` 1,228, `.BK` 943, `.DE` 2,100-vs-8) about names the pipeline
+works over 8 anchors, because `returns_core.PriceSource` deliberately UNIONS `2025-12-30`
+into the `2025-12-31` anchor -- precisely for the venues that do not trade on the 31st.  That
+union is now the general per-anchor fill layer (`_fill_from_neighbour_dates`) rather than a
+2025-only special case, so the same reasoning applies at every anchor.
+
+So the audit reported `venue .T has 3787 panel name(s) but ZERO priced at anchor(s)
+2025-12-31` (and `.KS` 1,228, `.BK` 943, `.DE` 2,100-vs-8) about names the pipeline
 prices perfectly well.  A false STALE is not cosmetic here: with `price_grid_refuse_when_stale`
 enabled it is a PERMANENT hard refusal on a non-defect.
 
@@ -63,10 +67,40 @@ Every coverage question is therefore answered by `returns_core.PriceSource.price
 depth-grid uses.  The audit can no longer be right about a grid the grader reads differently,
 or wrong about one it reads fine.
 
-A CONSEQUENCE WORTH STATING: this audits the REAL-PRICE ROUTE, which is what
-`pipeline_analysis._build_price_source` feeds every analysis stage today.  If the derived-price
-route (`derived_prices.build_price_source`) is ever wired into the pipeline, this module's claim
-about what the stages below it compute on goes stale and must be re-pointed.
+A CONSEQUENCE WORTH STATING: this audits the REAL-PRICE ROUTE ONLY, and a second route IS
+now wired in (`derived_prices.build_price_source`, routes 'derived' / 'derived+real' /
+'real+derived').  So the banner's old claim -- "EVERY number the analysis stages below print
+is computed on this grid" -- is FALSE for any run that selects another route, and it is now
+parameterised: `banner(rep, price_route=...)` states the route it was told about, and on a
+non-real route it says outright that some names are priced off the fundamentals panel instead
+and that THIS AUDIT DOES NOT COVER THEM.  The caller must pass the route it actually built;
+`pipeline_analysis` does.
+
+The honest reading on the gap-fill route in particular: this module's per-venue zeros are
+exactly the population `real+derived` hands to the derived leg, so a `.PA`/`.KS`/`.OL` finding
+below is still TRUE (the real grid cannot price them) but no longer means those names are
+absent from the averages.  Read it together with `GapFillPriceSource.per_venue_counts`.
+
+AN INTERIOR HOLE IS A WORSE DEFECT THAN A MISSING VENUE (added 2026-08-22)
+-------------------------------------------------------------------------
+A venue the grid cannot price AT ALL is comparatively harmless to the numbers: those names
+get `status='no_buy'` and every derived view in `returns_core` EXCLUDES them.  They distort
+the pick set, not the average.
+
+A name priced at one anchor, ABSENT at a later one, and priced AGAIN at a later-still one is
+a different animal.  The middle anchor has no eval leg, so `compute_returns` fires the
+TERMINAL policy: `rc.beat_rate(missing='fail')` -- the default, and what the headline
+beat-rate uses -- counts it as NOT BEATING, and `total_return_floor` puts it at -100%.  The
+later price PROVES the company was alive, so that is a data gap being scored as a loss.
+
+Measured against the 08-22 CUR6K panel: the run machine's grid has 177 such names / 291 hole
+cells, 164 of them on `.L` -- and 6 on US listings, i.e. the defect is live on the CURRENT
+NA1-only default, not only on a widened exchange scope.  The repo-local dev grid has 4,232
+hole cells, overwhelmingly the Dec-31 venue holidays on `.ST`/`.DE`/`.KS`/`.KQ`/`.OL`.
+
+REPORTED, NOT REPAIRED.  Reclassifying a hole away from `terminal` would change the audited
+terminal-value policy and every certified number that rides on it; that is a decision for
+the CEO, not a side effect of an audit.  What this module does is stop it being invisible.
 
 THRESHOLDS: THERE ARE NONE, ON PURPOSE
 --------------------------------------
@@ -147,16 +181,34 @@ def audit_price_grid(prices_csv, panel_symbols, supp_csv=None, anchors=None):
     for sym in panel:
         panel_by_venue.setdefault(suffix_of(sym), set()).add(sym)
 
+    #  INTERIOR HOLES, per symbol.  A hole is an anchor with no price that lies strictly
+    #  between two anchors that DO have one -- so the name was demonstrably alive on both
+    #  sides of it and the gap is the grid's, not the company's.  Anything before a symbol's
+    #  first price or after its last is NOT a hole: that is a name not yet listed, or one
+    #  that genuinely stopped, and the terminal policy is the right answer there.
+    holes_by_symbol = {}
+    for sym in panel:
+        pres = [sym in priced_at[a] for a in anchors]
+        if not any(pres):
+            continue
+        first, last = pres.index(True), len(pres) - 1 - pres[::-1].index(True)
+        gaps = [anchors[i] for i in range(first, last + 1) if not pres[i]]
+        if gaps:
+            holes_by_symbol[sym] = gaps
+
     venues = {}
     for venue, members in sorted(panel_by_venue.items()):
         pa = {a: len(members & priced_at[a]) for a in anchors}
         zero_anchors = [a for a in anchors if pa[a] == 0]
+        h = {sym: g for sym, g in holes_by_symbol.items() if sym in members}
         venues[venue] = {
             'n_panel': len(members),
             'n_priced_any_anchor': len(members & overlap),
             'per_anchor': pa,
             'zero_anchors': zero_anchors,
             'absent_everywhere': len(zero_anchors) == len(anchors) and bool(anchors),
+            'n_interior_hole_symbols': len(h),
+            'n_interior_hole_cells': sum(len(g) for g in h.values()),
         }
 
     #  THE BENCHMARK IS ITS OWN COVERAGE QUESTION, and the only one that can still kill a stage
@@ -187,6 +239,9 @@ def audit_price_grid(prices_csv, panel_symbols, supp_csv=None, anchors=None):
         'overlap_frac': (len(overlap) / len(panel)) if panel else 0.0,
         'per_anchor': per_anchor,
         'venues': venues,
+        'n_interior_hole_symbols': len(holes_by_symbol),
+        'n_interior_hole_cells': sum(len(g) for g in holes_by_symbol.values()),
+        'interior_holes': {s: list(g) for s, g in sorted(holes_by_symbol.items())},
         'benchmark_symbol': bench_sym,
         'benchmark_per_anchor': bench,
         'benchmark_missing_anchors': bench_missing,
@@ -211,6 +266,16 @@ def audit_price_grid(prices_csv, panel_symbols, supp_csv=None, anchors=None):
         elif v['zero_anchors']:
             f.append('venue %s has %d panel name(s) but ZERO priced at anchor(s) %s'
                      % (venue, v['n_panel'], ', '.join(v['zero_anchors'])))
+    if holes_by_symbol:
+        #  CATEGORICAL, like every other finding here: a name priced on both sides of an
+        #  anchor it is missing at was alive, full stop.  No threshold is involved.
+        f.append('%d panel name(s) / %d anchor-cell(s) have an INTERIOR price hole -- '
+                 'priced BEFORE and AFTER an anchor they are missing at.  Those resolve to '
+                 "status='terminal', which the default beat-rate policy (missing='fail') "
+                 'counts as NOT BEATING and total_return_floor puts at -100%%, even though '
+                 'a later price proves the name was alive'
+                 % (len(holes_by_symbol),
+                    sum(len(g) for g in holes_by_symbol.values())))
     if anchors and bench_missing == anchors:
         f.append('the benchmark %s is absent from EVERY anchor -- PriceSource.benchmark_series '
                  'will RAISE and the beat-rate/excess stages cannot run at all' % bench_sym)
@@ -237,7 +302,10 @@ def format_audit(rep):
     L.append('  panel names priced, per anchor:')
     for a in rep['anchors']:
         L.append('    %s  %5d' % (a, rep['per_anchor'][a]))
-    L.append('  per venue (panel names / priced at any anchor):')
+    L.append('  interior price holes (priced before AND after a missing anchor -- scored as '
+             'a LOSS, not excluded): %d name(s) / %d cell(s)'
+             % (rep['n_interior_hole_symbols'], rep['n_interior_hole_cells']))
+    L.append('  per venue (panel names / priced at any anchor / interior-hole names):')
     for venue, v in sorted(rep['venues'].items(),
                            key=lambda kv: -kv[1]['n_panel']):
         flag = ''
@@ -245,6 +313,9 @@ def format_audit(rep):
             flag = '   <-- WHOLLY ABSENT from the grid'
         elif v['zero_anchors']:
             flag = '   <-- zero at %s' % ', '.join(v['zero_anchors'])
+        if v['n_interior_hole_symbols']:
+            flag += '   [%d hole name(s), %d cell(s)]' % (v['n_interior_hole_symbols'],
+                                                         v['n_interior_hole_cells'])
         L.append('    %-8s %5d / %5d%s'
                  % (venue, v['n_panel'], v['n_priced_any_anchor'], flag))
     L.append('  benchmark %s, per anchor (never in the panel, so it needs its own line):'
@@ -257,8 +328,13 @@ def format_audit(rep):
     return chr(10).join(L)
 
 
-def banner(rep):
-    """The unmissable form, for a STALE verdict."""
+def banner(rep, price_route="real"):
+    """The unmissable form, for a STALE verdict.
+
+    `price_route` is the route the CALLER actually built.  It exists because the sentence
+    "EVERY number below is computed on this grid" stopped being true the moment a second
+    price route was wired in, and a banner that keeps saying it is worse than no banner.
+    """
     bang = '!' * 78
     lines = ['', bang,
              '!!! PRICE GRID IS STALE FOR THIS UNIVERSE -- BACKTEST NUMBERS ARE AFFECTED !!!',
@@ -267,10 +343,21 @@ def banner(rep):
              % (rep['n_overlap'], rep['n_panel'], 100.0 * rep['overlap_frac'])]
     for x in rep['findings']:
         lines.append('!!!   * %s' % x)
+    if price_route == "real":
+        lines += [
+            '!!! EVERY number the analysis stages below print is computed on this grid,',
+            '!!! so any name it cannot price is silently ABSENT from those averages -- and',
+            '!!! a whole missing venue biases them by market, not just by count.']
+    else:
+        lines += [
+            '!!!   price route in use: %s  <-- NOT the plain real route' % price_route,
+            '!!! THIS AUDIT COVERS THE REAL GRID ONLY.  On this route some names are priced',
+            '!!! off the fundamentals panel instead, so a venue reported as absent above may',
+            '!!! still be CONTRIBUTING to the averages below -- via a leg this audit did not',
+            '!!! measure and cannot vouch for.  The per-venue zeros are still true about the',
+            '!!! GRID; they are no longer a statement about the NUMBERS.  Cross-read with',
+            '!!! derived_prices.GapFillPriceSource.per_venue_counts / refusal_reasons.']
     lines += [
-        '!!! EVERY number the analysis stages below print is computed on this grid, so any',
-        '!!! name it cannot price is silently ABSENT from those averages -- and a whole',
-        '!!! missing venue biases them by market, not just by count.',
         '!!! NOTHING WAS FETCHED. This is a report, not a remedy: refreshing the grid costs',
         '!!! API calls and is a deliberate human action (baseline_tools/fetch_prices.py).',
         bang, '']
@@ -278,19 +365,24 @@ def banner(rep):
 
 
 def run_audit(prices_csv, panel_symbols, supp_csv=None, log=None, refuse_when_stale=False,
-              out_streams=None):
+              out_streams=None, price_route="real"):
     """Audit + emit.  Returns the report dict.
 
     `refuse_when_stale` raises RuntimeError on a structural finding, for the CEO to switch on
     (`configdic['price_grid_refuse_when_stale']`).  Default False -- see the module docstring
     for why warn-and-proceed is the default and why that is a decision rather than a habit.
+
+    `price_route` is the route the caller built, passed through to `banner` so the headline
+    claim about what the stages below compute on stays true.  Defaults to 'real' because that
+    is still the default route everywhere.
     """
     import sys
     rep = audit_price_grid(prices_csv, panel_symbols, supp_csv=supp_csv)
+    rep['price_route'] = price_route
     text = format_audit(rep)
     streams = out_streams if out_streams is not None else (sys.stdout,)
     if rep['verdict'] == 'STALE':
-        b = banner(rep) + chr(10) + text
+        b = banner(rep, price_route=price_route) + chr(10) + text
         print(b, file=sys.stderr, flush=True)
         for st in streams:
             print(b, file=st, flush=True)

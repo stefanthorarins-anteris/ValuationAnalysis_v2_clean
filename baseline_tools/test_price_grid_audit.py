@@ -35,7 +35,7 @@ import returns_core as rc
 #  THE FIXTURES USE THE GRADER'S OWN ANCHOR LIST, not a copy of it (2026-08-22, reviewer C2).
 #  A local copy is how the audit came to measure over an anchor space the grader does not use:
 #  it harvested 9 `date_requested` values from the file while the grader works over 8, because
-#  `PriceSource._merge_supplementary` unions `2025-12-30` into the `2025-12-31` anchor.  If
+#  `PriceSource`'s fill layer unions `2025-12-30` into the `2025-12-31` anchor.  If
 #  DEFAULT_ANCHORS ever changes, these tests must move with it or they are testing nothing.
 ANCHORS = list(rc.DEFAULT_ANCHORS)
 
@@ -201,7 +201,7 @@ def test_rows_with_no_usable_price_are_not_counted_as_coverage():
 #  C2: it measures THROUGH the grader, so it cannot disagree with it           #
 # --------------------------------------------------------------------------- #
 def test_the_2025_holiday_union_is_NOT_reported_as_a_missing_venue():
-    """THE FALSE FLAG.  `PriceSource._merge_supplementary` unions `2025-12-30` into the
+    """THE FALSE FLAG.  `PriceSource`'s per-anchor fill layer unions `2025-12-30` into the
     `2025-12-31` anchor precisely for venues that do not trade on the 31st, so those names ARE
     priced at 2025-12-31 as far as every grading stage is concerned.
 
@@ -506,6 +506,88 @@ def test_the_audit_module_contains_no_network_surface():
     consts = {c.value for c in ast.walk(tree)
               if isinstance(c, ast.Constant) and isinstance(c.value, str)}
     assert not any('apikey' in c.lower() for c in consts), 'an apikey literal is present'
+
+
+# --------------------------------------------------------------------------- #
+#  INTERIOR HOLES -- the defect a "wholly absent venue" check cannot see       #
+# --------------------------------------------------------------------------- #
+#  A wholly-unpriceable venue is comparatively harmless to the NUMBERS: those names get
+#  status='no_buy' and every derived view in returns_core EXCLUDES them.  A name priced
+#  BEFORE and AFTER an anchor it is missing at is the dangerous case -- compute_returns
+#  fires the TERMINAL policy, the default beat-rate policy (missing='fail') scores it a
+#  miss and total_return_floor puts it at -100%, while a later price proves the company was
+#  alive.  Measured on the run machine's grid: 177 name(s) / 291 cell(s), 164 of them .L and
+#  6 of them US -- so this is live on the CURRENT NA1-only default, not only on a widened
+#  exchange scope.
+def _tmp():
+    import tempfile
+    import pathlib
+    d = tempfile.TemporaryDirectory()
+    return d, pathlib.Path(d.name)
+
+
+def test_an_INTERIOR_price_hole_is_found_and_named():
+    """Priced at the first and last anchor, missing in the middle -> a hole."""
+    d, tmp = _tmp()
+    with d:
+        cov = {a: ['HOLEY'] for a in ANCHORS}
+        cov[ANCHORS[3]] = []                    # punch one anchor out
+        grid = _grid(tmp, _with_benchmark(cov))
+        rep = pga.audit_price_grid(grid, ['HOLEY'])
+    assert rep['n_interior_hole_symbols'] == 1
+    assert rep['n_interior_hole_cells'] == 1
+    assert rep['interior_holes']['HOLEY'] == [ANCHORS[3]]
+    assert rep['verdict'] == 'STALE'
+    assert any('INTERIOR price hole' in x for x in rep['findings']), rep['findings']
+
+
+def test_a_LEADING_gap_is_NOT_a_hole():
+    """Before a name's first price it is simply not listed yet, and the terminal policy is
+    the right answer -- calling that a defect would fire on every recent IPO."""
+    d, tmp = _tmp()
+    with d:
+        cov = {a: (['LATECO'] if i >= 3 else []) for i, a in enumerate(ANCHORS)}
+        grid = _grid(tmp, _with_benchmark(cov))
+        rep = pga.audit_price_grid(grid, ['LATECO'])
+    assert rep['n_interior_hole_symbols'] == 0
+
+
+def test_a_TRAILING_gap_is_NOT_a_hole():
+    """After a name's last price it may genuinely have stopped trading; the price file cannot
+    distinguish that from a gap, and the terminal policy exists for exactly this case."""
+    d, tmp = _tmp()
+    with d:
+        cov = {a: (['GONECO'] if i <= 2 else []) for i, a in enumerate(ANCHORS)}
+        grid = _grid(tmp, _with_benchmark(cov))
+        rep = pga.audit_price_grid(grid, ['GONECO'])
+    assert rep['n_interior_hole_symbols'] == 0
+
+
+def test_the_hole_count_is_reported_PER_VENUE_so_the_market_is_visible():
+    """The 164-of-177-on-.L shape: without the per-venue split it reads as diffuse noise."""
+    d, tmp = _tmp()
+    with d:
+        lse = _names('L', 5, '.L')
+        cov = {a: list(lse) for a in ANCHORS}
+        cov[ANCHORS[6]] = []
+        grid = _grid(tmp, _with_benchmark(cov))
+        rep = pga.audit_price_grid(grid, lse)
+    assert rep['venues']['.L']['n_interior_hole_symbols'] == 5
+    assert rep['venues']['.L']['n_interior_hole_cells'] == 5
+    assert '5 hole name(s)' in pga.format_audit(rep)
+
+
+def test_a_fully_priced_grid_reports_NO_holes():
+    """The false-positive side, and the mutation control for the tests above: the same
+    fixture with nothing punched out must be clean."""
+    d, tmp = _tmp()
+    with d:
+        grid = _grid(tmp, _with_benchmark({a: ['SOLID'] for a in ANCHORS}))
+        rep = pga.audit_price_grid(grid, ['SOLID'])
+    assert rep['n_interior_hole_symbols'] == 0
+    assert rep['n_interior_hole_cells'] == 0
+    assert not any('INTERIOR' in x for x in rep['findings'])
+    assert rep['verdict'] == 'OK'
 
 
 if __name__ == '__main__':

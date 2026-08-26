@@ -264,7 +264,13 @@ def writeManElimToFile(dmdic, manualelimtickers):
     entries = dmdic.get('exclusion_entries_next')
     if not entries:
         entries = _x.propose_from_run(manualelimtickers, [])
-    _x.write_exclusions(mefn, entries)
+    #  CARRY THE ROTATION COUNTER FORWARD (CEO, 2026-08-24).  `write_exclusions` ADVANCES it,
+    #  so the next run holds out the next 10% slice and the cycle walks every slot.  The
+    #  verdict is None when the run loaded no list; the counter is then omitted and the next
+    #  armed run starts at slot 0 -- correct, merely not continuous.
+    _xv = dmdic.get('exclusion_verdict')
+    _x.write_exclusions(mefn, entries,
+                        cycle=(getattr(_xv, 'cycle', None) if _xv is not None else None))
     live = [e for e in entries if e.status == 'live']
     #  THE LOOP IS SHIPPED **INERT**, AND THAT IS STATED HERE RATHER THAN LEFT TO BE DISCOVERED
     #  (review S10).  The run WRITES `ExclusionList_<ds>_<date>.csv` and the loader READS

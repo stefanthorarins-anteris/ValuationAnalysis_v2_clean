@@ -220,3 +220,252 @@ def test_default_configuration_excludes_nothing():
         assert getattr(ns, 'manelimtickers', None) in (None, False)
     #  3. even a populated list is only reachable via BOTH the flag and a schema file
     assert x.DEFAULT_EXCLUSION_FILE != 'ManualEliminationTickersList_fmp_2023-02-14.csv'
+
+# --------------------------------------------------------------------------- #
+#  ROTATION -- the retest slice (CEO, 2026-08-24)                              #
+# --------------------------------------------------------------------------- #
+def _rotation_list(tmp_path, n=300, category='transient_fetch', added=None, expires=None):
+    added = added or (TODAY - timedelta(days=1))
+    expires = expires or (TODAY + timedelta(days=400))
+    rows = ['ticker,category,reason,added,expires,evidence']
+    for i in range(n):
+        rows.append('T%04d,%s,fetch failed on this run,%s,%s,run-observed'
+                    % (i, category, added.strftime(x.DATE_FMT), expires.strftime(x.DATE_FMT)))
+    return _write(tmp_path, rows)
+
+
+def test_EVERY_listed_name_is_retested_within_RETEST_SLOTS_runs(tmp_path):
+    """*** THE PROMISE ROTATION MAKES, AND THE ONLY ONE THAT MATTERS. ***  An armed list with
+    no rotation is a permanent ban; the whole argument for arming it is that every name comes
+    back round within a BOUNDED number of runs.  So walk every cycle and assert the union of
+    the held-out slices covers the list -- not that each slice is roughly 10%, which is a
+    property of the hash and not a promise to anybody."""
+    path = _rotation_list(tmp_path, n=300)
+    seen = set()
+    for cycle in range(x.RETEST_SLOTS):
+        v = x.load_exclusions(path, as_of=TODAY, verbose=False, cycle=cycle)
+        seen |= set(v.held_out)
+    live = {e.ticker for e in x.load_exclusions(path, as_of=TODAY, verbose=False,
+                                                rotate=False).entries if e.status == 'live'}
+    assert live, 'fixture produced no live entries'
+    assert live - seen == set(), (
+        '%d name(s) were never held out in %d cycles, so an armed list bans them forever: %s'
+        % (len(live - seen), x.RETEST_SLOTS, sorted(live - seen)[:10]))
+
+
+def test_a_held_out_name_is_NOT_applied_so_the_run_actually_refetches_it(tmp_path):
+    """The hold-out has to reach `applied`, or rotation is a log line that changes nothing.
+    `applied` is the ONLY thing the pipeline filters on (see the ExclusionVerdict docstring),
+    so this is the assertion that connects the mechanism to the behaviour."""
+    path = _rotation_list(tmp_path, n=300)
+    v = x.load_exclusions(path, as_of=TODAY, verbose=False, cycle=0)
+    assert v.held_out, 'cycle 0 held nobody out -- the fixture cannot exercise this'
+    for tk in v.held_out:
+        assert tk not in v.applied, (
+            '%r was held out for re-test and STILL applied -- the name is excluded, so the '
+            'run never re-fetches it and the hold-out is cosmetic' % tk)
+
+
+def test_the_slot_is_STABLE_across_processes_and_across_list_growth():
+    """Two properties, one test, because both are what make "within 10 runs" true of a list
+    that changes between runs:
+      * `hash()` is salted per process (PYTHONHASHSEED), so a slot built on it would differ
+        between two runs of the SAME list -- a name could then be skipped indefinitely;
+      * a positional slice (`sorted(...)[i::10]`) reshuffles every later name's slot whenever
+        a name is inserted, so the bound would reset on every list change."""
+    known = {t: x.retest_slot(t) for t in ('AAPL', '007700.KS', 'SHEL.L', '0QQF.L')}
+    assert known == {t: x.retest_slot(t) for t in known}, 'retest_slot is not deterministic'
+    #  A hash of the ticker cannot depend on what else is in the list -- there is no list
+    #  argument -- so growth-stability is structural.  Pin it anyway, because the obvious
+    #  "improvement" is to pass the list in.
+    import inspect
+    assert 'entries' not in inspect.signature(x.retest_slot).parameters, (
+        'retest_slot now sees the list, so a name inserted anywhere can move another name to '
+        'a different slot and the within-N-runs bound stops holding')
+
+
+def test_the_cycle_counter_ADVANCES_through_the_written_file(tmp_path):
+    """Rotation only walks the slots if the counter moves.  It rides in a `#` comment, which
+    the loader already skips, so this also pins that a counter cannot make a valid file
+    malformed (safety lock (a) checks EXCLUSION_HEADER on the first non-comment line)."""
+    path = _rotation_list(tmp_path, n=50)
+    seen_cycles = []
+    for _ in range(x.RETEST_SLOTS + 2):
+        v = x.load_exclusions(path, as_of=TODAY, verbose=False)
+        assert not v.by_status('malformed'), (
+            'the cycle comment made the file malformed: %s'
+            % [e.note for e in v.by_status('malformed')][:2])
+        seen_cycles.append(v.cycle)
+        x.write_exclusions(path, v.entries, cycle=v.cycle)
+    assert seen_cycles[:x.RETEST_SLOTS] == list(range(x.RETEST_SLOTS)), seen_cycles
+    assert seen_cycles[x.RETEST_SLOTS] == 0, 'the counter did not wrap'
+
+
+def test_the_3_MONTH_BLANKET_holds_out_a_name_rotation_would_not(tmp_path):
+    """The CEO's backstop.  A machine entry live for more than BLANKET_RETEST_DAYS is
+    re-fetched whatever the slot arithmetic says -- so a slot that never comes up, a counter
+    that stops advancing, or a hand-rewritten file cannot produce a permanent ban."""
+    old = TODAY - timedelta(days=x.BLANKET_RETEST_DAYS + 1)
+    path = _rotation_list(tmp_path, n=300, added=old)
+    #  Pick a name whose slot is NOT this cycle, so rotation is provably not what catches it.
+    v0 = x.load_exclusions(path, as_of=TODAY, verbose=False, cycle=0)
+    victims = [t for t in v0.held_out if v0.held_out[t] == 'blanket']
+    assert victims, 'no name was caught by the blanket -- the fixture is not exercising it'
+    for t in victims:
+        assert x.retest_slot(t) != 0, 'this name was in the rotation slice anyway'
+        assert t not in v0.applied
+
+
+def test_the_blanket_does_NOT_reach_a_HAND_ADDED_permanent_entry(tmp_path):
+    """A `duplicate` line is a structural claim with no clock BY DESIGN, and the blanket must
+    not quietly convert the CEO's "forever" into 90 days.  Only `run-observed` entries are
+    machine claims about a fetch, so only those are re-probed."""
+    old = (TODAY - timedelta(days=x.BLANKET_RETEST_DAYS + 30)).strftime(x.DATE_FMT)
+    path = _write(tmp_path, [
+        'ticker,category,reason,added,expires,evidence',
+        'BRK-B,duplicate,second listing of Berkshire Hathaway,%s,,DedupSurvivorReport.csv' % old,
+    ])
+    #  Force the cycle to the slot this ticker is NOT in, so rotation cannot be the cause.
+    cycle = (x.retest_slot('BRK-B') + 1) % x.RETEST_SLOTS
+    v = x.load_exclusions(path, as_of=TODAY, verbose=False, cycle=cycle)
+    assert v.held_out == {}, (
+        'the 90-day blanket re-probed a hand-added permanent entry (%s) -- it must only reach '
+        'run-observed machine claims' % v.held_out)
+    assert v.applied == ['BRK-B']
+
+
+def test_short_history_is_NOT_spent_on_a_rotation_slot(tmp_path):
+    """`short_history` recovers by AGING, deterministically -- 328 of the 710 rows on the
+    2026-08-22 list.  A rotation slot spent on a name that provably cannot have recovered yet
+    is a wasted fetch, so this cohort is scheduled, not sampled.  Its category expiry (90d)
+    is what re-probes it."""
+    path = _rotation_list(tmp_path, n=300, category='short_history')
+    for cycle in range(x.RETEST_SLOTS):
+        v = x.load_exclusions(path, as_of=TODAY, verbose=False, cycle=cycle)
+        assert all(r != 'rotation' for r in v.held_out.values()), (
+            'a short_history name was held out by ROTATION on cycle %d: %s'
+            % (cycle, {k: r for k, r in v.held_out.items() if r == 'rotation'}))
+
+
+def test_the_computed_short_history_retry_date_is_LATER_than_the_flat_expiry():
+    """The CEO's refinement (a): `16 - n` more quarters is COMPUTABLE, so a name holding 4
+    periods should not be re-probed as if it needed one.  The date may only push a retry OUT,
+    never pull it in -- pulling it in would spend calls earlier than the flat policy does."""
+    added = TODAY
+    flat = x.default_expiry('short_history', added)
+    near = x.scheduled_retry_date(added, x.HISTORY_GATE_PERIODS - 1)   # needs 1 more quarter
+    far = x.scheduled_retry_date(added, 4)                             # needs 12 more
+    assert near is not None and far is not None
+    assert far > flat, (far, flat)
+    assert far > near
+    #  And the fallback is honest: with no period count there is no computed date at all.
+    assert x.scheduled_retry_date(added, None) is None
+
+
+def test_propose_from_run_uses_the_computed_date_ONLY_when_the_count_is_supplied():
+    """Production does not supply the period count today (`getData_fmp` appends the bare
+    ticker to `lenfail`), so this pins BOTH arms: with the map the expiry is computed, and
+    without it the flat 90-day category expiry is used and nothing silently pretends
+    otherwise."""
+    added = TODAY
+    flat = x.propose_from_run(['AAA'], ['AAA'], added=added)[0]
+    assert flat.expires == x.default_expiry('short_history', added).strftime(x.DATE_FMT)
+    comp = x.propose_from_run(['AAA'], ['AAA'], added=added, lenfail_periods={'AAA': 4})[0]
+    assert comp.expires == x.scheduled_retry_date(added, 4).strftime(x.DATE_FMT)
+    assert comp.expires > flat.expires
+
+
+def test_a_name_can_only_be_listed_AFTER_it_has_actually_been_fetched():
+    """*** THE GUARD THE BRIEF ASKED FOR BY NAME: the list must not be able to skip a name it
+    has never tried. ***  It is STRUCTURAL, not a runtime check: `propose_from_run` is the only
+    machine author of entries and it can only emit names that are in `tickersfailed`, i.e.
+    names this run fetched and this run saw fail.
+
+    WHAT THIS CANNOT DETECT: a HAND-ADDED entry.  A `ceo` or `duplicate` line is a human
+    judgement about a name the human names, and nothing here asks whether the machine ever
+    tried it -- by design, but it does mean "every applied name was fetched at least once" is
+    true of the machine-authored half only."""
+    proposed = x.propose_from_run(['AAA', 'BBB'], ['BBB'], added=TODAY)
+    assert {e.ticker for e in proposed} == {'AAA', 'BBB'}
+    assert all(e.evidence == 'run-observed' for e in proposed)
+    #  A name that did not fail cannot be proposed, however it is passed in.
+    assert x.propose_from_run([], ['CCC'], added=TODAY) == []
+
+
+def test_ROTATION_IS_ON_BY_DEFAULT(tmp_path):
+    """The safe default, not the convenient one.  `rotate=False` produces a verdict whose
+    `cycle` is None, and `report()` says so in as many words -- because an armed list read
+    without rotation is a permanent ban and must never be the thing you get by forgetting an
+    argument."""
+    path = _rotation_list(tmp_path, n=300)
+    assert x.load_exclusions(path, as_of=TODAY, verbose=False).cycle is not None
+    v = x.load_exclusions(path, as_of=TODAY, verbose=False, rotate=False)
+    assert v.cycle is None and v.held_out == {}
+    assert 'ROTATION: NOT APPLIED' in v.report(verbose=False)
+
+
+def test_the_applied_count_EXCLUDES_the_held_out_slice(tmp_path):
+    """A held-out name is re-fetched, so counting it as an exclusion would overstate the
+    filter by the size of the slice -- in the report the CEO reads, every run."""
+    path = _rotation_list(tmp_path, n=300)
+    v = x.load_exclusions(path, as_of=TODAY, verbose=False, cycle=0)
+    live = sum(1 for e in v.entries if e.status == 'live')
+    assert sum(v.counts_by_category().values()) == len(v.applied) == live - len(v.held_out)
+
+def test_the_rotation_banner_does_NOT_promise_a_RUN_bound_for_the_SCHEDULED_cohort(tmp_path):
+    """*** THE BANNER LIED TO THE OPERATOR, AND IT IS THE ONLY THING THEY SEE. ***  It read
+    "Every listed name is retried within 10 runs" -- false for `short_history`, which
+    rotation deliberately skips and which is 328 of the 710 rows on the 2026-08-22 list, 46%
+    of the very list the banner describes.  A promise the mechanism does not make is exactly
+    how an armed list becomes a permanent ban nobody audits."""
+    rows = ['ticker,category,reason,added,expires,evidence']
+    added = (TODAY - timedelta(days=1)).strftime(x.DATE_FMT)
+    for i in range(20):
+        rows.append('R%03d,transient_fetch,fetch failed on this run,%s,%s,run-observed'
+                    % (i, added, (TODAY + timedelta(days=10)).strftime(x.DATE_FMT)))
+    for i in range(30):
+        rows.append('S%03d,short_history,failed the history-length gate,%s,%s,run-observed'
+                    % (i, added, (TODAY + timedelta(days=80)).strftime(x.DATE_FMT)))
+    path = _write(tmp_path, rows)
+    text = x.load_exclusions(path, as_of=TODAY, verbose=False).report(verbose=False)
+    assert 'Every listed name is retried within' not in text, (
+        'the banner is back to promising a uniform run bound it does not deliver')
+    assert '20 ROTATED name(s): retried within %d runs' % x.RETEST_SLOTS in text
+    assert '30 SCHEDULED name(s)' in text and 'NOT within %d runs' % x.RETEST_SLOTS in text
+
+
+def test_select_retest_has_NO_unreachable_scheduled_arm(tmp_path):
+    """The deleted branch fired on `expires <= as_of`, which `_classify` already calls
+    `'expired'` and which this loop already skips -- unreachable on every input, and MORE
+    unreachable once `lenfail_periods` pushes expiries out.  Asserted over a fixture that
+    spans the whole space: expired, live-and-near, live-and-far, rotated and scheduled."""
+    rows = ['ticker,category,reason,added,expires,evidence']
+    for i, (cat, days) in enumerate([('short_history', -5), ('short_history', 1),
+                                     ('short_history', 1200), ('transient_fetch', -5),
+                                     ('transient_fetch', 3), ('transient_fetch', 900)] * 20):
+        rows.append('T%03d,%s,r,%s,%s,run-observed'
+                    % (i, cat, (TODAY - timedelta(days=1)).strftime(x.DATE_FMT),
+                       (TODAY + timedelta(days=days)).strftime(x.DATE_FMT)))
+    path = _write(tmp_path, rows)
+    seen = set()
+    for cycle in range(x.RETEST_SLOTS):
+        seen |= set(x.load_exclusions(path, as_of=TODAY, verbose=False,
+                                      cycle=cycle).held_out.values())
+    assert seen <= {'rotation', 'blanket'}, (
+        'select_retest produced a hold-out reason outside {rotation, blanket}: %s' % seen)
+    assert 'scheduled' not in seen
+
+
+def test_a_SCHEDULED_name_with_a_MULTI_YEAR_expiry_is_still_reached_by_the_blanket(tmp_path):
+    """The consequence of deleting the arm, pinned: a `short_history` name whose COMPUTED
+    retry date is ~3 years out is skipped by rotation and is not yet expired -- so the
+    3-month blanket is the only thing that re-probes it, and it must."""
+    old = (TODAY - timedelta(days=x.BLANKET_RETEST_DAYS + 1)).strftime(x.DATE_FMT)
+    far = (TODAY + timedelta(days=1100)).strftime(x.DATE_FMT)
+    path = _write(tmp_path, [
+        'ticker,category,reason,added,expires,evidence',
+        'AAA,short_history,4 of 16 periods,%s,%s,run-observed' % (old, far)])
+    v = x.load_exclusions(path, as_of=TODAY, verbose=False,
+                          cycle=(x.retest_slot('AAA') + 1) % x.RETEST_SLOTS)
+    assert v.held_out == {'AAA': 'blanket'}, v.held_out
+    assert v.applied == []

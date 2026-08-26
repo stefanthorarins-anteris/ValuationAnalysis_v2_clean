@@ -198,6 +198,24 @@ def postBoScoreRanking(bmtop, bstop, cdxtop, baseurl, api_key, period='quarter',
         _safe_diagnose(missing_data_fill_report, postScoreMetric_raw, postScoreMetric_df,
                        weight_series, pool=(pool_label or 'general')) or (None, None))
 
+    #  --- THE IMPUTATION LADDER (CEO, 2026-08-24) --------------------------------------
+    #  HERE for the charge, because the penalty column is assembled ~40 lines below and a
+    #  contribution added after that is added to nothing.  The EXCLUSION half is applied
+    #  after the dedup (see `_drop_heavily_imputed` at the call site) -- z-scores were
+    #  computed over the whole selected pool and are deliberately NOT recomputed when a name
+    #  is removed, exactly as the issuer-dedup does not recompute them.
+    #
+    #  *** THE EXCLUSION SHRINKS THE SHORTLIST -- IT DOES NOT BACKFILL, AND IT STRUCTURALLY
+    #  CANNOT.  `imputed_weight_share` is a property of the Stage-2 scoring pass, which only
+    #  runs on the names `postBo` already selected with `head(100)`.  So the number does not
+    #  exist for the name at rank 101 and there is nothing to promote in its place: the pool
+    #  goes 100 -> 97 on the 2026-08-22 data, it does not re-fill.  Backfilling would mean
+    #  scoring deeper than 100 and taking the top 100 of the survivors, which changes the
+    #  z-pool every metric normalises against and is a bigger decision than this one.  Raised,
+    #  not silently accepted. ***
+    _imp_excluded, _ = imputation_ladder(_fill_name_df, penalty_book=penalty_book,
+                                         pool_label=(pool_label or 'general'))
+
     # WHY each cell was NaN in the first place, as a per-rule COUNT for this pool.  The fill
     # report above says WHERE the imputation lands; this says WHICH RULE created the cell it
     # imputed -- coverage below 0.50, interior gaps, calendar gaps, a boundary limit, or a
@@ -273,6 +291,32 @@ def postBoScoreRanking(bmtop, bstop, cdxtop, baseurl, api_key, period='quarter',
     postRank, issuer_dupes_dropped = _dedup_issuers_in_ranking(
         postRank, cdxtop, names, dedup_issuers)
 
+    #  --- THE IMPUTATION LADDER'S TOP RUNG (CEO, 2026-08-24) ---------------------------
+    #  Removal happens HERE, beside the issuer-dedup, because these are the only two places
+    #  the ranked frame loses rows and both must be in one place and one order.  AFTER the
+    #  dedup deliberately: the dedup's survivor choice is about which LINE of an issuer to
+    #  keep and must not be decided by an imputation share, and if the survivor it picks is
+    #  the heavily-imputed one, this then removes the issuer entirely -- which is the honest
+    #  outcome, not a reason to make the dedup pick a line we would not have ranked.
+    #  `postRank` is already shorter than `postScoreMetric_df` after the dedup, so a shorter
+    #  ranked frame is the established shape here and no consumer infers length from it.
+    imputed_dropped = []
+    if _imp_excluded:
+        _mask = postRank['source'].isin(_imp_excluded)
+        imputed_dropped = sorted(postRank.loc[_mask, 'source'])
+        postRank = postRank[~_mask].reset_index(drop=True)
+        print('IMPUTATION LADDER [%s]: removed %d name(s) from the ranked output (%d -> %d '
+              'rows): %s'
+              % (pool_label or 'general', len(imputed_dropped),
+                 len(imputed_dropped) + len(postRank), len(postRank),
+                 ', '.join(imputed_dropped)), flush=True)
+        #  The pool SHRANK and nothing backfilled it -- see the note at the charge site for
+        #  why it structurally cannot.  Said out loud so a 97-row top-100 is never read as a
+        #  100-row one.
+        print('    THE SHORTLIST IS NOW SHORTER, NOT REFILLED: `imputed_weight_share` only '
+              'exists for names Stage-2 scored, so there is no measured candidate at rank '
+              '101 to promote.', flush=True)
+
     #  THE k PROPERTY, against THIS pool's own panel (E-1 / SQUASH_K).  It runs HERE, and the
     #  position is chosen twice over: it cannot run inside normalizeAndDropNA because the
     #  right-hand side of the inequality is the median-to-rank-20 distance of an AggScore that
@@ -291,6 +335,10 @@ def postBoScoreRanking(bmtop, bstop, cdxtop, baseurl, api_key, period='quarter',
     #    postRank_predupe               BASIS_Z_TIMES_W  a copy of postRank before dedup
     #  Read metric values with metric_frame(frame, basis); do NOT infer the basis from the key.
     rankdic = {'postRank': postRank, 'postScoreMetric': postScoreMetric_df,
+               #  Names the imputation ladder removed at/above IMPUTED_EXCLUDE_AT.  [] means
+               #  "the ladder ran and removed nobody"; the ladder prints its own NOT APPLIED
+               #  banner when it could not look at all.
+               'imputed_dropped': imputed_dropped,
                'postScoreMetric_raw': postScoreMetric_raw,
                'psmdf_normalized': psmdf_normalized, 'BoAggCorr': BoAggCorr, 'outlierlist': outlierlist,
                'postRank_predupe': postRank_predupe, 'issuer_dupes_dropped': issuer_dupes_dropped,
@@ -1691,6 +1739,120 @@ def single_column_reach_check(postRank, weight_series=None, pool_label=None, top
 
 MISSING_REPORT_CSV = 'MissingDataFillReport_%s.csv'
 _MISSING_CSV_STARTED = set()
+
+
+#  ###################################################################################
+#  ##                     THE IMPUTATION LADDER (CEO, 2026-08-24)                     ##
+#  ###################################################################################
+#  ONE instrument with TWO rungs, not two instruments.  `imputed_weight_share` is the
+#  fraction of the Stage-2 weight a name was scored on FILLS -- columns whose value was
+#  absent and replaced by the column's neutral z.  A name at 0.93 is being ranked on ~2
+#  observed metrics out of 19 while its score is presented as a 19-metric score.
+#
+#      share == 0                 nothing
+#      0 < share < EXCLUDE_AT     ad-hoc penalty, `ceil(share / STEP)` points
+#      share >= EXCLUDE_AT        EXCLUDED from the pool's ranked output; NOT charged
+#
+#  *** WHY IT IS ONE LADDER AND WHY THE TOP RUNG IS NOT ALSO CHARGED.  The CEO asked for
+#  both instruments and asked that they "cannot double-count or fight".  Exactly one acts
+#  on any given name, decided by one number, so there is no name both instruments touch and
+#  no ordering in which they disagree.  Charging an excluded name would be points on a name
+#  that is not in the output -- invisible arithmetic, and the shape in which a future edit
+#  that un-excludes the top rung silently ships a double charge. ***
+#
+#  MONOTONE ACROSS THE JOIN, which is the property that makes it a ladder rather than two
+#  rules: the charge rises with the share to `RUNGS` points immediately below the cut and
+#  then becomes ejection, which is strictly worse.  Nowhere does more missing data buy a
+#  softer treatment.  (That inversion is a defect this bucket has actually shipped before --
+#  see the MONOTONICITY note in `adhoc_penalty`.)
+#
+#  THE STEP IS DERIVED FROM THE CEO'S OWN CUT, NOT TUNED SEPARATELY.  `RUNGS` rungs across
+#  the band, so `STEP = EXCLUDE_AT / RUNGS` = 0.025 at today's 0.20.  Move the cut and the
+#  ladder rescales with it; there is no second constant to forget.  8 rungs puts the charge
+#  immediately below the cut at 8 points = -0.08 AggScore, which is 24% of the measured
+#  median-to-rank-20 distance (0.3327) -- big enough that the step up to ejection is not a
+#  cliff, small enough that it never removes a name on its own.
+#
+#  *** THIS IS THE FIRST INSTRUMENT TO READ `imputed_weight_share` AT ALL, AND THAT WAS
+#  VERIFIED RATHER THAN ASSUMED.  The ad-hoc bucket has exactly two other charging call
+#  sites -- `stage1_veto` (missing veto-flag rows) and `detectManipulation` (absent Beneish
+#  components, min(absent,3)+1 points, max -0.04).  Neither reads this column, neither reads
+#  anything Stage-2 imputed: the veto charges Stage-1 CRITERIA rows and Beneish charges
+#  FORENSIC components, and Stage-2's metric fills are a third population.  So this adds a
+#  charge, it does not duplicate one. ***
+#  WHAT IT DOES OVERLAP, STATED AS A CORRELATION AND NOT A DOUBLE-CHARGE: a name with bad
+#  data tends to be charged by more than one check.  MEASURED on the 2026-08-22 CUR6K
+#  top-100: of the 10 names this ladder newly charges, 7 already carry a charge from the
+#  veto or from Beneish, so for those the total rises rather than appearing from nothing.
+#  That is the bucket working as designed (one point per distinct data gap, the CEO's
+#  "scaling lives in the amount") -- but a reader comparing bucket totals across runs should
+#  know 7 of the 10 are additive, not new.
+#
+#  WHAT THIS LADDER CANNOT DETECT.  It measures how much weight was FILLED, not whether the
+#  fill was WRONG.  A name whose every column is present but whose values are vendor garbage
+#  scores 0.0 here and is untouched; so does a name whose price series has holes outside the
+#  scoring window.  And the share is computed over the pool's weight vector, so a cohort with
+#  a different weight vector produces a different share for the same missing columns -- the
+#  cut is not comparable across pools, only within one.
+IMPUTED_EXCLUDE_AT = 0.20
+IMPUTED_LADDER_RUNGS = 8
+IMPUTED_LADDER_STEP = IMPUTED_EXCLUDE_AT / IMPUTED_LADDER_RUNGS
+CHECK_IMPUTED_WEIGHT = 'imputed_weight_share'
+
+
+def imputation_ladder(name_df, penalty_book=None, pool_label=None, verbose=True):
+    """Charge the low rung, name the high rung.  Returns `(excluded, n_charged)`.
+
+    `name_df` is `missing_data_fill_report`'s per-name half (or None if it did not run).
+    `excluded` is the set of sources at or above `IMPUTED_EXCLUDE_AT`; the CALLER removes
+    them, because removal has to happen after the dedup so the two reductions of the ranked
+    frame are in one place and one order.
+
+    A MISSING REPORT ABSTAINS, LOUDLY.  `missing_data_fill_report` is wrapped in
+    `_safe_diagnose` and returns `(None, None)` on any failure, and a ladder that read that
+    as "no name is heavily imputed" would report a clean pool on a run where it never looked.
+    """
+    excluded, n_charged, pts_total = set(), 0, 0.0
+    if name_df is None or not len(name_df) or 'imputed_weight_share' not in name_df.columns:
+        if verbose:
+            print('IMPUTATION LADDER [%s]: NOT APPLIED -- no per-name fill report this pool. '
+                  'NOT a finding that no name is heavily imputed; the measurement is absent.'
+                  % (pool_label or 'general'), flush=True)
+        return excluded, n_charged
+    share = pd.to_numeric(name_df['imputed_weight_share'], errors='coerce')
+    for i, src in enumerate(name_df['source'].values):
+        v = share.iloc[i]
+        if not np.isfinite(v) or v <= 0:
+            continue
+        if v >= IMPUTED_EXCLUDE_AT:
+            excluded.add(src)
+            continue
+        pts = float(math.ceil(v / IMPUTED_LADDER_STEP))
+        pts_total += pts
+        n_charged += 1
+        if penalty_book is not None:
+            penalty_book.add(
+                src, CHECK_IMPUTED_WEIGHT,
+                'scored on %.1f%% imputed weight (%s of %s weighted column(s) filled with the '
+                'column neutral z): %s'
+                % (100.0 * v, name_df['n_imputed_cols'].iloc[i],
+                   name_df['n_weighted_cols'].iloc[i],
+                   name_df['imputed_cols'].iloc[i] or '<not itemised>'),
+                pts, pool=pool_label)
+    if verbose:
+        print('IMPUTATION LADDER [%s]: %d name(s) charged %d point(s) total (%.4f AggScore) '
+              'for imputed weight below %.0f%%; %d name(s) EXCLUDED at or above it%s'
+              % (pool_label or 'general', n_charged, int(pts_total),
+                 -ap.WEIGHT * pts_total, 100 * IMPUTED_EXCLUDE_AT, len(excluded),
+                 ('' if not excluded else ': ' + ', '.join(
+                     '%s (%.0f%%)' % (r['source'], 100 * r['imputed_weight_share'])
+                     for _, r in name_df[name_df['source'].isin(excluded)].iterrows()))),
+              flush=True)
+        if penalty_book is None and n_charged:
+            print('    NOTE: no penalty book was passed, so the %d charge(s) above were '
+                  'COMPUTED AND DISCARDED -- this pool is scored with no imputation penalty.'
+                  % n_charged, flush=True)
+    return excluded, n_charged
 
 
 def missing_data_fill_report(raw_df, norm_df, weight_series, pool='general',

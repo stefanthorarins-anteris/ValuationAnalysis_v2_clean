@@ -294,7 +294,12 @@ def _get_top_symbols(bm_filtered, cdx_filtered, dmdic, topn, verbose=True):
         sys.stdout = io.StringIO()
     
     try:
-        resdic = pb.postBoWrapper(temp_dmdic)
+        #  NO TRADED-VALUE FLOOR (2026-08-24).  This scores a DATE-FILTERED
+        #  panel with as_of=None, so `postBoWrapper` cannot tell it from a live
+        #  run -- and the floor reads TODAY's volAvg capture, which would screen
+        #  a past cross-section on a fact from the future.  Explicit, because
+        #  no value of as_of expresses it.
+        resdic = pb.postBoWrapper(temp_dmdic, dollarvol_floor=None)
     finally:
         if not verbose:
             sys.stdout = old_stdout

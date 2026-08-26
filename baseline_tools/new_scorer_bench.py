@@ -169,8 +169,15 @@ assert set(W_THEORY) == set(METRICS18), (
     "only-in-CFG=%s" % (sorted(set(W_THEORY) - set(METRICS18)),
                         sorted(set(METRICS18) - set(W_THEORY))))
 
-REAL_DATES = ["2018-12-31", "2019-12-31", "2020-12-28", "2021-12-31",
-              "2022-12-27", "2023-12-29", "2024-12-31"]  # 2024-12-28 Saturday excluded
+#  *** REAL_DATES WAS A HARD-CODED `date_actual` LIST AND IS GONE (2026-08-24). ***
+#  It read ["2018-12-31","2019-12-31","2020-12-28","2021-12-31","2022-12-27","2023-12-29",
+#  "2024-12-31"] -- two of those (2020-12-28, 2022-12-27) are `date_actual` values, i.e. the
+#  trading day ONE VENUE settled on, not the anchor the fetch asked for.  The anchors are now
+#  resolved AT RUN TIME off the loaded matrix, against `returns_core.DEFAULT_ANCHORS`, by
+#  `real_ic.resolve_anchors` -- which raises rather than silently dropping one.  See
+#  `load_real` below for why the axis, not the literals, was the defect.
+INTENDED_REAL_ANCHORS = ["2018-12-31", "2019-12-31", "2020-12-31", "2021-12-31",
+                         "2022-12-31", "2023-12-31", "2024-12-31"]
 
 
 # --------------------------------------------------------------------------- #
@@ -389,21 +396,71 @@ def parallel_candidate_scores(panel, D, decisional="old", topn=20, new_key="S_ne
 
 # --------------------------------------------------------------------------- #
 def load_real():
-    df = pd.read_csv(REAL)
-    df["adjClose"] = pd.to_numeric(df["adjClose"], errors="coerce")
-    piv = df.pivot_table(index="symbol", columns="date_actual",
-                         values="adjClose", aggfunc="last")
-    return piv
+    """symbol x ANCHOR matrix of adjClose -- DELEGATED to `real_ic.load_real`.
+
+    ==========================================================================================
+    THIS FILE CARRIED A THIRD, WRONG-AXIS COPY OF THIS LOADER UNTIL 2026-08-24.
+    ==========================================================================================
+    It pivoted on `date_actual` with `aggfunc="last"`.  `date_requested` is the ANCHOR the
+    fetch asked for; `date_actual` is the trading day each VENUE happened to settle on, so one
+    anchor fragments into several `date_actual` columns -- one per venue calendar -- and a
+    pivot on that axis turns an N-anchor grid into a wider matrix of PARTIAL cross-sections.
+    Measured on `price_data/real_prices.csv`: anchor 2020-12-31 splits into 2020-12-28 (58,838
+    rows) and 2020-12-31 (9,901); 2022-12-30 into 2022-12-27 (64,490) and 2022-12-30 (15,441).
+    The hard-coded `REAL_DATES` then named the 2020-12-28 and 2022-12-27 fragments, so two of
+    this bench's seven columns were single-venue subsamples of their anchor.
+
+    `returns_core.PriceSource` -- the grader -- reads
+    `usecols=["date_requested","symbol","adjClose"]` and never looks at `date_actual`, so a
+    bench built on the other axis is describing a different population from the thing it is
+    benchmarking.
+
+    THIS IS NOT THE MANUFACTURED-CONCLUSION CLASS, AND THE DIFFERENCE IS WORTH KEEPING.  This
+    bench is hand-run, prints `nan` explicitly and states no verdict, so nobody was handed a
+    confident conclusion off a partial cross-section -- unlike `real_ic`, where the same defect
+    fed `verdict_line`.  It is the same DEFECT with a much smaller blast radius.
+
+    REUSED RATHER THAN RE-FIXED.  `real_ic.load_real` already does exactly this correctly, and
+    a fourth copy is how the third one happened.
+    """
+    import real_ic as ric
+    return ric.load_real(path=REAL)
+
+
+def resolved_real_anchors(real):
+    """`INTENDED_REAL_ANCHORS` mapped to the matrix's ACTUAL column labels, or a raise.
+
+    Resolution happens against the loaded matrix, not against a literal list, so a grid whose
+    year-end anchor moved a day is followed rather than silently missed -- and an anchor the
+    grid does not carry within the tolerance stops the bench by name instead of quietly
+    shortening the horizon ladder.  `real_ic.resolve_anchors` is the one implementation.
+    """
+    import real_ic as ric
+    r = ric.resolve_anchors(real.columns, INTENDED_REAL_ANCHORS, what="bench real anchor")
+    return [r[d] for d in INTENDED_REAL_ANCHORS]
 
 
 def real_fwd(real, buy, ev):
-    if buy not in real.columns or ev not in real.columns:
-        return None
+    #  STRICT since 2026-08-24: the caller resolves anchors against the grid BEFORE calling,
+    #  so a missing column here is a defect and not a data condition.  Returning None on a
+    #  missing column made a horizon silently drop a window and report the mean of what was
+    #  left as if it were the mean of all of them.
+    missing = [c for c in (buy, ev) if c not in real.columns]
+    if missing:
+        raise RuntimeError(
+            "new_scorer_bench.real_fwd: column(s) %s are not in the price matrix (it carries "
+            "%s). Anchors must be resolved with `resolved_real_anchors` before they get here."
+            % (missing, list(real.columns)))
     return (real[ev] / real[buy] - 1).replace([np.inf, -np.inf], np.nan)
 
 
-def horizon_pairs():
-    d = REAL_DATES
+def horizon_pairs(real):
+    """The 12/24/36-month (buy, eval) pairs as ACTUAL grid columns.
+
+    TAKES `real` NOW, because the columns are resolved off the grid rather than restated as
+    literals -- which is what made the pairs stale in the first place.
+    """
+    d = resolved_real_anchors(real)
     return {
         "12mo": [(d[i], d[i + 1]) for i in range(len(d) - 1)],
         "24mo": [(d[i], d[i + 2]) for i in range(len(d) - 2)],
@@ -421,7 +478,7 @@ def _ic(vals, ret, min_n=50):
 
 def check1(panel, real, use_real=True, lag_days=0):
     """Returns (pooled results, per-metric IC, per-window IC) for all schemes."""
-    pairs = horizon_pairs()
+    pairs = horizon_pairs(real)
     buy_dates = sorted({b for hs in pairs.values() for (b, _) in hs})
     cache = {}
     for b in buy_dates:

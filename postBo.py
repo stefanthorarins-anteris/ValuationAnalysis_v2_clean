@@ -20,6 +20,7 @@ from datetime import datetime, timedelta
 from tqdm import tqdm
 from sklearn.linear_model import LinearRegression
 import numpy as np
+import math
 import warnings
 
 # Suppress FutureWarning about DataFrame concatenation with empty/all-NA entries
@@ -121,12 +122,76 @@ def _one_mean_score(df, source, col):
         return None
 
 
-def postBoWrapper(dmdic, as_of=None):
+def _resolve_dollarvol_floor(as_of=None, dollarvol_floor='auto'):
+    """The $/day floor THIS scoring pass may apply, or None.  See `postBoWrapper`.
+
+    A module-level function rather than four lines inline, so the decision can be exercised
+    without standing a scoring run up -- the first cut's guard was a source scan precisely
+    because the decision was not reachable, and a source scan is what let the defect through.
+    """
+    if dollarvol_floor == 'auto':
+        import carveOut as _co_floor
+        return _co_floor.DOLLAR_VOLUME_FLOOR_USD if as_of is None else None
+    return dollarvol_floor
+
+
+def postBoWrapper(dmdic, as_of=None, dollarvol_floor='auto'):
     """Scoring orchestration.  as_of (default None) threads the point-in-time date D
     from Sbocker through Stage-1 (simpleScore_fromDict) and Stage-2
-    (postBoScoreRanking).  as_of=None -> live behaviour, BIT-FOR-BIT unchanged."""
+    (postBoScoreRanking).  as_of=None -> live behaviour, BIT-FOR-BIT unchanged.
+
+    `dollarvol_floor` -- whether THIS run may apply the $1M/day traded-value floor.
+    `'auto'` (default) decides from `as_of`; an explicit value, INCLUDING None, always wins.
+    See the resolution block below for why this is a parameter and not a test on `as_of`.
+    """
     import sys
     import numpy as np
+
+    #  --- WHETHER THIS RUN MAY APPLY THE $1M/DAY TRADED-VALUE FLOOR -------------------
+    #  *** THE FIRST CUT PUT THE OPT-IN UNCONDITIONALLY INSIDE THIS FUNCTION AND CALLED THAT
+    #  THE LOOKAHEAD GUARD.  IT IS NOT ONE: `postBoWrapper` IS ITSELF A POINT-IN-TIME ENTRY
+    #  POINT (reviewer, 2026-08-24). ***  `carveOut.dollar_volume_frame` reads whatever volAvg
+    #  profile capture is NEWEST ON DISK -- today's liquidity -- so a re-entrant
+    #  scoring a past or date-filtered panel would screen it on a fact from the future, and
+    #  the thing that contaminates is the backtest that measures whether the filter works.
+    #  `meanBars._prior_streaks` already recorded the re-entrancy in as many words
+    #  ("postBoWrapper is the production seam but it is ALSO re-entered by the offline
+    #  research"); the fact was available and the first cut failed to carry it into the guard.
+    #
+    #  THREE REACHABLE PIT PATHS, AND `as_of` ONLY CLOSES THE FIRST:
+    #    1. `Sbocker.main` passes `as_of` straight through, and `-asof YYYY-MM-DD` is a
+    #       documented production flag (see `configuration.getDataFetchConfiguration`, which
+    #       describes it as "run the pipeline as-of that past date (survivorship-safe PIT
+    #       universe)").  `as_of is not None` -> OFF.
+    #    2. `backtest_ols_analysis.run_ols_analysis` and
+    #    3. `portfolio._get_top_symbols` -- the latter is what `Sbocker` invokes when
+    #       `portfoliotestyear > 0` -- both build a temp dmdic over a DATE-FILTERED panel and
+    #       call with `as_of=None`.  No value of `as_of` can distinguish them from a live run,
+    #       so they pass `dollarvol_floor=None` EXPLICITLY.  That is the whole reason this is
+    #       a parameter rather than a one-line test on `as_of`.
+    #    (SYMBOLS, NOT LINE NUMBERS, and that is an enforced house rule --
+    #     `test_structural_guards.test_NO_comment_in_the_scoring_files_cites_a_LINE_NUMBER`.
+    #     The first cut of this block cited six line numbers and broke it; a cite corrected
+    #     from 209 to 229 was stale within 308 hours, which is the case that set the rule.)
+    #
+    #  NOT CLOSED HERE, AND DELIBERATELY: `normalized_analysis.run_normalized_pipeline` and the
+    #  `baseline_tools` re-entrants (`run_corrected_current`, `industry_attribution`,
+    #  `nan_policy_report`) score TODAY's panel and exist to reproduce or A/B the live run, so
+    #  today's liquidity is the right question for them and the floor stays ON.
+    _dv_floor = _resolve_dollarvol_floor(as_of, dollarvol_floor)
+    if dollarvol_floor == 'auto':
+        _why = ('as_of is None -> treated as LIVE' if as_of is None
+                else 'as_of=%s -> point-in-time, floor withheld' % (as_of,))
+    else:
+        _why = 'caller passed dollarvol_floor=%r explicitly' % (dollarvol_floor,)
+    if _dv_floor:
+        print("TRADED-VALUE FLOOR: ON at $%.0f/day (%s). The reading is TODAY's volAvg "
+              "capture, so this is a statement about liquidity NOW." % (float(_dv_floor), _why),
+              flush=True)
+    else:
+        print("TRADED-VALUE FLOOR: OFF (%s). This scoring pass is NOT screened on today's "
+              "liquidity -- which is correct for a point-in-time or date-filtered panel, and "
+              "is NOT a finding that the pool is liquid." % _why, flush=True)
     
     # Diagnostic: Check input data BEFORE any calculations
     print("\n" + "="*60, flush=True)
@@ -339,8 +404,12 @@ def postBoWrapper(dmdic, as_of=None):
     _short_warned = False
     try:
         import carveOut as co
+        #  `_dv_floor` is resolved at the top of this function, where `as_of` is in scope --
+        #  see the long note there.  `partition_universe` itself still defaults the floor OFF,
+        #  so the three offline carve callers (refit, the depth grid, the tuner) are untouched.
         carve = co.partition_universe(BoScore_df, cdx_df, dmdic.get('Tickers_df'),
-                                      mcap_floor=25e6, cohort_head=25)
+                                      mcap_floor=25e6, cohort_head=25,
+                                      dollarvol_floor=_dv_floor)
         general_scores = carve['general']
         gp_count = len(general_scores)
         diag = carve['diagnostics']
@@ -412,6 +481,88 @@ def postBoWrapper(dmdic, as_of=None):
     #  then scores a zero penalty column rather than no column at all.
     import adhoc_penalty as ap
     penalty_book = ap.PenaltyBook()
+
+    #  --- CHARGE A NAME WE CANNOT PRICE (CEO ruling; wired 2026-08-24) -----------------
+    #  CEO, verbatim: *"they should be punished for not having this data ... No metric makes
+    #  sense if not relative to a price."*  The backtest half of that ruling is already
+    #  shipped; this is the live half.
+    #
+    #  *** WHAT "CANNOT RELIABLY PRICE" WAS SCOPED TO, AND WHY IT IS THIS AND NOT SOMETHING
+    #  WIDER.  This charge is deliberately NARROW: it is exactly the set the $1M/day
+    #  traded-value floor COULD NOT JUDGE -- `dollarVolume_usd` is NaN because the name has
+    #  no profile price, no trading currency, no resolvable FX rate or no volAvg capture at
+    #  all.  Three properties make it the right scope:
+    #    * IT IS DISJOINT FROM THE FLOOR BY CONSTRUCTION.  The floor acts on a KNOWN value
+    #      below $1M/day; this acts on NO value.  No name can be both, so this cannot become
+    #      a second liquidity floor and cannot double-charge the first one.
+    #    * IT IS NOT A LIQUIDITY TEST.  It says nothing about how much the name trades -- it
+    #      says the price INPUT is absent, which is the CEO's own criterion.  The floor keeps
+    #      these names (absence is not illiquidity, see carveOut.partition_universe), so
+    #      without this charge a name we cannot price at all ranks EXACTLY as if it had
+    #      cleared the floor.  That is the hole this closes, and it is the floor's own hole.
+    #    * IT DOES NOT OVERLAP THE IMPUTATION LADDER.  That ladder (postBoRank) measures how
+    #      much of a name's Stage-2 WEIGHT was filled with a neutral z; this measures whether
+    #      the volavgdic profile capture answered.  Different inputs, different mechanisms.
+    #      MEASURED on the 2026-08-22 CUR6K top-100: the one name here (OPLN, rank 93,
+    #      `dollarVolume_basis = no-reading`) carries `imputed_weight_share = 0.0`, so the
+    #      ladder charges it nothing and the two instruments touch disjoint names.
+    #
+    #  *** THE WIDER READING OF THE RULING WAS MEASURED AND DECLINED.  A charge for "the
+    #  price SERIES is unreliable" -- holes in the panel's `price` column -- was scoped and
+    #  found to have an EMPTY population: on the 2026-08-22 CUR6K panel, 0 of 4,954 names
+    #  have a single missing or non-positive `price` in the newest 8 quarters, which is the
+    #  window the price-bearing Stage-2 metrics read.  The holes that exist are all in the
+    #  deep 80-quarter tail the score never looks at, and they are what the derived-price
+    #  hole-fill already addresses.  Building a second instrument on an empty population
+    #  would ship a latent, uncalibrated charge that first fires on some future run -- so it
+    #  was not built.  This is the half of the ruling with a real, measured population. ***
+    #
+    #  ONE POINT PER NAME, which is the bucket's convention for one named data gap (weight
+    #  0.01 -> -0.01 AggScore).  Not scaled: there is nothing to scale BY -- the reading is
+    #  absent, and absence has no magnitude.
+    CHECK_UNPRICEABLE = 'unpriceable:no_traded_value_reading'
+    try:
+        _dv_unknown = set((carve or {}).get('diagnostics', {}).get('dollarvol_unknown') or [])
+        _dv_enforced = bool((carve or {}).get('diagnostics', {})
+                            .get('dollarvol_floor_enforced', False))
+        if _dv_unknown and not _dv_enforced:
+            #  EVERY name is unknown, i.e. the capture is missing wholesale.  Charging the
+            #  entire universe one point each would move nothing (a constant subtracted from
+            #  every score cannot reorder) and would fill the evidence CSV with thousands of
+            #  rows that say "this run had no volavgdic", which is one fact about the RUN and
+            #  not a finding about any name.  Declared instead.
+            penalty_book.declare_unmeasured(
+                CHECK_UNPRICEABLE,
+                'NOT CHARGED: this run has NO traded-value reading for ANY name (no volavgdic '
+                'profile capture), so "we cannot price this name" is a statement about the run, '
+                'not about %d individual names. The $/day floor did not run either.'
+                % len(_dv_unknown), pool='general')
+        elif _dv_unknown:
+            _pools = {'general': list(general_scores['source'])}
+            if carve is not None:
+                _pools.update({lab: list(cs['source'])
+                               for lab, cs in carve['cohorts'].items()})
+            _n_charged = 0
+            for _lab, _members in _pools.items():
+                for _s in _members:
+                    if _s in _dv_unknown:
+                        penalty_book.add(
+                            _s, CHECK_UNPRICEABLE,
+                            'no usable traded-value reading: dollarVolume_usd could not be '
+                            'formed (no profile price, no trading currency, no FX rate, or no '
+                            'volAvg capture), so the $/day floor could not judge this name and '
+                            'kept it. It is charged rather than screened.', 1.0, pool=_lab)
+                        _n_charged += 1
+            print('UNPRICEABLE CHARGE: %d name(s) across %d pool(s) carry no traded-value '
+                  'reading and are charged 1 point each (-%.2f AggScore). The $/day floor '
+                  'KEPT them -- absence is not illiquidity -- so this is the only thing that '
+                  'acts on them.' % (_n_charged, len(_pools), ap.WEIGHT), flush=True)
+    except Exception as _ue:
+        #  A charge must never be able to cost the run, and a failed charge must not read as
+        #  a clean pool.
+        print('WARNING: the unpriceable-name charge did not run (%s: %s) -- names with no '
+              'traded-value reading are scored with NO penalty this run. NOT a finding that '
+              'every name could be priced.' % (type(_ue).__name__, _ue), flush=True)
 
     veto_reports = {}
     _gp_pre_veto = gp_count
@@ -1110,6 +1261,98 @@ def writeResWrapper(resdic):
     # nothing here changes scoring/ranking/forensic output.
     return deliverables
 
+def _current_ratio_panel_table(cdx_df):
+    """{source: currentRatio} for the published `currentRatio` column, COMPUTED from the
+    run's OWN panel.  Newest row per source, taken by DATE (same reason as
+    `_pe_panel_table`).  Returns {} on any failure -- this feeds a REPORT column, so it
+    degrades to the vendor fallback rather than costing the CSV.
+
+    *** THE DEFECT THAT FORCED THIS (2026-08-24). ***  The column was FMP's `currentRatio`
+    read straight off a SEPARATE live `v3/ratios/<symb>?period=quarter&limit=4` call and
+    printed.  The consumer TYPE-CHECKED the value and never VALUE-CHECKED it, so a vendor
+    `0` formatted as "0.0000" while a missing key correctly produced the 'NaN' sentinel.
+    On the shipped 2026-08-22 CUR6K top-100 that put 0.0000 against `092730.KQ` at **RANK
+    7** and `041830.KQ` at rank 27 -- and `generate_presentation` flags `currentRatio < 1.0`
+    as a solvency red flag, so a rank-7 pick shipped a red flag it does not have, in the CSV
+    the CEO's manual review reads.  Both names are solvent by a wide margin: the panel's own
+    balance sheet gives 184,604,415,000 / 32,089,653,000 KRW = **5.75** and
+    230,256,128,000 / 43,462,233,000 = **5.30**.
+
+    IT IS NOT A COLUMN-WIDE ERROR, AND THAT WAS CHECKED BEFORE CHANGING ANYTHING.  Across
+    the same 100 names the vendor value and this computed one agree to a relative difference
+    below 4e-5 on 97 of them; the only other deviation is `067160.KQ` at 7.8%, a
+    reporting-vintage difference (the live call's newest quarter is later than the panel's),
+    not a defect.  The two zeros are the whole population, both `.KQ`, 2 of 18 Korean names
+    and 0 of 82 others.
+
+    WHY COMPUTE RATHER THAN VALUE-CHECK THE CELL.  The house rule: the vendor supplies RAW
+    INPUTS, we compute the derived quantity -- the same rule that moved `PE-ratio`,
+    `dividendYield` and `GrahamNumberToPrice` off the vendor's own fields.  The
+    reconstruction is free: `totalCurrentAssets` and `totalCurrentLiabilities` are already
+    in the panel, and the ratio IS their quotient (verified: the panel's own `currentRatio`
+    column equals the quotient to floating point on both zero cases).  A value-check alone
+    would still leave the published number coming from a second, later, unreconciled live
+    call -- a whole class of divergence, not one bad cell.
+
+    *** THIS DOES NOT REMOVE AN API CALL, AND AN EARLIER FRAMING SAID IT WOULD. ***  The
+    same `v3/ratios` response still supplies `grossProfitMargin` and the
+    `priceEarningsRatio` vendor fallback further down the loop, so the call stays.  What is
+    removed is the DIVERGENCE, not the request.
+
+    SCORING IS UNAFFECTED AND THIS IS MEASURED, NOT ASSUMED.  `uCurrentRatio` is
+    `FIELD_EVIDENCE='counts'`, so a 0 behaves in Stage-1 exactly as a NaN does, and of the
+    407 general-pool `uCurrentRatio` ejections **0 of 407 flip** when the impossible zeros
+    are repaired.  This is a DISPLAY change.
+    """
+    try:
+        if cdx_df is None:
+            return {}
+        cols = getattr(cdx_df, 'columns', [])
+        if 'totalCurrentAssets' not in cols or 'totalCurrentLiabilities' not in cols:
+            return {}
+        df = cdx_df.copy()
+        df['date'] = pd.to_datetime(df['date'], errors='coerce')
+        df = df.sort_values(['source', 'date'], ascending=[True, False])
+        newest = df.groupby('source', sort=False).head(1)
+        out = {}
+        for _, r in newest.iterrows():
+            ca = pd.to_numeric(r.get('totalCurrentAssets'), errors='coerce')
+            cl = pd.to_numeric(r.get('totalCurrentLiabilities'), errors='coerce')
+            ratio = (ca / cl) if (pd.notna(ca) and pd.notna(cl) and cl != 0) else None
+            out[r['source']] = _current_ratio_value(ratio)
+        return out
+    except Exception:
+        return {}
+
+
+def _current_ratio_value(v):
+    """`v` as a float if it is a POSSIBLE current ratio, else None.
+
+    THE ONE RULE, and it is the rule the old type-check was missing: a current ratio of
+    exactly ZERO is not a solvency reading, it is a vendor null wearing a number.  It would
+    mean a company with current assets of exactly nothing while carrying current
+    liabilities -- and the two names it fired on hold 184.6bn and 230.3bn KRW of current
+    assets.  A NEGATIVE ratio is impossible on the same argument (neither side of the
+    quotient can be negative), and a non-finite one is arithmetic debris.  All three become
+    None, which the caller renders as the 'NaN' sentinel a MISSING key already produced --
+    so "the vendor said nothing" and "the vendor said something impossible" finally read the
+    same, which is the whole defect.
+
+    WHAT THIS CANNOT DETECT: a WRONG-BUT-POSSIBLE ratio.  A vendor 1.0 on a company whose
+    balance sheet says 5.75 passes this guard untouched and would still ship a red flag one
+    side of the deck's 1.0 line.  Nothing here reconciles the two sources -- reading the
+    panel is what does that, and this function is only the backstop for the path where the
+    panel cannot answer.
+    """
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(f) or f <= 0:
+        return None
+    return f
+
+
 def _pe_panel_table(cdx_df):
     """{source: (newest earningsYield, rows-per-year)} from the run's OWN panel.
 
@@ -1441,6 +1684,11 @@ def writeBoAggToCSV(fb_df, mscore, cscore, baseurl, api_key, ntopagg, fname_AggS
     _gtp_panel_fallback = sorted(s for s, b in _gtp_basis.items()
                                  if b == GRAHAM_BASIS_PANEL and s in set(symblist))
     _div_ttm = _dividend_yield_ttm_from_panel(cdx_df)
+    #  COMPUTED, NOT CONSUMED -- see `_current_ratio_panel_table` for the rank-7 false red
+    #  flag that forced it.  Built once, for the same reason the P/E table is.
+    _cr_panel = _current_ratio_panel_table(cdx_df)
+    _cr_vendor_fallback = []
+    _cr_refused = []
     #  Resolved ONCE, offline, from the run's volavgdic capture -- it is only the FALLBACK
     #  for a name whose live profile response degraded, so a per-row lookup would re-read the
     #  pickle 100 times for a value the loop usually does not need.
@@ -1576,13 +1824,23 @@ def writeBoAggToCSV(fb_df, mscore, cscore, baseurl, api_key, ntopagg, fname_AggS
                     temp_resp_dcf = [temp_resp_dcf] if temp_resp_dcf else []
         
             # Check if API responses are empty before accessing
-            # Check currentRatio
-            if len(temp_resp_fr) == 0 or 'currentRatio' not in temp_resp_fr[0]:
-                crVec.append('NaN')
-            elif type(temp_resp_fr[0]['currentRatio']) == int or type(temp_resp_fr[0]['currentRatio']) == float:
-                crVec.append("{:.4f}".format(temp_resp_fr[0]['currentRatio']))
-            else:
-                crVec.append('NaN')
+            # currentRatio -- THE PANEL FIRST, the vendor only as a fallback, and BOTH
+            # value-checked.  See `_current_ratio_panel_table`: this column used to be the
+            # vendor's field behind a TYPE check with no VALUE check, so a vendor 0 shipped
+            # as "0.0000" and the deck flagged a rank-7 pick as insolvent.
+            _cr = _cr_panel.get(symb)
+            if _cr is None:
+                _cr_vendor_fallback.append(symb)
+                _cr_raw = (temp_resp_fr[0].get('currentRatio')
+                           if len(temp_resp_fr) and isinstance(temp_resp_fr[0], dict)
+                           else None)
+                _cr = _current_ratio_value(_cr_raw)
+                #  A value the vendor SUPPLIED and this refused -- recorded by name, because
+                #  a refusal that shows up only as 'NaN' is indistinguishable from the vendor
+                #  never answering, and those are different facts about the run.
+                if _cr is None and _cr_raw is not None:
+                    _cr_refused.append('%s=%r' % (symb, _cr_raw))
+            crVec.append('NaN' if _cr is None else "{:.4f}".format(_cr))
             
             #  `dividendYield` and `GrahamNumberToPrice` USED TO BE APPENDED HERE and are
             #  now assigned AFTER the loop -- see the block above their column assignments.
@@ -1733,6 +1991,33 @@ def writeBoAggToCSV(fb_df, mscore, cscore, baseurl, api_key, ntopagg, fname_AggS
             "panel -- see postBo._pe_ratio_from_panel."
             % (len(_pe_vendor_fallback), len(BoComp_tocsv),
                ', '.join(map(str, _pe_vendor_fallback[:20]))))
+    #  currentRatio: the SAME two lines the P/E gets, and for the same reason.  The first
+    #  reports how many cells did NOT come from our own balance sheet; the second reports
+    #  values the vendor supplied and this REFUSED, which a bare 'NaN' cannot distinguish
+    #  from a vendor that never answered.
+    if _cr_vendor_fallback:
+        gdg.bar_print(
+            "currentRatio: %d of %d name(s) fell back to FMP's `currentRatio` because our "
+            "own panel could not answer (no usable totalCurrentAssets/totalCurrentLiabilities "
+            "on the newest row): %s. Every OTHER cell is COMPUTED as "
+            "totalCurrentAssets/totalCurrentLiabilities from the run's own panel -- see "
+            "postBo._current_ratio_panel_table."
+            % (len(_cr_vendor_fallback), len(BoComp_tocsv),
+               ', '.join(map(str, _cr_vendor_fallback[:20]))))
+    if _cr_refused:
+        gdg.bar_print(
+            "currentRatio: REFUSED %d impossible vendor value(s) (<=0 or non-finite), written "
+            "as NaN rather than shipped: %s. Before 2026-08-24 a vendor 0 printed as '0.0000' "
+            "and the deck flagged it as a solvency red flag -- 092730.KQ at RANK 7 on the "
+            "2026-08-22 run."
+            % (len(_cr_refused), ', '.join(map(str, _cr_refused[:20]))))
+    if not _cr_panel:
+        gdg.bar_print(
+            "currentRatio: THE PANEL TABLE IS EMPTY -- every cell in this column came from "
+            "the vendor's live `v3/ratios` call. Not a finding that the panel is clean; the "
+            "computed basis did not run at all (missing totalCurrentAssets / "
+            "totalCurrentLiabilities columns, or a failure inside "
+            "postBo._current_ratio_panel_table).")
     #  SAY WHICH CELLS CAME OFF THE FALLBACK BASIS, exactly as the P/E line above does.  A
     #  column carrying two bases must name the rows, or it is a silently-mixed column.
     if _gtp_panel_fallback:

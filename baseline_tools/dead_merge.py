@@ -75,6 +75,16 @@ import universe_pit as up
 # postBoRank -> requests/matplotlib) at merge-module import time; kept in lockstep.
 NA1_EXCHANGES = ("NYSE", "NASDAQ", "TSX")
 
+#  SENTINEL for "no exchange restriction at all".
+#
+#  `exchange_filter=None` already means NA1 (NYSE/NASDAQ/TSX) and that default must not
+#  move, so "all exchanges" needed a value of its own.  Without it the PIT backtest could
+#  only ever be pointed at an exchange list someone typed out by hand, which is how it came
+#  to be silently NA1-only while the shipped filter scores KOSPI, KOSDAQ, LSE, XETRA, PAR,
+#  STO, OSL and BRU -- the backtest was measuring a different universe from the one being
+#  ranked, and nothing in the signature said so.
+ALL_EXCHANGES = "__ALL_EXCHANGES__"
+
 
 # --------------------------------------------------------------------------- #
 #  Per-entity transform  (replica of get_fundamentals_fmp:53-146, offline)    #
@@ -200,10 +210,18 @@ def load_registry(path):
 def _live_na1(dmdic, exch):
     """Live survivors restricted to the `exch` exchange set, exactly as the na1_only
     scoring baseline does (Tickers_df.exchangeShortName in exch), intersected with the
-    actual cdx sources so the set is scoring-meaningful."""
+    actual cdx sources so the set is scoring-meaningful.
+
+    `exch is None` means NO restriction -- every live source, whatever it is listed on.  It
+    is spelled as None here rather than as the ALL_EXCHANGES sentinel because this helper is
+    private and its caller has already resolved the sentinel; keeping the sentinel in one
+    place stops it leaking into the row-level predicates.
+    """
     tk = dmdic["Tickers_df"]
-    live_syms = set(tk.loc[tk["exchangeShortName"].isin(exch), "symbol"])
     cdx_sources = set(dmdic["cdx_df"]["source"].dropna().unique())
+    if exch is None:
+        return set(tk["symbol"].dropna()) & cdx_sources
+    live_syms = set(tk.loc[tk["exchangeShortName"].isin(exch), "symbol"])
     return live_syms & cdx_sources
 
 
@@ -218,17 +236,66 @@ def pit_universe(dmdic, registry, as_of, exchange_filter=None):
     live survivors (via Tickers_df) and the dead names (via build_universe's
     exchange_filter), closing the two-variables-at-once confound.
 
-    as_of=None returns the live NA1 survivors unchanged (live invariant)."""
-    exch = set(NA1_EXCHANGES) if exchange_filter is None else set(exchange_filter)
+    THREE FORMS, and the default is deliberately unchanged:
+        None            -> NA1 (NYSE/NASDAQ/TSX).  What every existing caller gets.
+        ALL_EXCHANGES   -> no restriction on either side; the universe actually scored.
+        <iterable>      -> exactly those exchangeShortName values, both sides.
+
+    WHY ALL_EXCHANGES MATTERS.  `depth_horizon_grid.rank_all_anchors` and
+    `skill_baseline.window_sets` both called this with no override, so the whole PIT
+    backtest ran NYSE/NASDAQ/TSX-only and never saw KOSPI, KOSDAQ, LSE, XETRA, PAR, STO,
+    OSL or BRU -- venues the deployed filter ranks and picks from.  A backtest scoped
+    narrower than the thing it grades is not a conservative choice, it is a different
+    experiment.
+
+    as_of=None returns the live survivors on the requested scope unchanged (live
+    invariant)."""
+    if exchange_filter is None:
+        exch = set(NA1_EXCHANGES)
+    elif isinstance(exchange_filter, str) and exchange_filter == ALL_EXCHANGES:
+        #  isinstance-guarded, because a bare `== ALL_EXCHANGES` against a numpy array or a
+        #  pandas Index returns an ELEMENTWISE array and `elif` on it raises
+        #  "truth value of an array is ambiguous" -- a crash instead of a filter.
+        exch = None
+    else:
+        exch = set(exchange_filter)
     live = _live_na1(dmdic, exch)
     if as_of is None:
         return sorted(live)
     # Dead side: registry entities alive@D on `exch`.  Empty live_symbols -> the union
     # inside build_universe adds nothing from live; the exchange_filter is applied to
-    # the registry rows (which DO carry `exchange`).
+    # the registry rows (which DO carry `exchange`).  `exch is None` is build_universe's
+    # own "no filter" spelling, so the sentinel resolves consistently on both sides.
     dead = set(up.build_universe([], registry=registry, as_of=as_of,
                                  exchange_filter=exch))
     return sorted(live | dead)
+
+
+def resolve_exchange_filter(spec):
+    """Parse a CLI / config exchange scope into what `pit_universe` wants.
+
+    None / '' / 'na1'  -> None          (the NA1 default; nothing changes)
+    'all'              -> ALL_EXCHANGES (no restriction)
+    'NYSE,NASDAQ,LSE'  -> ('NYSE', 'NASDAQ', 'LSE')
+
+    One parser, so a CLI flag, a `configdic` key and a test all mean the same thing by the
+    same string.  Case-insensitive on the two keywords only -- exchangeShortName values are
+    passed through verbatim, because they are vendor data and guessing their case is how a
+    filter silently matches nothing.
+    """
+    if spec is None:
+        return None
+    if not isinstance(spec, str):
+        return tuple(spec)
+    s = spec.strip()
+    if not s or s.lower() == "na1":
+        return None
+    if s.lower() == "all":
+        return ALL_EXCHANGES
+    parts = tuple(x.strip() for x in s.split(",") if x.strip())
+    if not parts:
+        return None
+    return parts
 
 
 # --------------------------------------------------------------------------- #
