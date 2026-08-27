@@ -201,7 +201,8 @@ def inputs_from_memory(dmdic, merged, registry, log):
 
 
 def run_in_pipeline(dmdic, merged, registry, price_source, log=None,
-                    weights="default", carve="off", exchange_filter=None):
+                    weights="default", carve="off", exchange_filter=None,
+                    stage1_veto=True):
     """IN-MEMORY entry point for the automatic pipeline (post-pick analysis suite).
 
     Reproduces the PIT ranking as-of each historical buy anchor USING TONIGHT's model
@@ -217,7 +218,8 @@ def run_in_pipeline(dmdic, merged, registry, price_source, log=None,
     log = log or (lambda *a: None)
     inputs = inputs_from_memory(dmdic, merged, registry, log)
     per_anchor = rank_all_anchors(inputs, log, weights=weights, carve=carve,
-                                  exchange_filter=exchange_filter)
+                                  exchange_filter=exchange_filter,
+                                  stage1_veto=stage1_veto)
     cells, pooled, pooled_clean = compute_grid(per_anchor, price_source)
     text = build_report(per_anchor, cells, pooled, pooled_clean)
     print("\n" + "#" * 72)
@@ -231,7 +233,8 @@ def run_in_pipeline(dmdic, merged, registry, price_source, log=None,
 # --------------------------------------------------------------------------- #
 #  Ranking: once per buy anchor (full ordering to depth 100)                  #
 # --------------------------------------------------------------------------- #
-def rank_all_anchors(inputs, log, weights="default", carve="off", exchange_filter=None):
+def rank_all_anchors(inputs, log, weights="default", carve="off", exchange_filter=None,
+                     stage1_veto=True):
     """Rank all buy anchors under one scoring config.
 
     weights : 'default' (production weights) | 'equal' (all metric weights = 1).
@@ -261,8 +264,14 @@ def rank_all_anchors(inputs, log, weights="default", carve="off", exchange_filte
             #  only ever describe the live half (see carve_general_universe).
             uni = sorted(carve_general_universe(uni, merged["cdx_df"], tickers_df, log,
                                                 coverage_scope=live_sources))
+        #  STAGE-1 VETO ON BY DEFAULT HERE (2026-08-27).  This is the instrument meant to
+        #  judge the CEO gates, and until now it never ran them -- so the veto could be
+        #  tightened or loosened and every grid number would be identical.  The parameter
+        #  exists so the UN-VETOED basis every historical figure was computed on stays
+        #  reproducible: `stage1_veto=False` restores it exactly.
         res = s2.reproduce_pit_top(merged, buy, universe_override=uni,
-                                   weight_override=weight_override)
+                                   weight_override=weight_override,
+                                   apply_stage1_veto=stage1_veto)
         if res is None:
             log(f"[{wid}] reproduce_pit_top returned None -- skipping")
             continue
@@ -282,9 +291,21 @@ def rank_all_anchors(inputs, log, weights="default", carve="off", exchange_filte
             "top20_deduped": res.get("top20", ranking[:20]),
             "universe_size": len(uni), "n_pit_scored": n_pit,
             "n_pit_live": n_pit_live, "n_pit_dead": n_pit - n_pit_live,
+            #  CARRIED so every downstream readout can stamp which basis it is on.
+            "basis": res.get("basis", "un-vetoed"),
+            "stage1_veto": res.get("stage1_veto"),
         }
+        _vr = res.get("stage1_veto") or {}
         log(f"[{wid}] pit_universe={len(uni)}  n_pit_scored={n_pit} "
             f"(live={n_pit_live}, dead={n_pit - n_pit_live})  rank_depth={len(ranking)}")
+        log(f"[{wid}] BASIS: {res.get('basis', 'un-vetoed')}")
+        if _vr.get("applies") and _vr.get("n_ejected"):
+            log(f"[{wid}] stage-1 veto ejected {_vr['n_ejected']} of {_vr['n_in']} "
+                f"-> {_vr['n_out']}; by_flag={_vr.get('by_flag')}")
+        elif _vr and not _vr.get("applies"):
+            log(f"[{wid}] stage-1 veto DECLINED TO GATE -- "
+                f"{_vr.get('not_applicable_reason') or _vr.get('missing_columns')}. "
+                "This is NOT 'nothing to eject'.")
     return per_anchor
 
 

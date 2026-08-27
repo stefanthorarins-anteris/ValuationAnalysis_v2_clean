@@ -183,7 +183,7 @@ def _venue_shortfall(kept_symbols, ref_for_anchor):
 
 
 def _fetch_bulk_scrubbed(baseurl, api_key, anchors, symbols_filter, out_path, log,
-                         max_lookback=4, reference_paths=None):
+                         max_lookback=4, reference_paths=None, companion_days=1):
     """BULK-BY-DATE fetch that CANNOT leak the api_key.  One call per anchor date (whole
     universe per call; NEVER per-symbol), stepping back up to `max_lookback` days on an
     unusable response.  The HTTP call goes through delisted_ingest.safe_get_bulk_csv, which
@@ -221,6 +221,43 @@ def _fetch_bulk_scrubbed(baseurl, api_key, anchors, symbols_filter, out_path, lo
         repointing `configdic['price_grid_reference']` is usually the better move.
       * Wrong PRICES.  Every test here is about presence and count.
 
+    THE COMPANION PULL (`companion_days`, default 1) -- and why presence AT THE ANCHOR is a
+    different question from the venue being covered.  MEASURED on the dev grid, which is
+    ALREADY UNFILTERED (443,893 rows / 90,506 symbols), so the save-side allow-list cannot be
+    the cause: `.KS` reads 1, 1, 1350, 1, 1369, 0, 0 across the seven main anchors; `.KQ`
+    reads 0, 0, 307, 0, 350, 0, 0; `.OL` reads 1, 1, 243, 1, 290, 275, 0.  The two anchors
+    where they DO appear are exactly the two whose body came from a PRE-HOLIDAY `date_actual`
+    (2020-12-28 and 2022-12-27).  Those venues shut before the calendar year-end, so the
+    anchor body genuinely does not contain them and no amount of widening what we SAVE can
+    conjure them.  That is a HOLIDAY problem, not a filter problem, and the two were
+    conflated once already.
+
+    So each anchor also pulls the nearest `companion_days` WEEKDAYS strictly before the
+    accepted body, and each companion is written under ITS OWN `date_requested` -- never the
+    anchor.  That keeps it OUT of PriceSource anchor layer (which selects on
+    `date_requested`) and available to `_fill_from_neighbour_dates`, which unions it in per
+    symbol, per anchor, add-only, and REPORTS the lag it introduces.  The 2025 supplementary
+    file already on disk stores its 2025-12-30 body in exactly this shape, so this is the
+    established convention rather than a new one.
+
+    BOUNDED BY THE READER FILL WINDOW, deliberately: a companion older than
+    `returns_core.DEFAULT_FILL_WINDOW_DAYS` before the anchor is a date the reader can never
+    consume, so a call there buys nothing.  Weekends cost no call, a date already fetched is
+    never re-requested, and a companion that would collide with another anchor of this run is
+    skipped so it cannot inject a body into a different anchor layer.
+
+    A COMPANION IS NOT AN ANCHOR BODY.  It faces the absolute payload floor and nothing else.
+    The venue-shortfall test would fire on it BY CONSTRUCTION -- a different day has different
+    venues open, which is the entire reason it is being pulled -- and it is kept out of the
+    relative-median floor so it cannot move the median the anchor bodies are judged against.
+    It is never a substitute for an anchor that got no body at all.
+
+    WHAT ONE COMPANION DAY BUYS, stated so nobody over-reads it: it recovers venues whose last
+    trading day is the weekday before the anchor, which covers 2021-12-31 and 2024-12-31 --
+    BOTH legs of the buy2021 clean 36-month window.  A venue that shut EARLIER (the 2020 and
+    2022 cases above, three days back) needs `companion_days` raised toward the fill window,
+    at roughly +8 calls per extra day.
+
     ONE PROPERTY WORTH KNOWING, because it makes a bad reference safe: the test only fires
     when the NEW body has FEWER rows for a venue than the reference.  A reference that is
     itself truncated therefore makes this test WEAKER, never spuriously stricter -- so
@@ -231,11 +268,23 @@ def _fetch_bulk_scrubbed(baseurl, api_key, anchors, symbols_filter, out_path, lo
     import delisted_ingest as di
     import fetch_prices as fp
 
+    import returns_core as _rc
+
     ref, ref_path = _venue_reference(reference_paths or [], log)
     ref_label = os.path.basename(str(ref_path)) if ref_path else "no-reference"
     calls = written = 0
     accepted = []
+    companions = []
     venue_findings = []
+    #  Every date this run has already spent a call on, plus every ANCHOR of this run.  A
+    #  companion may be neither: re-requesting a date costs money for nothing, and a companion
+    #  written under a date that is some other anchor would inject a body into that anchor
+    #  layer -- the "two payloads for one anchor" failure this file already carries a scar
+    #  from.
+    seen_dates = set()
+    anchor_dates = {a.strftime("%Y-%m-%d") for a in anchors}
+    fill_cap = int(_rc.DEFAULT_FILL_WINDOW_DAYS)
+    companion_days = max(0, int(companion_days))
 
     for anchor in anchors:
         a_str = anchor.strftime("%Y-%m-%d")
@@ -252,6 +301,7 @@ def _fetch_bulk_scrubbed(baseurl, api_key, anchors, symbols_filter, out_path, lo
             url = (f"{baseurl}v4/batch-request-end-of-day-prices"
                    f"?date={ds}&apikey={api_key}")
             calls += 1
+            seen_dates.add(ds)
             log(f"[price-fetch] bulk call {calls}: date={ds} "
                 f"(anchor {anchor.isoformat()})")
             rows = di.safe_get_bulk_csv(url)  # key-scrubbed on ANY error/warning
@@ -280,11 +330,76 @@ def _fetch_bulk_scrubbed(baseurl, api_key, anchors, symbols_filter, out_path, lo
             accepted.append({"anchor": a_str, "date": ds, "n_payload": n_payload,
                              "rows": kept})
             got = True
+            accepted_date = d
             log(f"[price-fetch]   OK: {n_payload} rows for {ds} ({len(kept)} kept)")
             break
         if not got:
             log(f"[price-fetch]   WARNING: no usable body for anchor "
                 f"{anchor.isoformat()} within {max_lookback} lookback days")
+            continue
+
+        #  COMPANION DAYS -- see the docstring.  Venues that shut before the calendar year-end
+        #  are absent from the anchor body itself, so the only way to price them AT that
+        #  anchor is to also hold the preceding trading day and let the reader union it in.
+        probe = accepted_date
+        taken = 0
+        while taken < companion_days:
+            probe = probe - timedelta(days=1)
+            if (anchor - probe).days > fill_cap:
+                #  Past the reader fill window: a call here buys a date nothing can consume.
+                log(f"[price-fetch]   companion stop for {a_str}: reached "
+                    f"{probe.isoformat()}, beyond the {fill_cap}-day fill window")
+                break
+            cs = probe.strftime("%Y-%m-%d")
+            if fp.is_weekend(probe):
+                dayname = probe.strftime("%A")
+                log(f"[price-fetch]   companion skip {cs}: {dayname} -- not requested")
+                continue
+            #  ALREADY SERVED -> CONSUME THE BUDGET.  A weekend (above) is not a trading
+            #  day at all, so it is skipped for free.  These two are different: the date IS
+            #  in the file already -- as another anchor body, or as a date this run has
+            #  fetched -- and the fill layer reads every row by `date_actual` regardless of
+            #  which anchor it was requested for.  The companion purpose is therefore
+            #  already met, so walking further back would spend a call the +1-day budget
+            #  never promised.  Consuming `taken` caps the run at companion_days calls per
+            #  anchor, which is what the call-count estimate in the log line assumes.
+            if cs in seen_dates:
+                log(f"[price-fetch]   companion skip {cs}: already fetched this run "
+                    "-- the fill layer can already reach it")
+                taken += 1
+                continue
+            if cs in anchor_dates:
+                log(f"[price-fetch]   companion skip {cs}: it is an ANCHOR of this run "
+                    "-- already in the file under its own date")
+                taken += 1
+                continue
+            url = (f"{baseurl}v4/batch-request-end-of-day-prices"
+                   f"?date={cs}&apikey={api_key}")
+            calls += 1
+            seen_dates.add(cs)
+            log(f"[price-fetch] bulk call {calls}: date={cs} "
+                f"(COMPANION for anchor {anchor.isoformat()})")
+            crows = di.safe_get_bulk_csv(url)
+            c_payload = len(crows or [])
+            #  ABSOLUTE FLOOR ONLY, for the reasons in the docstring.
+            if not fp.body_is_acceptable(c_payload):
+                log(f"[price-fetch]   companion {cs} REJECTED: {c_payload} rows is below the "
+                    f"absolute floor {fp.MIN_PAYLOAD_ROWS} -- not written")
+                taken += 1
+                continue
+            ckept = []
+            for row in crows:
+                sym, adj = fp._extract(row)
+                if not sym or adj in (None, "", "null"):
+                    continue
+                if symbols_filter and sym not in symbols_filter:
+                    continue
+                ckept.append((sym, adj))
+            companions.append({"anchor": a_str, "date": cs, "n_payload": c_payload,
+                               "rows": ckept})
+            log(f"[price-fetch]   companion OK: {c_payload} rows for {cs} "
+                f"({len(ckept)} kept) -- fill source for anchor {a_str}")
+            taken += 1
 
     #  DEFERRED relative floor.  It costs no call, so it runs at write time rather than
     #  re-entering the step-back loop and spending calls nobody planned.
@@ -306,6 +421,12 @@ def _fetch_bulk_scrubbed(baseurl, api_key, anchors, symbols_filter, out_path, lo
                 continue
             for sym, adj in a["rows"]:
                 w.writerow([a["anchor"], a["date"], sym, adj])
+                written += 1
+        #  Companions LAST, and under their OWN date_requested.  File order matters only for
+        #  the anchor layer keep-first rule, and these are invisible to it by construction.
+        for c in companions:
+            for sym, adj in c["rows"]:
+                w.writerow([c["date"], c["date"], sym, adj])
                 written += 1
     return calls, written, refused, venue_findings
 
@@ -403,6 +524,12 @@ def run_price_fetch_stage(resdic, configdic, log):
     configdic (fallback fmpAPIkey.txt) and NEVER printed (masked).  Returns
     dict(main=..., supp=...) of resolved paths (or None).
 
+    THE WHOLE BODY IS SAVED -- no symbol allow-list.  See the long note at the fetch
+    itself for why a filter built from tonight's universe silently froze this grid at a
+    survivor- and venue-thinned shape.  `resdic` is consequently UNUSED here and kept only
+    so every analysis stage shares one signature; the population tonight's universe defines
+    is now used by `_audit_price_grid_stage`, which reports rather than discards.
+
     THE DOCSTRING USED TO SAY "via fetch_prices.run_bulk" AND THAT WAS FALSE.  `run_bulk`
     is called from nowhere in this module; `_fetch_bulk_scrubbed` is the fetch, and it
     exists because it cannot leak the api_key.  The claim mattered: a payload floor and a
@@ -436,22 +563,89 @@ def run_price_fetch_stage(resdic, configdic, log):
     log(f"[price-fetch] api_key resolved (masked): {_mask_key(api_key)}")
     baseurl = configdic.get("baseurl") or "https://financialmodelingprep.com/api/"
 
-    # Keep the written file small: local symbol allow-list from tonight's universe
-    # (the bulk call still returns the whole universe; this only filters what we save).
-    syms = set()
-    try:
-        syms |= set(resdic["Tickers_df"]["symbol"].dropna().astype(str))
-        syms |= set(resdic["cdx_df"]["source"].dropna().astype(str))
-    except Exception:
-        syms = None  # no filter -> save everything (still one call per date)
-    # The benchmark ETF (URTH) is NOT a name in tonight's stock universe, so the
-    # allow-list above would DROP it -- yet the bulk EOD dump DOES return it and the
-    # downstream benchmark stages (beat-rate vs URTH, depth-grid, skill_baseline) fail
-    # hard without it.  Force-keep the benchmark symbol so PriceSource.benchmark_series
-    # resolves on every fresh fetch.  (No-op when syms is None: everything is saved.)
-    if syms is not None:
-        import returns_core as rc
-        syms.add(rc.BENCHMARK_SYMBOL)
+    #  WHAT WE SAVE: THE WHOLE BODY.  No local allow-list, deliberately.
+    #
+    #  THE RULE THAT WAS HERE WAS THE DEFECT, not a tuning choice.  It read "keep the
+    #  written file small" and built a symbol allow-list out of tonight's `Tickers_df` +
+    #  `cdx_df`.  The bulk endpoint returns every symbol that traded on the date and the
+    #  call is already paid for in full; the allow-list then threw most of that away
+    #  BEFORE writing.  What it kept is TONIGHT'S SCORED SURVIVORS -- and the file it
+    #  writes is read for years afterwards by the grading stages, which need a strictly
+    #  LARGER set than tonight's universe can ever contain:
+    #
+    #    * Names that DIED between an anchor and tonight (Atrion, Kirkland Lake, Triton,
+    #      QIWI, PBF Logistics, SciPlay, the preferred lines...).  A survivorship-clean
+    #      backtest is precisely the thing that needs the names a live universe cannot
+    #      hold, so the filter deleted the evidence whose absence it was meant to expose.
+    #    * Venues tonight's universe happens not to reach.  On the run machine's grid its
+    #      own `[price-audit]` block (2026-08-27) reports SEVEN venues priced at ZERO of the
+    #      8 anchors -- `.PA` (572 panel names), `.KS` (327), `.OL` (224), `.KQ` (160),
+    #      `.BR` (105), `.AS` (104), `.LS` (33) -- plus `.DE` and `.ST` empty at 2018-12-31,
+    #      with the backtest grading 18 of 40 picks.  That grid was written on 2026-07-17
+    #      against the older NA1_EU1 universe and, because `need_main` above is a presence
+    #      check by design, has been frozen at that shape ever since.
+    #
+    #      BE EXACT ABOUT HOW MANY OF THE SEVEN THIS CHANGE ACTUALLY RECOVERS: FOUR.  An
+    #      earlier version of this note claimed all seven and that was wrong.  Measured on
+    #      the DEV grid -- which is already unfiltered, so the allow-list cannot be the cause
+    #      -- `.PA` and `.L` are present at EVERY anchor, so `.PA/.BR/.AS/.LS` are genuinely
+    #      recovered here.  But `.KS` reads 1, 1, 1350, 1, 1369, 0, 0 across the seven main
+    #      anchors, `.KQ` reads 0, 0, 307, 0, 350, 0, 0 and `.OL` reads 1, 1, 243, 1, 290,
+    #      275, 0 -- and the anchors where they appear are exactly the two whose body came
+    #      from a pre-holiday `date_actual`.  Those three venues (711 of the 1,421 names) are
+    #      NOT recovered by removing the filter: they are absent from the anchor body itself,
+    #      including at 2021-12-31 and 2024-12-31, BOTH legs of the buy2021 clean window.
+    #      That is the HOLIDAY problem and it is fixed on the FETCH side by the companion-day
+    #      pull in `_fetch_bulk_scrubbed`, not here.
+    #    * The benchmark ETF, which needed its own hand-written exception here to survive
+    #      the filter at all.  A second special case for one rule is the rule being wrong,
+    #      so the exception is gone with the filter rather than joined by a third.
+    #
+    #  The structural reason no allow-list belongs here: THE READ SET IS NOT KNOWABLE AT
+    #  WRITE TIME.  Any list computed from one night's state is a guess about every future
+    #  reader, and it fails toward silently DROPPING data.  That includes the tempting
+    #  "universe + delisted registry + benchmark" union -- the registry is an optional
+    #  artifact (`delisted_out/`), so on a machine that lacks it the union quietly
+    #  re-narrows to exactly the filter being removed here.
+    #
+    #  WHAT IT COSTS: 13.6 MB.  Unfiltered the main grid is ~444k rows / ~90.5k symbols /
+    #  ~15.5 MB, against the filtered 54k rows / 9.6k symbols / 1.8 MB.  It lands on a
+    #  gitignored path (`baseline_tools/price_data/`) that moves between machines by Google
+    #  Drive, never git, so no size limit is in play; `PriceSource` construction on the
+    #  unfiltered file is 0.77s (measured -- see returns_core._fill_from_neighbour_dates),
+    #  and every offline tool in baseline_tools/ has been running against the unfiltered
+    #  grid on the dev machine all along.  Disk is not a reason to lose a venue.
+    #
+    #  WHAT CAN STILL BE DROPPED, so nobody reads this as "the grid is now complete":
+    #    * rows with no symbol or a null `adjClose` (`fp._extract`) -- not a price;
+    #    * a whole anchor body refused by the absolute floor, the relative-median floor or
+    #      the venue-shortfall test -- announced by `_report_fetch_refusals`, unmissably;
+    #    * whatever the VENDOR itself omits.  FMP's historical bodies are survivor-thinned
+    #      (fmp-specialist, 2026-08-20).  This stops US thinning them further; it cannot
+    #      un-thin the vendor.
+    #
+    #  `_fetch_bulk_scrubbed` KEEPS its `symbols_filter` parameter, and the honest reason is
+    #  NOT the one an earlier version of this note gave.  That note said "`fetch_prices.py
+    #  --symbols` is a deliberate operator choice on the standalone tool", which is wrong
+    #  twice: the flag is `--symbols-file`, and it routes through `fetch_prices.run_bulk`,
+    #  which has its OWN filter at its own line -- it never reaches this function.  So with
+    #  the stage passing None, `_fetch_bulk_scrubbed`s `symbols_filter` is DEAD IN
+    #  PRODUCTION; its only live callers are tests.
+    #
+    #  It is kept anyway, for one reason: `test_pipeline_fetch_guards` needs it to construct
+    #  a filtered body for `test_the_reference_is_compared_AFTER_the_local_symbol_filter`,
+    #  which pins a real ordering property of the venue-shortfall test (the comparison runs
+    #  on the KEPT rows, not the raw payload).  Dropping the parameter would delete that
+    #  guard as a side effect.  A reviewer who would rather see the dead parameter go is not
+    #  wrong -- it is a loaded gun pointed at exactly the defect above -- and the removal is
+    #  a clean follow-up costing two test edits.  What lives HERE is the POLICY: the pipeline
+    #  stage never narrows its own grid, pinned by `test_benchmark_in_price_source`.
+    symbols_filter = None
+    #  COMPANION DAYS: how many weekdays before each anchor to ALSO pull, so venues that shut
+    #  before the calendar year-end can be filled in by the reader.  1 (default) costs +8
+    #  calls and covers both legs of the buy2021 clean window; see `_fetch_bulk_scrubbed`.
+    #  0 restores the anchor-only fetch.  Capped there by the reader fill window.
+    companion_days = int(configdic.get("price_companion_days", 1))
 
     # D1 boundary mask: run the ENTIRE fetch with BOTH stdout+stderr scrubbed, and mask
     # any exception message, so the key cannot surface even on a network/HTTP error path
@@ -462,24 +656,28 @@ def run_price_fetch_stage(resdic, configdic, log):
             if need_main:
                 anchors = fp.build_anchor_dates(_MAIN_PRICE_YEARS, hold_months=12)
                 log(f"[price-fetch] MAIN grid absent -> bulk-by-date fetch, "
-                    f"{len(anchors)} anchor dates (~{len(anchors)} calls): "
+                    f"{len(anchors)} anchor dates + {companion_days} companion day(s) each "
+                    f"(~{len(anchors) * (1 + companion_days)} calls): "
                     f"{[a.isoformat() for a in anchors]}")
                 calls, written, refused, vf = _fetch_bulk_scrubbed(
-                    baseurl, api_key, anchors, syms, _PRICES_CSV, log,
-                    reference_paths=_reference_paths(configdic, _PRICES_CSV))
+                    baseurl, api_key, anchors, symbols_filter, _PRICES_CSV, log,
+                    reference_paths=_reference_paths(configdic, _PRICES_CSV),
+                    companion_days=companion_days)
                 log(f"[price-fetch] MAIN done: {calls} calls, {written} rows -> "
                     f"{os.path.basename(_PRICES_CSV)}")
                 _report_fetch_refusals("MAIN", refused, vf, log)
             if need_supp:
                 d2025 = fp.nearest_weekday_on_or_before(datetime(2025, 12, 31).date())
                 log(f"[price-fetch] SUPP 2025 anchor absent -> bulk-by-date fetch 1 "
-                    f"date ({d2025.isoformat()})")
+                    f"anchor + {companion_days} companion day(s) "
+                    f"(~{1 + companion_days} calls) ({d2025.isoformat()})")
                 #  ONE anchor, so the relative-median floor is vacuous by construction and
                 #  only the absolute floor and the venue test can fire here.  That is exactly
                 #  the hole the absolute backstop was put in for.
                 calls, written, refused, vf = _fetch_bulk_scrubbed(
-                    baseurl, api_key, [d2025], syms, _PRICES_2025_CSV, log,
-                    reference_paths=_reference_paths(configdic, _PRICES_2025_CSV))
+                    baseurl, api_key, [d2025], symbols_filter, _PRICES_2025_CSV, log,
+                    reference_paths=_reference_paths(configdic, _PRICES_2025_CSV),
+                    companion_days=companion_days)
                 log(f"[price-fetch] SUPP done: {calls} calls, {written} rows -> "
                     f"{os.path.basename(_PRICES_2025_CSV)}")
                 _report_fetch_refusals("SUPP", refused, vf, log)
@@ -750,8 +948,10 @@ def beat_rate_vs_urth(per_anchor, price_source, log, depths=(10, 20),
     import numpy as np
     import returns_core as rc
     import depth_horizon_grid as dhg
+    import target_clauses as _tc
 
     print("\n" + "#" * 72)
+    _print_basis_banner(per_anchor)
     print("# BEAT-RATE vs URTH  --  DEPLOYED FILTER (issuer-deduped, carve-ON top-20)")
     print(f"#   the shipped general list beats MSCI World by >= {threshold*100:.0f}pp?")
     print(f"#   horizon = {horizon_m}mo   benchmark = {rc.BENCHMARK_VARIANT}")
@@ -762,6 +962,10 @@ def beat_rate_vs_urth(per_anchor, price_source, log, depths=(10, 20),
 
     rows = []
     pooled_flags = {N: [] for N in depths}
+    #  DOWNSIDE-CLAUSE INPUTS.  The second half of the target needs the per-anchor top-20
+    #  RETURNS TABLE, not just its beat-rate, so it is captured in the same loop rather than
+    #  recomputed later -- one selection, one price read, both clauses.
+    clause_inputs = []
     for wid, buy in dhg.BUY_ANCHORS:
         if wid not in per_anchor or wid not in dhg.CLEAN_BUY_IDS:
             continue
@@ -779,6 +983,13 @@ def beat_rate_vs_urth(per_anchor, price_source, log, depths=(10, 20),
             br, n = rc.beat_rate(rdf, bench, threshold=threshold, missing="fail")
             rows.append({"window": f"{buy}->{ev}", "depth_N": N,
                          "beat_rate": br, "n": n, "bench_ret": bench})
+            if N == _tc.CHARTERED_DEPTH:
+                #  `n_selected` is len(top), NOT the nominal depth: if the anchor shipped 17
+                #  names, counting 20 would invent three phantom unpriced picks and understate
+                #  coverage.  The gap that matters is priced-vs-SHIPPED.
+                clause_inputs.append({"window": f"{buy}->{ev}", "n_selected": len(top),
+                                      "rdf": rdf, "beat_rate": br, "n": n,
+                                      "bench": bench})
             # pooled: recompute flags at the per-name level for an honest pooled rate
             inc = rc.included(rdf)
             for _, r in inc.iterrows():
@@ -803,6 +1014,14 @@ def beat_rate_vs_urth(per_anchor, price_source, log, depths=(10, 20),
     print("  CAVEAT: 2 heavily-overlapping windows = ONE regime; count-based (magnitude-")
     print("          blind); missing-eval counts as NOT beating (missing='fail').")
 
+    #  ============ THE SECOND CLAUSE, printed BESIDE the first ============
+    #  The beat-rate above is HALF the target.  It was shipped alone for six days and read as
+    #  the target, which is the failure mode this block exists to make impossible: the
+    #  DOWNSIDE clause is printed in the same stage, from the same selection and the same
+    #  price read, so a run can never again report one clause and call it the result.
+    two_clause = _two_clause_report(clause_inputs, horizon_m, threshold,
+                                    basis=_basis_of(per_anchor))
+
     # ================= ADDITIVE: per-market-cap-band beat-rate ==================
     # GROUP the deployed general ranking into USD market-cap bands and grade each band
     # SEPARATELY (CEO 2026-07-17): General -> top-20, Mid/Small/Micro -> top-5. Market cap
@@ -815,7 +1034,210 @@ def beat_rate_vs_urth(per_anchor, price_source, log, depths=(10, 20),
     band_rows, band_pending = _per_band_beat_rate(
         per_anchor, price_source, merged, horizon_m, threshold)
     return {"per_window": rows, "pooled": pooled,
-            "bands": band_rows, "band_pending": band_pending}
+            "bands": band_rows, "band_pending": band_pending,
+            "two_clause": two_clause}
+
+
+# --------------------------------------------------------------------------- #
+#  The TWO-CLAUSE target readout (UPSIDE + DOWNSIDE + the three diagnostics)   #
+# --------------------------------------------------------------------------- #
+def _pct(x, width=9):
+    return f"{x*100:+.1f}%".rjust(width) if x == x else "n/a".rjust(width)
+
+
+def _basis_of(per_anchor):
+    """The measurement BASIS carried by the rankings -- vetoed or not.
+
+    EVERY PIT FIGURE THIS PROJECT EVER PUBLISHED WAS UN-VETOED, because nothing under
+    `baseline_tools/` applied the Stage-1 solvency gate at all.  So a number with no basis on it
+    is ambiguous, and a vetoed number compared against a historical un-vetoed one is simply
+    wrong.  `rank_all_anchors` stamps `basis` per anchor; this collapses it for a header and
+    REFUSES to guess when the anchors disagree.
+    """
+    seen = sorted({(v or {}).get("basis") or "un-vetoed (basis not stamped)"
+                   for v in (per_anchor or {}).values()})
+    if not seen:
+        return "unknown (no anchors)"
+    if len(seen) == 1:
+        return seen[0]
+    return "MIXED -- anchors disagree: " + " | ".join(seen)
+
+
+def _print_basis_banner(per_anchor):
+    basis = _basis_of(per_anchor)
+    print("#" * 72)
+    print(f"# MEASUREMENT BASIS: {basis}")
+    print("#   Every PIT figure published by this project BEFORE 2026-08-27 was UN-VETOED --")
+    print("#   the backtest path never applied the Stage-1 solvency gate.  Do NOT compare a")
+    print("#   number on one basis against a number on the other.")
+    print("#" * 72)
+    return basis
+
+
+def _two_clause_report(clause_inputs, horizon_m, threshold, basis="unknown"):
+    """Print and return the charter two-clause verdict, per anchor and pooled.
+
+    ONLY THE TOP-20 IS GRADED HERE.  The charter states both clauses on the top-20 and nowhere
+    else; grading depth 10 as well would invent a clause the CEO did not set (the top-10 52.5%
+    rung is an UPSIDE rung, not a second target).  The beat-rate table above still reports both
+    depths, which is why every line here names its depth.
+
+    BOTH CLAUSES GET THE SAME COVERAGE DISCIPLINE, which is what stops this block contradicting
+    itself.  An earlier version applied it to the downside clause only and handed the upside
+    clause a beat-rate computed over whichever picks happened to be priceable; since a FAIL on
+    either clause sinks the period, the run printed `PERIOD: FAIL` on the same line as
+    `DOWNSIDE: INDETERMINATE`.  A beat-rate is bounded on both sides, so partial coverage gives
+    a real interval and a partial-coverage FAIL is genuinely provable -- see
+    `target_clauses.upside_clause`.
+
+    BOTH POLICIES ARE PRINTED (primary and floor) and neither is hidden.  Where their verdicts
+    differ, the disagreement is a statement about the PRICE GRID, not about the filter.
+    """
+    import pandas as pd
+    import target_clauses as tc
+
+    bar = tc.bond_bar(horizon_m)
+    print("\n" + "#" * 72)
+    print("# TWO-CLAUSE TARGET  --  BOTH must pass for a period to count as success")
+    print(f"#   UPSIDE   : >= 60% of the top-{tc.CHARTERED_DEPTH} beat URTH by "
+          f">= {threshold*100:.0f}pp over {horizon_m}mo   [per pick]")
+    print(f"#   DOWNSIDE : equal-weight top-{tc.CHARTERED_DEPTH} total return exceeds a flat "
+          f"{tc.BOND_RATE_ANNUAL*100:.0f}%/yr bond   [portfolio]")
+    print(f"#   bond bar : {bar*100:+.2f}% compounded over {horizon_m}mo")
+    print(f"#   BASIS    : {basis}")
+    print("#   The clauses are NOT tradable against each other -- that is the point of the")
+    print("#   pair: a filter can always buy a higher hit rate with tail risk.")
+    print("#" * 72)
+    for label, text in (("BOND BAR", tc.BOND_BAR_CAVEAT),
+                        ("SOFTNESS", tc.SOFTNESS_CAVEAT),
+                        ("POLICY  ", tc.POLICY_CAVEAT),
+                        ("COVERAGE", tc.COVERAGE_CAVEAT)):
+        print(f"  {label}: {_wrap(text)}")
+
+    if not clause_inputs:
+        print("  NO CLEAN WINDOW produced a top-20 -- the two-clause target is UNMEASURED "
+              "this run (not a pass, not a fail).")
+        return {"bar": bar, "per_anchor": [], "pooled": None, "n_windows": 0,
+                "basis": basis}
+
+    per_anchor_out = []
+    for ci in clause_inputs:
+        for floor in (False, True):
+            pol = "floor" if floor else "primary"
+            dn = tc.downside_clause(ci["rdf"], ci["n_selected"], horizon_m, floor=floor)
+            up = tc.upside_clause(ci["rdf"], ci["bench"], ci["n_selected"],
+                                  threshold=threshold, floor=floor)
+            per_anchor_out.append({
+                "window": ci["window"], "policy": pol, "upside": up, "downside": dn,
+                "period": tc.period_verdict(up, dn),
+                "diagnostics": tc.diagnostics(ci["rdf"], bar, floor=floor),
+                "legacy_missing_fail_rate": ci["beat_rate"], "legacy_n": ci["n"]})
+
+    #  ---- COVERAGE, first, because it conditions every number under it ----
+    print("\n  --- COVERAGE (what the anchor SHIPPED vs what could be MEASURED) ---")
+    print(f"  {'window':24} {'shipped':>8} {'measured':>9} {'buy_only':>9} {'no_buy':>7} "
+          f"{'terminal':>9} {'coverage':>9}")
+    for row in per_anchor_out:
+        if row["policy"] != "primary":
+            continue
+        d = row["downside"]
+        print(f"  {row['window']:24} {d['n_selected']:>8} {d['n_measured']:>9} "
+              f"{d['n_buy_only']:>9} {d['n_no_buy']:>7} {d['n_terminal']:>9} "
+              f"{d['coverage']*100:>8.1f}%")
+
+    #  ---- DOWNSIDE ----
+    print("\n  --- DOWNSIDE CLAUSE: equal-weight portfolio vs the bond bar ---")
+    print(f"  {'window':24} {'pol':>7} {'portfolio':>10} {'lowerbnd':>10} {'flip':>10} "
+          f"  {'VERDICT':<14} reason")
+    for row in per_anchor_out:
+        d = row["downside"]
+        print(f"  {row['window']:24} {row['policy']:>7} {_pct(d['portfolio_return'], 10)} "
+              f"{_pct(d['lower_bound'], 10)} {_pct(d['flip_return'], 10)}   "
+              f"{d['verdict']:<14} {d['verdict_reason']}")
+
+    #  ---- UPSIDE ----
+    print("\n  --- UPSIDE CLAUSE: share of the shipped top-20 beating URTH by the bar ---")
+    print(f"  {'window':24} {'pol':>7} {'n_beat':>7} {'measured%':>10} {'lo':>8} {'hi':>8} "
+          f"  {'VERDICT':<14} reason")
+    for row in per_anchor_out:
+        u = row["upside"]
+        mr = f"{u['rate_measured']*100:.1f}%" if u["rate_measured"] == u["rate_measured"] else "n/a"
+        lo = f"{u['lo']*100:.1f}%" if u["lo"] == u["lo"] else "n/a"
+        hi = f"{u['hi']*100:.1f}%" if u["hi"] == u["hi"] else "n/a"
+        print(f"  {row['window']:24} {row['policy']:>7} {u['n_beat']:>7} {mr:>10} "
+              f"{lo:>8} {hi:>8}   {u['verdict']:<14} {u['verdict_reason']}")
+    legacy = {(r["window"], r["legacy_missing_fail_rate"]) for r in per_anchor_out}
+    print("  FOR CONTINUITY with the beat-rate table above, which uses missing='fail' and so")
+    print("  counts every unpriceable pick as a NON-beater rather than as unmeasured:")
+    for w, lr in sorted(legacy, key=lambda t: t[0]):
+        ls = f"{lr*100:.1f}%" if lr == lr else "n/a"
+        print(f"    {w:24} missing='fail' rate = {ls}  (a POINT estimate, not the clause)")
+
+    #  ---- PERIOD ----
+    print("\n  --- PERIOD VERDICT: BOTH clauses must pass (charter) ---")
+    print(f"  {'window':24} {'pol':>7} {'UPSIDE':<15} {'DOWNSIDE':<15} {'PERIOD':<15}")
+    for row in per_anchor_out:
+        print(f"  {row['window']:24} {row['policy']:>7} {row['upside']['verdict']:<15} "
+              f"{row['downside']['verdict']:<15} {row['period']:<15}")
+    for ci in clause_inputs:
+        pol = [r for r in per_anchor_out if r["window"] == ci["window"]]
+        vs = {r["policy"]: r["downside"]["verdict"] for r in pol}
+        if vs.get("primary") != vs.get("floor"):
+            print(f"  ^ {ci['window']}: the two POLICIES disagree on the downside clause. That")
+            print("    is a PRICE-GRID finding (unpriceable picks), not evidence about the filter.")
+
+    #  ---- DIAGNOSTICS ----
+    print("\n  DIAGNOSTICS -- reported, NEVER gating (charter). Each carries its own n.")
+    print(f"  {'window':24} {'pol':>7} {'n':>4} {'p25':>9} {'rank':>5} {'clears':>7} "
+          f"{'worst':>9} {'clears':>7} {'below0':>8}")
+    for row in per_anchor_out:
+        d = row["diagnostics"]
+        cp = "-" if d["p25_clears_bar"] is None else ("yes" if d["p25_clears_bar"] else "NO")
+        cw = "-" if d["worst_clears_bar"] is None else ("yes" if d["worst_clears_bar"] else "NO")
+        print(f"  {row['window']:24} {row['policy']:>7} {d['n']:>4} {_pct(d['p25'])} "
+              f"{d['p25_rank']:>5} {cp:>7} {_pct(d['worst'])} {cw:>7} "
+              f"{str(d['n_below_zero']) + '/' + str(d['n']):>8}")
+    print("  p25 is the ceil(0.25*n)-th SMALLEST pick (the charter \"5th-worst\" at n=20),")
+    print("  not an interpolated percentile. 'worst' is EXPECTED to fail the bond bar --")
+    print("  it is tracked for magnitude, not as a test.")
+
+    #  ---- POOLED ----
+    pooled_rdf = pd.concat([ci["rdf"] for ci in clause_inputs], ignore_index=True)
+    pooled_selected = sum(ci["n_selected"] for ci in clause_inputs)
+    pooled_out = {}
+    print(f"\n  --- POOLED across {len(clause_inputs)} clean window(s) (per-name pooling; "
+          "NOT the chartered per-anchor clause) ---")
+    for floor in (False, True):
+        dn = tc.downside_clause(pooled_rdf, pooled_selected, horizon_m, floor=floor)
+        dg = tc.diagnostics(pooled_rdf, bar, floor=floor)
+        pooled_out["floor" if floor else "primary"] = {"downside": dn, "diagnostics": dg}
+        print(f"  {'floor' if floor else 'primary':>7}: shipped={dn['n_selected']} "
+              f"measured={dn['n_measured']} buy_only={dn['n_buy_only']} "
+              f"portfolio={_pct(dn['portfolio_return']).strip()} "
+              f"lower_bound={_pct(dn['lower_bound']).strip()} -> {dn['verdict']}"
+              f"   | p25={_pct(dg['p25']).strip()} worst={_pct(dg['worst']).strip()} "
+              f"below0={dg['n_below_zero']}/{dg['n']}")
+    print("  NOTE: the pooled UPSIDE clause is deliberately NOT restated here -- pooling picks")
+    print("  across windows is not the chartered per-anchor clause, and the pooled beat-rate")
+    print("  already appears in the table above.")
+    print("  CAVEAT: the two clean 36mo windows overlap heavily = ONE regime, and the pooled")
+    print("          n is picks, not independent observations.")
+    return {"bar": bar, "per_anchor": per_anchor_out, "pooled": pooled_out,
+            "n_windows": len(clause_inputs), "basis": basis}
+
+
+def _wrap(text, width=86, indent=" " * 12):
+    """Fold a caveat onto continuation lines so it stays readable in a run log."""
+    words, lines, cur = text.split(), [], ""
+    for w in words:
+        if cur and len(cur) + 1 + len(w) > width:
+            lines.append(cur)
+            cur = w
+        else:
+            cur = f"{cur} {w}".strip()
+    if cur:
+        lines.append(cur)
+    return ("\n" + indent).join(lines)
 
 
 # --------------------------------------------------------------------------- #

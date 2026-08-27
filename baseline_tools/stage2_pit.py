@@ -222,7 +222,7 @@ def reproduce_pit_top(dmdic, D, na1_only=True, nq_stage1=8, nq_stage2=16,
                       topn_stage1=100, topn_final=20, cycleheat_beta=1.0,
                       boscore_noise=0.0, price_noise_frac=0.0, rng=None,
                       universe_override=None, weight_override=None,
-                      dedup_issuers=True):
+                      dedup_issuers=True, apply_stage1_veto=False):
     """Full PIT reproduction as-of date D. Returns a result dict.
 
     Controlled-noise hooks (for the churn diagnostic, both default OFF):
@@ -247,6 +247,47 @@ def reproduce_pit_top(dmdic, D, na1_only=True, nq_stage1=8, nq_stage2=16,
                         cohort-weight hook).  DEFAULT None -> default weights, live
                         path bit-for-bit unchanged.  Used by the scoring-comparison
                         grid to run an equal-weight variant (all metric weights = 1).
+
+    apply_stage1_veto : run the Stage-1 SOLVENCY VETO between Stage-1 and Stage-2, the way
+                        production does (`postBo.py`).  **THIS PATH NEVER DID.**  Nothing under
+                        `baseline_tools/` referenced `stage1_veto` at all, so every PIT number
+                        this project has produced -- beat-rate, loss diagnostics, depth x
+                        horizon grid, the four-cell measurement -- graded a filter WITHOUT the
+                        CEO gates.  A backtest that never runs the gates cannot show what a
+                        gate does: the veto could be tightened or loosened and every number
+                        would be identical.
+
+                        DEFAULT False, DELIBERATELY, and this is a judgement rather than
+                        timidity.  `reproduce_pit_top` has many callers -- the tuner,
+                        `skill_baseline`, `validate_gate`, `tune_run` -- and
+                        `tune_run.validate_finish` ABORTS the tuner when its cached fast
+                        finish() diverges from this function ("cached finish() diverges from
+                        reproduce_pit_top -- not faithful").  The fast path does NOT veto, so
+                        flipping this default ON would abort the tuner on any panel where the
+                        veto can actually run -- precisely when the CEO is about to retune
+                        weights and gates.  So the default keeps every existing caller
+                        BIT-FOR-BIT unchanged, and the BACKTEST path turns it on explicitly
+                        (`depth_horizon_grid.rank_all_anchors(stage1_veto=True)`), which is the
+                        instrument that is supposed to judge gates.  Whether the tuner and
+                        `skill_baseline` should also veto is a real question, and an open one
+                        -- it is NOT answered by this parameter defaulting False.
+
+                        POINT-IN-TIME BY CONSTRUCTION.  The veto is handed `bm_pit`/`cdx_pit`,
+                        which are already `date <= D`, so `stage1_veto._evaluate` -- which
+                        simply sorts newest-first and takes `head(WINDOW_ROWS)` of whatever it
+                        is given -- can only ever see the eight newest rows AVAILABLE AT D, the
+                        same rows Stage-1 scored from.  It has no independent data source and no
+                        as-of parameter of its own, so PIT-safety is entirely a property of the
+                        frame passed in.  Handing it `bm`/`cdx` (all dates) instead would be the
+                        `dollarvol_floor` look-ahead again -- a present-day fact applied to a
+                        historical pool -- which is why `test_stage1_veto_pit` pins BOTH that
+                        the call site passes the PIT frames AND that a planted future row cannot
+                        change a verdict.
+
+                        BEFORE the head(topn_stage1) cut, matching production: `postBo.py`
+                        vetoes `general_scores` at its line 567 and cuts `head(100)` at 686, so
+                        an ejected name lets the next name PROMOTE into the pool rather than
+                        leaving a hole.
 
     dedup_issuers     : collapse same-issuer lines in the ranked pool, keeping the
                         HIGHEST-RANKED line per issuer, BEFORE the head(topn_final)
@@ -306,6 +347,34 @@ def reproduce_pit_top(dmdic, D, na1_only=True, nq_stage1=8, nq_stage2=16,
         BoScore_df["score"] = (BoScore_df["score"].astype(float)
                                + rng.normal(0.0, boscore_noise, size=len(BoScore_df)))
     BoScore_df = BoScore_df.sort_values("score", ascending=False)
+
+    #  ---- STAGE-1 SOLVENCY VETO -- the gate production applies and this path did not ----
+    #  BEFORE the head() cut, so an ejection PROMOTES the next name (production order).
+    #  `bm_pit`/`cdx_pit` are the `date <= D` frames, which is what makes this PIT-safe;
+    #  see the `apply_stage1_veto` note in the docstring.
+    veto_report = None
+    basis = "un-vetoed"
+    if apply_stage1_veto:
+        import stage1_veto as sv
+        #  `cdx_df` is for the AD-HOC BUCKET ONLY and reaches no verdict (production passes it
+        #  for the same reason).  No `penalty_book`: the soft penalty bucket lowers Stage-2
+        #  scores and is a SEPARATE production behaviour this path still does not reproduce --
+        #  a KNOWN remaining divergence, recorded rather than silently skipped.
+        BoScore_df, veto_report = sv.apply_veto(
+            BoScore_df, bm_pit, pool_label="general", cdx_df=cdx_pit)
+        if not veto_report.get("enabled"):
+            basis = "un-vetoed (veto disabled)"
+        elif not veto_report.get("applies"):
+            #  A panel that predates the veto columns DECLINES rather than gating.  "declined"
+            #  and "found nothing to eject" are completely different statements and must never
+            #  print as the same number.
+            miss = veto_report.get("missing_columns") or []
+            basis = ("un-vetoed (veto DECLINED: panel missing %s)" % ", ".join(miss)
+                     if miss else "un-vetoed (veto not applicable to this pool)")
+        else:
+            basis = "VETOED (stage-1 solvency gate applied, %d ejected)" % (
+                veto_report.get("n_ejected", 0))
+
     BoS_top = BoScore_df.head(topn_stage1).reset_index(drop=True)
 
     # ---- Stage-2: AggScore over the pool ----
@@ -363,6 +432,11 @@ def reproduce_pit_top(dmdic, D, na1_only=True, nq_stage1=8, nq_stage2=16,
         "issuer_dupes_dropped": dedup_dropped,
         "postRank": postRank,
         "universe_size": (len(universe) if universe else cdx["source"].nunique()),
+        #  WHICH BASIS THIS RESULT IS ON.  Every historical figure this project has published
+        #  was un-vetoed, so a number carrying no basis is ambiguous and a vetoed number
+        #  compared against an un-vetoed one is simply wrong.  Stamped here, at the source.
+        "basis": basis,
+        "stage1_veto": veto_report,
     }
 
 

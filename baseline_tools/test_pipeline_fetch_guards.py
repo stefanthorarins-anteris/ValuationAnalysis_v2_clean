@@ -116,7 +116,22 @@ def _grid(tmp_path, name, per_anchor):
     return str(p)
 
 
-def _fetch(tmp_path, bodies, anchors, offline, reference_paths=None, symbols_filter=None):
+def _fetch(tmp_path, bodies, anchors, offline, reference_paths=None, symbols_filter=None,
+           companion_days=0):
+    """COMPANION DAYS DEFAULT TO 0 HERE, and that is a deliberate scoping choice rather than a
+    guard being switched off.
+
+    Every test in this file is about ANCHOR-BODY ACCEPTANCE -- the absolute payload floor, the
+    per-venue shortfall test, the deferred relative-median floor.  The companion pull added in
+    2026-08-27 fetches ADDITIONAL preceding weekdays under their own `date_requested`, which
+    is orthogonal to all three: it changes what else lands in the file, not which anchor body
+    is accepted.  Leaving it on would have made five of these tests fail on their fixture
+    rather than on their subject (a step-back date supplied as a fallback is also a companion
+    candidate), which measures the harness, not the guard.
+
+    So the companion behaviour is held FIXED here and tested EXPLICITLY in its own section at
+    the bottom of this file, where the assertions are about companions.
+    """
     rec = offline(bodies)
     out = tmp_path / "out.csv"
     #  ARITY- AND SIGNATURE-TOLERANT.  Before this change `_fetch_bulk_scrubbed` took no
@@ -127,8 +142,11 @@ def _fetch(tmp_path, bodies, anchors, offline, reference_paths=None, symbols_fil
     kw = {}
     try:
         import inspect
-        if "reference_paths" in inspect.signature(pa._fetch_bulk_scrubbed).parameters:
+        params = inspect.signature(pa._fetch_bulk_scrubbed).parameters
+        if "reference_paths" in params:
             kw["reference_paths"] = reference_paths
+        if "companion_days" in params:
+            kw["companion_days"] = companion_days
     except (TypeError, ValueError):     # pragma: no cover - unintrospectable callable
         kw["reference_paths"] = reference_paths
     result = pa._fetch_bulk_scrubbed(BASE, KEY, anchors, symbols_filter, str(out),
@@ -416,3 +434,165 @@ def test_a_truncated_reference_makes_the_test_WEAKER_never_spuriously_stricter(t
                [date(2021, 12, 31)], offline, reference_paths=[thin_ref])
     assert r["venue"] == [], "a truncated reference rejected a FULL body"
     assert r["written"] > 0
+
+
+# --------------------------------------------------------------------------- #
+#  COMPANION DAYS -- the HOLIDAY half of the coverage problem                  #
+#                                                                             #
+#  Removing the save-side allow-list recovers venues that were IN the anchor   #
+#  body and thrown away.  It does nothing for venues that shut BEFORE the      #
+#  calendar year-end and are therefore absent from that body: measured on the  #
+#  already-unfiltered dev grid, `.KS` / `.KQ` / `.OL` (711 names) are zero at  #
+#  2021-12-31 and 2024-12-31, BOTH legs of the buy2021 clean window.  These    #
+#  pin the fetch-side fix for that half.                                       #
+# --------------------------------------------------------------------------- #
+def test_a_companion_day_is_pulled_and_written_under_ITS_OWN_date(tmp_path, offline):
+    """The whole mechanism in one assertion.  The companion must NOT be written under the
+    anchor: `PriceSource`s anchor layer selects on `date_requested`, so an anchor-labelled
+    companion would silently compete to BE the anchor price instead of being a fill source
+    for names the anchor lacks."""
+    bodies = {"2021-12-31": _body(FULL, tag="anch"),
+              "2021-12-30": _body(FULL, tag="comp")}
+    r = _fetch(tmp_path, bodies, [date(2021, 12, 31)], offline, companion_days=1)
+    assert r["calls"] == 2
+    got = set(zip(r["df"]["date_requested"], r["df"]["date_actual"]))
+    assert ("2021-12-31", "2021-12-31") in got
+    assert ("2021-12-30", "2021-12-30") in got
+    #  and NEVER the anchor wearing the companion date
+    assert ("2021-12-31", "2021-12-30") not in got
+
+
+def test_the_companion_recovers_a_venue_ABSENT_from_the_anchor_body(tmp_path, offline):
+    """The measured case, in miniature: a venue that shut before the year-end.  The anchor
+    body genuinely has no `.KS`, so no amount of widening what we SAVE can produce it -- only
+    holding the preceding trading day can."""
+    anchor_body = _body({"(none)": 50000, ".DE": 800}, tag="a")
+    comp_body = _body({"(none)": 50000, ".DE": 800, ".KS": 300}, tag="c")
+    r = _fetch(tmp_path, {"2021-12-31": anchor_body, "2021-12-30": comp_body},
+               [date(2021, 12, 31)], offline, companion_days=1)
+    anchor_syms = set(r["df"][r["df"]["date_requested"] == "2021-12-31"]["symbol"])
+    comp_syms = set(r["df"][r["df"]["date_requested"] == "2021-12-30"]["symbol"])
+    assert not any(s.endswith(".KS") for s in anchor_syms)      # premise
+    assert sum(1 for s in comp_syms if s.endswith(".KS")) == 300
+
+
+def test_the_companion_is_reachable_by_the_READER_fill_layer(tmp_path, offline):
+    """END-TO-END, and the only assertion that proves the fetch and the reader agree.  A
+    companion written correctly but outside `PriceSource`s fill window would be dead bytes.
+    Reads the file back through the real `PriceSource` and asks for the venue AT the anchor."""
+    import returns_core as rc
+    anchor_body = _body({"(none)": 50000}, tag="a")
+    comp_body = _body({"(none)": 50000, ".KS": 300}, tag="c")
+    r = _fetch(tmp_path, {"2021-12-31": anchor_body, "2021-12-30": comp_body},
+               [date(2021, 12, 31)], offline, companion_days=1)
+    assert r["written"] > 0
+    ps = rc.PriceSource(str(tmp_path / "out.csv"), anchors=["2021-12-31"])
+    ks_name = _sym("c", ".KS", 0)
+    assert ps.price(ks_name, "2021-12-31") is not None, (
+        "the companion is on disk but the reader cannot see it at the anchor")
+    #  and the staleness it introduces is REPORTED, not silent
+    rep = ps.fill_report()
+    assert int(rep.loc[rep["anchor"] == "2021-12-31", "n_filled"].iloc[0]) >= 300
+
+
+def test_companion_days_ZERO_restores_the_anchor_only_fetch(tmp_path, offline):
+    """The off-switch, so a run can be put back to the previous shape without editing code."""
+    bodies = {"2021-12-31": _body(FULL, tag="anch"),
+              "2021-12-30": _body(FULL, tag="comp")}
+    r = _fetch(tmp_path, bodies, [date(2021, 12, 31)], offline, companion_days=0)
+    assert r["calls"] == 1
+    assert set(r["df"]["date_requested"]) == {"2021-12-31"}
+
+
+def test_a_weekend_companion_costs_NO_call(tmp_path, offline):
+    """Same rule as the anchor step-back: the endpoint answers a weekend with a small
+    non-empty body, so a weekend is never requested.
+
+    AN EARLIER DRAFT OF THIS TEST PASSED WITHOUT EVER CROSSING A WEEKEND -- it anchored on
+    Friday 2021-12-31 and walked back to Thu/Wed/Tue, all weekdays, so the rule it claimed to
+    check was never exercised.  Anchored on MONDAY 2021-12-27 the single companion day must
+    step over Sunday 12-26 and Saturday 12-25 to reach Friday 12-24, and neither weekend day
+    may cost a call."""
+    bodies = {"2021-12-27": _body(FULL, tag="a"), "2021-12-24": _body(FULL, tag="b")}
+    r = _fetch(tmp_path, bodies, [date(2021, 12, 27)], offline, companion_days=1)
+    assert date(2021, 12, 27).strftime("%A") == "Monday"          # premise
+    assert r["calls"] == 2, "a weekend day was requested"
+    assert set(r["df"]["date_requested"]) == {"2021-12-27", "2021-12-24"}
+    assert any("Sunday -- not requested" in ln for ln in r["rec"].log_lines)
+    assert any("Saturday -- not requested" in ln for ln in r["rec"].log_lines)
+
+
+def test_the_companion_walk_STOPS_at_the_reader_fill_window(tmp_path, offline):
+    """A companion older than `returns_core.DEFAULT_FILL_WINDOW_DAYS` before the anchor is a
+    date the reader can never consume, so requesting it spends money for nothing.  Ask for
+    far more companion days than the window allows and the walk must stop, not keep paying."""
+    import returns_core as rc
+    bodies = {"2021-12-31": _body(FULL, tag="a")}
+    for dd in range(20, 32):
+        bodies[f"2021-12-{dd:02d}"] = _body(FULL, tag=f"d{dd}")
+    r = _fetch(tmp_path, bodies, [date(2021, 12, 31)], offline, companion_days=99)
+    for req in set(r["df"]["date_requested"]):
+        lag = (date(2021, 12, 31) - date(*[int(x) for x in req.split("-")])).days
+        assert lag <= rc.DEFAULT_FILL_WINDOW_DAYS, f"{req} is outside the fill window"
+
+
+def test_a_companion_that_is_ANOTHER_anchor_is_never_written_as_a_companion(tmp_path, offline):
+    """2022-12-30 is an anchor of the real grid and 2022-12-29 could be a companion of it.
+    The converse is the hazard: a companion landing on a date that IS an anchor would inject a
+    second body into that anchor layer -- the "two payloads for one anchor" corruption this
+    module already carries a scar from.  Adjacent anchors, so the collision is forced."""
+    bodies = {"2021-12-31": _body(FULL, tag="a"), "2021-12-30": _body(FULL, tag="b")}
+    r = _fetch(tmp_path, bodies, [date(2021, 12, 31), date(2021, 12, 30)], offline,
+               companion_days=1)
+    #  THREE calls, not two, and the arithmetic is the point: two anchor bodies, plus ONE
+    #  companion call for the 12-30 anchor (its neighbour 12-29).  The 12-31 anchor companion
+    #  would have been 12-30, which is itself an anchor of this run -- already in the file, so
+    #  it is skipped AND consumes that anchor companion budget rather than walking further
+    #  back and spending an unbudgeted call.
+    assert r["calls"] == 3
+    assert any("it is an ANCHOR of this run" in ln for ln in r["rec"].log_lines)
+    #  the property that matters: no anchor ever wears another date body
+    pairs = set(zip(r["df"]["date_requested"], r["df"]["date_actual"]))
+    assert pairs == {("2021-12-31", "2021-12-31"), ("2021-12-30", "2021-12-30")}
+
+
+def test_a_short_companion_body_is_REFUSED_by_the_absolute_floor(tmp_path, offline):
+    """The companion faces the payload floor like anything else, so a truncated body cannot
+    enter the grid through the side door."""
+    bodies = {"2021-12-31": _body(FULL, tag="a"),
+              "2021-12-30": _body(SATURDAY_2024, tag="junk")}
+    r = _fetch(tmp_path, bodies, [date(2021, 12, 31)], offline, companion_days=1)
+    assert r["calls"] == 2                        # the call was spent
+    assert set(r["df"]["date_requested"]) == {"2021-12-31"}   # but nothing was written
+
+
+def test_a_companion_does_NOT_disturb_the_anchor_body_guards(tmp_path, offline):
+    """The floors judge ANCHOR bodies against each other.  A companion of a different size
+    must not enter the relative-median calculation, or pulling one could refuse an anchor that
+    was fine -- a guard corrupted by the fix meant to help it."""
+    bodies = {"2021-12-31": _body(FULL, tag="a"), "2021-12-30": _body(FULL, tag="b"),
+              "2020-12-31": _body(FULL, tag="c"), "2020-12-30": _body(FULL, tag="d")}
+    r = _fetch(tmp_path, bodies, [date(2021, 12, 31), date(2020, 12, 31)], offline,
+               companion_days=1)
+    assert r["refused"] == []
+    assert r["venue"] == []
+
+
+def test_the_companion_is_NOT_a_substitute_for_an_anchor_with_no_body(tmp_path, offline):
+    """A companion is a fill source, never a stand-in for a missing anchor.
+
+    THE FIRST DRAFT OF THIS TEST HAD A FALSE PREMISE and is worth recording.  It supplied a
+    body only at 2021-12-30 and expected the 2021-12-31 anchor to be reported missing -- but
+    the anchor own STEP-BACK loop (`max_lookback=4`) reaches 12-30 and accepts it AS the
+    anchor body, `date_requested=2021-12-31, date_actual=2021-12-30`.  That is pre-existing,
+    correct and deliberate behaviour that predates the companion pull, and the draft was
+    asserting against it.
+
+    The real claim is narrower: when NOTHING usable exists within the anchor own lookback, the
+    companion machinery must not paper over it.  So the only body here sits outside that
+    window."""
+    bodies = {"2021-12-20": _body(FULL, tag="far")}   # outside max_lookback of the anchor
+    r = _fetch(tmp_path, bodies, [date(2021, 12, 31)], offline, companion_days=1)
+    written_anchors = set(r["df"]["date_requested"]) if len(r["df"]) else set()
+    assert "2021-12-31" not in written_anchors
+    assert any("no usable body" in ln for ln in r["rec"].log_lines)
