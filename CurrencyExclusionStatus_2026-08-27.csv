@@ -1,0 +1,4 @@
+run_id,written_at,status,currency,source,n_rows_in_currency,n_rows_total,minority_label,watched_currencies,note
+stock_CUR6K@718712e8d985,2026-08-27 05:28:57,EXCLUDED,ARS,BMA,80,80,False,ARS,"reports in ARS -- IAS 29 hyperinflation regime, no admitted ARS->USD rate, and this vendor is demonstrably wrong on ARS in this panel"
+stock_CUR6K@718712e8d985,2026-08-27 05:28:57,EXCLUDED,ARS,CRESY,80,80,False,ARS,"reports in ARS -- IAS 29 hyperinflation regime, no admitted ARS->USD rate, and this vendor is demonstrably wrong on ARS in this panel"
+stock_CUR6K@718712e8d985,2026-08-27 05:29:10,APPLIED_NO_MATCH,,,,,,ARS,rule ran; no source reports in a watched currency

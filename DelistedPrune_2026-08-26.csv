@@ -1,0 +1,8 @@
+symbol,reason,source_endpoint,page,vendor_list_size,universe,asof,coverage_note
+AACB,delisted_prune,v3/delisted-companies,0,100,stock_CUR6K,2026-08-26,"PAGE 0 ONLY of a paginated endpoint -- this is a PARTIAL delisted list, so absence from this file is NOT evidence that a name is still listed"
+ANSCW,delisted_prune,v3/delisted-companies,0,100,stock_CUR6K,2026-08-26,"PAGE 0 ONLY of a paginated endpoint -- this is a PARTIAL delisted list, so absence from this file is NOT evidence that a name is still listed"
+BWNB,delisted_prune,v3/delisted-companies,0,100,stock_CUR6K,2026-08-26,"PAGE 0 ONLY of a paginated endpoint -- this is a PARTIAL delisted list, so absence from this file is NOT evidence that a name is still listed"
+FTRK,delisted_prune,v3/delisted-companies,0,100,stock_CUR6K,2026-08-26,"PAGE 0 ONLY of a paginated endpoint -- this is a PARTIAL delisted list, so absence from this file is NOT evidence that a name is still listed"
+LBRDA,delisted_prune,v3/delisted-companies,0,100,stock_CUR6K,2026-08-26,"PAGE 0 ONLY of a paginated endpoint -- this is a PARTIAL delisted list, so absence from this file is NOT evidence that a name is still listed"
+LBRDK,delisted_prune,v3/delisted-companies,0,100,stock_CUR6K,2026-08-26,"PAGE 0 ONLY of a paginated endpoint -- this is a PARTIAL delisted list, so absence from this file is NOT evidence that a name is still listed"
+LBRDP,delisted_prune,v3/delisted-companies,0,100,stock_CUR6K,2026-08-26,"PAGE 0 ONLY of a paginated endpoint -- this is a PARTIAL delisted list, so absence from this file is NOT evidence that a name is still listed"

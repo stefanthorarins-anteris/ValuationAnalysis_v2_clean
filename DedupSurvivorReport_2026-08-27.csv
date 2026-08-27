@@ -1,0 +1,264 @@
+dropped,survivor,name,orig_sector,propagated_sector,issuer_group,non_canonical_tag,dropped_price,dropped_shares,dropped_marketCap,decided_by,dropped_vol_t,survivor_vol_t,dropped_isin_t,survivor_isin_t,dropped_volAvg,dropped_volAvg_asof,survivor_volAvg,survivor_volAvg_asof
+ABX.TO,B,Barrick Gold Corporation,Basic Materials,Basic Materials,ABX.TO|B,,36.7136,1666000000.0,61164857600.0,punctuation,0,0,0,0,4736626.0,2026-08-21,10971356.0,2026-08-21
+ACB.TO,ACB,Aurora Cannabis Inc.,Healthcare,Healthcare,ACB|ACB.TO,,3.9604,61678703.0,244270922.9189,punctuation,0,0,0,0,458812.0,2026-08-21,1347341.0,2026-08-21
+ACT.TO,ADUR,Aduro Clean Technologies Inc.,Industrials,Industrials,ACT.TO|ADUR,,14.82,32945095.0,488246307.9,volavg,1,0,0,0,21903.0,2026-08-21,557795.0,2026-08-21
+ADNWW,ADN,,,,ADN|ADNWW,symbol-extension,3.33,2819633.0,9389377.89,canonicity,0,0,0,0,,not-captured,,not-captured
+ADW-B.TO,ADW-A.TO,Andrew Peller Limited,Consumer Defensive,Consumer Defensive,ADW-A.TO|ADW-B.TO,,7.94,42993471.0,341368159.74,volavg,1,0,0,0,3059.0,2026-08-21,146990.0,2026-08-21
+AEM.TO,AEM,Agnico Eagle Mines Limited,Basic Materials,Basic Materials,AEM|AEM.TO,,155.13,501659000.0,77822360670.0,punctuation,0,0,0,0,1119609.0,2026-08-21,2934991.0,2026-08-21
+AFGB,AFG,"American Financial Group, Inc.",Financial Services,Financial Services,AFG|AFGB|AFGC|AFGD|AFGE,symbol-extension,139.94,83000000.0,11615020000.0,canonicity,1,0,0,0,8380.0,2026-08-21,467366.0,2026-08-21
+AFGC,AFG,"American Financial Group, Inc.",Financial Services,Financial Services,AFG|AFGB|AFGC|AFGD|AFGE,symbol-extension,139.94,83000000.0,11615020000.0,canonicity,1,0,0,0,10700.0,2026-08-21,467366.0,2026-08-21
+AFGD,AFG,"American Financial Group, Inc.",Financial Services,Financial Services,AFG|AFGB|AFGC|AFGD|AFGE,symbol-extension,139.94,83000000.0,11615020000.0,canonicity,1,0,0,0,9140.0,2026-08-21,467366.0,2026-08-21
+AFGE,AFG,"American Financial Group, Inc.",Financial Services,Financial Services,AFG|AFGB|AFGC|AFGD|AFGE,symbol-extension,139.94,83000000.0,11615020000.0,canonicity,1,0,0,0,8411.0,2026-08-21,467366.0,2026-08-21
+AG.TO,AG,First Majestic Silver Corp.,Basic Materials,Basic Materials,AG|AG.TO,,16.9523,493335474.0,8363180822.5997,shares,0,0,0,0,1578330.0,2026-08-21,11112395.0,2026-08-21
+AGI.TO,AGI,Alamos Gold Inc.,Basic Materials,Basic Materials,AGI|AGI.TO,,30.34,419694000.0,12733515960.0,punctuation,0,0,0,0,1405001.0,2026-08-21,4737374.0,2026-08-21
+AGRIW,AGRI,,,,AGRI|AGRIW,symbol-extension,39.0,125433.6667,4891913.0,canonicity,0,0,0,0,,not-captured,,not-captured
+AIFER,AIFE,,,,AIFE|AIFER,symbol-extension,2.8333,8625000.0,24437090.0,canonicity,0,0,0,0,,not-captured,,not-captured
+AIMBU,AIMAW,,,,AIMAW|AIMBU,,0.032,1116476.0,35727.232,alphabetical,0,0,0,0,,not-captured,,not-captured
+AITRU,AITR,,,,AITR|AITRU,symbol-extension,10.48,7838000.0,82142240.0,canonicity,0,0,0,0,,not-captured,,not-captured
+ALSAU,ALSA,,,,ALSA|ALSAU,symbol-extension,10.0,3543000.0,35430000.0,canonicity,0,0,0,0,,not-captured,,not-captured
+AQN.TO,AQN,Algonquin Power & Utilities Corp.,Utilities,Utilities,AQN|AQN.TO|AQNB,,5.8714,769712719.0,4519260469.8278,punctuation,0,0,-2,-2,2633074.0,2026-08-21,4369425.0,2026-08-21
+AQNB,AQN,Algonquin Power & Utilities Corp.,Utilities,Utilities,AQN|AQN.TO|AQNB,symbol-extension,7.9916,565504241.0,4519260469.8278,canonicity,1,0,-1,-2,24980.0,2026-08-21,4369425.0,2026-08-21
+ARIS.TO,ARIS,Aris Mining Corporation,Basic Materials,Basic Materials,ARIS|ARIS.TO,,14.8896,206398410.0,3073189765.536,punctuation,0,0,0,0,714379.0,2026-08-21,1510937.0,2026-08-21
+ASTL.TO,ASTL,Algoma Steel Group Inc.,Basic Materials,Basic Materials,ASTL|ASTL.TO,,5.7489,109300000.0,628358540.85,punctuation,0,0,0,0,557634.0,2026-08-21,1137416.0,2026-08-21
+ATMVU,ATMVR,,,,ATMVR|ATMVU,,12.82,1574356.0,20183243.92,alphabetical,0,0,0,0,,not-captured,,not-captured
+ATS.TO,ATS,ATS Corporation,Industrials,Industrials,ATS|ATS.TO,,40.88,98116984.0,4011022305.92,punctuation,0,0,0,0,411579.0,2026-08-21,214795.0,2026-08-21
+BAM,BAM.TO,Brookfield Asset Management Ltd.,Financial Services,Financial Services,BAM|BAM.TO,,44.85,1606500000.0,72051525000.0,shares,0,0,0,0,2788659.0,2026-08-21,1846404.0,2026-08-21
+BAYAU,BAYA,,,,BAYA|BAYAU,symbol-extension,11.95,1005792.0,12019214.4,canonicity,0,0,0,0,,not-captured,,not-captured
+BBD-A.TO,BBD-B.TO,Bombardier Inc.,Industrials,Industrials,BBD-A.TO|BBD-B.TO,,229.8842,99254000.0,22816922416.64,volavg,1,0,0,0,5609.0,2026-08-21,322426.0,2026-08-21
+BBUC.TO,BBUC,Brookfield Business Corporation,Industrials,Industrials,BBUC|BBUC.TO,,29.9732,206200000.0,6180472350.0,shares,0,0,0,0,145422.0,2026-08-21,459875.0,2026-08-21
+BCE.TO,BCE,BCE Inc.,Communication Services,Communication Services,BCE|BCE.TO,,30.55,932500000.0,28487875000.0,punctuation,0,0,0,0,4812982.0,2026-08-21,4030795.0,2026-08-21
+BCT.TO,BCTX,BriaCell Therapeutics Corp.,Healthcare,Healthcare,BCT.TO|BCTX,,5.7,7250487.0,41327775.9,volavg,1,0,0,0,6269.0,2026-08-21,164266.0,2026-08-21
+BEP-UN.TO,BEP,Brookfield Renewable Partners L.P.,Utilities,Utilities,BEP|BEP-UN.TO|BEPI,,34.73,300111626.0,10422876770.98,punctuation,0,0,-2,-2,345029.0,2026-08-21,916667.0,2026-08-21
+BEPI,BEP,Brookfield Renewable Partners L.P.,Utilities,Utilities,BEP|BEP-UN.TO|BEPI,symbol-extension,34.73,300111626.0,10422876770.98,canonicity,1,0,-1,-2,25446.0,2026-08-21,916667.0,2026-08-21
+BEPC.TO,BEPC,Brookfield Renewable Corporation,Utilities,Utilities,BEPC|BEPC.TO,,37.12,182381589.0,6770004583.68,punctuation,0,0,0,0,349041.0,2026-08-21,1684856.0,2026-08-21
+BH-A,BH,Biglari Holdings Inc.,Consumer Cyclical,Consumer Cyclical,BH|BH-A,,426.03,3139020.0,1337316690.6,punctuation,0,0,0,0,21924.0,2026-08-21,126000.0,2026-08-21
+BHC.TO,BHC,Bausch Health Companies Inc.,Healthcare,Healthcare,BHC|BHC.TO,,4.93,375000000.0,1848750000.0,punctuation,0,0,0,0,623633.0,2026-08-21,3445883.0,2026-08-21
+BIPC.TO,BIPC,Brookfield Infrastructure Corporation,Utilities,Utilities,BIPC|BIPC.TO,,38.5046,122990668.0,4735707361.0,shares,0,0,0,0,262355.0,2026-08-21,1022306.0,2026-08-21
+BLCO.TO,BLCO,Bausch + Lomb Corporation,Healthcare,Healthcare,BLCO|BLCO.TO,,16.56,357100000.0,5913576000.0,volavg,1,0,0,0,1976.0,2026-08-21,423114.0,2026-08-21
+BLDEW,BLDE,,,,BLDE|BLDEW,symbol-extension,4.03,81297402.0,327628530.06,canonicity,0,0,0,0,,not-captured,,not-captured
+BLDP.TO,BLDP,Ballard Power Systems Inc.,Industrials,Industrials,BLDP|BLDP.TO,,3.89,301486701.0,1172783266.89,punctuation,0,0,0,0,1373457.0,2026-08-21,7086188.0,2026-08-21
+BMNP,BMNR,"Bitmine Immersion Technologies, Inc.",Financial Services,Financial Services,BMNP|BMNR,,18.85,551788656.0,10401216165.6,volavg,1,0,0,0,61767.0,2026-08-21,36861350.0,2026-08-21
+BMO,BMO.TO,Bank of Montreal,Financial Services,Financial Services,BMO|BMO.TO,,352.7423,498574456.0,175868310670.0,shares,0,0,0,0,768477.0,2026-08-21,2128590.0,2026-08-21
+BN.TO,BN,Brookfield Corporation,Financial Services,Financial Services,BN|BN.TO,,45.1316,2233700000.0,100810530000.0,shares,0,0,0,0,2729085.0,2026-08-21,4067211.0,2026-08-21
+BNS,BNS.TO,The Bank of Nova Scotia,Financial Services,Financial Services,BNS|BNS.TO,,172.4926,871876700.0,150392310000.0,shares,0,0,0,0,2579280.0,2026-08-21,3877549.0,2026-08-21
+BRACR,BRAC,,,,BRAC|BRACR|BRACU,symbol-extension,11.77,4755000.0,55966350.0,canonicity,0,0,0,0,,not-captured,,not-captured
+BRACU,BRAC,,,,BRAC|BRACR|BRACU,symbol-extension,11.77,4755000.0,55966350.0,canonicity,0,0,0,0,,not-captured,,not-captured
+BRAG.TO,BRAG,Bragg Gaming Group Inc.,Technology,Technology,BRAG|BRAG.TO,,2.43,25600000.0,62208000.0,punctuation,0,0,0,0,9260.0,2026-08-21,29291.0,2026-08-21
+BRK-A,BRK-B,Berkshire Hathaway Inc.,Financial Services,Financial Services,BRK-A|BRK-B,,750816.3781,1436000.0,1078172318960.0,volavg,1,0,0,0,196.0,2026-08-21,4788895.0,2026-08-21
+BTE.TO,BTE,Baytex Energy Corp.,Energy,Energy,BTE|BTE.TO,,5.678,721197000.0,4094927718.12,punctuation,0,0,0,0,4241385.0,2026-08-21,17859217.0,2026-08-21
+BUJAU,BUJA,,,,BUJA|BUJAU,symbol-extension,11.2,4941000.0,55339200.0,canonicity,0,0,0,0,,not-captured,,not-captured
+CAE.TO,CAE,CAE Inc.,Industrials,Industrials,CAE|CAE.TO,,35.51,321508660.0,11416772516.6,shares,0,0,0,0,1002011.0,2026-08-21,774414.0,2026-08-21
+CCIRU,CCIR,,,,CCIR|CCIRU,symbol-extension,10.97,8620000.0,94561400.0,canonicity,0,0,0,0,,not-captured,,not-captured
+CCO.TO,CCJ,Cameco Corporation,Energy,Energy,CCJ|CCO.TO,,144.56,435533000.0,62960650480.0,punctuation,0,0,0,0,1022566.0,2026-08-21,3328387.0,2026-08-21
+CCL-A.TO,CCL-B.TO,CCL Industries Inc.,Consumer Cyclical,Consumer Cyclical,CCL-A.TO|CCL-B.TO,,92.47,170839694.0,15797546504.18,volavg,1,0,0,0,219.0,2026-08-21,426033.0,2026-08-21
+CCZ,CMCSA,Comcast Holdings Corp.,Communication Services,Communication Services,CCZ|CMCSA,,24.55,3570000000.0,87643500000.0,volavg,1,0,0,0,151.0,2026-08-21,34413090.0,2026-08-21
+CFFSU,CFFS,,,,CFFS|CFFSU,symbol-extension,11.1,10280000.0,114108000.0,canonicity,0,0,0,0,,not-captured,,not-captured
+CG.TO,CGAU,Centerra Gold Inc.,Basic Materials,Basic Materials,CG.TO|CGAU,,15.833,197544000.0,3127706250.24,punctuation,0,0,0,0,749260.0,2026-08-21,1580743.0,2026-08-21
+WEED.TO,CGC,Canopy Growth Corporation,Healthcare,Healthcare,CGC|WEED.TO,,1.38,422264025.0,582724354.5,punctuation,0,0,0,0,1064403.0,2026-08-21,4758862.0,2026-08-21
+CIGI,CIGI.TO,Colliers International Group Inc.,Real Estate,Real Estate,CIGI|CIGI.TO,,93.79,35977216.0,3374303088.64,shares,0,0,0,0,218383.0,2026-08-21,98977.0,2026-08-21
+CIMN,CIM,Chimera Investment Corporation,Real Estate,Real Estate,CIM|CIMN,symbol-extension,13.34,83813331.0,1118069835.54,canonicity,1,0,0,0,7272.0,2026-08-21,726143.0,2026-08-21
+CIO-PA,CIO,,,,CIO|CIO-PA,preferred-suffix,6.96,40363000.0,280926480.0,canonicity,0,0,0,0,,not-captured,,not-captured
+CLS.TO,CLS,Celestica Inc.,Technology,Technology,CLS|CLS.TO,,364.8,115000000.0,41952000000.0,punctuation,0,0,0,0,424911.0,2026-08-21,2500601.0,2026-08-21
+CM,CM.TO,Canadian Imperial Bank of Commerce,Financial Services,Financial Services,CM|CM.TO,,206.0215,674932000.0,139050469570.0,shares,0,0,0,0,1341472.0,2026-08-21,2444098.0,2026-08-21
+CNR.TO,CNI,Canadian National Railway Company,Industrials,Industrials,CNI|CNR.TO,,169.25,606500000.0,102650125000.0,punctuation,0,0,0,0,1610495.0,2026-08-21,1583617.0,2026-08-21
+CNQ.TO,CNQ,Canadian Natural Resources Limited,Energy,Energy,CNQ|CNQ.TO,,56.12,2077894000.0,116611411280.0,punctuation,0,0,0,0,13701931.0,2026-08-21,8063290.0,2026-08-21
+COEPW,COEP,,,,COEP|COEPW,symbol-extension,11.22,6032193.0,67681205.46,canonicity,0,0,0,0,,not-captured,,not-captured
+CP.TO,CP,Canadian Pacific Kansas City Ltd.,Industrials,Industrials,CP|CP.TO,,122.96,886400000.0,108991744000.0,punctuation,0,0,0,0,1285280.0,2026-08-21,2742200.0,2026-08-21
+CRDL.TO,CRDL,Cardiol Therapeutics Inc.,Healthcare,Healthcare,CRDL|CRDL.TO,,1.49,114935371.0,171253702.79,punctuation,0,0,0,0,104706.0,2026-08-21,774290.0,2026-08-21
+CRON.TO,CRON,Cronos Group Inc.,Healthcare,Healthcare,CRON|CRON.TO,,2.7597,373609102.0,1031041566.6074,shares,0,0,0,0,167769.0,2026-08-21,1153885.0,2026-08-21
+CSLMW,CSLMR,,,,CSLMR|CSLMW,,11.5,3528000.0,40572000.0,alphabetical,0,0,0,0,,not-captured,,not-captured
+CSSEN,CSSE,,,,CSSE|CSSEN|CSSEP,symbol-extension,0.1524,32388222.0,4935965.0328,canonicity,0,0,0,0,,not-captured,,not-captured
+CSSEP,CSSE,,,,CSSE|CSSEN|CSSEP,symbol-extension,0.1524,32388222.0,4935965.0328,canonicity,0,0,0,0,,not-captured,,not-captured
+CSW-B.TO,CSW-A.TO,Corby Spirit and Wine Limited,Consumer Defensive,Consumer Defensive,CSW-A.TO|CSW-B.TO,,14.42,28468856.0,410520903.52,volavg_raw,0,0,0,0,5290.0,2026-08-21,17126.0,2026-08-21
+CTC.TO,CTC-A.TO,"Canadian Tire Corporation, Limited",Consumer Cyclical,Consumer Cyclical,CTC-A.TO|CTC.TO,,197.97,52578003.0,10408867253.91,volavg,1,0,0,0,379.0,2026-08-21,189012.0,2026-08-21
+CVE.TO,CVE,Cenovus Energy Inc.,Energy,Energy,CVE|CVE.TO,,35.19,1860129000.0,65457939510.0,punctuation,0,0,0,0,5547987.0,2026-08-21,7702987.0,2026-08-21
+CYTHW,CYTH,,,,CYTH|CYTHW,symbol-extension,0.789,28729641.0,22667686.749,canonicity,0,0,0,0,,not-captured,,not-captured
+DATSW,DATS,,,,DATS|DATSW,symbol-extension,2.54,4209329.0,10691695.66,canonicity,0,0,0,0,,not-captured,,not-captured
+DCBO.TO,DCBO,Docebo Inc.,Technology,Technology,DCBO|DCBO.TO,,17.9,25455554.0,455654416.6,punctuation,0,0,0,0,82711.0,2026-08-21,98032.0,2026-08-21
+DECAW,DECA,,,,DECA|DECAW,symbol-extension,11.43,2047846.0,23406879.78,canonicity,0,0,0,0,,not-captured,,not-captured
+DOO.TO,DOO,BRP Inc.,Consumer Cyclical,Consumer Cyclical,DOO|DOO.TO,,76.01,73151257.0,5560227044.57,punctuation,0,0,0,0,278211.0,2026-08-21,241329.0,2026-08-21
+DSG.TO,DSGX,The Descartes Systems Group Inc.,Technology,Technology,DSG.TO|DSGX,,72.106,86019000.0,6202482315.183,punctuation,0,0,0,0,318022.0,2026-08-21,538796.0,2026-08-21
+DTG,DTE,DTE Energy Company 2021 Series,Utilities,Utilities,DTE|DTG,,152.37,208000000.0,31692960000.0,volavg,1,0,0,0,38635.0,2026-08-21,1373053.0,2026-08-21
+DYCQU,DYCQR,,,,DYCQR|DYCQU,,11.1,779989.0,8657877.9,alphabetical,0,0,0,0,,not-captured,,not-captured
+ECCX,ECCW,,,,ECCW|ECCX,,3.76,132530740.0,498315582.4,alphabetical,0,0,0,0,,not-captured,,not-captured
+EDR.TO,EXK,Endeavour Silver Corp.,Basic Materials,Basic Materials,EDR.TO|EXK,,8.28,296096000.0,2451674880.0,punctuation,0,0,0,0,886385.0,2026-08-21,6991788.0,2026-08-21
+EFX.TO,EFXT,Enerflex Ltd.,Energy,Energy,EFX.TO|EFXT,,34.83,122086713.0,4252280213.79,punctuation,0,0,0,0,706057.0,2026-08-21,579424.0,2026-08-21
+ELD.TO,EGO,Eldorado Gold Corporation,Basic Materials,Basic Materials,EGO|ELD.TO,,31.09,251453420.0,7817686827.8,punctuation,0,0,0,0,707788.0,2026-08-21,2624750.0,2026-08-21
+ELC,ETR,"Entergy Louisiana, LLC COLLATERAL TR MT",Utilities,Utilities,ELC|ETR,,114.86,458745729.0,52691534432.94,volavg,1,0,0,0,18964.0,2026-08-21,2975895.0,2026-08-21
+ELVA.TO,ELVA,Electrovaya Inc.,Industrials,Industrials,ELVA|ELVA.TO,,10.5,49744052.0,522312546.0,punctuation,0,0,0,0,182266.0,2026-08-21,1041529.0,2026-08-21
+EMA.TO,EMA,Emera Incorporated,Utilities,Utilities,EMA|EMA.TO,,75.23,306400000.0,23050472000.0,punctuation,0,0,0,0,1097101.0,2026-08-21,498600.0,2026-08-21
+EMCGU,EMCG,,,,EMCG|EMCGU,symbol-extension,11.34,3379946.0,38328587.64,canonicity,0,0,0,0,,not-captured,,not-captured
+ENB,ENB.TO,Enbridge Inc.,Energy,Energy,ENB|ENB.TO,,76.9805,2182000000.0,167971440000.0,shares,0,0,0,0,4290348.0,2026-08-21,7999785.0,2026-08-21
+ENJ,ENO,"Entergy New Orleans, LLC",Utilities,Utilities,ENJ|ENO,,21.33,458745729.0,9785046399.57,volavg_raw,0,0,0,0,1709.0,2026-08-21,7443.0,2026-08-21
+EPRX.TO,EPRX,Eupraxia Pharmaceuticals Inc.,Healthcare,Healthcare,EPRX|EPRX.TO,,9.31,66221815.0,616525097.65,punctuation,0,0,0,0,66742.0,2026-08-21,360075.0,2026-08-21
+EQV-UN,EQV,,,Financial Services,EQV|EQV-UN|FTW,,10.38,28775000.0,298684500.0,punctuation,0,0,0,0,,not-captured,,not-captured
+FTW,EQV,,Financial Services,Financial Services,EQV|EQV-UN|FTW,,10.38,28775000.0,298684500.0,alphabetical,0,0,0,0,,not-captured,,not-captured
+ERO.TO,ERO,Ero Copper Corp.,Basic Materials,Basic Materials,ERO|ERO.TO,,26.6605,104282548.0,2780222785.303,punctuation,0,0,0,0,439884.0,2026-08-21,1217766.0,2026-08-21
+ESGRO,ESGR,,,,ESGR|ESGRO|ESGRP,symbol-extension,332.38,14891871.0,4949760082.98,canonicity,0,0,0,0,,not-captured,,not-captured
+ESGRP,ESGR,,,,ESGR|ESGRO|ESGRP,symbol-extension,332.38,14891871.0,4949760082.98,canonicity,0,0,0,0,,not-captured,,not-captured
+FRX.TO,FENC,Fennec Pharmaceuticals Inc.,Healthcare,Healthcare,FENC|FRX.TO,,10.75,34545000.0,371358750.0,volavg,1,0,0,0,734.0,2026-08-21,236925.0,2026-08-21
+FGN,FG,"F&G Annuities & Life, Inc.",Financial Services,Financial Services,FG|FGN,symbol-extension,26.59,130000000.0,3456700000.0,canonicity,1,0,0,0,31896.0,2026-08-21,672312.0,2026-08-21
+FNV.TO,FNV,Franco-Nevada Corporation,Basic Materials,Basic Materials,FNV|FNV.TO,,208.8722,192900000.0,40291452000.0,shares,0,0,0,0,387030.0,2026-08-21,846662.0,2026-08-21
+FNVTU,FNVT,,,,FNVT|FNVTU|FNVTW,symbol-extension,11.62,865292.0,10054693.04,canonicity,0,0,0,0,,not-captured,,not-captured
+FNVTW,FNVT,,,,FNVT|FNVTU|FNVTW,symbol-extension,11.62,865292.0,10054693.04,canonicity,0,0,0,0,,not-captured,,not-captured
+FRGAP,FRG,,,,FRG|FRGAP,symbol-extension,28.64,35177146.0,1007473461.44,canonicity,0,0,0,0,,not-captured,,not-captured
+FVI.TO,FSM,Fortuna Mining Corp.,Basic Materials,Basic Materials,FSM|FVI.TO,,8.45,301010000.0,2543534500.0,punctuation,0,0,0,0,725260.0,2026-08-21,5285791.0,2026-08-21
+FSV.TO,FSV,FirstService Corporation,Real Estate,Real Estate,FSV|FSV.TO,,143.7555,45341000.0,6518017260.0,shares,0,0,0,0,145017.0,2026-08-21,215635.0,2026-08-21
+FTAI-PB,FTAIO,,,,FTAI-PB|FTAIO,preferred-suffix,144.04,101539000.0,14625677560.0,canonicity,0,0,0,0,,not-captured,,not-captured
+FTS,FTS.TO,Fortis Inc.,Utilities,Utilities,FTS|FTS.TO,,86.19,480769231.0,41437500000.0,shares,0,0,0,0,758174.0,2026-08-21,1491171.0,2026-08-21
+GATEW,GATEU,,,,GATEU|GATEW,,19.61,73914402.0,1449461423.22,alphabetical,0,0,0,0,,not-captured,,not-captured
+GATO.TO,GATO,,,,GATO|GATO.TO,,15.1164,70430000.0,1064648000.0,shares,0,0,0,0,,not-captured,,not-captured
+GBBKR,GBBK,,,,GBBK|GBBKR|GBBKW,symbol-extension,11.04,11041000.0,121892640.0,canonicity,0,0,0,0,,not-captured,,not-captured
+GBBKW,GBBK,,,,GBBK|GBBKR|GBBKW,symbol-extension,11.04,11041000.0,121892640.0,canonicity,0,0,0,0,,not-captured,,not-captured
+GEEXW,GEEX,,,,GEEX|GEEXW,symbol-extension,10.3,25000000.0,257500000.0,canonicity,0,0,0,0,,not-captured,,not-captured
+GFL.TO,GFL,GFL Environmental Inc.,Industrials,Industrials,GFL|GFL.TO,,52.15,361371647.0,18845531391.05,punctuation,0,0,0,0,783165.0,2026-08-21,2833785.0,2026-08-21
+GIB-A.TO,GIB,CGI Inc.,Technology,Technology,GIB|GIB-A.TO,,91.67,207765623.0,19045874660.41,punctuation,0,0,0,0,645946.0,2026-08-21,484001.0,2026-08-21
+GLLIW,GLLIR,,,,GLLIR|GLLIW,,11.76,218965.0,2575028.4,alphabetical,0,0,0,0,,not-captured,,not-captured
+GODNU,GODN,,,,GODN|GODNU,symbol-extension,10.92,2032000.0,22189440.0,canonicity,0,0,0,0,,not-captured,,not-captured
+GOOGL,GOOG,Alphabet Inc.,Communication Services,Communication Services,GOOG|GOOGL,symbol-extension,357.37,12151000000.0,4342402870000.0,canonicity,0,0,0,0,32133217.0,2026-08-21,22016991.0,2026-08-21
+GSRTU,GSRT,,,,GSRT|GSRTU,symbol-extension,10.79,23000000.0,248170000.0,canonicity,0,0,0,0,,not-captured,,not-captured
+HAIAU,HAIA,,,,HAIA|HAIAU,symbol-extension,11.72,5637985.0,66077184.2,canonicity,0,0,0,0,,not-captured,,not-captured
+HBANL,HBAN,Huntington Bancshares Incorporated,Financial Services,Financial Services,HBAN|HBANL|HBANM,symbol-extension,17.73,1946000000.0,34502580000.0,canonicity,1,0,0,0,21695.0,2026-08-21,23987100.0,2026-08-21
+HBANM,HBAN,Huntington Bancshares Incorporated,Financial Services,Financial Services,HBAN|HBANL|HBANM,symbol-extension,17.73,1946000000.0,34502580000.0,canonicity,1,0,0,0,17056.0,2026-08-21,23987100.0,2026-08-21
+HBM.TO,HBM,Hudbay Minerals Inc.,Basic Materials,Basic Materials,HBM|HBM.TO,,23.61,400356079.0,9452407025.19,punctuation,0,0,0,0,2415847.0,2026-08-21,5394491.0,2026-08-21
+HEI-A,HEI,HEICO Corporation,Industrials,Industrials,HEI|HEI-A,,356.36,139702000.0,49784204720.0,punctuation,0,0,0,0,314769.0,2026-08-21,513291.0,2026-08-21
+HIVE.TO,HIVE,HIVE Digital Technologies Ltd.,Technology,Technology,HIVE|HIVE.TO,,3.64,266251300.0,969154732.0,punctuation,0,0,0,0,4034531.0,2026-08-21,26555551.0,2026-08-21
+HONDU,HOND,,,,HOND|HONDU,symbol-extension,22.69,28750000.0,652337500.0,canonicity,0,0,0,0,,not-captured,,not-captured
+HROWM,HROWL,,,,HROWL|HROWM,,48.18,37145440.0,1789667299.2,alphabetical,0,0,0,0,,not-captured,,not-captured
+HTFC,HRZN,Horizon Technology Finance Corp,Financial Services,Financial Services,HRZN|HTFC,,4.73,64974577.0,307329749.21,volavg,1,0,0,0,2848.0,2026-08-21,735164.0,2026-08-21
+HSONP,HSON,,,,HSON|HSONP,symbol-extension,8.51,3205000.0,27274550.0,canonicity,0,0,0,0,,not-captured,,not-captured
+HTLFP,HTLF,,,,HTLF|HTLFP,symbol-extension,56.7,44550694.0,2526024349.8,canonicity,0,0,0,0,,not-captured,,not-captured
+HUT.TO,HUT,Hut 8 Mining Corp.,Financial Services,Financial Services,HUT|HUT.TO,,65.24,111064728.0,7245862854.72,shares,0,0,0,0,460219.0,2026-08-21,4455537.0,2026-08-21
+HVT-A,HVT,"Haverty Furniture Companies, Inc.",Consumer Cyclical,Consumer Cyclical,HVT|HVT-A,,25.53,15741667.0,401884758.51,volavg,1,0,0,0,1008.0,2026-08-21,113941.0,2026-08-21
+HYAC-UN,HYAC,,,,HYAC|HYAC-UN,,11.54,30646356.0,353658948.24,punctuation,0,0,0,0,,not-captured,,not-captured
+IMG.TO,IAG,Iamgold Corporation,Basic Materials,Basic Materials,IAG|IMG.TO,,15.84,578000000.0,9155520000.0,punctuation,0,0,0,0,1635517.0,2026-08-21,5625650.0,2026-08-21
+IROHU,IROH,,,,IROH|IROHU|IROHW,symbol-extension,4.09,47689349.0,195049437.41,canonicity,0,0,0,0,,not-captured,,not-captured
+IROHW,IROH,,,,IROH|IROHU|IROHW,symbol-extension,4.09,47689349.0,195049437.41,canonicity,0,0,0,0,,not-captured,,not-captured
+ISPOW,ISPO,,,,ISPO|ISPOW,symbol-extension,2.96,12630008.0,37384823.68,canonicity,0,0,0,0,,not-captured,,not-captured
+ISRLU,ISRL,,,,ISRL|ISRLU,symbol-extension,12.36,1081184.0,13363434.24,canonicity,0,0,0,0,,not-captured,,not-captured
+IVCBU,IVCB,,,,IVCB|IVCBU,symbol-extension,11.79,18011000.0,212349690.0,canonicity,0,0,0,0,,not-captured,,not-captured
+IXAQW,IXAQ,,,,IXAQ|IXAQW,symbol-extension,12.06,1418542.0,17107616.52,canonicity,0,0,0,0,,not-captured,,not-captured
+JFBRW,JFBR,,,,JFBR|JFBRW,symbol-extension,3.94,250725.0,987856.5,canonicity,0,0,0,0,,not-captured,,not-captured
+JVSAU,JVSA,,,,JVSA|JVSAU,symbol-extension,10.72,5750000.0,61640000.0,canonicity,0,0,0,0,,not-captured,,not-captured
+K.TO,KGC,Kinross Gold Corporation,Basic Materials,Basic Materials,K.TO|KGC,,23.62,1191629000.0,28146276980.0,punctuation,0,0,0,0,3485969.0,2026-08-21,8401264.0,2026-08-21
+KACLR,KACL,,,,KACL|KACLR|KACLU,symbol-extension,12.63,3164938.0,39973166.94,canonicity,0,0,0,0,,not-captured,,not-captured
+KACLU,KACL,,,,KACL|KACLR|KACLU,symbol-extension,12.63,3164938.0,39973166.94,canonicity,0,0,0,0,,not-captured,,not-captured
+KDLYW,KDLY,,,,KDLY|KDLYW,symbol-extension,3553.3344,6105882.0,21696240552.9408,canonicity,0,0,0,0,,not-captured,,not-captured
+KEEL.TO,KEEL,Keel Infrastructure Corp.,Technology,Technology,KEEL|KEEL.TO,,5.74,605370634.0,3474827439.16,volavg,1,0,0,0,5396500.0,2026-08-21,72545179.0,2026-08-21
+KEI.TO,KGEI,Kolibri Global Energy Inc.,Energy,Energy,KEI.TO|KGEI,,4.98,35642000.0,177497160.0,punctuation,0,0,0,0,20863.0,2026-08-21,190954.0,2026-08-21
+KWESW,KWE,,,,KWE|KWESW,symbol-extension,15.52,625323.0,9705012.96,canonicity,0,0,0,0,,not-captured,,not-captured
+LAAC.TO,LAAC,,,,LAAC|LAAC.TO,,3.26,161451000.0,526330260.0,punctuation,0,0,0,0,,not-captured,,not-captured
+LAC,LAC.TO,Lithium Americas Corp.,Basic Materials,Basic Materials,LAC|LAC.TO,,3.85,243658000.0,938083300.0,shares,0,0,0,0,10566929.0,2026-08-21,1230639.0,2026-08-21
+LAR.TO,LAR,Lithium Argentina AG,Basic Materials,Basic Materials,LAR|LAR.TO,,8.27,163901000.0,1355461270.0,volavg,1,0,0,0,188847.0,2026-08-21,1909677.0,2026-08-21
+LATGU,LATG,,,,LATG|LATGU,symbol-extension,11.59,7192000.0,83355280.0,canonicity,0,0,0,0,,not-captured,,not-captured
+LGF,LGF-A,,,,LGF|LGF-A|LGF-B,,17.5578,108350000.0,1902384000.0,shares,0,0,0,0,,not-captured,,not-captured
+LGF-B,LGF-A,,,,LGF|LGF-A|LGF-B,,7.92,240200000.0,1902384000.0,alphabetical,0,0,0,0,,not-captured,,not-captured
+LGO.TO,LGO,Largo Inc.,Basic Materials,Basic Materials,LGO|LGO.TO,,0.88,103118000.0,90743840.0,punctuation,0,0,0,0,157396.0,2026-08-21,1522058.0,2026-08-21
+LSPD.TO,LSPD,Lightspeed Commerce Inc.,Technology,Technology,LSPD|LSPD.TO,,10.49,138206060.0,1449781569.4,punctuation,0,0,0,0,716757.0,2026-08-21,1100885.0,2026-08-21
+MARXU,MARX,,,,MARX|MARXU,symbol-extension,10.77,2392000.0,25761840.0,canonicity,0,0,0,0,,not-captured,,not-captured
+MDA.TO,MDA,MDA Ltd.,Industrials,Industrials,MDA|MDA.TO,,58.6,138845290.0,8136333994.0,punctuation,0,0,0,0,1268017.0,2026-08-21,1614366.0,2026-08-21
+MX.TO,MEOH,Methanex Corporation,Basic Materials,Basic Materials,MEOH|MX.TO,,46.15,77364263.0,3570360737.45,punctuation,0,0,0,0,262085.0,2026-08-21,898695.0,2026-08-21
+MG.TO,MGA,Magna International Inc.,Consumer Cyclical,Consumer Cyclical,MG.TO|MGA,,65.66,271200000.0,17806992000.0,punctuation,0,0,0,0,1159522.0,2026-08-21,1218090.0,2026-08-21
+MKC-V,MKC,"McCormick & Company, Incorporated",Consumer Defensive,Consumer Defensive,MKC|MKC-V,,46.58,269200000.0,12539336000.0,volavg,1,0,0,0,4724.0,2026-08-21,3976556.0,2026-08-21
+MOG-B,MOG-A,Moog Inc.,Industrials,Industrials,MOG-A|MOG-B,,425.36,31654223.0,13464440295.28,volavg,1,0,0,0,280.0,2026-08-21,322216.0,2026-08-21
+MSCL.TO,MSLE,Satellos Bioscience Inc.,Healthcare,Healthcare,MSCL.TO|MSLE,,10.66,20831350.0,222062191.0,punctuation,0,0,0,0,22482.0,2026-08-21,55603.0,2026-08-21
+MSSAW,MSSAR,,,,MSSAR|MSSAW,,11.76,208775.0,2455194.0,alphabetical,0,0,0,0,,not-captured,,not-captured
+MUX.TO,MUX,McEwen Mining Inc.,Basic Materials,Basic Materials,MUX|MUX.TO,,18.1773,59998000.0,1090600445.44,volavg,1,0,0,0,50511.0,2026-08-21,1160479.0,2026-08-21
+NETDW,NETD,,,,NETD|NETDW,symbol-extension,11.21,16489995.0,184852843.95,canonicity,0,0,0,0,,not-captured,,not-captured
+NLSPW,NLSP,,,,NLSP|NLSPW,symbol-extension,29.0,400487.0,11614123.0,canonicity,0,0,0,0,,not-captured,,not-captured
+NOA.TO,NOA,North American Construction Group Ltd.,Energy,Energy,NOA|NOA.TO,,18.86,27062861.0,510405558.46,punctuation,0,0,0,0,89763.0,2026-08-21,103137.0,2026-08-21
+NTR.TO,NTR,Nutrien Ltd.,Basic Materials,Basic Materials,NTR|NTR.TO,,62.95,479600000.0,30190820000.0,punctuation,0,0,0,0,1610019.0,2026-08-21,2759866.0,2026-08-21
+NXE.TO,NXE,NexGen Energy Ltd.,Energy,Energy,NXE|NXE.TO,,13.32,665698655.0,8867106084.6,punctuation,0,0,0,0,1565069.0,2026-08-21,5600311.0,2026-08-21
+NYMTG,NYMT,,,,NYMT|NYMTG|NYMTI|NYMTL|NYMTM|NYMTN|NYMTP|NYMTZ,symbol-extension,6.7,90324000.0,605170800.0,canonicity,0,0,0,0,,not-captured,,not-captured
+NYMTI,NYMT,,,,NYMT|NYMTG|NYMTI|NYMTL|NYMTM|NYMTN|NYMTP|NYMTZ,symbol-extension,6.7,90324000.0,605170800.0,canonicity,0,0,0,0,,not-captured,,not-captured
+NYMTL,NYMT,,,,NYMT|NYMTG|NYMTI|NYMTL|NYMTM|NYMTN|NYMTP|NYMTZ,symbol-extension,6.7,90324000.0,605170800.0,canonicity,0,0,0,0,,not-captured,,not-captured
+NYMTM,NYMT,,,,NYMT|NYMTG|NYMTI|NYMTL|NYMTM|NYMTN|NYMTP|NYMTZ,symbol-extension,6.7,90324000.0,605170800.0,canonicity,0,0,0,0,,not-captured,,not-captured
+NYMTN,NYMT,,,,NYMT|NYMTG|NYMTI|NYMTL|NYMTM|NYMTN|NYMTP|NYMTZ,symbol-extension,6.7,90324000.0,605170800.0,canonicity,0,0,0,0,,not-captured,,not-captured
+NYMTP,NYMT,,,,NYMT|NYMTG|NYMTI|NYMTL|NYMTM|NYMTN|NYMTP|NYMTZ,symbol-extension,6.7,90324000.0,605170800.0,canonicity,0,0,0,0,,not-captured,,not-captured
+NYMTZ,NYMT,,,,NYMT|NYMTG|NYMTI|NYMTL|NYMTM|NYMTN|NYMTP|NYMTZ,symbol-extension,6.7,90324000.0,605170800.0,canonicity,0,0,0,0,,not-captured,,not-captured
+OAKUU,OAKU,,,,OAKU|OAKUU,symbol-extension,12.0,3577425.0,42929100.0,canonicity,0,0,0,0,,not-captured,,not-captured
+OGI.TO,OGI,Organigram Global Inc.,Healthcare,Healthcare,OGI|OGI.TO,,1.45,135131882.0,195941228.9,shares,0,0,0,0,212225.0,2026-08-21,893598.0,2026-08-21
+OR.TO,OR,OR Royalties Inc.,Basic Materials,Basic Materials,OR|OR.TO,,44.91,187714000.0,8430235740.0,punctuation,0,0,0,0,421833.0,2026-08-21,1018617.0,2026-08-21
+ORIO.TO,ORIO,Orion Digital Corp.,Technology,Technology,ORIO|ORIO.TO,,1.24,23805000.0,29518200.0,punctuation,0,0,0,0,21425.0,2026-08-21,38574.0,2026-08-21
+OTEX.TO,OTEX,Open Text Corporation,Technology,Technology,OTEX|OTEX.TO,,22.742,242544000.0,5515925900.0,shares,0,0,0,0,1978420.0,2026-08-21,2120154.0,2026-08-21
+OVV.TO,OVV,Ovintiv Inc,Energy,Energy,OVV|OVV.TO,,52.65,280000000.0,14742000000.0,volavg,1,0,0,0,194120.0,2026-08-21,3343851.0,2026-08-21
+OXY-WT,OXY,Occidental Petroleum Corporation,Energy,Energy,OXY|OXY-WT,,48.57,997100000.0,48429147000.0,volavg,1,0,0,0,57370.0,2026-08-21,9399016.0,2026-08-21
+OZKAP,OZK,Bank OZK,Financial Services,Financial Services,OZK|OZKAP,symbol-extension,52.09,109702000.0,5714377180.0,canonicity,1,0,0,0,24206.0,2026-08-21,1169743.0,2026-08-21
+PAAS,PAAS.TO,Pan American Silver Corp.,Basic Materials,Basic Materials,PAAS|PAAS.TO,,44.79,420271000.0,18823938090.0,shares,0,0,0,0,4459188.0,2026-08-21,928112.0,2026-08-21
+PPL.TO,PBA,Pembina Pipeline Corporation,Energy,Energy,PBA|PPL.TO,,65.62,581000000.0,38125220000.0,punctuation,0,0,0,0,2547173.0,2026-08-21,1136633.0,2026-08-21
+PD.TO,PDS,Precision Drilling Corporation,Energy,Energy,PD.TO|PDS,,108.92,12927000.0,1408008840.0,punctuation,0,0,0,0,81301.0,2026-08-21,108700.0,2026-08-21
+PETWW,PET,,,,PET|PETWW,symbol-extension,0.2312,50798000.0,11744497.6,canonicity,0,0,0,0,,not-captured,,not-captured
+PFTAU,PFTA,,,,PFTA|PFTAU,symbol-extension,10.81,8100000.0,87561000.0,canonicity,0,0,0,0,,not-captured,,not-captured
+PPLC,PPL,PPL Corporation,Utilities,Utilities,PPL|PPLC,symbol-extension,49.07,752358000.0,36918207060.0,canonicity,1,0,0,0,261541.0,2026-08-21,9089825.0,2026-08-21
+PPTA.TO,PPTA,Perpetua Resources Corp.,Basic Materials,Basic Materials,PPTA|PPTA.TO,,20.76,125085630.0,2596777678.8,volavg,1,0,0,0,123926.0,2026-08-21,1527370.0,2026-08-21
+PRH,PRU,"Prudential Financial, Inc. 5.95",Financial Services,Financial Services,PRH|PRU,,107.93,323487544.0,34914010623.92,volavg,1,0,0,0,45767.0,2026-08-21,1856656.0,2026-08-21
+PRLHU,PRLH,,,,PRLH|PRLHU,symbol-extension,11.16,5000000.0,55800000.0,canonicity,0,0,0,0,,not-captured,,not-captured
+PRN.TO,PROF,Profound Medical Corp.,Healthcare,Healthcare,PRN.TO|PROF,,6.6387,36350665.0,241321886.7488,punctuation,0,0,0,0,13009.0,2026-08-21,92130.0,2026-08-21
+PWUPU,PWUP,,,,PWUP|PWUPU,symbol-extension,11.5,8244000.0,94806000.0,canonicity,0,0,0,0,,not-captured,,not-captured
+QBR-A.TO,QBR-B.TO,Quebecor Inc.,Communication Services,Communication Services,QBR-A.TO|QBR-B.TO,,67.69,224800000.0,15216712000.0,volavg,1,0,0,0,539.0,2026-08-21,968560.0,2026-08-21
+QIPT.TO,QIPT,,,,QIPT|QIPT.TO,,4.85,43609000.0,211503650.0,punctuation,0,0,0,0,,not-captured,,not-captured
+QRTEB,QRTEA,,,,QRTEA|QRTEB|QRTEP,,19.5,7793090.0,151965255.0,shares,0,0,0,0,,not-captured,,not-captured
+QRTEP,QRTEA,,,,QRTEA|QRTEB|QRTEP,,19.5,7793090.0,151965255.0,shares,0,0,0,0,,not-captured,,not-captured
+QSP-UN.TO,QSR,Restaurant Brands International Limited Partnership,Consumer Cyclical,Consumer Cyclical,QSP-UN.TO|QSR|QSR.TO,,72.51,348000000.0,25233480000.0,volavg,1,0,-1,-2,11.0,2026-08-21,2993541.0,2026-08-21
+QSR.TO,QSR,Restaurant Brands International Inc.,Consumer Cyclical,Consumer Cyclical,QSP-UN.TO|QSR|QSR.TO,,72.51,348000000.0,25233480000.0,punctuation,0,0,-2,-2,992353.0,2026-08-21,2993541.0,2026-08-21
+RBA.TO,RBA,"RB Global, Inc.",Industrials,Industrials,RBA|RBA.TO,,116.2374,185800000.0,21596916352.0,punctuation,0,0,0,0,300782.0,2026-08-21,1417296.0,2026-08-21
+RCG-PB.TO,RCG.TO,,,,RCG-PB.TO|RCG.TO,preferred-suffix,10.39,15486000.0,160899540.0,canonicity,0,0,0,0,,not-captured,,not-captured
+RCI-A.TO,RCI,Rogers Communications Inc.,Communication Services,Communication Services,RCI|RCI-A.TO|RCI-B.TO,,46.14,540000000.0,24915600000.0,volavg,1,0,-1,-2,1825.0,2026-08-21,1280620.0,2026-08-21
+RCI-B.TO,RCI,Rogers Communications Inc.,Communication Services,Communication Services,RCI|RCI-A.TO|RCI-B.TO,,46.14,540000000.0,24915600000.0,punctuation,0,0,-2,-2,2132555.0,2026-08-21,1280620.0,2026-08-21
+RMBL,RDNW,,,,RDNW|RMBL,,2.31,37905484.0,87561668.04,alphabetical,0,0,0,0,,not-captured,,not-captured
+RENEW,RENE,,,,RENE|RENEW,symbol-extension,12.15,6597942.0,80164995.3,canonicity,0,0,0,0,,not-captured,,not-captured
+RFACU,RFAC,,,,RFAC|RFACU,symbol-extension,11.24,5730606.0,64412011.44,canonicity,0,0,0,0,,not-captured,,not-captured
+RY,RY.TO,Royal Bank of Canada,Financial Services,Financial Services,RY|RY.TO,,332.0784,1025074000.0,340404940920.0,shares,0,0,0,0,1552716.0,2026-08-21,3213857.0,2026-08-21
+SEA.TO,SA,Seabridge Gold Inc.,Basic Materials,Basic Materials,SA|SEA.TO,,36.6,107628783.0,3939213457.8,punctuation,0,0,0,0,114332.0,2026-08-21,766325.0,2026-08-21
+STC.TO,SANG,Sangoma Technologies Corporation,Technology,Technology,SANG|STC.TO,,5.48,33152692.0,181676752.16,punctuation,0,0,0,0,15174.0,2026-08-21,6670.0,2026-08-21
+SHOP.TO,SHOP,Shopify Inc.,Technology,Technology,SHOP|SHOP.TO,,114.18,1295220307.0,147888254653.26,punctuation,0,0,0,0,2155011.0,2026-08-21,9458406.0,2026-08-21
+SII.TO,SII,Sprott Inc.,Financial Services,Financial Services,SII|SII.TO,,159.8,25768000.0,4117726400.0,punctuation,0,0,0,0,71003.0,2026-08-21,190691.0,2026-08-21
+SKE.TO,SKE,Skeena Resources Limited,Basic Materials,Basic Materials,SKE|SKE.TO,,37.8,123696000.0,4675708800.0,shares,0,0,0,0,371112.0,2026-08-21,781040.0,2026-08-21
+SKGRU,SKGR,,,,SKGR|SKGRU|SKGRW,symbol-extension,11.62,9972000.0,115874640.0,canonicity,0,0,0,0,,not-captured,,not-captured
+SKGRW,SKGR,,,,SKGR|SKGRU|SKGRW,symbol-extension,11.62,9972000.0,115874640.0,canonicity,0,0,0,0,,not-captured,,not-captured
+SLF.TO,SLF,Sun Life Financial Inc.,Financial Services,Financial Services,SLF|SLF.TO,,111.35,554000000.0,61687900000.0,punctuation,0,0,0,0,1810204.0,2026-08-21,731970.0,2026-08-21
+SNV-PE,SNV-PD,,,,SNV-PD|SNV-PE,preferred-suffix,49.08,139452000.0,6844304160.0,alphabetical,0,0,0,0,,not-captured,,not-captured
+SOMN,SO,The Southern Company,Utilities,Utilities,SO|SOMN,symbol-extension,95.71,1137000000.0,108822270000.0,canonicity,1,0,0,0,232332.0,2026-08-21,5753937.0,2026-08-21
+SREA,SRE,Sempra,Utilities,Utilities,SRE|SREA,symbol-extension,92.71,654038000.0,60635862980.0,canonicity,1,0,0,0,70427.0,2026-08-21,3786811.0,2026-08-21
+SSRM.TO,SSRM,SSR Mining Inc.,Basic Materials,Basic Materials,SSRM|SSRM.TO,,28.28,208014000.0,5882635920.0,punctuation,0,0,0,0,463800.0,2026-08-21,3140396.0,2026-08-21
+STN,STN.TO,Stantec Inc.,Industrials,Industrials,STN|STN.TO,,98.0371,113560104.0,11133104415.18,shares,0,0,0,0,460287.0,2026-08-21,527317.0,2026-08-21
+SU.TO,SU,Suncor Energy Inc.,Energy,Energy,SU|SU.TO,,76.3,1179000000.0,89957700000.0,punctuation,0,0,0,0,5763512.0,2026-08-21,4580919.0,2026-08-21
+SYTAW,SYTA,,,,SYTA|SYTAW,symbol-extension,11.84,383751.0,4543611.84,canonicity,0,0,0,0,,not-captured,,not-captured
+T.TO,TU,TELUS Corporation,Communication Services,Communication Services,T.TO|TU,,15.0,1574000000.0,23610000000.0,punctuation,0,0,0,0,9288934.0,2026-08-21,7275575.0,2026-08-21
+TA.TO,TAC,TransAlta Corporation,Utilities,Utilities,TA.TO|TAC,,19.62,302000000.0,5925240000.0,punctuation,0,0,0,0,2047304.0,2026-08-21,1780604.0,2026-08-21
+TAP-A,TAP,Molson Coors Beverage Company,Consumer Defensive,Consumer Defensive,TAP|TAP-A|TPX-B.TO,,38.96,187500000.0,7305000000.0,volavg,1,0,0,0,111.0,2026-08-21,3151901.0,2026-08-21
+TPX-B.TO,TAP,Molson Coors Canada Inc.,Consumer Defensive,Consumer Defensive,TAP|TAP-A|TPX-B.TO,,40.128,199100000.0,7989484800.0,volavg,1,0,0,0,628.0,2026-08-21,3151901.0,2026-08-21
+TC.TO,TCX,Tucows Inc.,Technology,Technology,TC.TO|TCX,,13.47,11148826.0,150174686.22,volavg,1,0,0,0,5057.0,2026-08-21,72632.0,2026-08-21
+TCBIO,TCBI,"Texas Capital Bancshares, Inc.",Financial Services,Financial Services,TCBI|TCBIO,symbol-extension,103.26,45021962.0,4648967796.12,canonicity,1,0,0,0,15333.0,2026-08-21,511295.0,2026-08-21
+TCL-B.TO,TCL-A.TO,Transcontinental Inc.,Consumer Cyclical,Consumer Cyclical,TCL-A.TO|TCL-B.TO,,5.31,83600000.0,443916000.0,volavg,1,0,0,0,1177.0,2026-08-21,402874.0,2026-08-21
+TD,TD.TO,The Toronto-Dominion Bank,Financial Services,Financial Services,TD|TD.TO,,198.899,1221777000.0,243010231000.0,shares,0,0,0,0,2600475.0,2026-08-21,4823509.0,2026-08-21
+TECK-A.TO,TECK-B.TO,Teck Resources Limited,Basic Materials,Basic Materials,TECK-A.TO|TECK-B.TO,,84.4029,490100000.0,41365849233.54,volavg,1,0,0,0,7579.0,2026-08-21,1080308.0,2026-08-21
+TETEU,TETE,,,,TETE|TETEU,symbol-extension,12.08,4098270.0,49507101.6,canonicity,0,0,0,0,,not-captured,,not-captured
+TFII.TO,TFII,TFI International Inc.,Industrials,Industrials,TFII|TFII.TO,,204.15,82190031.0,16779094828.65,punctuation,0,0,0,0,257053.0,2026-08-21,375043.0,2026-08-21
+TFPM.TO,TFPM,Triple Flag Precious Metals Corp.,Basic Materials,Basic Materials,TFPM|TFPM.TO,,29.97,206295928.0,6182688962.16,punctuation,0,0,0,0,209085.0,2026-08-21,638383.0,2026-08-21
+TGAAU,TGAA,,,,TGAA|TGAAU,symbol-extension,11.33,2910566.0,32976712.78,canonicity,0,0,0,0,,not-captured,,not-captured
+TH.TO,THTX,,,,TH.TO|THTX,,2.6446,49361835.0,130540526.8788,punctuation,0,0,0,0,,not-captured,,not-captured
+TIXT.TO,TIXT,,,,TIXT|TIXT.TO,,3.6563,276000000.0,1009140000.0,shares,0,0,0,0,,not-captured,,not-captured
+TLRY,TLRY.TO,"Tilray Brands, Inc.",Healthcare,Healthcare,TLRY|TLRY.TO,,5.49,111832375.0,613959738.75,shares,0,0,0,0,4051819.0,2026-08-21,503390.0,2026-08-21
+TPGXL,TPG,TPG Inc.,Financial Services,Financial Services,TPG|TPGXL,symbol-extension,99.8909,164670334.0,16449062926.4506,canonicity,1,0,0,0,25556.0,2026-08-21,2584814.0,2026-08-21
+TRI.TO,TRI,Thomson Reuters Corporation,Industrials,Industrials,TRI|TRI.TO,,81.6906,438500639.0,35821390914.58,shares,0,0,0,0,759619.0,2026-08-21,2078756.0,2026-08-21
+TRP.TO,TRP,TC Energy Corporation,Energy,Energy,TRP|TRP.TO,,93.92,1042000000.0,97864640000.0,punctuation,0,0,0,0,3829157.0,2026-08-21,2469137.0,2026-08-21
+TSAT.TO,TSAT,Telesat Corporation,Communication Services,Communication Services,TSAT|TSAT.TO,,71.8546,15219358.0,1093580634.7932,punctuation,0,0,0,0,53200.0,2026-08-21,283524.0,2026-08-21
+URB-A.TO,URB.TO,Urbana Corporation,Financial Services,Financial Services,URB-A.TO|URB.TO,,9.22,41395100.0,381662822.0,punctuation,0,0,0,0,11009.0,2026-08-21,1182.0,2026-08-21
+UZC,USM,,,,USM|UZC,,63.97,86000000.0,5501420000.0,alphabetical,0,0,0,0,,not-captured,,not-captured
+VBNK,VBNK.TO,VersaBank,Financial Services,Financial Services,VBNK|VBNK.TO,,32.989,23609905.0,778866942.39,shares,0,0,0,0,113198.0,2026-08-21,34477.0,2026-08-21
+VCICU,VCIC,,,,VCIC|VCICU|VCICW,symbol-extension,10.77,22000000.0,236940000.0,canonicity,0,0,0,0,,not-captured,,not-captured
+VCICW,VCIC,,,,VCIC|VCICU|VCICW,symbol-extension,10.77,22000000.0,236940000.0,canonicity,0,0,0,0,,not-captured,,not-captured
+VET.TO,VET,Vermilion Energy Inc.,Energy,Energy,VET|VET.TO,,13.27,153100000.0,2031637000.0,punctuation,0,0,0,0,1148984.0,2026-08-21,1476770.0,2026-08-21
+VMCAU,VMCA,,,,VMCA|VMCAU,symbol-extension,11.52,3718651.0,42838859.52,canonicity,0,0,0,0,,not-captured,,not-captured
+VOXR.TO,VOXR,Vox Royalty Corp.,Basic Materials,Basic Materials,VOXR|VOXR.TO,,4.73,71003870.0,335848305.1,volavg,1,0,0,0,20292.0,2026-08-21,494200.0,2026-08-21
+VRN,VRN.TO,,,,VRN|VRN.TO,,7.3958,616584965.0,4560120932.48,shares,0,0,0,0,,not-captured,,not-captured
+WAVSU,WAVS,,,,WAVS|WAVSU|WAVSW,symbol-extension,10.67,14968215.0,159710854.05,canonicity,0,0,0,0,,not-captured,,not-captured
+WAVSW,WAVS,,,,WAVS|WAVSU|WAVSW,symbol-extension,10.67,14968215.0,159710854.05,canonicity,0,0,0,0,,not-captured,,not-captured
+WCN.TO,WCN,"Waste Connections, Inc.",Industrials,Industrials,WCN|WCN.TO,,167.9332,253457489.0,42563922448.34,shares,0,0,0,0,388049.0,2026-08-21,1537017.0,2026-08-21
+WFG.TO,WFG,West Fraser Timber Co. Ltd.,Basic Materials,Basic Materials,WFG|WFG.TO,,96.01,78304000.0,7517967040.0,punctuation,0,0,0,0,170842.0,2026-08-21,222208.0,2026-08-21
+WINVW,WINVU,,,,WINVU|WINVW,,12.0,1535014.0,18420168.0,alphabetical,0,0,0,0,,not-captured,,not-captured
+WPM.TO,WPM,Wheaton Precious Metals Corp.,Basic Materials,Basic Materials,WPM|WPM.TO,,112.32,454133000.0,51008218560.0,punctuation,0,0,0,0,836241.0,2026-08-21,2066709.0,2026-08-21
+WPRT.TO,WPRT,Westport Fuel Systems Inc.,Consumer Cyclical,Consumer Cyclical,WPRT|WPRT.TO,,2.2538,17822491.0,40168030.9,volavg,1,0,0,0,11403.0,2026-08-21,1053946.0,2026-08-21
+WTFCP,WTFCM,,,,WTFCM|WTFCP,,123.98,66931000.0,8298105380.0,alphabetical,0,0,0,0,,not-captured,,not-captured
+WTMAU,WTMA,,,,WTMA|WTMAU,symbol-extension,11.0,1618885.0,17807735.0,canonicity,0,0,0,0,,not-captured,,not-captured
