@@ -176,36 +176,82 @@ def test_nothing_priced_is_INDETERMINATE_rather_than_a_zero():
 
 
 # --------------------------------------------------------------------------- #
-#  4. PRIMARY vs FLOOR -- real losses separated from unpriceable ones          #
+#  4. PRIMARY vs FLOOR -- the pair is no longer two readings                   #
+#                                                                             #
+#  THE THREE TESTS THAT USED TO LIVE HERE PINNED THE DEFECT.  They asserted    #
+#  that a `terminal` pick is MEASURED under both policies and merely valued    #
+#  differently -- so a stale last-observed price counted as an observation of  #
+#  a 36-month window, and the FLOOR row averaged observed returns with assumed #
+#  -100%s over a denominator that excluded the picks nothing priced at all.    #
+#  They are replaced, not deleted, by tests of the corrected semantics.        #
 # --------------------------------------------------------------------------- #
-def test_floor_and_primary_differ_ONLY_via_the_terminal_names():
-    """An interior price hole -- a name priced before AND after a missing anchor -- is floored
-    at -100% although a later price proves it alive.  So FLOOR is a LOWER BOUND on the
-    portfolio, never a reading of it, and both must be available side by side."""
+def test_a_terminal_pick_is_UNMEASURED_under_both_policies():
+    """A pick with no eval leg is not an observation whatever price is substituted for it.
+    PRIMARY substitutes a price one or two anchors old; FLOOR substitutes an assumption
+    returns_core says it cannot tell apart from a coverage gap.  Neither reads this window."""
     r = _rdf(ok=[0.10] * 18, terminal=[0.10, 0.10])
-    prim = tc.downside_clause(r, depth_n=20, floor=False)
-    flr = tc.downside_clause(r, depth_n=20, floor=True)
-    assert prim["portfolio_return"] == pytest.approx(0.10)
-    assert flr["portfolio_return"] == pytest.approx((18 * 0.10 + 2 * -1.0) / 20)
-    assert flr["portfolio_return"] < prim["portfolio_return"]
-    assert prim["n_terminal"] == flr["n_terminal"] == 2
+    for floor in (False, True):
+        d = tc.downside_clause(r, depth_n=20, floor=floor)
+        assert d["n_measured"] == 18
+        assert d["n_terminal"] == 2 and d["n_terminal_stale"] == 2
+        assert d["portfolio_return"] == pytest.approx(0.10)
+        assert d["coverage"] == pytest.approx(18 / 20)
 
 
-def test_the_two_policies_can_disagree_on_the_verdict_and_both_are_reported():
-    """The case that must never be collapsed into one number: PASS on the prices we have,
-    FAIL if every unpriceable name is assumed dead.  Reporting either one alone is a claim the
-    data does not support."""
+def test_the_two_policies_now_agree_BY_CONSTRUCTION_on_every_figure():
+    """The guard that keeps the exclusion honest.  Once `measured` keeps only `status == 'ok'`
+    rows, `total_return_floor == total_return` on every one of them, so the policies MUST
+    produce identical clauses and identical diagnostics.  If this test ever fails, a
+    substituted price has got back into the measured set -- which is exactly the defect."""
+    r = _rdf(ok=[0.15] * 12 + [-0.40] * 4, terminal=[0.15] * 3, buy_only=1)
+    for key in ("portfolio_return", "lower_bound", "flip_return", "verdict", "n_measured"):
+        a = tc.downside_clause(r, 20, floor=False)[key]
+        b = tc.downside_clause(r, 20, floor=True)[key]
+        assert a == b or (a != a and b != b), key
+    for key in ("p25", "worst", "n_below_zero", "n"):
+        a = tc.diagnostics(r, tc.bond_bar(36), floor=False)[key]
+        b = tc.diagnostics(r, tc.bond_bar(36), floor=True)[key]
+        assert a == b or (a != a and b != b), key
+
+
+def test_the_corrected_lower_bound_IS_the_old_FLOOR_lower_bound():
+    """NOTHING IS LOST BY DROPPING THE FLOOR POLICY, and this is the arithmetic that says so.
+
+    The old FLOOR lower bound averaged the ok returns with a -1.0 for every terminal, then
+    floored the rest of `n_selected`:
+        (S - n_terminal - n_buy_only - n_no_buy) / n_selected
+    The corrected PRIMARY lower bound floors everything that is not measured:
+        (S - (n_selected - n_ok)) / n_selected
+    and `n_selected - n_ok` IS `n_terminal + n_buy_only + n_no_buy`.  Same number.  So the
+    FLOOR READING survives as `lower_bound`; only the FLOOR point estimate -- which was a
+    ratio of mismatched populations -- goes away.
+    """
+    S = 12 * 0.15 + 4 * -0.40
+    r = _rdf(ok=[0.15] * 12 + [-0.40] * 4, terminal=[0.15] * 2, buy_only=1, no_buy=1)
+    d = tc.downside_clause(r, 20)
+    old_floor_lower_bound = (S - d["n_terminal"] - d["n_no_buy"]) / 20
+    assert d["n_measured"] == 16 and d["n_terminal"] == 3 and d["n_buy_only"] == 1
+    assert d["lower_bound"] == pytest.approx(old_floor_lower_bound)
+
+
+def test_below_zero_excludes_a_terminal_pick_under_both_policies():
+    """A stale terminal used to enter `below0` as a -100% under FLOOR and as a 12-month return
+    under PRIMARY.  Neither is a loss the run observed over this window, so neither counts --
+    and the CEO reads `below0` as his loss rate."""
     r = _rdf(ok=[0.15] * 16, terminal=[0.15] * 4)
-    assert tc.downside_clause(r, 20, floor=False)["verdict"] == "PASS"
-    assert tc.downside_clause(r, 20, floor=True)["verdict"] == "FAIL"
+    for floor in (False, True):
+        d = tc.diagnostics(r, tc.bond_bar(36), floor=floor)
+        assert d["n"] == 16 and d["n_below_zero"] == 0
 
 
-def test_below_zero_count_reads_differently_under_the_two_policies():
-    """'4 picks ended below zero' is a different sentence when the 4 are unpriceable rather
-    than down. The diagnostic carries its n and its policy for exactly this reason."""
-    r = _rdf(ok=[0.15] * 16, terminal=[0.15] * 4)
-    assert tc.diagnostics(r, tc.bond_bar(36), floor=False)["n_below_zero"] == 0
-    assert tc.diagnostics(r, tc.bond_bar(36), floor=True)["n_below_zero"] == 4
+def test_the_coverage_counts_PARTITION_the_shipped_picks():
+    """measured + stale + buy_only + no_buy == shipped.  The old line printed `terminal`
+    beside a `measured` count that already contained most of it, which is how an anchor with
+    9 terminals could read as "16 of 20 measured"."""
+    d = tc.downside_clause(_rdf(ok=[0.2] * 11, terminal=[0.2] * 4, buy_only=3, no_buy=2), 20)
+    assert (d["n_measured"] + d["n_terminal_stale"] + d["n_buy_only"] + d["n_no_buy"]
+            == d["n_selected"] == 20)
+    assert d["n_terminal"] == d["n_terminal_stale"] + d["n_buy_only"] == 7
 
 
 # --------------------------------------------------------------------------- #
@@ -401,13 +447,69 @@ def test_a_buy_only_pick_is_excluded_from_all_three_diagnostics():
     assert with_bo["n_below_zero"] == without["n_below_zero"] == 4
 
 
-def test_a_GENUINE_terminal_is_still_measured():
-    """The heuristic must not swallow real terminals.  A name with a real last-before price
-    different from its buy price is an observation and stays in the denominator."""
+def test_a_GENUINE_terminal_is_NOT_measured_EITHER():
+    """THE CORRECTION.  This test used to assert the opposite -- that a name with a real
+    last-before price different from its buy price "is an observation and stays in the
+    denominator" -- and that sentence is the defect written down.  The last-before price comes
+    from an EARLIER ANCHOR, so on a 36-month window it is a 12- or 24-month return being
+    graded as a three-year one.  The `buy_only` heuristic separates the two KINDS of terminal
+    for reporting; it no longer decides which of them counts."""
     d = tc.downside_clause(_rdf(ok=[0.10] * 18, terminal=[-0.40, -0.40]), 20)
-    assert d["n_buy_only"] == 0
-    assert d["n_measured"] == 20 and d["coverage"] == 1.0
-    assert d["n_terminal"] == 2
+    assert d["n_buy_only"] == 0 and d["n_terminal_stale"] == 2
+    assert d["n_measured"] == 18 and d["coverage"] == pytest.approx(18 / 20)
+    assert "full coverage" not in d["verdict_reason"]
+
+
+# --------------------------------------------------------------------------- #
+#  6d. THE 2026-08-28 RUN, at the counts it actually printed                   #
+# --------------------------------------------------------------------------- #
+#  buy2021 shipped 20, and the run reported measured=16 / buy_only=4 /         #
+#  no_buy=0 / terminal=9.  Nine terminals of which four are buy_only leaves    #
+#  FIVE stale terminals inside that 16, so only ELEVEN picks were observed.    #
+#  Both regressions below are that arithmetic.                                 #
+# --------------------------------------------------------------------------- #
+def _shape_20260828_buy2021(ok_returns):
+    """11 ok + 5 stale terminals + 4 buy_only = the 20 picks buy2021 shipped."""
+    assert len(ok_returns) == 11
+    return _rdf(ok=ok_returns, terminal=[0.30] * 5, buy_only=4)
+
+
+def test_the_run_counted_ELEVEN_observations_not_SIXTEEN():
+    d = tc.downside_clause(_shape_20260828_buy2021([0.4] * 11), 20)
+    assert d["n_selected"] == 20 and d["n_terminal"] == 9 and d["n_buy_only"] == 4
+    assert d["n_measured"] == 11        # was 16
+    assert d["n_missing"] == 9
+
+
+def test_the_upside_FAIL_the_run_printed_was_NOT_PROVABLE():
+    """THE HEADLINE DEFECT.  With 16 counted as measured and 3 beating, hi = (3+4)/20 = 35%,
+    which is below the 60% bar, so the clause printed `FAIL -- cannot reach the bar even if
+    every unmeasured pick beat` -- and `period_verdict` let that sink the whole period at both
+    clean anchors.  With the stale terminals correctly unmeasured there are 9 unknowns, so hi
+    reaches the bar and the honest verdict is INDETERMINATE."""
+    #  3 of the 11 observed picks clear the +10pp bar against a flat benchmark.
+    picks = _shape_20260828_buy2021([0.50] * 3 + [0.0] * 8)
+    up = tc.upside_clause(picks, 0.0, 20)
+    assert up["n_measured"] == 11 and up["n_beat"] == 3 and up["n_missing"] == 9
+    assert up["lo"] == pytest.approx(3 / 20)
+    assert up["hi"] == pytest.approx((3 + 9) / 20)      # 60%, i.e. it REACHES the bar
+    assert up["verdict"] == "INDETERMINATE"
+    assert up["hi"] >= up["bar"], "a FAIL here would again be unprovable"
+
+
+def test_the_fix_CUTS_BOTH_WAYS_and_can_withdraw_a_downside_PASS():
+    """The direction nobody wants and the one that must not be softened.  Removing the stale
+    terminals from the numerator shrinks the strict lower bound too, so an anchor that cleared
+    the bar "even with every unpriced pick at -100%" can stop clearing it.  An INDETERMINATE
+    at this coverage is the correct output; a PASS resting on stale returns is not."""
+    #  Stale terminals carrying a big number: they used to lift both the point estimate and
+    #  the lower bound.
+    picks = _rdf(ok=[0.30] * 11, terminal=[3.0] * 5, buy_only=4)
+    d = tc.downside_clause(picks, 20)
+    #  The lower bound is now 11 observed picks against 9 assumed total losses.
+    assert d["lower_bound"] == pytest.approx((11 * 0.30 - 9) / 20)
+    assert d["lower_bound"] < d["bar"]
+    assert d["verdict"] == "INDETERMINATE"
 
 
 # --------------------------------------------------------------------------- #

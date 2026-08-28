@@ -1045,22 +1045,65 @@ def _pct(x, width=9):
     return f"{x*100:+.1f}%".rjust(width) if x == x else "n/a".rjust(width)
 
 
+#  The per-anchor MAGNITUDE inside a basis stamp.  `stage2_pit` writes
+#  "VETOED (stage-1 solvency gate applied, 1125 ejected)", so the ejection COUNT is part of
+#  the string -- and the count is different at every anchor by construction, because the
+#  pools are different sizes.
+_BASIS_EJECTED_RE = re.compile(r",\s*(\d+)\s+ejected\)")
+
+
+def _basis_kind(basis):
+    """The KIND of measurement basis, with the per-anchor magnitude stripped out.
+
+    WHY THIS EXISTS.  `_basis_of` used to collapse on the WHOLE stamp, so seven anchors that
+    gated identically produced seven distinct strings and the 2026-08-28 run printed
+    `BASIS: MIXED -- anchors disagree` followed by seven lines differing only in an ejection
+    count (955, 991, 1037, 1125, 1134, 1144, 1182).  Nothing disagreed.  The banner exists to
+    stop a vetoed number being compared against an un-vetoed one, and a false MIXED devalues
+    it exactly like a false alarm devalues any other alarm.
+
+    THE COUNT IS NOT DISCARDED, it is moved: `_basis_of` reports the counts separately, per
+    anchor, where they read as what they are -- how much each anchor's pool was cut -- instead
+    of as a disagreement about the measurement basis.
+
+    DECLINED STAMPS KEEP THEIR PARENTHETICAL, deliberately.  "un-vetoed (veto DECLINED: panel
+    missing netDebtToEBITDA)" and "un-vetoed (veto DECLINED: panel missing uCurrentRatio)" are
+    genuinely different bases -- different flags never ran -- so those still read as MIXED.
+    Only the ejection count, which is a magnitude and not a basis, is normalised away.
+    """
+    if not basis:
+        return "un-vetoed (basis not stamped)"
+    return _BASIS_EJECTED_RE.sub(")", str(basis))
+
+
 def _basis_of(per_anchor):
     """The measurement BASIS carried by the rankings -- vetoed or not.
 
     EVERY PIT FIGURE THIS PROJECT EVER PUBLISHED WAS UN-VETOED, because nothing under
     `baseline_tools/` applied the Stage-1 solvency gate at all.  So a number with no basis on it
     is ambiguous, and a vetoed number compared against a historical un-vetoed one is simply
-    wrong.  `rank_all_anchors` stamps `basis` per anchor; this collapses it for a header and
-    REFUSES to guess when the anchors disagree.
+    wrong.  `rank_all_anchors` stamps `basis` per anchor; this collapses it to a KIND for the
+    header, reports the per-anchor ejection counts beside it, and REFUSES to guess when the
+    anchors are on genuinely different bases.
     """
-    seen = sorted({(v or {}).get("basis") or "un-vetoed (basis not stamped)"
-                   for v in (per_anchor or {}).values()})
-    if not seen:
+    stamps = {wid: ((v or {}).get("basis") or "un-vetoed (basis not stamped)")
+              for wid, v in (per_anchor or {}).items()}
+    if not stamps:
         return "unknown (no anchors)"
-    if len(seen) == 1:
-        return seen[0]
-    return "MIXED -- anchors disagree: " + " | ".join(seen)
+    kinds = sorted({_basis_kind(b) for b in stamps.values()})
+    if len(kinds) > 1:
+        return "MIXED -- anchors disagree: " + " | ".join(kinds)
+    counts = {}
+    for wid, b in stamps.items():
+        m = _BASIS_EJECTED_RE.search(str(b))
+        if m:
+            counts[wid] = int(m.group(1))
+    if not counts:
+        return kinds[0]
+    ns = sorted(counts.values())
+    return ("%s -- %d anchor(s), %d-%d ejected each (%s)"
+            % (kinds[0], len(stamps), ns[0], ns[-1],
+               ", ".join("%s=%d" % (w, counts[w]) for w in sorted(counts))))
 
 
 def _print_basis_banner(per_anchor):
@@ -1090,8 +1133,14 @@ def _two_clause_report(clause_inputs, horizon_m, threshold, basis="unknown"):
     a real interval and a partial-coverage FAIL is genuinely provable -- see
     `target_clauses.upside_clause`.
 
-    BOTH POLICIES ARE PRINTED (primary and floor) and neither is hidden.  Where their verdicts
-    differ, the disagreement is a statement about the PRICE GRID, not about the filter.
+    ONLY THE PRIMARY POLICY IS PRINTED, and the reason is stated in the output rather than
+    left for a reader to infer.  `target_clauses.measured` classes every pick with no eval leg
+    as unmeasured, so the FLOOR policy has nothing left to act on: every remaining row carries
+    the same number in `total_return` and `total_return_floor`, and a FLOOR row would be a
+    bit-for-bit copy of the PRIMARY row above it.  Printing four rows where two carry no
+    information is its own kind of misleading.  Both policies are still COMPUTED and both are
+    still in the returned dict, so nothing downstream loses access; the floor READING is
+    `lower_bound`, which is algebraically the number the old FLOOR lower bound produced.
     """
     import pandas as pd
     import target_clauses as tc
@@ -1134,22 +1183,33 @@ def _two_clause_report(clause_inputs, horizon_m, threshold, basis="unknown"):
                 "legacy_missing_fail_rate": ci["beat_rate"], "legacy_n": ci["n"]})
 
     #  ---- COVERAGE, first, because it conditions every number under it ----
+    #  THE COLUMNS PARTITION THE SHIPPED PICKS: measured + stale + buy_only + no_buy =
+    #  shipped.  `terminal` used to be printed as a single column ALONGSIDE a `measured` count
+    #  that already contained most of it, which is how a reader -- and the clause itself --
+    #  could read "16 of 20 measured" off an anchor with 9 terminals.  Split and summing to
+    #  the shipped count, the line cannot be read that way: every pick is in exactly one bucket.
     print("\n  --- COVERAGE (what the anchor SHIPPED vs what could be MEASURED) ---")
-    print(f"  {'window':24} {'shipped':>8} {'measured':>9} {'buy_only':>9} {'no_buy':>7} "
-          f"{'terminal':>9} {'coverage':>9}")
+    print(f"  {'window':24} {'shipped':>8} {'measured':>9} {'stale':>7} {'buy_only':>9} "
+          f"{'no_buy':>7} {'coverage':>9}")
     for row in per_anchor_out:
         if row["policy"] != "primary":
             continue
         d = row["downside"]
         print(f"  {row['window']:24} {d['n_selected']:>8} {d['n_measured']:>9} "
-              f"{d['n_buy_only']:>9} {d['n_no_buy']:>7} {d['n_terminal']:>9} "
+              f"{d['n_terminal_stale']:>7} {d['n_buy_only']:>9} {d['n_no_buy']:>7} "
               f"{d['coverage']*100:>8.1f}%")
+    print("  measured = BOTH legs priced at the chartered anchors. stale = eval leg substituted")
+    print("  from an EARLIER anchor (12-24mo old, so not a reading of this window). buy_only =")
+    print("  priced at the buy anchor alone. no_buy = never opened. The last three are UNKNOWN,")
+    print("  not flat and not losses -- they are what lo/hi and lower_bound bracket.")
 
     #  ---- DOWNSIDE ----
     print("\n  --- DOWNSIDE CLAUSE: equal-weight portfolio vs the bond bar ---")
     print(f"  {'window':24} {'pol':>7} {'portfolio':>10} {'lowerbnd':>10} {'flip':>10} "
           f"  {'VERDICT':<14} reason")
     for row in per_anchor_out:
+        if row["policy"] != "primary":
+            continue
         d = row["downside"]
         print(f"  {row['window']:24} {row['policy']:>7} {_pct(d['portfolio_return'], 10)} "
               f"{_pct(d['lower_bound'], 10)} {_pct(d['flip_return'], 10)}   "
@@ -1160,6 +1220,8 @@ def _two_clause_report(clause_inputs, horizon_m, threshold, basis="unknown"):
     print(f"  {'window':24} {'pol':>7} {'n_beat':>7} {'measured%':>10} {'lo':>8} {'hi':>8} "
           f"  {'VERDICT':<14} reason")
     for row in per_anchor_out:
+        if row["policy"] != "primary":
+            continue
         u = row["upside"]
         mr = f"{u['rate_measured']*100:.1f}%" if u["rate_measured"] == u["rate_measured"] else "n/a"
         lo = f"{u['lo']*100:.1f}%" if u["lo"] == u["lo"] else "n/a"
@@ -1177,20 +1239,32 @@ def _two_clause_report(clause_inputs, horizon_m, threshold, basis="unknown"):
     print("\n  --- PERIOD VERDICT: BOTH clauses must pass (charter) ---")
     print(f"  {'window':24} {'pol':>7} {'UPSIDE':<15} {'DOWNSIDE':<15} {'PERIOD':<15}")
     for row in per_anchor_out:
+        if row["policy"] != "primary":
+            continue
         print(f"  {row['window']:24} {row['policy']:>7} {row['upside']['verdict']:<15} "
               f"{row['downside']['verdict']:<15} {row['period']:<15}")
+    #  THE POLICIES CAN NO LONGER DISAGREE, and the check is kept rather than deleted because
+    #  the previous run printed a disagreement here and it was read as a price-grid finding.
+    #  It was an artefact: the FLOOR row averaged observed returns with assumed -100%s over a
+    #  denominator that excluded the picks nothing priced at all.  If this ever fires again it
+    #  means a substituted price got back into `target_clauses.measured`.
     for ci in clause_inputs:
-        pol = [r for r in per_anchor_out if r["window"] == ci["window"]]
-        vs = {r["policy"]: r["downside"]["verdict"] for r in pol}
-        if vs.get("primary") != vs.get("floor"):
-            print(f"  ^ {ci['window']}: the two POLICIES disagree on the downside clause. That")
-            print("    is a PRICE-GRID finding (unpriceable picks), not evidence about the filter.")
+        pol = {r["policy"]: r["downside"]["verdict"]
+               for r in per_anchor_out if r["window"] == ci["window"]}
+        if pol.get("primary") != pol.get("floor"):
+            print(f"  ^ {ci['window']}: PRIMARY and FLOOR disagree, which should now be "
+                  "IMPOSSIBLE --")
+            print("    every measured pick has both legs priced, so the two policies read the")
+            print("    same rows. A substituted price has got back into the measured set.")
+            print("    TREAT THE NUMBERS ABOVE AS UNSAFE.")
 
     #  ---- DIAGNOSTICS ----
     print("\n  DIAGNOSTICS -- reported, NEVER gating (charter). Each carries its own n.")
     print(f"  {'window':24} {'pol':>7} {'n':>4} {'p25':>9} {'rank':>5} {'clears':>7} "
           f"{'worst':>9} {'clears':>7} {'below0':>8}")
     for row in per_anchor_out:
+        if row["policy"] != "primary":
+            continue
         d = row["diagnostics"]
         cp = "-" if d["p25_clears_bar"] is None else ("yes" if d["p25_clears_bar"] else "NO")
         cw = "-" if d["worst_clears_bar"] is None else ("yes" if d["worst_clears_bar"] else "NO")
@@ -1200,6 +1274,11 @@ def _two_clause_report(clause_inputs, horizon_m, threshold, basis="unknown"):
     print("  p25 is the ceil(0.25*n)-th SMALLEST pick (the charter \"5th-worst\" at n=20),")
     print("  not an interpolated percentile. 'worst' is EXPECTED to fail the bond bar --")
     print("  it is tracked for magnitude, not as a test.")
+    print("  below0 IS NOT THE LOSS RATE OF THE SHIPPED LIST. Its denominator is the picks that")
+    print("  could be priced; the unmeasured picks are UNKNOWN, and that population is enriched")
+    print("  in names that stopped pricing -- a state losers reach more often than winners. So")
+    print("  this share reads OPTIMISTIC, and it moving because the denominator shrank is not")
+    print("  the filter improving.")
 
     #  ---- POOLED ----
     pooled_rdf = pd.concat([ci["rdf"] for ci in clause_inputs], ignore_index=True)
@@ -1211,8 +1290,11 @@ def _two_clause_report(clause_inputs, horizon_m, threshold, basis="unknown"):
         dn = tc.downside_clause(pooled_rdf, pooled_selected, horizon_m, floor=floor)
         dg = tc.diagnostics(pooled_rdf, bar, floor=floor)
         pooled_out["floor" if floor else "primary"] = {"downside": dn, "diagnostics": dg}
-        print(f"  {'floor' if floor else 'primary':>7}: shipped={dn['n_selected']} "
-              f"measured={dn['n_measured']} buy_only={dn['n_buy_only']} "
+        if floor:
+            continue          # identical to primary by construction; see the POLICY caveat
+        print(f"  {'primary':>7}: shipped={dn['n_selected']} "
+              f"measured={dn['n_measured']} stale={dn['n_terminal_stale']} "
+              f"buy_only={dn['n_buy_only']} no_buy={dn['n_no_buy']} "
               f"portfolio={_pct(dn['portfolio_return']).strip()} "
               f"lower_bound={_pct(dn['lower_bound']).strip()} -> {dn['verdict']}"
               f"   | p25={_pct(dg['p25']).strip()} worst={_pct(dg['worst']).strip()} "
@@ -1543,6 +1625,26 @@ def run_analysis_suite(resdic, configdic):
             raise RuntimeError("beat-rate stage skipped: per_anchor/price_source missing")
         return beat_rate_vs_urth(per_anchor, price_source, log, merged=merged)
     _run_stage("beat-rate vs URTH (DEPLOYED filter: deduped, carve-ON)", _beat)
+
+    # ---- Stage 5b: what the Stage-1 solvency GATE actually did -----------------
+    #  THE ONE READOUT THAT MAKES THE VETO JUDGEABLE.  Since 2026-08-27 the backtest applies
+    #  the gate, and it ejects roughly half the scored pool -- but nothing said whether a
+    #  single ejection helped.  A gate whose only visible output is its own ejection count can
+    #  be tightened or loosened with no measurable consequence, which is the state the CEO is
+    #  in while his next decision is the weights and the gates.
+    #
+    #  COST, MEASURED: one extra PIT reproduction of the CLEAN anchors only -- two of the
+    #  seven, because the rest have no 36-month eval leg and so nothing to attribute over.  A
+    #  full seven-anchor pass is ~205s on this panel, so this is ~60s.  The vetoed rankings are
+    #  REUSED from the grid stage rather than recomputed.
+    def _gate_attr():
+        if per_anchor is None or price_source is None or registry is None:
+            raise RuntimeError("gate-attribution skipped: per_anchor/price_source/PIT inputs "
+                               "missing")
+        import gate_attribution as ga
+        return ga.run_in_pipeline(dmdic, merged, registry, price_source, per_anchor,
+                                  log=log, exchange_filter=pit_exch, carve="on")
+    _run_stage("stage-1 gate attribution (vetoed vs un-vetoed counterfactual)", _gate_attr)
 
     # ---- Stage 6: oracle-best-N + random baseline + decomposition ladder ----
     def _skill():

@@ -30,15 +30,32 @@ three DIAGNOSTICS -- p25 of the picks, the worst pick, the count below zero -- w
 COMPUTED AND PRINTED BUT NEVER GATE.  Do not quietly promote a diagnostic into the clause;
 if the bar should be harder, that is a CEO decision recorded in the charter.
 
-TWO POLICIES, BOTH REPORTED, because a missing eval price is not a loss:
-  * PRIMARY -- an unpriceable eval leg is marked at the last observed price before eval
-    (`returns_core` terminal policy).  The headline.
-  * FLOOR   -- an unpriceable eval leg is -100%.
-The run currently flags interior price holes (a name priced BEFORE and AFTER a missing
-anchor) which FLOOR marks as total losses although a later price proves the name alive.  So
-FLOOR is a lower bound on the portfolio, not a reading of it, and the two are printed side by
-side precisely so "the filter picked losers" can never be read off a grid that could not
-price the winners.
+THE TWO TERMINAL POLICIES ARE NOT TWO READINGS -- and this module used to treat them as
+though they were.  `returns_core` offers two ways to value a pick whose EVAL leg it cannot
+price:
+  * PRIMARY -- mark it at the last observed price BEFORE eval (`status='terminal'`).
+  * FLOOR   -- mark it -100%.
+NEITHER IS AN OBSERVATION OF THE CHARTERED WINDOW.  PRIMARY substitutes a price that is a
+whole anchor-year (12 or 24 months at a 36-month horizon) stale, so a name that stopped
+pricing at 2022-12-30 enters a 2021->2024 clause carrying its ONE-year return dressed as a
+three-year one.  FLOOR substitutes an assumption -- and `returns_core` says plainly that its
+price source CANNOT distinguish a delisting from a coverage gap, so -100% is a stance, not a
+measurement.  Both are therefore UNMEASURED here (see `measured`), which makes the policy
+choice irrelevant to every figure this module computes and leaves exactly one place where the
+floor assumption still enters: `lower_bound`, which marks EVERY unmeasured pick at -100% over
+`n_selected`.
+
+  THAT SUBSUMES THE OLD FLOOR POLICY EXACTLY, and the identity is worth writing down because
+  it is the reason nothing is lost.  Write n_ok for the picks with both legs priced and S for
+  the sum of their returns.  The old FLOOR lower bound was
+      (S - n_terminal - n_buy_only - n_no_buy) / n_selected
+  because it averaged the ok returns with a -1.0 for every terminal over the priced subset and
+  then floored the rest.  The corrected PRIMARY lower bound is
+      (S - (n_selected - n_ok)) / n_selected
+  and n_selected - n_ok IS n_terminal + n_buy_only + n_no_buy.  The two are the same number.
+  What disappears is the old FLOOR *point estimate*, which was never a reading of anything: it
+  divided observed returns plus assumed total losses by a denominator that excluded the picks
+  nothing priced at all.
 
 COVERAGE IS PART OF THE ANSWER, NOT A FOOTNOTE.  An equal-weight return over the 9 of 20
 picks that happened to be priceable is a DIFFERENT QUANTITY from the chartered clause.  This
@@ -48,26 +65,38 @@ return the unpriced picks would need for the portfolio to clear the bar.  `flip_
 what makes an incomplete verdict actionable: +6% is a real coin-flip, +400% is a FAIL in all
 but name.
 
-A PICK PRICED AT THE BUY ANCHOR ONLY IS NOT A MEASUREMENT.  `returns_core.compute_returns`
-falls back to `terminal = p_buy` when a name has no eval leg AND no earlier price to fall back
-to, which yields `total_return` of EXACTLY 0.0 with `terminal_flag` set.  That 0.0 is
-fabricated -- it says "we know nothing", not "the position was flat".  Left in, it counts
-toward coverage, so a window could report `coverage = 1.0` and a DEFINITIVE verdict while
-resting on names nothing priced; flip the sign of the bar and one such name takes the
-chartered clause from FAIL to PASS "at full coverage".  This module therefore classes those
-picks as UNMEASURED, alongside `no_buy`, and reports them as `n_buy_only`.
+A PICK WITH NO EVAL LEG IS NOT A MEASUREMENT, WHATEVER PRICE IS SUBSTITUTED FOR IT.  This
+is the corrected form of a rule that first shipped too narrow, and the narrowness cost two
+false verdicts on the 2026-08-28 run.  The first version excluded only the `buy_only` subset
+-- picks with no eval leg AND no earlier price, which `compute_returns` marks at `p_buy` for a
+`total_return` of exactly 0.0 -- on the ground that the 0.0 is fabricated.  That argument is
+right and it does not stop at `buy_only`: EVERY `status='terminal'` pick carries a substituted
+price, and a last-observed price from one or two anchors back is no more an observation of the
+36-month window than a break-even is.  So the exclusion is now the whole of `terminal`, and
+`buy_only` survives only as a REPORTED breakdown (`n_buy_only`), not as the test.
 
-  The interaction is what made it dangerous, and it is worth naming: the wider grid (the
-  allow-list removal) moves names that USED to be honestly `no_buy` into this silently
-  marked-at-break-even state.  The two halves of this change set created it together.
+  WHAT IT COST WHEN IT WAS NARROW.  At the 2021-12-31 anchor the run shipped 20 picks and
+  counted 16 as measured, 9 of which were terminal (4 of those `buy_only`).  Eleven of the 16
+  were genuine.  The five stale terminals rode into the denominator, `hi` came out too low,
+  and the UPSIDE clause printed `FAIL -- cannot reach the bar even if every unmeasured pick
+  beat` at BOTH clean anchors.  Because `period_verdict` lets FAIL dominate, both `PERIOD:
+  FAIL` lines were wrong too.  A coverage defect was reported as a filter defect -- the exact
+  failure the coverage discipline exists to prevent, one layer further down than it was fixed.
 
-  The test is `terminal_flag and terminal_adjClose == buy_adjClose`, which has one
-  false-positive mode: a genuine last-before price bit-identical to the buy price.  That
-  direction is SAFE and the safety is asserted, not assumed -- reclassifying a pick as
-  unmeasured can only ever turn a definitive verdict INDETERMINATE, never manufacture a PASS.
-  (Downside: it lowers the strict lower bound, which is the only route to a partial-coverage
-  PASS.  Upside: it lowers `lo` and leaves `hi` unchanged, so neither a PASS nor a FAIL can
-  be conjured.)
+  IT CUTS BOTH WAYS, AND THAT IS THE POINT.  Widening the exclusion does not only relax a
+  FAIL.  It also removes the stale terminals from the DOWNSIDE numerator, which on this run
+  turns a partial-coverage `PASS` into `INDETERMINATE` at 2021-12-31: the surviving picks now
+  have to carry a strict lower bound over a much larger unmeasured remainder.  An honest
+  INDETERMINATE at this coverage is the correct output; a PASS resting on stale returns is
+  not.
+
+  THE SAFETY DIRECTION IS PRESERVED.  Reclassifying a pick as unmeasured can only ever weaken
+  a verdict: it lowers the strict lower bound (the only route to a partial-coverage downside
+  PASS) and it lowers `lo` while RAISING `hi`, so neither a PASS nor a FAIL can be conjured
+  out of it.  The `buy_only` breakdown keeps its structural test (`terminal_flag and
+  terminal_adjClose == buy_adjClose`), whose one false-positive mode -- a genuine last-before
+  price bit-identical to the buy price -- no longer changes any denominator, because both
+  branches are unmeasured now.
 
 COVERAGE DISCIPLINE APPLIES TO BOTH CLAUSES, and the asymmetry between them is the point.  A
 PORTFOLIO RETURN is unbounded above, so a missing pick can never be ruled out and partial
@@ -118,6 +147,11 @@ def buy_only_mask(inc):
     (`terminal_flag` AND terminal price identical to the buy price) because `compute_returns`
     does not record which branch of its fallback it took, and widening its schema would ripple
     through every stage that reads RETURNS_COLS.
+
+    THIS IS NOW A BREAKDOWN, NOT A TEST.  `measured` excludes the whole of `terminal`, of which
+    these are a subset, so nothing hangs on the heuristic any more.  It is kept because
+    "no eval leg and nothing earlier either" and "an eval leg a year stale" are different
+    facts about the price grid and the coverage line reports them separately.
     """
     tf = inc["terminal_flag"].astype(bool).fillna(False)
     same = (pd.to_numeric(inc["terminal_adjClose"], errors="coerce")
@@ -128,18 +162,35 @@ def buy_only_mask(inc):
 def measured(returns_df):
     """Picks whose return is an OBSERVATION.  The denominator for every figure here.
 
-    Two exclusions, for the same reason: `no_buy` (never opened) and `buy_only` (opened, but
-    nothing ever priced the other leg).  Both are UNKNOWN, and an unknown is coverage, not a
-    data point.
+    EXACTLY the `status == 'ok'` rows: both legs priced at the two chartered anchors.  The two
+    exclusions are `no_buy` (never opened) and `terminal` (opened, but nothing priced the eval
+    leg).  Both are UNKNOWN, and an unknown is coverage, not a data point.
+
+    A TERMINAL PICK IS EXCLUDED UNDER **BOTH** POLICIES, deliberately, because "is this an
+    OBSERVATION" is a property of the DATA and not of the terminal-valuation policy laid over
+    it.  Under PRIMARY the substituted price is 12 or 24 months stale; under FLOOR it is an
+    assumed -100% that `returns_core` itself says cannot be told apart from a coverage gap.
+    Neither observes the chartered window.  The consequence -- that the FLOOR readings collapse
+    onto the PRIMARY ones, since every remaining row has `total_return_floor == total_return`
+    by construction -- is not a loss of information: the floor reading survives, exactly, as
+    `lower_bound`.  See the identity in the module docstring.
     """
     inc = rc.included(returns_df)
     if not len(inc):
         return inc
-    return inc[~buy_only_mask(inc)]
+    return inc[inc["status"].astype(str) != "terminal"]
 
 
 def coverage_counts(returns_df, depth_n):
-    """One place that decides what is measured and what is merely absent."""
+    """One place that decides what is measured and what is merely absent.
+
+    The four counts PARTITION the shipped picks -- `n_measured + n_terminal_stale +
+    n_buy_only + n_no_buy == n_selected` whenever the frame holds every shipped pick -- so a
+    reader can see WHAT the missing picks are missing, rather than only how many.  The split
+    of `n_terminal` into `n_terminal_stale` and `n_buy_only` is the one that matters: a stale
+    last-observed price and a bare buy price are both unmeasured, but only the first ever
+    looked like a measurement.
+    """
     inc = rc.included(returns_df)
     n_buy_only = int(buy_only_mask(inc).sum()) if len(inc) else 0
     cnt = rc.counts(returns_df)
@@ -147,13 +198,23 @@ def coverage_counts(returns_df, depth_n):
     n_selected = int(depth_n)
     return {"n_selected": n_selected, "n_measured": n_measured,
             "n_missing": max(0, n_selected - n_measured),
-            "n_terminal": int(cnt["n_terminal"]), "n_buy_only": n_buy_only,
+            "n_terminal": int(cnt["n_terminal"]),
+            "n_terminal_stale": max(0, int(cnt["n_terminal"]) - n_buy_only),
+            "n_buy_only": n_buy_only,
             "n_no_buy": int(cnt["n_no_buy"]),
             "coverage": (float(n_measured) / n_selected) if n_selected else float("nan")}
 
 
 def _returns(returns_df, floor):
-    """Per-pick MEASURED returns under one policy."""
+    """Per-pick MEASURED returns under one policy.
+
+    `floor` is now INERT and that is a property, not an oversight: `measured` keeps only
+    `status == 'ok'` rows, and `returns_core.compute_returns` writes the same number into
+    `total_return` and `total_return_floor` for those rows.  The parameter is kept on the
+    public surface so callers and tests do not have to change, and `test_target_clauses`
+    pins the equality -- so if anyone ever lets a substituted price back into `measured`,
+    the two policies start disagreeing again and the test says so.
+    """
     col = "total_return_floor" if floor else "total_return"
     m = measured(returns_df)
     if not len(m):
@@ -174,9 +235,19 @@ def diagnostics(returns_df, bar, floor=False):
     statement as out of 20, and the run has been thin enough that the difference decides the
     reading.
 
-    COMPUTED OVER MEASURED PICKS ONLY.  A pick priced at the buy anchor alone contributes a
-    fabricated 0.0, which would sit above the worst pick, below the median, and count as "not
-    below zero" -- polluting all three diagnostics at once with a number nobody observed.
+    COMPUTED OVER MEASURED PICKS ONLY, and that now means over `status == 'ok'` picks.  Any
+    substituted price pollutes all three diagnostics at once with a number nobody observed: a
+    buy-only pick contributes a fabricated 0.0 that sits above the worst pick, below the
+    median and counts as "not below zero", and a stale terminal contributes a 12- or 24-month
+    return that is scored as if it were a 36-month one.
+
+    READ `n_below_zero` WITH ITS DENOMINATOR AND WITH WHAT LEFT IT.  The count is now taken
+    over the priced picks only, so it is "of the picks we could price, how many lost money" --
+    NOT the loss rate of the shipped list.  The excluded picks are UNKNOWN, and the unknown
+    population is enriched in names that stopped pricing, which is a state losers reach more
+    often than winners.  So this share is, if anything, an OPTIMISTIC read of the shipped
+    list's loss rate, and moving it by shrinking the denominator is not an improvement in the
+    filter.
     """
     r = _returns(returns_df, floor)
     n = int(len(r))
@@ -351,14 +422,17 @@ SOFTNESS_CAVEAT = (
     "diagnostics below measure how close to failure it is; they do NOT gate.")
 
 POLICY_CAVEAT = (
-    "PRIMARY marks an unpriceable eval leg at the last observed price; FLOOR marks it -100%. "
-    "Interior price holes (priced before AND after a missing anchor) are floored at -100% "
-    "though a later price proves the name alive -- so FLOOR is a lower bound, not a reading. "
-    "Where the two verdicts differ, the disagreement is a PRICE-GRID finding, not a filter one.")
+    "the PRIMARY/FLOOR pair no longer produces two readings, and the tables below print PRIMARY "
+    "only. A pick with no eval leg is UNMEASURED under both: PRIMARY's substituted price is 12 "
+    "or 24 months stale and FLOOR's -100% is an assumption returns_core says it cannot tell "
+    "apart from a coverage gap. The floor reading survives EXACTLY as `lower_bound`, which "
+    "marks every unmeasured pick at -100% over n_selected -- algebraically the same number the "
+    "old FLOOR lower bound produced.")
 
 COVERAGE_CAVEAT = (
-    "n_selected is what the anchor SHIPPED; n_measured is what could be priced. buy_only picks "
-    "(priced at the buy anchor only) are UNMEASURED, not flat -- their 0.0 return is a fallback, "
-    "not an observation. Both clauses are graded over n_selected with the unmeasured picks "
-    "treated as unknown: the portfolio is unbounded above so it can only prove PASS or stay "
+    "n_selected is what the anchor SHIPPED; n_measured is what could be priced at BOTH chartered "
+    "anchors. terminal picks -- stale (an eval leg substituted from an earlier anchor) and "
+    "buy_only (priced at the buy anchor alone) -- and no_buy picks are all UNMEASURED, not flat "
+    "and not losses. Both clauses are graded over n_selected with the unmeasured picks treated "
+    "as unknown: the portfolio is unbounded above so it can only prove PASS or stay "
     "INDETERMINATE, while the beat-rate is bounded both ways so [lo, hi] can prove PASS or FAIL.")

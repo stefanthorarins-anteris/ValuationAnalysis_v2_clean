@@ -234,8 +234,15 @@ def run_in_pipeline(dmdic, merged, registry, price_source, log=None,
 #  Ranking: once per buy anchor (full ordering to depth 100)                  #
 # --------------------------------------------------------------------------- #
 def rank_all_anchors(inputs, log, weights="default", carve="off", exchange_filter=None,
-                     stage1_veto=True):
+                     stage1_veto=True, anchors=None):
     """Rank all buy anchors under one scoring config.
+
+    anchors : optional iterable of anchor ids (`buy2021`, ...) restricting which anchors are
+              ranked.  DEFAULT None -> every anchor in BUY_ANCHORS, i.e. today's behaviour
+              unchanged.  It exists for the GATE-ATTRIBUTION counterfactual, which needs a
+              SECOND ranking pass with the veto off and only ever uses the two anchors that
+              have a 36-month eval leg -- ranking the other six would be four fifths of the
+              cost for output nothing can read.
 
     weights : 'default' (production weights) | 'equal' (all metric weights = 1).
     carve   : 'off' (full un-carved survivorship universe -- current behaviour) |
@@ -253,8 +260,11 @@ def rank_all_anchors(inputs, log, weights="default", carve="off", exchange_filte
     weight_override = build_weight_override(weights)
     tickers_df = dmdic.get("Tickers_df")
 
+    wanted = None if anchors is None else set(anchors)
     per_anchor = {}
     for wid, buy in BUY_ANCHORS:
+        if wanted is not None and wid not in wanted:
+            continue
         log(f"[{wid}] pit_universe + reproducing PIT ranking as-of {buy} "
             f"(weights={weights}, carve={carve}) ...")
         uni = dm.pit_universe(dmdic, registry, as_of=buy,

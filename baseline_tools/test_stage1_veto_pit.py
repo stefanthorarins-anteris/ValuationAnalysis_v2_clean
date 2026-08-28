@@ -231,6 +231,46 @@ def test_the_basis_string_distinguishes_declined_from_clean():
     assert pa._basis_of(mixed).startswith("MIXED")
 
 
+def test_anchors_that_all_gated_are_NOT_mixed_just_because_the_counts_differ():
+    """THE FALSE ALARM, at the numbers it fired on.  `_basis_of` collapsed on the WHOLE stamp,
+    and the stamp carries the ejection COUNT -- which is different at every anchor by
+    construction, because the pools are different sizes.  So the 2026-08-28 run printed
+    `BASIS: MIXED -- anchors disagree` above seven strings that differed only in a number
+    (955, 991, 1037, 1125, 1134, 1144, 1182).  Nothing disagreed.
+
+    The banner's job is to stop a vetoed figure being compared against an un-vetoed one, and a
+    false MIXED devalues it the way a false alarm devalues any alarm.  The counts are not
+    thrown away -- they are reported beside the kind, where they read as what they are.
+    """
+    import pipeline_analysis as pa
+    counts = [955, 991, 1037, 1125, 1134, 1144, 1182]
+    per_anchor = {"buy%d" % (2018 + i):
+                  {"basis": "VETOED (stage-1 solvency gate applied, %d ejected)" % n}
+                  for i, n in enumerate(counts)}
+    out = pa._basis_of(per_anchor)
+    assert not out.startswith("MIXED"), out
+    assert out.startswith("VETOED (stage-1 solvency gate applied)")
+    #  every count still reachable from the banner, and the range stated
+    assert "955-1182 ejected" in out
+    for n in counts:
+        assert str(n) in out
+
+
+def test_a_DECLINED_anchor_beside_a_VETOED_one_is_STILL_mixed():
+    """The normalisation must strip a MAGNITUDE, never a basis.  A panel that declined to gate
+    and one that gated are on genuinely different bases, and so are two panels that declined
+    over different missing columns -- those must keep reading MIXED."""
+    import pipeline_analysis as pa
+    assert pa._basis_of({
+        "a": {"basis": "VETOED (stage-1 solvency gate applied, 955 ejected)"},
+        "b": {"basis": "un-vetoed (veto DECLINED: panel missing netDebtToEBITDA)"},
+    }).startswith("MIXED")
+    assert pa._basis_of({
+        "a": {"basis": "un-vetoed (veto DECLINED: panel missing netDebtToEBITDA)"},
+        "b": {"basis": "un-vetoed (veto DECLINED: panel missing uCurrentRatio)"},
+    }).startswith("MIXED")
+
+
 def test_an_unstamped_ranking_reads_as_unvetoed_not_as_unknown_good():
     """A per_anchor built by an older code path carries no basis.  The safe reading is the one
     that was true for every historical figure: un-vetoed."""
