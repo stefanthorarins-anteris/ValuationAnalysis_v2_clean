@@ -45,6 +45,12 @@ _REPO = os.path.dirname(_HERE)
 
 # The CLEAN 36-month windows (buy anchor -> +36mo eval anchor) the header advertises.
 # Matches depth_horizon_grid's ANCHORS grid: only these two have an eval anchor in data.
+#
+# THIS LIST IS NO LONGER THE AUTHORITY ON WHICH ANCHORS ARE GRADED -- `dhg.CLEAN_BUY_IDS` is,
+# and the two can now differ (buy2020 was promoted 2026-08-30 on the survivorship evidence in
+# `dhg.ANCHOR_EXCLUSION_REASONS`).  Every place that PRINTS the graded window set derives it
+# from `dhg` via `_clean_window_text()`; this literal survives for exactly one caller,
+# `merge_as_of` below, which is a different question -- see the comment there.
 _CLEAN_36MO_WINDOWS = [("2021-12-31", "2024-12-31"), ("2022-12-30", "2025-12-31")]
 
 # Default locations for the survivorship (delisted) inputs the PIT reproduction needs.
@@ -540,15 +546,58 @@ def run_price_fetch_stage(resdic, configdic, log):
     """
     import fetch_prices as fp  # KEY-FREE pure helpers only (build_anchor_dates, ...)
 
-    #  PRESENCE, NOT FRESHNESS -- and that is now a stated decision rather than an oversight.
-    #  A present-but-stale grid is NOT re-fetched here: the refresh costs API calls and is a
-    #  deliberate human action.  Whether the grid still fits tonight's universe is answered by
-    #  the SEPARATE audit stage (`_audit_price_grid_stage`), which reports and never spends.
+    #  PRESENCE DECIDES, FRESHNESS SPEAKS -- and the two used to be different stages.
+    #
+    #  THE DEFECT (Q-7).  This decision was `not os.path.exists(...)` alone, so a grid written
+    #  months ago satisfied it for ever and the freshness signal -- which existed, two stages
+    #  down, in `_audit_price_grid_stage` -- had no way to reach the decision it was about.
+    #  The audit could shout STALE all it liked; the refetch decision had already been taken
+    #  and had never asked.
+    #
+    #  WHAT IT IS NOW: a THREE-way decision, and only one branch spends money, never by
+    #  default.
+    #    absent               -> fetch, exactly as before.
+    #    present + fresh      -> no fetch, exactly as before.
+    #    present + STALE      -> REFUSE TO REFETCH, loudly and by name, and say which key
+    #                            authorises it.  The refusal is a refusal to SPEND, not a
+    #                            refusal to run: five working analysis stages still get their
+    #                            grid, because withholding output would make the spend
+    #                            decision for the CEO by starving him of the thing he would
+    #                            decide from.  That was the 2026-08-22 ruling and it stands.
+    #  `configdic['price_grid_refetch_when_stale'] = 1` is the required override.  There is
+    #  deliberately NO automatic-refetch path and no age threshold that silently trips one:
+    #  a fetch is ~8 paid calls on a key the house does not own the budget for.
     need_main = not os.path.exists(_PRICES_CSV)
     need_supp = not os.path.exists(_PRICES_2025_CSV)
+
+    stale_findings = None if need_main else _grid_stale_findings(resdic, log)
+    if stale_findings:
+        if configdic.get("price_grid_refetch_when_stale"):
+            need_main = True
+            log("[price-fetch] !! REFETCHING A PRESENT GRID because "
+                "configdic['price_grid_refetch_when_stale'] is set.")
+            log("[price-fetch] !! THIS SPENDS PAID API CALLS.  Reason(s) the grid is stale: "
+                + "; ".join(stale_findings[:3]))
+        else:
+            log("[price-fetch] " + "!" * 62)
+            log("[price-fetch] !! THE GRID IS PRESENT AND STALE, AND I WILL NOT REFETCH IT.")
+            for finding in stale_findings[:5]:
+                log(f"[price-fetch] !!   - {finding}")
+            if len(stale_findings) > 5:
+                log(f"[price-fetch] !!   ... and {len(stale_findings) - 5} more "
+                    "(the audit stage below prints all of them)")
+            log("[price-fetch] !! Every backtest number in this run rides THIS grid.")
+            log("[price-fetch] !! To refetch, set configdic['price_grid_refetch_when_stale']"
+                " = 1 and re-run.")
+            log("[price-fetch] !! That costs paid API calls, which is why it is not the "
+                "default and why")
+            log("[price-fetch] !! nothing here decides it for you.")
+            log("[price-fetch] " + "!" * 62)
+
     if not need_main and not need_supp:
         log(f"[price-fetch] both price files present -- NO fetch "
-            f"({os.path.basename(_PRICES_CSV)}, {os.path.basename(_PRICES_2025_CSV)}).")
+            f"({os.path.basename(_PRICES_CSV)}, {os.path.basename(_PRICES_2025_CSV)})"
+            + ("  [STALE -- refetch REFUSED, see above]" if stale_findings else ""))
         return {"main": _PRICES_CSV, "supp": _PRICES_2025_CSV}
 
     # Resolve + MASK the key.  Missing key => cannot fetch => banner via raise (guarded).
@@ -689,6 +738,47 @@ def run_price_fetch_stage(resdic, configdic, log):
             "supp": _PRICES_2025_CSV if os.path.exists(_PRICES_2025_CSV) else None}
 
 
+def _clean_window_text(horizon_m=36):
+    """The graded buy->eval windows, NAMED FROM `dhg.CLEAN_BUY_IDS` rather than restated.
+
+    Two headers printed "buy2021->2024, buy2022->2025" as a literal.  That sentence is what a
+    reader takes the run to have graded, so it has to come from the set that decides it --
+    otherwise promoting or excluding an anchor silently makes the header a false claim about
+    the numbers underneath it, which is the same defect class as the basis stamp.
+
+    GUARDED, because one of its two callers is the SUITE HEADER, which prints BEFORE the
+    first `_run_stage` and is therefore outside the swallow that keeps a stage failure from
+    costing the run.  A `dhg` import failure there would have lost the entire analysis suite
+    to a cosmetic header -- the same shape as the bare `benchmark_return` in a loop, one
+    level up.  A header that cannot name the windows degrades to saying so.
+    """
+    try:
+        import depth_horizon_grid as dhg
+    except Exception as e:
+        return ("window list unavailable: %s: %s -- see the grid report's own flag table"
+                % (type(e).__name__, e))
+    out = []
+    for wid, buy in dhg.BUY_ANCHORS:
+        if wid not in dhg.CLEAN_BUY_IDS:
+            continue
+        idx = dhg.ANCHOR_IDX[buy] + horizon_m // 12
+        if idx >= len(dhg.ANCHORS):
+            continue
+        out.append(f"{wid}->{dhg.ANCHORS[idx][:4]}")
+    return ", ".join(out) if out else "(no clean window has an eval anchor in data)"
+
+
+def _clean_window_text_guarded(horizon_m=36):
+    """`_clean_window_text` with the LAST failure mode closed: the body above can still raise
+    after the import succeeds (a missing `ANCHOR_IDX` key, a malformed anchor).  Belt and
+    braces, because the caller is unguarded by construction and a header is never worth a
+    suite."""
+    try:
+        return _clean_window_text(horizon_m)
+    except Exception as e:
+        return "window list unavailable (%s: %s)" % (type(e).__name__, e)
+
+
 def _panel_symbols(resdic):
     """Tonight's scored names, for the price-grid audit.  Same two frames the fetch allow-list
     reads, so the audit measures the grid against exactly the population that will be graded."""
@@ -699,6 +789,32 @@ def _panel_symbols(resdic):
         except Exception:
             continue
     return syms
+
+
+def _grid_stale_findings(resdic, log):
+    """The audit's STRUCTURAL findings, read at FETCH time so the refetch decision can see
+    them.  Returns a list of strings, or None when the question could not be asked.
+
+    ONE DEFINITION, borrowed not copied: this calls `price_grid_audit.audit_price_grid`, the
+    same function `_audit_price_grid_stage` reports from, so the fetch decision and the
+    printed audit can never disagree about whether the grid is stale.  A second staleness
+    rule living here is precisely how the presence-check and the audit came to be two
+    unrelated opinions in the first place.
+
+    FULLY GUARDED, AND THE GUARD LEANS TOWARDS SPENDING NOTHING.  Any failure returns None,
+    which means "no findings" and therefore NO refetch -- an audit that cannot run must never
+    be the thing that authorises a paid call.
+    """
+    try:
+        import price_grid_audit as pga
+        rep = pga.audit_price_grid(
+            _PRICES_CSV, _panel_symbols(resdic),
+            supp_csv=_PRICES_2025_CSV if os.path.exists(_PRICES_2025_CSV) else None)
+        return list(rep.get("findings") or []) or None
+    except Exception as e:
+        log(f"[price-fetch] freshness read did not run ({type(e).__name__}: {e}); "
+            "falling back to the presence check alone -- NO fetch will be triggered by it.")
+        return None
 
 
 def _audit_price_grid_stage(resdic, configdic, log):
@@ -733,6 +849,51 @@ def _audit_price_grid_stage(resdic, configdic, log):
         #  told which route they will use.  Same configdic key `_build_price_source` reads,
         #  so the two cannot disagree.
         price_route=str(configdic.get("price_route", "real") or "real"))
+
+
+def _audit_price_scale_stage(resdic, configdic, log):
+    """VENDOR PRICE-LEVEL audit -- report only, never a correction, never a score change.
+
+    THE DEFECT.  FMP serves `ATRI`'s OHLC and `adjClose` at 1/1000 of the real tape while
+    leaving `vwap` on it (`vwap/close` median exactly 1000.0 across all 756 rows; the final
+    pinned `vwap` 459.92 matches the ~$460/share cash consideration).  Returns are unaffected
+    -- the scaling cancels -- but every use of the price LEVEL is wrong by 1000x, and no level
+    screen can find it because 16.9% of the grid's symbols are legitimately under $1 already.
+
+    WHY THE CHECK IS NOT THE ONE THE REGISTER PROPOSED.  Q-38 proposed synthetic-vs-grid.
+    Measured on ATRI's own saved fundamentals: FMP scales `marketCap` by the same 1/1000, so
+    the synthetic price is 0.70490 against a grid 0.67507 -- a ratio of 1.04.  The proposed
+    detector returns "agrees" on the one name known to be broken.  What separates them is the
+    BALANCE SHEET, which the scaling does not touch: price/book comes out at 0.0116, i.e. the
+    company priced at a hundredth of its own book equity.  See `price_scale_audit`.
+
+    IT DOES NOT GATE, AND THAT IS THE POINT OF THE STAGE.  Q-38 was held OPEN rather than
+    parked with the rest of the price-grid work precisely because its detector reaches names
+    that are live in scoring.  Reading the panel is free; changing a score on a heuristic is
+    the CEO's decision.  So this prints and writes evidence, and nothing downstream consumes
+    it.
+    """
+    import price_scale_audit as psa
+    panel = None
+    for key in ("cdx_df",):
+        try:
+            panel = resdic[key]
+            break
+        except Exception:
+            continue
+    if panel is None or not len(panel):
+        log("[price-scale] no cdx_df panel in resdic -- audit did not run.")
+        return None
+    #  LOG ONLY, no evidence CSV, matching its neighbour `price_grid_audit`.  The alarm list
+    #  is single-digit on the measured panel so it fits in the log the CEO already reads, and
+    #  a new dated artifact would need a new .gitignore rule and land in the same place Q-29
+    #  is still open about.  `price_scale_audit.run_audit(out_csv=...)` remains available for
+    #  a standalone investigation.
+    return psa.run_audit(
+        panel,
+        prices_csv=_PRICES_CSV if os.path.exists(_PRICES_CSV) else None,
+        supp_csv=_PRICES_2025_CSV if os.path.exists(_PRICES_2025_CSV) else None,
+        log=log)
 
 
 def _build_price_source(log, configdic=None):
@@ -920,7 +1081,18 @@ def _build_pit_inputs(dmdic, configdic, log):
         f"registry={os.path.basename(reg_path)}")
     dead = pd.read_pickle(dead_path)
     registry = dm.load_registry(reg_path)
-    merge_as_of = _CLEAN_36MO_WINDOWS[0][0]  # earliest clean buy anchor
+    #  NOT "the earliest clean buy anchor" any more, and the old comment saying so became
+    #  false the moment buy2020 was promoted.  What this date actually does is fix the
+    #  `pit_universe` SNAPSHOT stored on the merged dict -- and NOTHING in this pipeline
+    #  grades off that snapshot: `dhg.rank_all_anchors` recomputes the universe per anchor
+    #  with `as_of=buy`, and the dead names' rows are unioned into `cdx_df` regardless of this
+    #  date, with `reproduce_pit_top` applying its own `date <= D`.  The only consumer of the
+    #  stored key is the standalone `run_target_test.py`.  So promoting an anchor EARLIER than
+    #  this date does not create a look-ahead -- checked before the promotion, because it
+    #  would have been one if `rank_all_anchors` had reused the snapshot.
+    #  Left at 2021-12-31 deliberately: moving it would change the merged universe for EVERY
+    #  anchor, which is a numbers-moving change and not part of correcting a false comment.
+    merge_as_of = _CLEAN_36MO_WINDOWS[0][0]
     log(f"[pit-inputs] dead-merge as-of {merge_as_of} (ONCE; shared across stages) ...")
     merged, stats = dm.merge_dead_into_dmdic(dmdic, dead, registry, as_of=merge_as_of)
     log(f"[pit-inputs] merge: universe={stats.get('universe_size')} "
@@ -931,6 +1103,20 @@ def _build_pit_inputs(dmdic, configdic, log):
 # --------------------------------------------------------------------------- #
 #  Stage: beat-rate vs URTH (operational-target proxy) -- reuses per_anchor    #
 # --------------------------------------------------------------------------- #
+def _bench_or_skip(price_source, buy, ev, wid, rc, where):
+    """Thin delegation to `returns_core.benchmark_return_or_none` -- see its docstring for
+    the composition defect (a strict raise inside a per-anchor loop under a swallowing stage
+    guard, so one missing anchor erased the whole stage).
+
+    IT MOVED because this was not the only place with the shape: `gate_attribution` and
+    `skill_baseline` had four more bare call sites between them, both running in this same
+    suite and both widened by the buy2020 promotion.  Fixing it here and copying the fix
+    there is how the two would drift in strictness; one definition in `returns_core`, which
+    all of them already import, is the fix.
+    """
+    return rc.benchmark_return_or_none(price_source, buy, ev, wid, where)
+
+
 def beat_rate_vs_urth(per_anchor, price_source, log, depths=(10, 20),
                       horizon_m=36, threshold=0.10, merged=None):
     """The operational-target readout on the DEPLOYED FILTER: share of the shipped
@@ -955,7 +1141,7 @@ def beat_rate_vs_urth(per_anchor, price_source, log, depths=(10, 20),
     print("# BEAT-RATE vs URTH  --  DEPLOYED FILTER (issuer-deduped, carve-ON top-20)")
     print(f"#   the shipped general list beats MSCI World by >= {threshold*100:.0f}pp?")
     print(f"#   horizon = {horizon_m}mo   benchmark = {rc.BENCHMARK_VARIANT}")
-    print("#   CLEAN 36mo windows only (buy2021->2024, buy2022->2025).")
+    print(f"#   CLEAN 36mo windows only ({_clean_window_text()}).")
     print("#   (skill_baseline reports the same deduped-top20 basis carve-OFF; the")
     print("#    intended difference between the two is the carve.)")
     print("#" * 72)
@@ -976,7 +1162,9 @@ def beat_rate_vs_urth(per_anchor, price_source, log, depths=(10, 20),
         ev = dhg.ANCHORS[eval_idx]
         # DEPLOYED deduped top-20 (the shipped pick); top-10 is its head slice.
         deployed = per_anchor[wid].get("top20_deduped") or per_anchor[wid]["ranking"][:20]
-        bench = rc.benchmark_return(price_source, buy, ev, require_exact=True)
+        bench = _bench_or_skip(price_source, buy, ev, wid, rc, "the two-clause / beat-rate table")
+        if bench is None:
+            continue
         for N in depths:
             top = deployed[:N]
             rdf = rc.compute_returns(top, buy, ev, price_source)
@@ -1011,7 +1199,12 @@ def beat_rate_vs_urth(per_anchor, price_source, log, depths=(10, 20),
         pooled[N] = {"beat_rate": rate, "n": len(flags)}
         rs = f"{rate*100:.1f}%" if rate == rate else "n/a"
         print(f"  POOLED top-{N}: beat_rate={rs} (n={len(flags)})")
-    print("  CAVEAT: 2 heavily-overlapping windows = ONE regime; count-based (magnitude-")
+    #  COUNTED, not asserted.  This read "2 heavily-overlapping windows" as a literal and
+    #  went wrong the moment a third anchor was graded -- in a CAVEAT, whose whole job is to
+    #  stop a reader over-reading the n above it.
+    _nw = len({r["window"] for r in rows}) if rows else 0
+    print(f"  CAVEAT: {_nw} heavily-overlapping window(s) = ONE regime; count-based "
+          "(magnitude-")
     print("          blind); missing-eval counts as NOT beating (missing='fail').")
 
     #  ============ THE SECOND CLAUSE, printed BESIDE the first ============
@@ -1045,75 +1238,36 @@ def _pct(x, width=9):
     return f"{x*100:+.1f}%".rjust(width) if x == x else "n/a".rjust(width)
 
 
-#  The per-anchor MAGNITUDE inside a basis stamp.  `stage2_pit` writes
-#  "VETOED (stage-1 solvency gate applied, 1125 ejected)", so the ejection COUNT is part of
-#  the string -- and the count is different at every anchor by construction, because the
-#  pools are different sizes.
-_BASIS_EJECTED_RE = re.compile(r",\s*(\d+)\s+ejected\)")
+#  THE BASIS READER MOVED TO `basis_stamp` and these three names are now thin delegations.
+#  It moved because `depth_horizon_grid` and `scoring_compare` need the same reader and
+#  NEITHER CAN IMPORT THIS MODULE -- `pipeline_analysis` imports `dhg`, so the dependency only
+#  runs one way.  The alternative was a second copy of the parse living next to the report
+#  that prints it, which is how the ejection-count false alarm would have been fixed in one
+#  place and not the other.  The names are kept (with the underscore) because the veto tests
+#  reach for `pa._basis_of` directly and the delegation is the point being tested: one reader.
+def _basis_stamp():
+    #  Imported lazily, like every other sibling in this module: `pipeline_analysis` is
+    #  imported by the pipeline before `baseline_tools/` is necessarily on the path, so the
+    #  path guard travels with the import rather than sitting at module scope.
+    if _HERE not in sys.path:
+        sys.path.insert(0, _HERE)
+    import basis_stamp
+    return basis_stamp
 
 
 def _basis_kind(basis):
-    """The KIND of measurement basis, with the per-anchor magnitude stripped out.
-
-    WHY THIS EXISTS.  `_basis_of` used to collapse on the WHOLE stamp, so seven anchors that
-    gated identically produced seven distinct strings and the 2026-08-28 run printed
-    `BASIS: MIXED -- anchors disagree` followed by seven lines differing only in an ejection
-    count (955, 991, 1037, 1125, 1134, 1144, 1182).  Nothing disagreed.  The banner exists to
-    stop a vetoed number being compared against an un-vetoed one, and a false MIXED devalues
-    it exactly like a false alarm devalues any other alarm.
-
-    THE COUNT IS NOT DISCARDED, it is moved: `_basis_of` reports the counts separately, per
-    anchor, where they read as what they are -- how much each anchor's pool was cut -- instead
-    of as a disagreement about the measurement basis.
-
-    DECLINED STAMPS KEEP THEIR PARENTHETICAL, deliberately.  "un-vetoed (veto DECLINED: panel
-    missing netDebtToEBITDA)" and "un-vetoed (veto DECLINED: panel missing uCurrentRatio)" are
-    genuinely different bases -- different flags never ran -- so those still read as MIXED.
-    Only the ejection count, which is a magnitude and not a basis, is normalised away.
-    """
-    if not basis:
-        return "un-vetoed (basis not stamped)"
-    return _BASIS_EJECTED_RE.sub(")", str(basis))
+    return _basis_stamp().kind(basis)
 
 
 def _basis_of(per_anchor):
-    """The measurement BASIS carried by the rankings -- vetoed or not.
-
-    EVERY PIT FIGURE THIS PROJECT EVER PUBLISHED WAS UN-VETOED, because nothing under
-    `baseline_tools/` applied the Stage-1 solvency gate at all.  So a number with no basis on it
-    is ambiguous, and a vetoed number compared against a historical un-vetoed one is simply
-    wrong.  `rank_all_anchors` stamps `basis` per anchor; this collapses it to a KIND for the
-    header, reports the per-anchor ejection counts beside it, and REFUSES to guess when the
-    anchors are on genuinely different bases.
-    """
-    stamps = {wid: ((v or {}).get("basis") or "un-vetoed (basis not stamped)")
-              for wid, v in (per_anchor or {}).items()}
-    if not stamps:
-        return "unknown (no anchors)"
-    kinds = sorted({_basis_kind(b) for b in stamps.values()})
-    if len(kinds) > 1:
-        return "MIXED -- anchors disagree: " + " | ".join(kinds)
-    counts = {}
-    for wid, b in stamps.items():
-        m = _BASIS_EJECTED_RE.search(str(b))
-        if m:
-            counts[wid] = int(m.group(1))
-    if not counts:
-        return kinds[0]
-    ns = sorted(counts.values())
-    return ("%s -- %d anchor(s), %d-%d ejected each (%s)"
-            % (kinds[0], len(stamps), ns[0], ns[-1],
-               ", ".join("%s=%d" % (w, counts[w]) for w in sorted(counts))))
+    return _basis_stamp().of(per_anchor)
 
 
 def _print_basis_banner(per_anchor):
-    basis = _basis_of(per_anchor)
-    print("#" * 72)
-    print(f"# MEASUREMENT BASIS: {basis}")
-    print("#   Every PIT figure published by this project BEFORE 2026-08-27 was UN-VETOED --")
-    print("#   the backtest path never applied the Stage-1 solvency gate.  Do NOT compare a")
-    print("#   number on one basis against a number on the other.")
-    print("#" * 72)
+    bs = _basis_stamp()
+    basis = bs.of(per_anchor)
+    for line in bs.banner_lines(basis):
+        print(line)
     return basis
 
 
@@ -1302,7 +1456,11 @@ def _two_clause_report(clause_inputs, horizon_m, threshold, basis="unknown"):
     print("  NOTE: the pooled UPSIDE clause is deliberately NOT restated here -- pooling picks")
     print("  across windows is not the chartered per-anchor clause, and the pooled beat-rate")
     print("  already appears in the table above.")
-    print("  CAVEAT: the two clean 36mo windows overlap heavily = ONE regime, and the pooled")
+    #  This one printed "the two clean 36mo windows" IMMEDIATELY UNDER a line correctly
+    #  reading "POOLED across 3 clean window(s)" -- two adjacent lines contradicting each
+    #  other, in the commit whose entire point was to stop exactly that.
+    print(f"  CAVEAT: the {len(clause_inputs)} clean 36mo window(s) overlap heavily = ONE "
+          "regime, and the pooled")
     print("          n is picks, not independent observations.")
     return {"bar": bar, "per_anchor": per_anchor_out, "pooled": pooled_out,
             "n_windows": len(clause_inputs), "basis": basis}
@@ -1392,8 +1550,29 @@ def _per_band_beat_rate(per_anchor, price_source, merged, horizon_m, threshold):
             'failed': ("NOTHING -- the FX feed failed, so every name is unknown-currency "
                        "and every band read below is empty/General"),
         }.get(_state, _state)
-        fx_basis = ("NOT point-in-time [%s] -- %s. Run `python fx_rates.py --historical` "
-                    "to remove the look-ahead." % (_state, _what))
+        #  THE OLD SENTENCE ADVISED A 35-CALL PAID FETCH AS THE ONLY REMEDY, AND IT IS
+        #  USUALLY THE WRONG ONE.  `fx_rates.py --historical` costs one call per MAJOR
+        #  supported currency -- 35 of the 38 (GBX/GBp/USD are derived free) -- and on this
+        #  house's machines the table it would rebuild ALREADY EXISTS:
+        #  `output/FxRatesHistorical_2019-01-01_2026-08-08.csv`, 38/38 currencies, spanning
+        #  2019-01-01..2026-08-07, which covers every currently-graded buy anchor.
+        #  It does not reach the run machine because `output/` is gitignored, and the FX table
+        #  is a large data artifact -- so it travels out-of-band like the pickles, and nobody
+        #  ever carried it.  The look-ahead has therefore been costing a false basis for want
+        #  of a 2.4MB file copy, while the message on screen asked for money.
+        #  BOTH remedies are named now, cheapest first, because a run log that offers only the
+        #  expensive one is how the expensive one gets chosen.
+        fx_basis = (
+            "NOT point-in-time [%s] -- %s.\n"
+            "#            TO REMOVE THE LOOK-AHEAD, IN ORDER OF COST:\n"
+            "#            (1) FREE -- copy an existing `FxRatesHistorical_*.csv` into this\n"
+            "#                machine's repo root or `output/`.  It is gitignored, so it does\n"
+            "#                NOT arrive with the code; it must be carried like the pickles.\n"
+            "#            (2) PAID -- `python fx_rates.py --historical` rebuilds it at ONE\n"
+            "#                API CALL PER MAJOR CURRENCY (35 of the 38 supported).  Only\n"
+            "#                needed if no table exists anywhere, or the span misses an\n"
+            "#                anchor you intend to grade."
+            % (_state, _what))
 
     band_pending = (merged_cdx is None) or (
         not co.currency_data_present(merged_cdx, fx=fx_pit))
@@ -1418,7 +1597,9 @@ def _per_band_beat_rate(per_anchor, price_source, merged, horizon_m, threshold):
         if eval_idx >= len(dhg.ANCHORS):
             continue
         ev = dhg.ANCHORS[eval_idx]
-        bench = rc.benchmark_return(price_source, buy, ev, require_exact=True)
+        bench = _bench_or_skip(price_source, buy, ev, wid, rc, "the per-band split")
+        if bench is None:
+            continue
         ranking = per_anchor[wid].get("ranking") or []
         # FULL deduped general ranking (deep enough to fill the sub-bands), then band it.
         if merged_cdx is not None:
@@ -1526,7 +1707,7 @@ def run_analysis_suite(resdic, configdic):
     print("=" * 78)
     print("WHAT THIS GRADES: the HISTORICAL point-in-time backtest RE-RUN AGAINST")
     print("TONIGHT'S MODEL -- the same fundamentals/scoring the live pick used,")
-    print("reproduced as-of the historical buy anchors (buy2021->2024, buy2022->2025 =")
+    print(f"reproduced as-of the historical buy anchors ({_clean_window_text_guarded()} =")
     print("the CLEAN 36-month windows), on REAL adjusted-close prices.")
     print("It does NOT grade tonight's live picks: no forward price exists yet (the")
     print("pick-log accrues those; grading them is the deferred separate piece).")
@@ -1540,6 +1721,13 @@ def run_analysis_suite(resdic, configdic):
     #  anything, and a failure inside the audit must not be mistaken for a fetch failure.
     _run_stage("price-grid staleness audit (report only, NO fetch)",
                _audit_price_grid_stage, resdic, configdic, log)
+    #  SAME PLACE, DIFFERENT QUESTION.  The staleness audit asks "is this the right grid";
+    #  this asks "is any price on it off by a power of ten", which staleness cannot see and a
+    #  level screen structurally cannot see either (16.9% of grid symbols are already under
+    #  $1).  Report-only, like its neighbour, and for a sharper reason: its evidence touches
+    #  names that are LIVE in scoring, and correcting a price would change a score.
+    _run_stage("vendor price-scale audit (report only, NO correction)",
+               _audit_price_scale_stage, resdic, configdic, log)
     #  Referee BEFORE the price source is built: it is about whether the real grid can be
     #  trusted, so its finding belongs above every number that rides on it.
     _run_stage("level-break referee (report only, NO override)",

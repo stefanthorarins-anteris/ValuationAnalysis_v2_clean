@@ -31,6 +31,7 @@ Run:  python baseline_tools/depth_horizon_grid.py --out <file.out> [--csv <file.
 
 import argparse
 import datetime as _dt
+import textwrap as _textwrap
 import os
 import sys
 import warnings
@@ -49,6 +50,7 @@ import dead_merge as dm
 import stage2_pit as s2
 import returns_core as rc
 import derived_prices as dpx
+import basis_stamp as bstamp
 
 # --------------------------------------------------------------------------- #
 #  Default inputs (present locally at the HomeGDrive paths; NONE cross git).   #
@@ -81,12 +83,94 @@ BUY_ANCHORS = [
 DEPTHS = [1, 2, 3, 5, 10, 20, 50, 100]
 HORIZONS = [12, 24, 36]  # months
 
-# Degeneracy flag (CEO-stated): pre-2021 buy anchors are UNIVERSE-DEGENERATE -- the
-# scoring pickle's history cap leaves only a non-representative long-history subset
-# (~1,000-1,250 names) live PIT, so a top-100 there is a large slice of the scored pool
-# and the depth cut is not meaningful.  buy2024 is the RICHEST anchor (7,863 names >=8q)
-# -> CLEAN.
-CLEAN_BUY_IDS = {"buy2021", "buy2022", "buy2023", "buy2024"}
+# WHICH BUY ANCHORS ARE FIT TO GRADE ON, AND WHY -- the reason is REQUIRED, not a comment.
+#
+# THE OLD FORM STATED A REASON THAT IS NOW FALSE, and stated it as prose beside a hardcoded
+# set, so the two could drift without anything noticing.  It read: "pre-2021 buy anchors are
+# UNIVERSE-DEGENERATE -- the scoring pickle's history cap leaves only a non-representative
+# long-history subset (~1,000-1,250 names) live PIT, so a top-100 there is a large slice of
+# the scored pool ... buy2024 is the RICHEST anchor (7,863 names >=8q) -> CLEAN."
+#
+# `-nrperiods 80` LIFTED THAT CAP.  Measured on the 2026-08-29 run's own log lines
+# (`[analysis] [buyNNNN] pit_universe=... n_pit_scored=...`):
+#
+#     anchor    pit_universe   n_pit_scored   live    dead   top-100 as % of scored
+#     buy2018        3034           2021       856    1165          4.95%
+#     buy2019        3211           2146       885    1261          4.66%
+#     buy2020        3533           2290       917    1373          4.37%
+#     buy2021        4131           2409       988    1421          4.15%
+#     buy2022        3708           2701      1016    1685          3.70%
+#     buy2023        2892           2311      1026    1285          4.33%
+#     buy2024        2159           1808      1027     781          5.53%
+#
+# EVERY CLAUSE OF THE OLD REASON IS NOW FALSE, AND TWO OF THEM ARE INVERTED.  No anchor has
+# "~1,000-1,250 names" -- the thinnest is 1,808.  buy2024, the anchor the comment named as
+# the RICHEST, has the SMALLEST scored pool of all seven.  And the criterion the comment
+# actually states -- top-100 being too large a slice of the pool -- applied literally today
+# would CLEAR buy2018 (4.95%) and FLAG buy2024 (5.53%), i.e. exactly backwards from what the
+# set encodes.  The live/dead mix separates nothing either: 42.4% live at buy2018 against
+# 41.0% at the CLEAN buy2021.
+#
+# THE REAL DRIVER IS DELISTED-REGISTRY COVERAGE, WHICH COLLAPSES BEFORE ~2021.  Deaths
+# recorded in `delisted_out/delisted_registry.csv` inside each anchor's own 36-month holding
+# window (counted directly off the registry, 9,277 rows):
+#
+#     buy2018  2018-12-31 -> 2021-12-31      658
+#     buy2019  2019-12-31 -> 2022-12-31    1,564
+#     buy2020  2020-12-31 -> 2023-12-31    3,257
+#     buy2021  2021-12-31 -> 2024-12-31    4,557
+#
+# Per calendar year the collapse is unmistakable: 69 recorded deaths in 2019 and 124 in 2020
+# against 1,817 in 2023 and 2,288 in 2025.  Global equities did not become twenty times more
+# likely to die in four years; the REGISTRY got better.  So an anchor whose holding window
+# sits in the blind era is FLATTERED -- its losers were never recorded as dead, they merely
+# stop appearing, and a backtest cannot grade a name it cannot see die.  This correlates with
+# "pre-2021" exactly as the old label did, which is why the false reason survived so long,
+# but it is a DIFFERENT reason and it ranks the anchors differently.
+#
+# THE PROMOTION RULE, NAMED SO THE NEXT ONE IS NOT AD HOC.  An anchor is EXCLUDED when the
+# registry records fewer than **50% of the death coverage of the latest CLEAN anchor** inside
+# its own 36-month holding window.  Against buy2021's 4,557: buy2020 at 3,257 is 71% -> CLEAN;
+# buy2019 at 1,564 is 34% -> excluded; buy2018 at 658 is 14% -> excluded.  The threshold is a
+# JUDGEMENT, not a derivation -- it says how much survivorship flattery is tolerable in the
+# POOLED-CLEAN headline -- and it is written down so the next promotion argues about the
+# number rather than re-inventing a rationale.  The CEO can overrule either way by editing
+# the table below; nothing computes the set from the counts, deliberately, because a rule
+# that silently re-promotes an anchor when a registry re-fetch moves a number is the failure
+# this whole entry exists to stop.
+#
+# CAVEAT ON THE MECHANISM, which is weaker than the ranking it supports.  "The registry got
+# better over time" is the obvious story and the series does NOT support it as stated: deaths
+# are NOT MONOTONE -- 2018 records 208 against 2019's 69 -- so a steady improvement in
+# coverage cannot explain the dip.  A vendor RETENTION artifact (older records aged out,
+# recent ones retained, with 2018 partially repopulated from another source) fits the shape
+# better, and neither hypothesis was tested.  WHAT SURVIVES THE UNCERTAINTY: whatever causes
+# it, the pre-2021 windows demonstrably contain far fewer gradeable deaths, and that is the
+# fact the exclusion rests on.  The RANKING of the anchors is unaffected, so the buy2019 and
+# buy2018 calls stand; the explanation is what is unsettled.
+#
+# THE STRUCTURE IS THE FIX.  `CLEAN_BUY_IDS` is now DERIVED from the exclusion table below,
+# so an anchor cannot be excluded without a written reason, and the reason is printed in the
+# grid report rather than living here where no reader of the output ever sees it.
+ANCHOR_EXCLUSION_REASONS = {
+    "buy2018": ("survivorship: only 658 registry deaths fall inside its 2018-12-31 -> "
+                "2021-12-31 holding window, against 4,557 for buy2021 -- 14% of the "
+                "coverage. Almost none of its losers can be graded as losses, so its "
+                "downside numbers are flattering rather than good."),
+    "buy2019": ("survivorship: 1,564 registry deaths inside its 2019-12-31 -> 2022-12-31 "
+                "window, 34% of buy2021's coverage, with a third of the window (2020-2021) "
+                "in the era where the registry recorded 69-461 deaths a year against "
+                "1,800-2,300 later. Thinner than buy2020 by a factor of two; held out of "
+                "the POOLED-CLEAN headline for that reason alone."),
+}
+
+#  DERIVED, so the set and its justification cannot drift apart.
+CLEAN_BUY_IDS = {wid for wid, _buy in BUY_ANCHORS} - set(ANCHOR_EXCLUSION_REASONS)
+
+
+def exclusion_reason(wid):
+    """Why `wid` is not graded on, or None if it is.  One place, printed by the report."""
+    return ANCHOR_EXCLUSION_REASONS.get(wid)
 
 
 # --------------------------------------------------------------------------- #
@@ -476,6 +560,12 @@ def build_report(per_anchor, cells, pooled, pooled_clean):
     lines.append("  Built on the returns_core.compute_returns primitive (returns-first architecture).")
     lines.append(f"  Generated {_dt.datetime.utcnow().isoformat()}Z  |  offline, no network")
     lines.append("=" * 100)
+    #  THE BASIS STAMP.  Without it this report is shaped identically to every un-vetoed one
+    #  in the archive, which is the ambiguity the stamp exists to prevent: the file is kept,
+    #  the run log that carried the stamp is not.  Same reader as the run banner
+    #  (`basis_stamp`), so the two cannot drift apart.
+    _basis = bstamp.of(per_anchor)
+    lines += bstamp.banner_lines(_basis, width=100)
     lines.append("RETURN DEFINITION: total_return = adjClose_eval / adjClose_buy - 1.")
     lines.append("  adjClose = FMP split+DIVIDEND-adjusted close (same series the beat-rate uses)")
     lines.append("  => dividend-INCLUSIVE total return.  Benchmark = " + rc.BENCHMARK_VARIANT + ".")
@@ -490,38 +580,66 @@ def build_report(per_anchor, cells, pooled, pooled_clean):
 
     lines.append("UNIVERSE & DEGENERACY FLAG (per buy anchor):")
     lines.append(f"  {'anchor':7} {'buy_date':11} {'pit_universe':>12} {'n_pit_scored':>12} "
-                 f"{'live':>6} {'dead':>6} {'rank_depth':>10}  flag")
+                 f"{'live':>6} {'dead':>6} {'rank_depth':>10}  {'basis':<10} flag")
     for wid, buy in BUY_ANCHORS:
         if wid not in per_anchor:
             lines.append(f"  {wid:7} {buy:11}  (ranking unavailable)")
             continue
         a = per_anchor[wid]
-        flag = "CLEAN" if wid in CLEAN_BUY_IDS else "DEGENERATE*"
+        flag = "CLEAN" if wid in CLEAN_BUY_IDS else "EXCLUDED*"
+        #  PER ANCHOR as well as in the header, because the POOLED blocks below average
+        #  across anchors: a header reading MIXED tells you the pool is mixed, this column
+        #  tells you WHICH rows mixed it.
         lines.append(f"  {wid:7} {buy:11} {a['universe_size']:>12} {a['n_pit_scored']:>12} "
-                     f"{a['n_pit_live']:>6} {a['n_pit_dead']:>6} {a['rank_depth']:>10}  {flag}")
-    lines.append("  * DEGENERATE (pre-2021): only a non-representative long-history subset")
-    lines.append("    (~1,000-1,250 names) is available PIT, so a 'top-100' is a large slice of the")
-    lines.append("    scored pool -- stage-1 barely filters and the DEPTH cut (top-3 vs top-100) is")
-    lines.append("    NOT meaningful.  The depth-concentration question is only truly answerable on")
-    lines.append("    the CLEAN windows (buy2021/2022/2023/2024), where the PIT pool is thousands of")
-    lines.append("    names.")
+                     f"{a['n_pit_live']:>6} {a['n_pit_dead']:>6} {a['rank_depth']:>10}  "
+                     f"{bstamp.tag(a.get('basis')):<10} {flag}")
+    #  THE REASON IS PRINTED, PER ANCHOR, and comes from the same table that decides the
+    #  set.  It used to be a fixed paragraph about a scoring-pickle history cap that
+    #  `-nrperiods 80` has since lifted -- so the report asserted a cause that no longer
+    #  existed, about anchors it no longer described.  A reader promoting an anchor on the
+    #  written reason was the named risk; now there is only one reason and it is the one the
+    #  set is built from.
+    if any(wid not in CLEAN_BUY_IDS for wid, _b in BUY_ANCHORS):
+        lines.append("  * EXCLUDED anchors and WHY (excluded = kept out of POOLED-CLEAN and out of")
+        lines.append("    the two-clause target; still computed and shown above for context):")
+        for wid, _buy in BUY_ANCHORS:
+            why = exclusion_reason(wid)
+            if not why:
+                continue
+            wrapped = _textwrap.wrap(f"{wid}: {why}", width=92)
+            lines.append("      " + wrapped[0])
+            lines += ["        " + w for w in wrapped[1:]]
     lines.append("")
 
     for wid, buy in BUY_ANCHORS:
         subset = [c for c in cells if c["scope"] == wid]
         if not subset:
             continue
-        flag = "CLEAN" if wid in CLEAN_BUY_IDS else "DEGENERATE (depth cut not meaningful)"
+        flag = ("CLEAN" if wid in CLEAN_BUY_IDS
+                else "EXCLUDED -- %s" % (exclusion_reason(wid) or "").split(":")[0])
         lines += _grid_block(f"ANCHOR {wid}  (buy {buy})   [{flag}]", subset)
 
-    lines += _grid_block("POOLED -- ALL anchors (per horizon)  [includes DEGENERATE windows]",
+    lines += _grid_block("POOLED -- ALL anchors (per horizon)  [includes EXCLUDED windows]",
                          pooled,
                          note="  Pools every pick across all anchors supporting the horizon. "
-                              "Depth-signal CONTAMINATED by degenerate pre-2021 windows.")
-    lines += _grid_block("POOLED -- CLEAN anchors only (buy2021/2022/2023/2024)  [the defensible read]",
+                              "CONTAMINATED by the EXCLUDED windows -- see their reasons "
+                              "under the flag table above.")
+    #  NAMED FROM THE SET, not restated.  The literal here said buy2021/2022/2023/2024 and
+    #  would have kept saying it after the set changed -- a title that describes a different
+    #  pool from the one it sits above is worse than an unlabelled one.
+    _clean_names = "/".join(w for w, _b in BUY_ANCHORS if w in CLEAN_BUY_IDS) or "(none)"
+    lines += _grid_block(f"POOLED -- CLEAN anchors only ({_clean_names})  [the defensible read]",
                          pooled_clean,
                          note="  The depth-concentration question answered on populated PIT "
                               "universes only.")
+    if str(_basis).startswith("MIXED"):
+        lines.append("")
+        lines.append("  !! THE TWO POOLED BLOCKS ABOVE AVERAGE ACROSS ANCHORS ON DIFFERENT "
+                     "MEASUREMENT BASES.")
+        lines.append("     A vetoed anchor and an un-vetoed one are not apples-to-apples; the "
+                     "pooled cell is")
+        lines.append("     a blend of the two and is NOT a reading of either.  See the basis "
+                     "column above.")
 
     lines.append("")
     lines.append("=" * 100)
@@ -541,7 +659,14 @@ def build_report(per_anchor, cells, pooled, pooled_clean):
     lines.append("    the buy leg; watch the nobuy counts, especially on gap-affected exchanges.")
     lines.append("  * A precise delisting terminal needs the death-price series (separate re-fetch);")
     lines.append("    the primary policy (last pre-eval anchor price) is an APPROXIMATION.")
-    lines.append("  * DEGENERATE pre-2021 windows: depth cut not meaningful (see flag table).")
+    #  THE CAVEAT NAMES THE REAL REASON.  This line survived Q-28 verbatim, asserting a
+    #  depth-cut argument from a history cap `-nrperiods 80` lifted -- in the CAVEATS block,
+    #  which is the part of the report a reader keeps.
+    if any(wid not in CLEAN_BUY_IDS for wid, _b in BUY_ANCHORS):
+        lines.append("  * EXCLUDED windows (%s) are in the POOLED-ALL block only, and NOT"
+                     % ", ".join(w for w, _b in BUY_ANCHORS if w not in CLEAN_BUY_IDS))
+        lines.append("    because their depth cut is uninformative -- see the per-anchor")
+        lines.append("    reasons under the flag table, which are about SURVIVORSHIP.")
     lines.append("  * URTH TR-proxy carries ~0.7pp/36mo tracking drag vs MSCI World Net TR --")
     lines.append("    immaterial against these return magnitudes.")
     lines.append("  * Windows overlap heavily (one macro regime); directional, not a large sample.")

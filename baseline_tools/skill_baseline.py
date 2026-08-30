@@ -64,10 +64,18 @@ import returns_core as rc          # PriceSource, compute_returns, beat_rate, be
 import stage2_pit as s2            # reproduce_pit_top, stage1_boscore
 import dead_merge as dm            # merge_dead_into_dmdic, pit_universe, load_registry
 import stage2_metrics as sm        # shared Stage-2 metrics (used only for the short-history guard)
+import depth_horizon_grid as dhg  # the ONE definition of which buy anchors are graded
 
-# Buy anchors with a non-degenerate PIT universe (pre-2021 anchors are universe-degenerate
-# -- thin dead-registry coverage + price-coverage gaps; see run_target_test caveats).
-CLEAN_BUY_ANCHORS = ["2021-12-31", "2022-12-30", "2023-12-29", "2024-12-31"]
+# THE GRADED BUY ANCHORS -- DERIVED, never restated.  This was the FOURTH hardcoded copy of
+# the clean-anchor set and the one that mattered most, because `skill_baseline` runs as a
+# suite stage beside the beat-rate table and the two stages are printed as a matched pair:
+# `pipeline_analysis` says "the intended difference between the two is the carve".  With
+# buy2020 promoted in `dhg` and this literal frozen at four anchors, that sentence became
+# false -- the beat-rate would grade THREE windows against skill_baseline's TWO, and the
+# difference a reader attributes to the carve would actually be a different anchor set.
+# The old comment's stated reason ("pre-2021 anchors are universe-degenerate") is also the
+# retired one; the surviving reasons live in `dhg.ANCHOR_EXCLUSION_REASONS` and are printed.
+CLEAN_BUY_ANCHORS = [buy for wid, buy in dhg.BUY_ANCHORS if wid in dhg.CLEAN_BUY_IDS]
 
 # +10,000% return.  A real 36mo winner never nears this; the near-zero-buy-price artifact
 # (~4,033x) does.  Names above the cap are dropped from dollar means (correction #3).
@@ -134,8 +142,10 @@ def clean_windows(cadence_months, anchors=None):
     """(buy_anchor, eval_anchor) pairs for the given hold length, restricted to the
     clean buy set and to anchors that actually exist on the price grid.
 
-    36mo -> [(2021-12-31, 2024-12-31), (2022-12-30, 2025-12-31)]   (2 windows)
-    12mo -> 4 windows buy2021..buy2024                              (annual cadence)
+    The window COUNT follows `dhg.CLEAN_BUY_IDS` and is deliberately not written down here:
+    stating it as a literal is what made the old docstring wrong the moment buy2020 was
+    promoted.  36mo yields one window per clean buy anchor that has an eval anchor on the
+    grid; 12mo yields one per clean anchor at annual cadence.
     """
     anchors = list(anchors) if anchors is not None else list(rc.DEFAULT_ANCHORS)
     idx = {a: i for i, a in enumerate(anchors)}
@@ -281,7 +291,10 @@ def _filter_metrics(per_window_ctx, ps, threshold, missing, contam_cap, winsor):
     for buy, ev, res, _sets in per_window_ctx:
         top20 = res["top20"]
         rdf = rc.compute_returns(top20, buy, ev, ps)
-        bench = rc.benchmark_return(ps, buy, ev, require_exact=True)
+        #  PER-WINDOW loop under a swallowing stage guard -- a bare require_exact call loses the whole stage, not one window.
+        bench = rc.benchmark_return_or_none(ps, buy, ev, str(buy), "skill_baseline")
+        if bench is None:
+            continue
         r, n = rc.beat_rate(rdf, bench, threshold=threshold, missing=missing)
         flags, rets = _name_flags_and_returns(rdf, bench, threshold, missing)
         all_rets.extend(rets.tolist())
@@ -318,7 +331,10 @@ def _oracle_metrics(per_window_ctx, ps, oracle_ns, threshold, missing, contam_ca
             # fine-ranking skill.  Directional, not exact.
             pool = res["pool_after_norm"]
             rdf = rc.compute_returns(pool, buy, ev, ps)
-            bench = rc.benchmark_return(ps, buy, ev, require_exact=True)
+            #  PER-WINDOW loop under a swallowing stage guard -- a bare require_exact call loses the whole stage, not one window.
+            bench = rc.benchmark_return_or_none(ps, buy, ev, str(buy), "skill_baseline")
+            if bench is None:
+                continue
             flags, rets = _name_flags_and_returns(rdf, bench, threshold, missing)
             m = len(flags)
             pool_sizes.append(m)
@@ -356,7 +372,10 @@ def _random_rung(rung_name, per_window_ctx, ps, pick_n, n_draws, threshold, miss
     for buy, ev, _res, sets in per_window_ctx:
         names = sets[rung_name]
         rdf = rc.compute_returns(names, buy, ev, ps).reset_index(drop=True)
-        bench = rc.benchmark_return(ps, buy, ev, require_exact=True)
+        #  PER-WINDOW loop under a swallowing stage guard -- a bare require_exact call loses the whole stage, not one window.
+        bench = rc.benchmark_return_or_none(ps, buy, ev, str(buy), "skill_baseline")
+        if bench is None:
+            continue
         per_window.append((rdf, bench))
         set_sizes[buy] = len(names)
 
@@ -529,9 +548,15 @@ def run_skill_baseline(dmdic, merged, registry, price_source, *,
                 else ("all" if (isinstance(exchange_filter, str)
                                 and exchange_filter == dm.ALL_EXCHANGES)
                       else list(exchange_filter))),
-            "note": ("pre-2021 buy anchors EXCLUDED (universe-degenerate). "
-                     "oracle shortlist = the Stage-2 pool the top-N is chosen from "
-                     "(reproduce_pit_top pool_after_norm)."),
+            #  DERIVED, and it names WHICH anchors rather than a stale rule of thumb: the
+            #  set moves, and a provenance note that describes a different set from the one
+            #  the numbers came from is worse than no note.
+            "note": ("buy anchors EXCLUDED: %s (see "
+                     "depth_horizon_grid.ANCHOR_EXCLUSION_REASONS). oracle shortlist = the "
+                     "Stage-2 pool the top-N is chosen from (reproduce_pit_top "
+                     "pool_after_norm)."
+                     % (", ".join(w for w, _b in dhg.BUY_ANCHORS
+                                  if w not in dhg.CLEAN_BUY_IDS) or "(none)")),
         },
         "filter": filt,
         "oracle": oracle,

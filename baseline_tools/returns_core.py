@@ -368,6 +368,44 @@ def benchmark_return(price_source, buy_date, eval_date, symbol=BENCHMARK_SYMBOL,
                             eval_date, require_exact=require_exact)
 
 
+def benchmark_return_or_none(price_source, buy_date, eval_date, window_id="",
+                             where="", symbol=BENCHMARK_SYMBOL, log=None):
+    """`benchmark_return(require_exact=True)`, but a missing anchor costs ONE WINDOW.
+
+    THE COMPOSITION DEFECT THIS EXISTS FOR.  `require_exact=True` RAISES on purpose, so a
+    missing benchmark anchor can never be papered over with a forward-filled stale level.
+    Every caller then put that bare call inside a PER-ANCHOR LOOP, and every one of those
+    loops runs under a stage guard that swallows exceptions (`pipeline_analysis._run_stage`
+    catches everything and returns None so a stage "can never crash the run").  The two
+    correct-in-isolation decisions compose into the wrong thing: ONE unpriceable anchor did
+    not cost its own window, it destroyed the WHOLE stage -- the two-clause target, the
+    beat-rate table, the per-band split, the gate attribution -- and took the perfectly
+    measurable windows down with it.  A coverage defect erasing a filter measurement, which
+    is precisely what `target_clauses` spends three docstring paragraphs preventing one layer
+    up, where nothing was preventing it.
+
+    THE STRICTNESS IS KEPT.  `require_exact=True` is still passed; it was never the problem,
+    the blast radius was.  A window with no exact benchmark leg is SAID and skipped, and the
+    remaining windows still report.
+
+    Returns the benchmark return, or None.  `None` must be treated as "skip this window" --
+    NEVER coerced to 0.0, which would silently score every pick in the window against a flat
+    benchmark and read as a result.
+    """
+    log = print if log is None else log
+    try:
+        return benchmark_return(price_source, buy_date, eval_date, symbol=symbol,
+                                require_exact=True)
+    except Exception as e:
+        tag = ("%s " % window_id) if window_id else ""
+        loc = (" in %s" % where) if where else ""
+        log("!!! %s(%s->%s) SKIPPED%s: no exact benchmark leg (%s: %s)."
+            % (tag, buy_date, eval_date, loc, type(e).__name__, e))
+        log("!!! This window contributes NOTHING here -- it is not a zero and not a failure "
+            "of the filter.")
+        return None
+
+
 def beat_rate(returns_df, benchmark_ret, threshold=0.10, missing="fail", floor=False):
     """Beat-rate DERIVED from per-ticker returns: share of names whose excess over the
     benchmark is >= threshold.  Mirrors beat_rate.py's missing-eval policy so it is a

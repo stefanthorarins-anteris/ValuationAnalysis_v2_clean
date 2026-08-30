@@ -25,6 +25,7 @@ sys.path.insert(0, _HERE)
 
 import returns_core as rc
 import skill_baseline as sb
+import depth_horizon_grid as dhg
 
 
 # --------------------------------------------------------------------------- #
@@ -61,22 +62,50 @@ class FakePrices:
 # --------------------------------------------------------------------------- #
 #  clean_windows                                                              #
 # --------------------------------------------------------------------------- #
-def test_clean_windows_36mo():
-    w = sb.clean_windows(36)
-    assert w == [("2021-12-31", "2024-12-31"), ("2022-12-30", "2025-12-31")]
-
-
-def test_clean_windows_12mo():
-    w = sb.clean_windows(12)
-    assert w == [("2021-12-31", "2022-12-30"), ("2022-12-30", "2023-12-29"),
-                 ("2023-12-29", "2024-12-31"), ("2024-12-31", "2025-12-31")]
-
-
-def test_clean_windows_excludes_pre_2021():
-    # No buy anchor before 2021 appears (universe-degenerate) at any cadence.
+#  THESE THREE PINNED THE RETIRED RULE.  They asserted the frozen 2021+ window lists and,
+#  by name, that "no buy anchor before 2021 appears (universe-degenerate)" -- which is the
+#  `-nrperiods 80`-lifted history-cap rationale Q-28 removed.  With buy2020 promoted on
+#  SURVIVORSHIP evidence they failed, and the failing assertion was the retired rule itself,
+#  not a defect in the promotion.  Rewritten to assert the INVARIANTS they were standing in
+#  for; the frozen lists are gone because restating a set that moves is the defect Q-28 is
+#  about, one layer down in a test.
+def test_clean_windows_follows_the_ONE_definition_of_the_graded_set():
+    """`skill_baseline` runs beside the beat-rate table and the pair is printed as differing
+    only by the carve, so its anchor set must BE `dhg.CLEAN_BUY_IDS`, not a copy of it."""
+    assert sb.CLEAN_BUY_ANCHORS == [b for w, b in dhg.BUY_ANCHORS if w in dhg.CLEAN_BUY_IDS]
     for cad in (12, 36):
         buys = [b for b, _ in sb.clean_windows(cad)]
-        assert all(b >= "2021" for b in buys)
+        assert buys == sorted(buys), "windows must come out in anchor order"
+        assert set(buys) <= set(sb.CLEAN_BUY_ANCHORS)
+
+
+def test_clean_windows_emits_one_window_per_anchor_that_HAS_an_eval_leg():
+    """The real content of the old frozen lists: a clean anchor is graded exactly when its
+    buy+cadence lands on an anchor that exists on the grid, and is dropped silently when it
+    does not (the latest anchors have no eval leg yet)."""
+    anchors = list(rc.DEFAULT_ANCHORS)
+    idx = {a: i for i, a in enumerate(anchors)}
+    for cad in (12, 36):
+        expected = []
+        for buy in sb.CLEAN_BUY_ANCHORS:
+            i = idx.get(buy)
+            if i is None:
+                continue
+            j = i + cad // 12
+            if j < len(anchors):
+                expected.append((buy, anchors[j]))
+        assert sb.clean_windows(cad, anchors) == expected
+
+
+def test_no_EXCLUDED_anchor_leaks_into_the_graded_set_at_any_cadence():
+    """What `..._excludes_pre_2021` was actually protecting, stated as the thing that is
+    still true: an anchor held out in `ANCHOR_EXCLUSION_REASONS` must never be graded.
+    'pre-2021' was a proxy for that and stopped being one when buy2020 was promoted."""
+    excluded = {b for w, b in dhg.BUY_ANCHORS if w in dhg.ANCHOR_EXCLUSION_REASONS}
+    assert excluded, "fixture assumes at least one anchor is held out"
+    for cad in (12, 36):
+        buys = {b for b, _ in sb.clean_windows(cad)}
+        assert not (buys & excluded), f"an excluded anchor is being graded: {buys & excluded}"
 
 
 # --------------------------------------------------------------------------- #

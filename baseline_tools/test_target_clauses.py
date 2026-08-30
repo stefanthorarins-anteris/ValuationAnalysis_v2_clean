@@ -619,5 +619,93 @@ def test_the_bond_bar_has_ONE_definition_not_a_hardcoded_9_27_in_the_stage():
         assert literal not in src, f"{literal} is restated in the stage instead of imported"
 
 
+# --------------------------------------------------------------------------- #
+#  9. THE REASON STRING MUST AGREE WITH THE COVERAGE ROW ABOVE IT  (Q-39)      #
+#                                                                             #
+#  These are written as a CONSISTENCY test against `coverage_counts`, not as  #
+#  a string pin, because a pinned sentence is exactly how the defect shipped:  #
+#  the old branch hardcoded the `no_buy` wording and stayed "correct" against  #
+#  any test that only checked the verdict.                                     #
+#                                                                             #
+#  WHAT THIS GUARD CANNOT SEE: it checks the reason against the counts, so if  #
+#  `coverage_counts`/`buy_only_mask` MIScategorise a pick, the reason repeats  #
+#  the same mistake confidently and this test still passes.  It pins agreement #
+#  between the two printed rows, not the truth of either.                      #
+# --------------------------------------------------------------------------- #
+def test_an_all_buy_only_window_does_NOT_claim_the_picks_have_no_buy_price():
+    """THE DEFECT: 20 picks, every one priced at the buy anchor and nothing after it.  The
+    verdict INDETERMINATE was right; the reason said "no pick in this window has a buy price"
+    when all 20 have one.  It contradicted the coverage row printed two lines above it."""
+    d = tc.downside_clause(_rdf(buy_only=20), depth_n=20)
+    assert d["verdict"] == "INDETERMINATE"
+    assert d["n_buy_only"] == 20 and d["n_no_buy"] == 0
+    assert "no buy price" not in d["verdict_reason"]
+    assert "buy anchor only" in d["verdict_reason"]
+
+
+def test_the_all_no_buy_window_still_says_the_picks_were_never_opened():
+    """The case the old string WAS accurate for must not regress into a vaguer one."""
+    d = tc.downside_clause(_rdf(no_buy=20), depth_n=20)
+    assert d["verdict"] == "INDETERMINATE"
+    assert "20 never opened" in d["verdict_reason"]
+    assert "buy anchor only" not in d["verdict_reason"]
+
+
+@pytest.mark.parametrize("kw", [
+    dict(no_buy=20), dict(buy_only=20), dict(terminal=[0.1] * 20),
+    dict(no_buy=7, buy_only=6, terminal=[0.1] * 7), dict(no_buy=13, buy_only=7),
+])
+def test_every_count_named_in_the_reason_matches_the_coverage_counts(kw):
+    """Whatever the mix of unmeasured buckets, the sentence is READ OFF the same counts the
+    coverage row prints, so the two cannot disagree.  A two-way no_buy-vs-buy_only branch --
+    the fix as first proposed -- would still have been wrong on the mixed rows here."""
+    d = tc.downside_clause(_rdf(**kw), depth_n=20)
+    reason = d["verdict_reason"]
+    assert d["n_measured"] == 0 and d["verdict"] == "INDETERMINATE"
+    for n, phrase in ((d["n_no_buy"], "never opened"),
+                      (d["n_buy_only"], "priced at the buy anchor only"),
+                      (d["n_terminal_stale"], "carrying only a stale earlier price")):
+        if n:
+            assert f"{n} {phrase}" in reason, f"{phrase!r} missing or miscounted in {reason!r}"
+        else:
+            assert phrase not in reason, f"{reason!r} names an empty bucket"
+
+
+def test_a_window_with_nothing_priced_reports_the_two_bounds_that_ARE_defined():
+    """`portfolio_return` is genuinely nan with nothing to average.  `lower_bound` is not --
+    every pick at -100% is exactly -100% -- and `flip_return` is exactly the bar.  Printing
+    all three as n/a discarded two well-defined figures."""
+    d = tc.downside_clause(_rdf(buy_only=20), depth_n=20)
+    assert d["portfolio_return"] != d["portfolio_return"]
+    assert d["lower_bound"] == pytest.approx(-1.0)
+    assert d["flip_return"] == pytest.approx(d["bar"])
+    assert d["verdict"] == "INDETERMINATE", "-100% must never clear the bar"
+
+
+def test_the_zero_priced_bounds_are_the_LIMIT_of_the_general_formulas():
+    """The special-cased branch must not invent its own arithmetic: -1.0 and the bar are what
+    the partial-coverage formulas below already produce as the priced count goes to zero."""
+    one = tc.downside_clause(_rdf(ok=[0.0], no_buy=19), depth_n=20)
+    none = tc.downside_clause(_rdf(no_buy=20), depth_n=20)
+    assert one["lower_bound"] == pytest.approx((0.0 - 19) / 20)
+    assert none["lower_bound"] == pytest.approx((0.0 - 20) / 20)
+    assert one["flip_return"] == pytest.approx((one["bar"] * 20 - 0.0) / 19)
+    assert none["flip_return"] == pytest.approx((none["bar"] * 20 - 0.0) / 20)
+
+
+def test_a_missing_BENCHMARK_is_not_reported_as_missing_PICKS():
+    """Same defect class in the sibling clause: three different exits shared one reason
+    string, so an unpriceable URTH leg printed "no measured pick to compute a beat-rate on"
+    over 20 perfectly measured picks."""
+    r = _rdf(ok=[0.30] * 20)
+    u = tc.upside_clause(r, float("nan"), depth_n=20)
+    assert u["verdict"] == "INDETERMINATE"
+    assert "no measured pick" not in u["verdict_reason"]
+    assert "benchmark" in u["verdict_reason"]
+    #  and the genuine no-coverage case still names the buckets
+    u2 = tc.upside_clause(_rdf(buy_only=20), 0.05, depth_n=20)
+    assert "buy anchor only" in u2["verdict_reason"]
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([os.path.abspath(__file__), "-q"]))

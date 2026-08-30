@@ -89,8 +89,15 @@ def main():
     print("AD-HOC ANALYSIS on SAVED RUN (offline; historical PIT backtest vs this model)")
     print("pickle   : " + os.path.basename(args.pickle))
     print("prices   : " + os.path.basename(pa._PRICES_CSV) + " (+2025 supp if present)")
+    #  COUNTED from the set, not stated: "~2 heavily-overlapping windows" was a literal that
+    #  survived the buy2020 promotion, in a CAVEAT whose job is to cap how hard a reader
+    #  leans on the numbers below it.
+    import depth_horizon_grid as _dhg
+    _nclean = sum(1 for _w, _b in _dhg.BUY_ANCHORS if _w in _dhg.CLEAN_BUY_IDS
+                  and _dhg.ANCHOR_IDX[_b] + 3 < len(_dhg.ANCHORS))
     print("CAVEATS  : JAN-2026 snapshot universe (NOT the live top-20); the CLEAN 36mo grid")
-    print("           is only ~2 heavily-overlapping windows -> suggestive, NOT established")
+    print(f"           is only ~{_nclean} heavily-overlapping window(s) -> suggestive, NOT "
+          "established")
     print("           (per reviewer). Numbers reported as they come out.")
     print(bar, flush=True)
 

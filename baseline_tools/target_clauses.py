@@ -266,6 +266,38 @@ def diagnostics(returns_df, bar, floor=False):
             "n_below_zero": n_below, "share_below_zero": float(n_below) / n}
 
 
+def unmeasured_reason(counts):
+    """Why NOTHING is measured, READ OFF the coverage counts rather than assumed.
+
+    The `n_priced == 0` branch used to hardcode "no pick in this window has a buy price".
+    That is the `no_buy` sentence and it is FALSE for the other two buckets: on a window
+    where all 20 picks are `buy_only` every pick DOES have a buy price -- none has an eval
+    price -- and the string contradicted the coverage row printed two lines above it in the
+    same output.  The buckets partition the shipped picks (`coverage_counts`), so building
+    the sentence FROM those counts is the only form that cannot disagree with that row,
+    whatever the mix is.  A two-way `no_buy`-vs-`buy_only` branch would still have been
+    wrong on a mixed window and on an all-stale one.
+
+    THE REMAINDER IS NAMED TOO.  `coverage_counts`' partition only closes when the frame
+    holds every shipped pick; picks absent from the returns table altogether are the
+    leftover, and they are reported as such rather than silently folded into a bucket that
+    was not observed.
+    """
+    n_sel = int(counts.get("n_selected", 0) or 0)
+    buckets = [(int(counts.get("n_no_buy", 0) or 0), "never opened (no buy price)"),
+               (int(counts.get("n_buy_only", 0) or 0), "priced at the buy anchor only"),
+               (int(counts.get("n_terminal_stale", 0) or 0),
+                "carrying only a stale earlier price")]
+    accounted = int(counts.get("n_measured", 0) or 0) + sum(n for n, _ in buckets)
+    unaccounted = max(0, n_sel - accounted)
+    if unaccounted:
+        buckets.append((unaccounted, "absent from the returns table"))
+    parts = ["%d %s" % (n, phrase) for n, phrase in buckets if n]
+    if not parts:
+        return "no pick is measured at this anchor"
+    return "no pick is measured: " + "; ".join(parts)
+
+
 def downside_clause(returns_df, depth_n, horizon_m=CHARTERED_HORIZON_M, floor=False,
                     annual=BOND_RATE_ANNUAL):
     """The chartered DOWNSIDE clause on ONE anchor: equal-weight portfolio vs the bond.
@@ -304,9 +336,19 @@ def downside_clause(returns_df, depth_n, horizon_m=CHARTERED_HORIZON_M, floor=Fa
     out["n_priced"] = n_priced
 
     if n_priced == 0:
-        out.update({"portfolio_return": float("nan"), "lower_bound": float("nan"),
-                    "flip_return": float("nan"), "verdict": "INDETERMINATE",
-                    "verdict_reason": "no pick in this window has a buy price"})
+        #  THE POINT ESTIMATE IS THE ONLY UNDEFINED NUMBER HERE.  There is no priced pick to
+        #  average, so `portfolio_return` is genuinely nan -- but `lower_bound` and
+        #  `flip_return` are not: the general formulas below both close at n_priced == 0 and
+        #  give -100% (mark every pick at -100%) and exactly the bar (what the unpriced picks
+        #  would have to average for the full portfolio to clear it).  Printing them as `n/a`
+        #  threw away two well-defined figures and made the two columns look as unknowable as
+        #  the first.  The verdict is unchanged: -100% never clears the bar, so a window with
+        #  nothing priced stays INDETERMINATE.
+        out.update({"portfolio_return": float("nan"),
+                    "lower_bound": -1.0 if n_selected else float("nan"),
+                    "flip_return": bar if n_selected else float("nan"),
+                    "verdict": "INDETERMINATE",
+                    "verdict_reason": unmeasured_reason(out)})
         return out
 
     total = float(r.sum())
@@ -365,10 +407,21 @@ def upside_clause(returns_df, benchmark_ret, depth_n, threshold=0.10,
     n_selected = out["n_selected"]
     m = measured(returns_df)
     if benchmark_ret != benchmark_ret or not len(m) or not n_selected:
+        #  THREE DIFFERENT REASONS SHARE THIS EXIT and they were collapsed into one string.
+        #  A missing BENCHMARK is not a coverage gap in the picks: the sentence "no measured
+        #  pick to compute a beat-rate on" is false whenever the picks are fine and it is
+        #  URTH that could not be priced.  Same defect class as the downside clause's
+        #  hardcoded `no_buy` reason -- an accurate verdict carrying an inaccurate reason.
+        if not n_selected:
+            reason = "no pick shipped at this anchor"
+        elif benchmark_ret != benchmark_ret:
+            reason = ("the benchmark return is unavailable for this window, so no pick can "
+                      "be scored against it")
+        else:
+            reason = unmeasured_reason(out)
         out.update({"n_beat": 0, "rate_measured": float("nan"),
                     "lo": float("nan"), "hi": float("nan"), "verdict": "INDETERMINATE",
-                    "verdict_reason": ("no measured pick to compute a beat-rate on"
-                                       if n_selected else "no pick shipped at this anchor")})
+                    "verdict_reason": reason})
         return out
     col = "total_return_floor" if floor else "total_return"
     r = pd.to_numeric(m[col], errors="coerce").dropna()

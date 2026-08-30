@@ -457,28 +457,72 @@ def test_the_audit_is_wired_as_its_own_pipeline_stage():
     assert calls[0] is not fetch[0]
 
 
-def test_the_fetch_decision_is_still_PRESENCE_only_so_staleness_cannot_spend_money():
-    """The one thing the fix must NOT do.  An auto-refetch on staleness would bill the CEO on a
-    schedule nobody approved, so `need_main`/`need_supp` must stay pure existence checks."""
+def test_staleness_alone_can_NEVER_spend_money():
+    """THIS TEST PINNED THE DEFECT IT WAS COVERING, and it is rewritten rather than deleted.
+
+    It used to be called `..._is_still_PRESENCE_only_...` and asserted that `need_main` and
+    `need_supp` were BOTH pure `not os.path.exists(...)` expressions.  But presence-only was
+    Q-7 -- the refetch decision could not see the freshness signal that existed two stages
+    away, so a months-old grid satisfied it for ever.  The test encoded the SHAPE that
+    happened to deliver the invariant, so it made the defect unfixable without a test failure,
+    which is exactly the trap this repo has now hit eleven times.
+
+    THE INVARIANT ITSELF IS UNCHANGED AND IS WHAT IS ASSERTED HERE: an auto-refetch on
+    staleness would bill the CEO on a schedule nobody approved, so nothing may set
+    `need_main` except (a) the file being absent, or (b) an EXPLICIT override key.  Staleness
+    is an input to a REFUSAL, never to a fetch.
+
+    WHAT THIS CANNOT SEE: it reads the AST of the decision, so it proves no *code path* in
+    this function spends without the key.  It cannot prove the key is hard to set by accident,
+    and it says nothing about whether the staleness verdict itself is right.
+    """
     import ast
     import pathlib
     src = (pathlib.Path(_HERE) / 'pipeline_analysis.py').read_text(encoding='utf-8')
     tree = ast.parse(src)
     fn = next(n for n in ast.walk(tree)
               if isinstance(n, ast.FunctionDef) and n.name == 'run_price_fetch_stage')
-    assigns = {}
+
+    assigns = []
     for n in ast.walk(fn):
         if isinstance(n, ast.Assign) and len(n.targets) == 1 \
                 and getattr(n.targets[0], 'id', None) in ('need_main', 'need_supp'):
-            assigns[n.targets[0].id] = ast.unparse(n.value)
-    assert set(assigns) == {'need_main', 'need_supp'}, assigns
-    for k, v in assigns.items():
-        assert v.startswith('not os.path.exists('), (k, v)
-    #  and the audit module is not reachable from the fetch stage at all
-    names = {getattr(a, 'name', '') for n in ast.walk(fn)
-             if isinstance(n, ast.Import) for a in n.names}
-    assert 'price_grid_audit' not in names, (
-        'the fetch stage imports the audit -- keep the report and the spend decision apart')
+            assigns.append((n.targets[0].id, ast.unparse(n.value), n.lineno))
+    names = {k for k, _v, _l in assigns}
+    assert names == {'need_main', 'need_supp'}, assigns
+
+    #  1. The BASELINE decision for each is still the existence check.  Absent -> fetch.
+    for key in ('need_main', 'need_supp'):
+        first = min((a for a in assigns if a[0] == key), key=lambda a: a[2])
+        assert first[1].startswith('not os.path.exists('), first
+
+    #  2. Every OTHER assignment must sit under the explicit override key.  This is the
+    #     invariant the old shape-check was standing in for.
+    for key, value, lineno in assigns:
+        if value.startswith('not os.path.exists('):
+            continue
+        enclosing = [n for n in ast.walk(fn) if isinstance(n, ast.If)
+                     and n.lineno <= lineno <= max(
+                         getattr(c, 'lineno', n.lineno) for c in ast.walk(n))]
+        guards = ' '.join(ast.unparse(n.test) for n in enclosing)
+        assert 'price_grid_refetch_when_stale' in guards, (
+            f'{key} is set at line {lineno} to {value!r} outside the override key -- '
+            'staleness must never authorise a paid fetch on its own')
+
+    #  3. No time-based trigger may creep in: an age rule looks conservative and quietly
+    #     spends on a schedule, which is the exact thing this test exists to forbid.
+    body = ast.unparse(fn)
+    for automatic in ('getmtime', 'timedelta(', 'max_age', 'auto_refetch'):
+        assert automatic not in body, f'a time-based refetch trigger appeared: {automatic}'
+
+    #  4. THE REPORT AND THE SPEND DECISION STAY APART, in the form that still matters.  The
+    #     fetch stage may now consult the audit's PURE verdict function, but it must not reach
+    #     `run_audit`, which prints the banner, writes to stderr and can RAISE on
+    #     `refuse_when_stale` -- a reporting entry point inside the spend decision is how the
+    #     two would become one thing again.
+    called = {ast.unparse(n.func) for n in ast.walk(fn) if isinstance(n, ast.Call)}
+    assert not any(c.endswith('run_audit') for c in called), (
+        'the fetch stage calls the audit REPORTER; it may only ask the pure verdict function')
 
 
 def test_the_audit_module_contains_no_network_surface():

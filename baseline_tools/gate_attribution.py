@@ -185,7 +185,12 @@ def attribute_anchor(wid, buy, ev, vetoed, unvetoed, price_source,
     ejected = set(vr.get("ejected") or [])
     ejected_flags = dict(vr.get("ejected_flags") or {})
 
-    bench = rc.benchmark_return(price_source, buy, ev, require_exact=True)
+    #  SINGLE-WINDOW helper: `None` propagates to the caller, which must skip the window.
+    #  Kept on the same guarded path so the two cannot diverge in strictness.
+    bench = rc.benchmark_return_or_none(price_source, buy, ev, str(buy),
+                                        "the per-window gate attribution")
+    if bench is None:
+        return None
 
     dropped_all = [t for t in u_top if t not in set(v_top)]
     added = [t for t in v_top if t not in set(u_top)]
@@ -310,7 +315,12 @@ def spotlight_rows(anchors, vetoed_by_wid, unvetoed_by_wid, price_source,
         v_top = list((v.get("top20_deduped") or [])[:depth_n])
         u_top = list((u.get("top20_deduped") or [])[:depth_n])
         u_rank_full = list(u.get("ranking") or [])
-        bench = rc.benchmark_return(price_source, buy, ev, require_exact=True)
+        #  PER-ANCHOR LOOP under a swallowing stage guard: a bare require_exact call here
+        #  loses the whole attribution, not one anchor.  Widened by the buy2020 promotion.
+        bench = rc.benchmark_return_or_none(price_source, buy, ev, wid,
+                                            "the gate attribution")
+        if bench is None:
+            continue
         for t in tickers:
             c = cohort([t], buy, ev, price_source, bench, threshold)
             rows.append({
@@ -581,7 +591,8 @@ def run_in_pipeline(dmdic, merged, registry, price_source, per_anchor_vetoed, lo
     PIT reproduction of the anchors that have a 36-month eval leg -- TWO of the seven, because
     the other five have no eval anchor in the grid and so nothing to compare returns over.
     MEASURED on this panel: a full seven-anchor ranking pass is ~205s (~30s per anchor), so the
-    two clean anchors are about a minute inside a multi-hour run.
+    clean anchors are about a minute each inside a multi-hour run (the count follows
+    `dhg.CLEAN_BUY_IDS` and is no longer two).
 
     Returns the attribution dict; prints the report.
     """
