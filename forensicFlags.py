@@ -126,6 +126,45 @@ def _classify_financial(sector, fallback_sector=None):
     return True, False, kind
 
 
+#  A BLANKED FLAG IS NOT A FALSE (P-4, 2026-08-29).  `M_flag_gt_-1.78` / `C_flag_ge_4` are
+#  blanked on a row with no score (see buildForensicFlagTable), which makes the published
+#  column three-valued -- True / False / blank -- and the blank arrives as `''` in memory and
+#  as NaN after a CSV round-trip.  `bool(float('nan')) is True`, so a plain truthiness test on
+#  the round-tripped column would INVENT a manipulation flag on the very names the pipeline
+#  said it could not assess: the exact inversion of the rule that blanked them, and precisely
+#  the "red flag next to a high-quality indicator" the CEO has named as the opposite of what
+#  he wants.  ONE reader for every consumer, so a new surface cannot re-derive it wrongly.
+def _flag_true(v):
+    """True only for a flag that SAYS true; a blank/NaN/absent flag is not a False, and is
+    certainly not a True.  Accepts the three shapes the column reaches a consumer in: a
+    Python/NumPy bool (in-memory), the string 'True'/'False' (object column read back from
+    CSV), and the blank ('' in memory, NaN after the round-trip)."""
+    if v is None:
+        return False
+    if isinstance(v, str):
+        return v.strip().lower() in ('true', '1', 'yes')
+    try:
+        if pd.isna(v):
+            return False
+    except (TypeError, ValueError):
+        pass
+    return bool(v)
+
+
+def flag_display(v, yes='FLAG', no='no', blank='not assessed'):
+    """How a possibly-blank forensic flag is RENDERED, in one place.  The blank gets its own
+    word: rendering it as `no` is the P-4 defect itself (a negative finding asserted where the
+    pipeline abstained), and rendering it as `FLAG` is the NaN-truthiness trap above."""
+    if v is None or (isinstance(v, str) and not v.strip()):
+        return blank
+    try:
+        if not isinstance(v, str) and pd.isna(v):
+            return blank
+    except (TypeError, ValueError):
+        pass
+    return yes if _flag_true(v) else no
+
+
 def _summary_tag(is_fin, m_finite, c_finite, m_flag, c_flag, sloan_flag):
     """Summary guidance tag (never an auto-drop). Financials are forensic-invalid
     and their M/C/Sloan flags are NOT counted."""
@@ -360,7 +399,21 @@ def buildForensicFlagTable(resdic, topn, sector_fallback=None):
             'forensicValid': forensic_valid,
             'financialKind': fin_kind,
             'M_score_mean': round(m_mean, 4) if m_finite else np.nan,
-            'M_flag_gt_-1.78': m_flag,
+            #  NO VERDICT, NO BOOLEAN VERDICT (P-4, 2026-08-29) -- the same rule as `M_drivers`
+            #  above, one column to its left.  `M_flag_gt_-1.78 = False` on a row with no
+            #  M-score asserts "this name is NOT a manipulator" about a name the pipeline has
+            #  just declared unassessable; on the 2026-08-29 top-100 that was 17 of 97 rows,
+            #  FIVE of them inside the top-20 (ranks 2, 4, 7, 9, 10).  A False here is not the
+            #  absence of a finding, it is a finding -- and the reader has no way to tell it
+            #  from the 78 rows where the model actually ran and returned a real 'no'.
+            #  THE COLUMN BECOMES THREE-VALUED (True / False / blank) and therefore OBJECT
+            #  dtype.  `''` is the blank, not `np.nan`, deliberately: the two are identical in
+            #  the CSV (both write an empty cell) but not in memory, and `bool(np.nan)` is
+            #  True -- so a NaN blank would turn any truthiness test still to be written into a
+            #  FALSE RED FLAG, which is worse than the defect being fixed.  `''` also matches
+            #  the blank `M_drivers` / `C_flags_fired` already use in the neighbouring columns.
+            #  Consumers must go through `_flag_true` / `flag_display`, which handle all three.
+            'M_flag_gt_-1.78': m_flag if m_finite else '',
             'M_drivers': m_drivers,
             #  WHY THE CELL BESIDE IT IS EMPTY (CEO, 2026-08-16).  After the O-13 domain
             #  guards a fifth of the shortlist abstains, and a blank M with no explanation
@@ -371,7 +424,13 @@ def buildForensicFlagTable(resdic, topn, sector_fallback=None):
             #  so the CSV cannot explain the abstention differently from the bucket.
             'M_abstain_reason': m_abstain_reason,
             'C_score_mean': round(c_mean, 4) if c_finite else np.nan,
-            'C_flag_ge_4': c_flag,
+            #  THE SAME RULE ON THE C SIDE, AND ITS MEASURED EFFECT TODAY IS ZERO -- stated
+            #  rather than implied, exactly as `C_flags_fired` states it: `C_Score` is a COUNT,
+            #  so `C_score_mean` is NaN only for a name that produces no forensic rows at all
+            #  (0 of 97 on the 2026-08-29 top-100).  Present because an asymmetry between two
+            #  adjacent columns -- one self-limiting, one not -- is how the M side acquired
+            #  this defect in the first place.
+            'C_flag_ge_4': c_flag if c_finite else '',
             'C_flags_fired': c_fired,
             'sloanAccruals': round(sloan_val, 4) if pd.notna(sloan_val) else np.nan,
             'sloan_worstQuintile_inShortlist': sloan_flag,
@@ -438,8 +497,13 @@ def applySectorFallback(flag_df, api_sector_map):
         sflag = bool(valid and pd.notna(sval) and pd.notna(sloan_cut) and sval >= sloan_cut)
         m_finite = pd.notna(row.get('M_score_mean'))
         c_finite = pd.notna(row.get('C_score_mean'))
-        m_flag = bool(row.get('M_flag_gt_-1.78'))
-        c_flag = bool(row.get('C_flag_ge_4'))
+        #  `_flag_true`, NOT `bool(...)` (P-4): the published columns are now three-valued and
+        #  a blank arrives here as `''` in memory or NaN from a CSV, and `bool(np.nan)` is
+        #  True.  The tag itself is not currently reachable through that path -- `_summary_tag`
+        #  returns `data-incomplete` before it reads either flag whenever a score is missing --
+        #  so this is closing the route, not a live wrong tag.
+        m_flag = _flag_true(row.get('M_flag_gt_-1.78'))
+        c_flag = _flag_true(row.get('C_flag_ge_4'))
         tag = _summary_tag(bool(row['isFinancial']), m_finite, c_finite, m_flag, c_flag, sflag)
         new_sloan_flag.append(sflag)
         new_tag.append(tag)

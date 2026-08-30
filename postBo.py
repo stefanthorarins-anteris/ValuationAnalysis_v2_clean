@@ -2545,13 +2545,20 @@ def createPresentation(finalBoRank_df, mscore, cscore, baseurl, api_key, topn, f
                     f"INVALID for {frow.get('financialKind', 'financial')} — use financial lens")
             forensic_items = [
                 ('Summary tag', frow.get('forensicTag', '')),
-                ('Beneish M > -1.78?', 'FLAG' if frow.get('M_flag_gt_-1.78') else 'no'),
+                #  THREE-VALUED, NOT TRUTHY (P-4, 2026-08-29).  `M_flag_gt_-1.78` is BLANK on a
+                #  row with no M-score, and the two ways of getting this wrong are opposite:
+                #  `... else 'no'` prints a negative finding where the pipeline abstained (the
+                #  defect itself), and a bare truthiness test on the NaN the column carries
+                #  after any CSV round-trip prints 'FLAG' -- a red flag on a name nobody
+                #  assessed.  `ff.flag_display` is the one reader that distinguishes all three;
+                #  the '  Why no M-score' line directly below then carries the reason.
+                ('Beneish M > -1.78?', ff.flag_display(frow.get('M_flag_gt_-1.78'))),
                 #  WHY THERE IS NO M AT ALL (CEO, 2026-08-16).  Blank for a name that HAS an
                 #  M, so the line appears exactly where it is needed; an abstention with a
                 #  reason reads as a refusal, an abstention without one reads as a bug.
                 ('  Why no M-score', frow.get('M_abstain_reason', '') or '-'),
                 ('  M drivers', frow.get('M_drivers', '') or '-'),
-                ('Montier C >= 4?', 'FLAG' if frow.get('C_flag_ge_4') else 'no'),
+                ('Montier C >= 4?', ff.flag_display(frow.get('C_flag_ge_4'))),
                 ('  C flags fired', frow.get('C_flags_fired', '') or '-'),
                 ('Sloan accruals', frow.get('sloanAccruals', '')),
                 ('  Sloan worst-quintile (within shortlist)?',

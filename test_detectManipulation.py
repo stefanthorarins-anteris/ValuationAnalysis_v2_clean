@@ -29,7 +29,9 @@ GMI and DEPI use prior/current; the other five use current/prior. A single globa
 orientation flip therefore CANNOT make all eight correct at once -- each component
 must compute ITS OWN published direction, which is what is asserted below.
 """
+import csv
 import inspect
+import io
 import os
 import sys
 
@@ -1629,6 +1631,150 @@ def test_P2_blanking_at_SOURCE_reaches_every_artifact_the_CEO_reads():
     print("PASS test_P2_blanking_at_SOURCE_reaches_every_artifact_the_CEO_reads")
 
 
+# ---------------------------------------------------------------------------
+#  P-4  --  a boolean verdict on a row that has no verdict
+# ---------------------------------------------------------------------------
+
+def test_P4_the_boolean_flags_are_BLANK_on_a_row_with_no_score():
+    """*** P-4, 2026-08-29: a no-verdict row must not carry a boolean verdict. ***
+    `M_flag_gt_-1.78 = False` asserts "this name is NOT a manipulator" about a name the
+    pipeline has just declared unassessable -- and the reader cannot tell it apart from the
+    rows where the model ran and cleared the name.  17 of the 97 rows of the shipped
+    2026-08-29 top-100 carried it, five of them inside the top-20 (ranks 2, 4, 7, 9, 10).
+
+    TWO-SIDED, and the second half is the one that matters: a name that HAS a score must keep
+    a real boolean, or the fix has traded a false negative for a blank column that never says
+    anything.  The blank must also be `''` and not NaN -- see the round-trip test below for
+    why the difference is not cosmetic.
+    """
+    #  the same fixture P-2 uses: abstains on GMI while DSRI is strongly adverse, so this is a
+    #  name with no verdict whose surviving components would happily support one.
+    rows = [dict(r, grossProfitMargin=0.0) for r in _dso_rows(300.0, 100.0)]
+    t = _flagtable(rows, 'NOVERD')
+    assert pd.isna(t['M_score_mean'].iloc[0]), t['M_score_mean'].iloc[0]
+    assert t['M_flag_gt_-1.78'].iloc[0] == '', repr(t['M_flag_gt_-1.78'].iloc[0])
+    assert t['M_flag_gt_-1.78'].iloc[0] is not False, 'a blank must not BE the False it replaces'
+    assert t['M_abstain_reason'].iloc[0], 'the blank must still be EXPLAINED'
+    assert t['forensicTag'].iloc[0] == 'data-incomplete: dig-deeper'
+
+    #  the other side: a scored name keeps a real boolean, and the tag still reads it
+    annual = _annual([_BASE] * 5 + [_DIRTY])
+    df = _build(annual, 'HASVERD')
+    resdic = {'cdx_df': df, 'postRank': pd.DataFrame({'source': ['HASVERD']})}
+    det = dm.detectManipulationWrapper(resdic)
+    with _no_sector_pickle():
+        t2 = ff.buildForensicFlagTable({**resdic, **det}, 1)
+    assert pd.notna(t2['M_score_mean'].iloc[0])
+    assert isinstance(t2['M_flag_gt_-1.78'].iloc[0], (bool, np.bool_)), \
+        repr(t2['M_flag_gt_-1.78'].iloc[0])
+    assert t2['forensicTag'].iloc[0] != 'data-incomplete: dig-deeper'
+    print("PASS test_P4_the_boolean_flags_are_BLANK_on_a_row_with_no_score")
+
+
+def test_P4_C_flag_is_blanked_on_the_SAME_rule_with_a_measured_effect_of_ZERO():
+    """The neighbouring column, on the same rule, with its incidence stated rather than
+    implied: `C_Score` is a COUNT, so `C_score_mean` is NaN only for a name that produces no
+    forensic rows at all -- 0 of 97 on the 2026-08-29 top-100.  The guard exists because an
+    asymmetry between two adjacent columns is how the M side acquired this defect."""
+    rows = _dso_rows(300.0, 100.0)
+    df = _build_quarters(rows, 'NOC')
+    resdic = {'cdx_df': df, 'postRank': pd.DataFrame({'source': ['NOC']})}
+    det = dm.detectManipulationWrapper(resdic)
+    det['SLmeanCscore'] = det['SLmeanCscore'].assign(C_Score_mean=np.nan)
+    with _no_sector_pickle():
+        t = ff.buildForensicFlagTable({**resdic, **det}, 1)
+    assert pd.isna(t['C_score_mean'].iloc[0])
+    assert t['C_flag_ge_4'].iloc[0] == '', repr(t['C_flag_ge_4'].iloc[0])
+    #  two-sided: with the mean present the boolean is published as before
+    det2 = dm.detectManipulationWrapper(resdic)
+    with _no_sector_pickle():
+        t2 = ff.buildForensicFlagTable({**resdic, **det2}, 1)
+    assert pd.notna(t2['C_score_mean'].iloc[0])
+    assert isinstance(t2['C_flag_ge_4'].iloc[0], (bool, np.bool_))
+    print("PASS test_P4_C_flag_is_blanked_on_the_SAME_rule_with_a_measured_effect_of_ZERO")
+
+
+def test_P4_a_blank_survives_the_CSV_round_trip_as_a_NON_verdict_not_as_a_FLAG():
+    """*** THE TRAP THIS FIX EXISTS TO AVOID. ***  Blanking makes the column three-valued and
+    therefore OBJECT dtype, and `pd.read_csv` turns the empty cell into NaN -- so every
+    consumer downstream of the CSV sees NaN, and `bool(float('nan')) is True`.  A consumer
+    that kept a bare truthiness test would print a MANIPULATION FLAG on the very names the
+    pipeline could not assess: not the old defect surviving but its inversion, and exactly
+    the "red flag next to a high-quality indicator" the CEO has ruled out.
+
+    So this asserts the READER, not the writer: `_flag_true` and `flag_display` must give the
+    right answer for all three shapes the column arrives in -- in-memory blank, round-tripped
+    NaN, and the string 'True'/'False' an object column reads back as.
+    """
+    assert bool(float('nan')) is True, 'the trap itself -- if this ever changes, say so here'
+
+    rows = [dict(r, grossProfitMargin=0.0) for r in _dso_rows(300.0, 100.0)]
+    t = _flagtable(rows, 'NOVERD')
+    text = t.to_csv(index=False)
+    #  the CSV cell is EMPTY -- the artifact says nothing, which is the whole point
+    lines = text.splitlines()
+    hdr = next(csv.reader([lines[0]]))
+    cells = next(csv.reader([lines[1]]))
+    assert cells[hdr.index('M_flag_gt_-1.78')] == '', cells[hdr.index('M_flag_gt_-1.78')]
+    back = pd.read_csv(io.StringIO(text))
+    v = back['M_flag_gt_-1.78'].iloc[0]
+    assert pd.isna(v), repr(v)                      # it really is NaN on the way back
+    assert ff._flag_true(v) is False, 'a NaN blank must never read as a fired flag'
+    assert ff.flag_display(v) == 'not assessed', ff.flag_display(v)
+
+    #  every other shape the column reaches a consumer in
+    assert ff._flag_true(True) and ff._flag_true(np.bool_(True)) and ff._flag_true('True')
+    assert not ff._flag_true(False) and not ff._flag_true(np.bool_(False))
+    assert not ff._flag_true('False') and not ff._flag_true('') and not ff._flag_true(None)
+    #  and the RENDERING keeps all three apart -- a blank is not a 'no'
+    assert ff.flag_display(True) == 'FLAG'
+    assert ff.flag_display(False) == 'no'
+    assert ff.flag_display('') == 'not assessed' and ff.flag_display(None) == 'not assessed'
+    assert ff.flag_display('False') == 'no', 'a round-tripped real False is still a real no'
+    print("PASS test_P4_a_blank_survives_the_CSV_round_trip_as_a_NON_verdict_not_as_a_FLAG")
+
+
+def test_P4_blanking_at_SOURCE_reaches_every_consumer_of_the_two_columns():
+    """ONE place, and then the consumers that must not undo it.  Blanking in
+    `buildForensicFlagTable` is upstream of `ForensicFlagsTop100`, of the `AggScoreTop100`
+    merge, of the XLSX forensic block and of the HTML deck -- but two of those RENDER the
+    boolean rather than passing it through, and a renderer with a bare truthiness test turns
+    the blank back into a statement.  This is the wiring check for those.
+
+    WHAT THIS CANNOT CATCH: it reads the source of the consumers that exist TODAY.  A new
+    surface written tomorrow as `if row['M_flag_gt_-1.78']:` would ship the inverted defect
+    and this test would stay green -- there is no asserting against code nobody has written.
+    The real guard is `_flag_true` making the correct read the easy one, not this test.
+    """
+    pb_src = open(os.path.join(REPO, 'postBo.py'), encoding='utf-8').read()
+    #  the AggScore merge carries both columns through, so the deck inherits the blank
+    assert "'M_flag_gt_-1.78', 'M_drivers', 'M_abstain_reason', 'C_flag_ge_4'" in pb_src
+    #  the XLSX block RENDERS them, through the shared three-valued reader
+    assert "ff.flag_display(frow.get('M_flag_gt_-1.78'))" in pb_src
+    assert "ff.flag_display(frow.get('C_flag_ge_4'))" in pb_src
+    #  ...and nothing in postBo still tests either column for truthiness
+    for col in ("M_flag_gt_-1.78", "C_flag_ge_4"):
+        assert ("'FLAG' if frow.get('%s')" % col) not in pb_src, col
+
+    gp_src = open(os.path.join(REPO, 'generate_presentation.py'), encoding='utf-8').read()
+    #  the deck reads the column as a STRING against positive tokens only, so both '' and the
+    #  round-tripped 'nan' fall through to False -- absence-safe by construction, asserted
+    #  here so a future "simplification" to `bool(...)` is a test failure, not a silent flag.
+    assert ("m_flag = str(r0.get('M_flag_gt_-1.78')).strip().lower() in ('true', '1', 'yes')"
+            in gp_src)
+    for probe in ('nan', '', 'False'):
+        assert probe.strip().lower() not in ('true', '1', 'yes')
+    #  and there is exactly ONE construction site for it in the deck -- no second, recomputed
+    #  m_flag that a blanked column would not disarm.
+    assert gp_src.count("m_flag = ") == 2, gp_src.count("m_flag = ")   # the default + the read
+
+    ff_src = open(os.path.join(REPO, 'forensicFlags.py'), encoding='utf-8').read()
+    #  the in-module consumer that rebuilds the summary tag after the sector fallback
+    assert "m_flag = _flag_true(row.get('M_flag_gt_-1.78'))" in ff_src
+    assert "bool(row.get('M_flag_gt_-1.78'))" not in ff_src
+    print("PASS test_P4_blanking_at_SOURCE_reaches_every_consumer_of_the_two_columns")
+
+
 if __name__ == '__main__':
     test_component_directions_exact_row0()
     test_mscore_fold_and_flag_dirty()
@@ -1687,4 +1833,8 @@ if __name__ == '__main__':
     test_P2_M_drivers_is_BLANK_on_a_row_that_has_no_M_score()
     test_P2_C_flags_fired_is_BLANK_when_there_is_no_C_score()
     test_P2_blanking_at_SOURCE_reaches_every_artifact_the_CEO_reads()
+    test_P4_the_boolean_flags_are_BLANK_on_a_row_with_no_score()
+    test_P4_C_flag_is_blanked_on_the_SAME_rule_with_a_measured_effect_of_ZERO()
+    test_P4_a_blank_survives_the_CSV_round_trip_as_a_NON_verdict_not_as_a_FLAG()
+    test_P4_blanking_at_SOURCE_reaches_every_consumer_of_the_two_columns()
     print("\nALL detectManipulation KNOWN-ANSWER TESTS PASSED")

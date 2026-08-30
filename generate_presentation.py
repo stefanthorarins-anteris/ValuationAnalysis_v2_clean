@@ -1369,19 +1369,27 @@ def _verdict_state_band(rule, v):
 
 
 #  THE LOW-CONFIDENCE NOTE ASSERTED A VALUE THAT MAY NOT EXIST (P-2 sweep, 2026-08-17).
-#  `low_conf` is tested BEFORE the value is, so a metric that is both low-confidence and
-#  ABSENT rendered the sentence "value present but flagged low-confidence" beside an empty
-#  cell -- the same "explanation of a thing that is not there" class as `M_drivers` on a row
-#  with no M-score.  It reaches two live combinations: a forensically-invalid name whose
-#  M/C/Sloan is NaN (`low_conf_forensic`) and a weak-denominator name whose incomeQuality or
-#  cash-conversion is NaN (`denom_weak`).
-#  ONLY THE SENTENCE IS FIXED HERE.  The 🟡-over-⚪ PRECEDENCE is a documented spec decision
-#  ("spec Part C") about what the deck's icons mean, so changing it is the CEO's call and not
-#  a bug fix -- an absent value arguably belongs in ⚪ 'value unavailable' rather than in a
-#  🟡 that qualifies a reading nobody made.  RAISED, NOT TAKEN; the icon is unchanged and only
-#  the false half of the note is removed.  Its incidence could not be measured offline (it
-#  needs a rendered deck), which is why the change is confined to text that is wrong under
-#  every reading.
+#  `low_conf` was tested BEFORE the value, so a metric that is both low-confidence and ABSENT
+#  rendered the sentence "value present but flagged low-confidence" beside an empty cell --
+#  the same "explanation of a thing that is not there" class as `M_drivers` on a row with no
+#  M-score.  It reaches two live combinations: a forensically-invalid name whose M/C/Sloan is
+#  NaN (`low_conf_forensic`) and a weak-denominator name whose incomeQuality or
+#  cash-conversion is NaN (`denom_weak`).  Only the SENTENCE was fixed then.
+#
+#  ABSENCE NOW OUTRANKS LOW CONFIDENCE (P-5, 2026-08-29).  The icon precedence was left in
+#  place in 2026-08-17 as a documented spec decision ("spec Part C") rather than a bug, so the
+#  🟡 kept rendering over the ⚪ and a MISSING metric read as a merely UNCERTAIN one.
+#  That is the weaker of the two facts, and the wrong one: "we could not measure this" is
+#  stronger, more actionable, and cannot be mistaken for a soft reading of a number -- while
+#  a 🟡 on an empty cell qualifies a reading nobody made.  Spec Part C is amended with the
+#  code, not behind it: the docstring below, the on-page legend (`_icon_legend`) and the
+#  pinning test in `test_reporting_expansion.py` all state the new order.
+#  THE 🚩 IS UNAFFECTED -- it is independent of the verdict icon by design (the legend says so),
+#  so a low-confidence name still carries whatever suspicion flag its rule fired; what changes
+#  is only which of two ⚪/🟡 facts the verdict glyph reports when BOTH are true.
+#  `_low_conf_note`'s absent-value branch is now unreachable through `compute_verdict` and is
+#  kept deliberately as the belt to this brace (a direct assertion in the test exercises it),
+#  so a future re-ordering cannot silently restore the false sentence as well as the icon.
 def _low_conf_note(value):
     """The Y2 low-confidence note, told apart from the case where there is no value."""
     if np.isnan(safe_float(value)):
@@ -1390,29 +1398,35 @@ def _low_conf_note(value):
 
 
 def compute_verdict(metric_key, value, cohort_label=None, low_conf=False):
-    """4-state verdict for one metric. Precedence (spec Part C): (1) no rule / suppressed
-    for cohort -> ⚪ 'gray'; (2) else Y2 low-confidence -> 🟡 'neutral'; (3) else value vs
-    rule. Returns (state, note) where state in {good,neutral,warn,gray} or (None, None)
-    when the metric takes NO icon. `low_conf` carries the caller's Y2 determination."""
+    """4-state verdict for one metric. Precedence (spec Part C, as amended by P-5 2026-08-29):
+    (1) no rule / suppressed for cohort -> ⚪ 'gray'; (2) else NO VALUE -> ⚪ 'gray, value
+    unavailable'; (3) else Y2 low-confidence -> 🟡 'neutral'; (4) else value vs rule.
+    Returns (state, note) where state in {good,neutral,warn,gray} or (None, None) when the
+    metric takes NO icon. `low_conf` carries the caller's Y2 determination.
+
+    (2) BEFORE (3) is the P-5 ruling: absence outranks low confidence.  A missing value and an
+    uncertain value are different facts, and rendering the missing one as the uncertain one
+    tells the reader the weaker, less actionable of the two -- and does it in the direction
+    that reads as a number we merely distrust rather than a number we do not have."""
     if metric_key in VERDICT_RULES:
         r = VERDICT_RULES[metric_key]
         if cohort_label is not None and cohort_label in r.get('suppress', set()):
             return 'gray', 'no universal rule for this cohort'
-        if low_conf:
-            return 'neutral', _low_conf_note(value)
         st = _verdict_state_band(r, value)
         if st is None:
             return 'gray', 'value unavailable'
+        if low_conf:
+            return 'neutral', _low_conf_note(value)
         return st, r['note']
     if metric_key in VERDICT_FLOORS:
         f = VERDICT_FLOORS[metric_key]
         if cohort_label is not None and cohort_label in f.get('suppress', set()):
             return 'gray', 'no universal rule for this cohort'
-        if low_conf:
-            return 'neutral', _low_conf_note(value)
         v = safe_float(value)
         if np.isnan(v):
             return 'gray', 'value unavailable'
+        if low_conf:
+            return 'neutral', _low_conf_note(value)
         bad = (v < f['floor']) if f['bad'] == 'below' else (v > f['floor'])
         return ('warn', f['note']) if bad else ('gray', 'no positive standalone rule (peer-relative)')
     if metric_key in VERDICT_GRAY:
@@ -3471,13 +3485,21 @@ class PresentationBuilder:
             '<span class="leg">🟢 good</span>'
             '<span class="leg">🟡 borderline / low-confidence</span>'
             '<span class="leg">🔴 bad side of a rule</span>'
-            '<span class="leg">⚪ no standalone rule (peer-relative)</span>'
+            #  ⚪ CARRIES TWO DISTINCT FACTS and the legend now says both (P-5, 2026-08-29).
+            #  It always did -- `compute_verdict` has returned ⚪ 'value unavailable' since the
+            #  rules were written -- but the legend only advertised the no-rule half, and after
+            #  P-5 an absent value is ⚪ even when the metric is also flagged low-confidence.
+            #  Hover gives the exact one; the legend must not leave a reader inferring that a
+            #  ⚪ means "we looked and there is no rule" when it can mean "there is no number".
+            '<span class="leg">⚪ no standalone rule (peer-relative), or no value</span>'
             '<span class="leg-sep">·</span>'
             '<span class="leg">🚩<sub>H</sub> High — treat as fact, investigate before buying</span>'
             '<span class="leg">🚩<sub>M</sub> Medium — real signal, needs business context</span>'
             '<span class="leg">🚩<sub>L</sub> Low — a prompt to look, not a verdict</span>'
             '<div class="leg-note">The 🚩 is independent of the verdict icon — a 🟢🚩 or ⚪🚩 '
-            'is valid (a good/no-rule number can still be flagged). Hover any icon for the rule '
+            'is valid (a good/no-rule number can still be flagged). A MISSING value always shows ⚪ '
+            'even when it is also low-confidence: absence is the stronger fact, so it is the '
+            'one the icon reports. Hover any icon for the rule '
             'and, for a flag, the mechanism + offending metric + values + tier + rule id.</div>'
             #  THE VALENCE OF THE FIELDS ADDED 2026-08-13, STATED ON THE PAGE.  A marker whose
             #  direction the reader has to infer is a marker that can be inferred backwards,

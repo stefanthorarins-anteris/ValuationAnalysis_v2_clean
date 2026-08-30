@@ -975,31 +975,64 @@ def test_the_deck_falls_back_to_the_FORENSIC_csv_when_the_aggscore_one_lacks_the
 #  P-2 SWEEP -- "an explanation of a thing that is not there", deck edition
 # ---------------------------------------------------------------------------
 
-def test_the_low_confidence_note_does_not_claim_a_value_that_is_ABSENT():
-    """*** P-2 sweep, 2026-08-17. ***  `compute_verdict` tests `low_conf` BEFORE it tests the
-    value, so a metric that is both low-confidence and MISSING rendered the sentence
-    "value present but flagged low-confidence" beside an empty cell.  Two live combinations
-    reach it: a forensically-invalid name whose M/C/Sloan is NaN (`low_conf_forensic`), and a
-    weak-denominator name whose incomeQuality or cash-conversion is NaN (`denom_weak`).
+def test_an_ABSENT_value_outranks_LOW_CONFIDENCE_in_both_the_icon_and_the_note():
+    """*** P-5, 2026-08-29: absence outranks low confidence. ***  `compute_verdict` tested
+    `low_conf` BEFORE the value, so a metric that is both low-confidence and MISSING rendered
+    as 🟡 "merely uncertain" -- the weaker and less actionable of the two facts, and the one
+    that reads as a number we distrust rather than a number we do not have.  The P-2 sweep of
+    2026-08-17 fixed only the SENTENCE and pinned the icon, saying in as many words that a
+    later ruling should update this test rather than quietly relax it.  This is that update.
 
-    ONLY THE SENTENCE IS ASSERTED HERE.  The 🟡-over-⚪ precedence is a documented spec
-    decision about what the deck's icons mean and is deliberately UNCHANGED -- so this test
-    pins the state as 'neutral' too.  If a later ruling moves an absent value to ⚪, this test
-    should be updated as part of that decision rather than quietly relaxed.
+    TWO-SIDED, and the second side is the one that could be broken silently: a metric that is
+    low-confidence and PRESENT must still be 🟡 with the low-confidence sentence, or the fix has
+    traded a wrong icon for a blind one that never reports low confidence at all.
     """
     #  one key from EACH branch that carries the low-confidence short-circuit: VERDICT_RULES
     #  (M-Score, sloan) and VERDICT_FLOORS (cash_conv).  `incomeQuality` is VERDICT_GRAY and
     #  never reaches the branch, so including it would have tested nothing.
     for key in ('M-Score', 'sloan', 'cash_conv'):
         st_missing, note_missing = gp.compute_verdict(key, np.nan, None, low_conf=True)
+        assert st_missing == 'gray', (key, st_missing)        # ⚪, not 🟡
+        assert note_missing == 'value unavailable', (key, note_missing)
         assert 'value present' not in note_missing, (key, note_missing)
-        assert 'unavailable' in note_missing, (key, note_missing)
-        assert st_missing == 'neutral', (key, st_missing)     # precedence UNCHANGED
-        #  ...and the note is unchanged wherever a value actually exists
-        _st, note_present = gp.compute_verdict(key, 0.5, None, low_conf=True)
+        #  ...and a name that HAS the value still gets the low-confidence amber and sentence
+        st_present, note_present = gp.compute_verdict(key, 0.5, None, low_conf=True)
+        assert st_present == 'neutral', (key, st_present)
         assert note_present == 'value present but flagged low-confidence (see 🚩/forensic)', note_present
+        #  the icon actually rendered differs, not just the internal state name
+        assert gp.VERDICT_GLYPH[st_missing] != gp.VERDICT_GLYPH[st_present]
     #  the ordinary (not low-confidence) missing case is untouched
     assert gp.compute_verdict('M-Score', np.nan, None, low_conf=False)[0] == 'gray'
+    #  cohort suppression still outranks BOTH -- a metric with no rule for this cohort says so
+    #  rather than reporting a missing value it was never going to judge.
+    assert gp.compute_verdict('M-Score', np.nan, 'FinManager', low_conf=True) == (
+        'gray', 'no universal rule for this cohort')
+    #  THE BELT BEHIND THE BRACE.  `_low_conf_note`'s absent-value branch is now unreachable
+    #  through `compute_verdict`; it is kept so that a future re-ordering cannot restore the
+    #  false SENTENCE as well as the icon, and is exercised directly here so it cannot rot.
+    assert 'value present' not in gp._low_conf_note(np.nan)
+    assert 'unavailable' in gp._low_conf_note(np.nan)
+
+
+def test_the_deck_LEGEND_states_the_precedence_it_renders():
+    """*** P-5. ***  The icon meanings are a documented spec ("Part C"); the code and the
+    documented meaning must not drift apart, and the only copy of that spec the CEO actually
+    reads is the legend printed on the page.  So the legend is asserted here alongside the
+    behaviour: ⚪ must advertise BOTH of its meanings (no rule, and no value), and the
+    precedence must be stated where the reader is.
+
+    WHAT THIS CANNOT CATCH: it checks that the sentences EXIST, not that they are true.  A
+    change that re-ordered `compute_verdict` and left the legend intact would pass this test
+    and fail the one above -- which is why both are here.
+    """
+    legend = gp.PresentationBuilder._icon_legend(None)   # `self` is unused by the legend
+    assert 'or no value' in legend, legend
+    assert 'absence is the stronger fact' in legend, legend
+    src = inspect.getsource(gp.compute_verdict)
+    #  the ORDER, read off the source: the value test precedes the low-confidence test in both
+    #  branches that carry one.  A pure-behaviour test cannot see a branch nobody exercises.
+    assert src.index("st = _verdict_state_band(r, value)") < src.index("if low_conf:")
+    assert src.index("if np.isnan(v):") < src.rindex("if low_conf:")
 
 
 def test_the_deck_R5_rule_cannot_fire_off_a_driver_string_that_has_no_M_score():
