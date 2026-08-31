@@ -11,7 +11,12 @@ commit that introduced the stamp said "basis is stamped everywhere"; it was stam
 `rank_all_anchors`'s log lines and in the two-clause banner, and NOWHERE ELSE.  The grid
 report and `scoring_compare` -- the two artifacts a reader actually keeps -- printed nothing,
 so the first vetoed grid report ever produced is shaped identically to every un-vetoed one in
-the archive.  `depth_horizon_grid` cannot import `pipeline_analysis` (that is the cycle:
+the archive.  (SCOPE, since it is easy to over-read: of those two, only the GRID report is
+produced by the nightly run.  `scoring_compare` is a hand-run tool with no production call
+site, so its stamps have never executed against real data -- see its module docstring.  And
+`skill_baseline`, the third report printed beside these, was not reached by that batch at
+all; it went on printing an UN-VETOED filter number beside a VETOED beat-rate, unstamped,
+until 2026-08-31.)  `depth_horizon_grid` cannot import `pipeline_analysis` (that is the cycle:
 `pipeline_analysis` imports `dhg`), which is why the reader is here instead of copied.  A
 second implementation of this parse is the failure mode to avoid, not a second stamp.
 

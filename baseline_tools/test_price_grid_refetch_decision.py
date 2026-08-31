@@ -172,21 +172,153 @@ def test_the_helper_still_requires_an_EXACT_benchmark_anchor():
     assert seen["require_exact"] is True
 
 
-def test_EVERY_per_anchor_loop_in_the_suite_uses_the_guarded_helper():
-    """THE FIX STOPPED ONE CALL SITE SHORT the first time.  `pipeline_analysis` was fixed
-    while `gate_attribution` (2 sites) and `skill_baseline` (3) kept the bare call -- both
-    run in this suite, and the buy2020 promotion widened both to three anchors.  Latent only
-    because URTH happens to be priced at every anchor, which is luck, not a guard.
+#  ----------------------------------------------------------------------------------- #
+#  THE SUITE, DERIVED -- not a list somebody has to remember to extend                  #
+#  ----------------------------------------------------------------------------------- #
+#  The first version of the sweep below named THREE modules and its own docstring conceded
+#  "it covers the modules named here".  `depth_horizon_grid` was the fourth suite module: it
+#  ran the same per-anchor loop under the same swallowing stage guard, it produced the
+#  LARGEST report in the suite -- and it kept a bare
+#  `rc.benchmark_return(price_source, buy, ev)` with `require_exact` defaulting False, i.e. a
+#  missing anchor silently FORWARD-FILLED a stale benchmark level into every `excess` column.
+#  A guard that cannot see the defect beneath it is this project's recurring failure, and a
+#  hand-maintained module list is how it got built that way.  So the list is DERIVED from
+#  `pipeline_analysis`'s own transitive import graph: a stage that runs in the suite must be
+#  imported by it (directly, or through another suite module), so a NEW stage is covered the
+#  moment it is wired in -- by construction, not by anybody remembering this file exists.
 
-    WHAT THIS CANNOT SEE: it covers the modules named here.  A NEW module added to the suite
-    with a bare call is not caught by anything."""
-    import gate_attribution
-    import pipeline_analysis
-    import skill_baseline
-    for mod in (pipeline_analysis, gate_attribution, skill_baseline):
-        src = _strip_docstrings(mod)
-        assert "benchmark_return(" not in src.replace("benchmark_return_or_none(", ""), (
-            f"{mod.__name__} still calls benchmark_return directly inside a loop")
+
+def _read(path):
+    with open(path, encoding="utf-8") as fh:
+        return fh.read()
+
+
+def _suite_modules():
+    """Every `baseline_tools` module reachable from `pipeline_analysis`'s imports.
+
+    FUNCTION-LOCAL IMPORTS COUNT, and that is essential rather than incidental: every stage
+    in `run_analysis_suite` imports its module INSIDE the stage closure
+    (`import depth_horizon_grid as dhg`), so a module-level-only scan would see almost none
+    of the suite.  `ast` rather than `importlib`, deliberately -- resolving these for real
+    would execute module-level code, and `tuner` / `tune_run` are heavy."""
+    import ast
+    local = {f[:-3] for f in os.listdir(_HERE) if f.endswith(".py")}
+
+    def _imports(mod):
+        tree = ast.parse(_read(os.path.join(_HERE, mod + ".py")))
+        out = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                out |= {a.name.split(".")[0] for a in node.names}
+            elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+                out.add(node.module.split(".")[0])
+        return out & local
+
+    seen, stack = set(), ["pipeline_analysis"]
+    while stack:
+        m = stack.pop()
+        if m in seen:
+            continue
+        seen.add(m)
+        stack.extend(_imports(m))
+    return sorted(seen)
+
+
+def _benchmark_return_calls(mod_name):
+    """[(lineno, passes_require_exact_True)] for every `benchmark_return(...)` CALL.
+
+    Matches `rc.benchmark_return(...)` and a bare `benchmark_return(...)`, and deliberately
+    NOT `benchmark_return_or_none(...)` -- that one is the guarded helper, which is the whole
+    point.  AST rather than substring, so a mention in a comment or a docstring cannot fail a
+    test about behaviour (the lesson `_strip_docstrings` above already carries)."""
+    import ast
+    tree = ast.parse(_read(os.path.join(_HERE, mod_name + ".py")))
+    out = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        f = node.func
+        name = (f.attr if isinstance(f, ast.Attribute)
+                else f.id if isinstance(f, ast.Name) else None)
+        if name != "benchmark_return":
+            continue
+        exact = any(kw.arg == "require_exact"
+                    and isinstance(kw.value, ast.Constant) and kw.value.value is True
+                    for kw in node.keywords)
+        out.append((node.lineno, exact))
+    return out
+
+
+#  Suite modules that call `benchmark_return` STRICTLY AND FATALLY on purpose, each with the
+#  reason.  Checked for EQUALITY, not containment: a new module taking the strict-fatal shape
+#  fails until someone writes down why, and an entry that has stopped being true fails too,
+#  so the registry cannot rot into a list of things that used to be exceptions.
+STRICT_AND_FATAL_BY_DESIGN = {
+    "returns_core":
+        "owns both `benchmark_return` and the `_or_none` wrapper; the wrapper's own call is "
+        "the strict one every other caller borrows.",
+    "tune_run":
+        "search OBJECTIVES (`surrogate_score`, `true_beat_rate`).  Silently dropping a "
+        "window there would change the objective the tuner optimises rather than cost a "
+        "report row, so a raise is the correct outcome -- and `tune_run` runs only under "
+        "run_estimation, never in the nightly suite's guarded stages.",
+    "rebalance_engine":
+        "one benchmark leg for a whole rebalance schedule, computed BEFORE the per-period "
+        "loop and not inside one.  With no leg there is no run to report, so there is no "
+        "window to skip.",
+}
+
+
+def test_no_suite_module_can_FORWARD_FILL_a_missing_benchmark_anchor():
+    """The `depth_horizon_grid.py:442` defect, stated as a property of the whole suite.
+
+    `benchmark_return` defaults `require_exact=False`, and that default is the dangerous one:
+    a missing anchor is answered with the last known benchmark LEVEL carried forward, so
+    `excess_primary` / `excess_floor` measure against a stale index and nothing says so.  No
+    suite module may take that default -- there is no reading of a forward-filled benchmark
+    that anybody wants."""
+    offenders = []
+    for mod in _suite_modules():
+        for lineno, exact in _benchmark_return_calls(mod):
+            if not exact:
+                offenders.append("%s.py:%d" % (mod, lineno))
+    assert not offenders, (
+        "these call benchmark_return with require_exact defaulting FALSE, i.e. a missing "
+        "anchor is silently forward-filled: " + ", ".join(offenders)
+        + ".  Route them through returns_core.benchmark_return_or_none.")
+
+
+def test_every_STRICT_benchmark_call_in_the_suite_is_one_we_wrote_down():
+    """The blast-radius half, which `require_exact=True` alone does not fix.
+
+    A strict call inside a per-anchor loop RAISES; every such loop runs under
+    `pipeline_analysis._run_stage`; that guard swallows everything -- so one unpriceable
+    anchor erased a whole stage and took the measurable windows with it.  The remedy is
+    `benchmark_return_or_none`; the exceptions are the three modules registered above, where
+    a raise is the right outcome.  EQUALITY, so a fourth cannot appear unexplained and a
+    stale entry cannot survive."""
+    strict = set(mod for mod in _suite_modules()
+                 if any(exact for _l, exact in _benchmark_return_calls(mod)))
+    registered = set(STRICT_AND_FATAL_BY_DESIGN)
+    assert strict == registered, (
+        "unregistered strict-and-fatal callers: %s; registered but no longer strict-and-"
+        "fatal: %s.  Either route the call through benchmark_return_or_none, or add a "
+        "one-line reason to STRICT_AND_FATAL_BY_DESIGN."
+        % (sorted(strict - registered), sorted(registered - strict)))
+
+
+def test_the_sweep_actually_reaches_the_module_it_was_blind_to():
+    """A guard that cannot see its own target is the failure this sweep was widened to fix,
+    so the widening is checked rather than assumed.  `depth_horizon_grid` is the module that
+    sat outside the old three-name list; the other three are the ones that sat inside it."""
+    got = set(_suite_modules())
+    for must in ("pipeline_analysis", "gate_attribution", "skill_baseline",
+                 "depth_horizon_grid", "returns_core", "target_clauses"):
+        assert must in got, "the derived suite list lost %s: %s" % (must, sorted(got))
+    #  and it must genuinely be READING dhg's calls, not merely listing the module
+    assert _benchmark_return_calls("depth_horizon_grid") == [], (
+        "depth_horizon_grid still calls benchmark_return directly; it must go through "
+        "benchmark_return_or_none")
 
 
 def test_the_guard_lives_in_ONE_place():

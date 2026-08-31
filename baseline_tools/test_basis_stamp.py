@@ -267,3 +267,84 @@ def test_the_MIXED_suppression_is_gone_end_to_end_in_scoring_compare(tmp_path):
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([os.path.abspath(__file__), "-q"]))
+
+
+# --------------------------------------------------------------------------- #
+#  WHAT WAS ACTUALLY DEMONSTRATED, versus what was shipped                     #
+# --------------------------------------------------------------------------- #
+def _suite_closure():
+    """Every `baseline_tools` module reachable from `pipeline_analysis`'s imports.
+
+    Function-local imports count -- every suite stage imports its module inside the stage
+    closure -- and `ast` rather than `importlib`, so nothing here executes module-level code.
+    Same derivation as `test_price_grid_refetch_decision._suite_modules`; duplicated rather
+    than imported because a test file importing another test file for a helper is a worse
+    coupling than nine lines, and both are pinned to the same source of truth (the import
+    graph) rather than to each other."""
+    import ast
+    import os
+    here = os.path.dirname(os.path.abspath(__file__))
+    local = {f[:-3] for f in os.listdir(here) if f.endswith(".py")}
+
+    def _imports(mod):
+        with open(os.path.join(here, mod + ".py"), encoding="utf-8") as fh:
+            tree = ast.parse(fh.read())
+        out = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                out |= {a.name.split(".")[0] for a in node.names}
+            elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+                out.add(node.module.split(".")[0])
+        return out & local
+
+    seen, stack = set(), ["pipeline_analysis"]
+    while stack:
+        m = stack.pop()
+        if m in seen:
+            continue
+        seen.add(m)
+        stack.extend(_imports(m))
+    return seen
+
+
+def test_scoring_compare_is_still_a_hand_run_tool():
+    """HALF THE 2026-08-27 STAMPING BATCH HAS NEVER EXECUTED, and that is a fact about what
+    was demonstrated rather than a defect.
+
+    `scoring_compare` has NO production call site -- the nightly suite does not import it, so
+    its basis stamps are exercised by these tests and by a person running the script, and by
+    nothing else.  That was not visible from the commit, and the 08-31 run review had to
+    establish it by grep.  It is written down in the module docstring now; this test is what
+    keeps the note true.
+
+    THE ASSERTION RUNS BOTH WAYS.  If somebody wires the tool into the suite, this fails --
+    which is correct: the docstring would then be wrong, and 'its stamps have never run
+    against real data' would stop being true and would need deleting rather than aging."""
+    closure = _suite_closure()
+    assert "scoring_compare" not in closure, (
+        "scoring_compare is now reachable from pipeline_analysis.  That may well be right -- "
+        "but its docstring says it is a hand-run tool whose stamps have never executed "
+        "against real data, and that paragraph is now false.  Update it, then update this "
+        "test.")
+    #  and the note must actually be there to be kept true
+    import inspect
+    doc = inspect.getdoc(sc) or ""
+    assert "NOT A PIPELINE STAGE" in doc
+    assert "never touches" in doc or "does not import this module" in doc
+
+
+def test_the_stamped_reports_the_suite_DOES_produce_are_named_correctly():
+    """The other half: `depth_horizon_grid` and `skill_baseline` DO run every night, so their
+    stamps are the ones a reader is actually holding.  `skill_baseline` was unstamped until
+    2026-08-31 -- it printed an UN-VETOED filter beat-rate beside a VETOED one -- so its stamp
+    is pinned here rather than assumed."""
+    closure = _suite_closure()
+    assert {"depth_horizon_grid", "skill_baseline"} <= closure
+    import skill_baseline as sb
+    src = inspect_source(sb.format_report)
+    assert "banner_lines" in src, "the skill-baseline report is unstamped again"
+
+
+def inspect_source(fn):
+    import inspect
+    return inspect.getsource(fn)

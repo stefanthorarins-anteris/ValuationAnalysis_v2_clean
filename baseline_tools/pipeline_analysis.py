@@ -889,11 +889,116 @@ def _audit_price_scale_stage(resdic, configdic, log):
     #  a new dated artifact would need a new .gitignore rule and land in the same place Q-29
     #  is still open about.  `price_scale_audit.run_audit(out_csv=...)` remains available for
     #  a standalone investigation.
+    #  THE RUN'S OWN RANKING AND THE RUN'S OWN SHIPPED LIST, so the containment sentence is
+    #  COMPUTED rather than recited.  `resdic['BoScore_df']` is the FULL pre-carve, pre-veto
+    #  Stage-1 frame (postBo assigns it once and stores it unchanged); `resdic['postRank']`
+    #  is the Stage-2 survivor set that actually ships.  Both are read defensively -- absent,
+    #  the audit says CONTAINMENT NOT CHECKED, which is the honest answer and not an
+    #  all-clear.
+    def _get(key, col=None):
+        try:
+            v = resdic[key]
+            return list(v[col]) if col else v
+        except Exception:
+            return None
+
     return psa.run_audit(
         panel,
         prices_csv=_PRICES_CSV if os.path.exists(_PRICES_CSV) else None,
         supp_csv=_PRICES_2025_CSV if os.path.exists(_PRICES_2025_CSV) else None,
+        stage1_scores=_get("BoScore_df"),
+        shipped_sources=_get("postRank", "source"),
+        panel_label="LIVE cdx_df -- survivor-only; NO delisted name is in it",
         log=log)
+
+
+def _alarm_sources(audit_result):
+    """The ALARM set out of a `price_scale_audit.run_audit` result, or an empty set."""
+    try:
+        internal = (audit_result or {}).get("internal")
+        if internal is None or not len(internal):
+            return set()
+        return set(str(x) for x in internal.loc[internal["severity"] == "ALARM", "source"])
+    except Exception:
+        return set()
+
+
+def _audit_price_scale_pit_stage(merged, per_anchor, live_audit, survivorship_clean, log):
+    """CHECK A OVER THE PIT DEAD-MERGED PANEL -- the population the backtest actually ranks.
+
+    THE BLIND SPOT THIS CLOSES, AND IT WAS THE MOTIVATING NAME.  The live pass reads
+    `resdic['cdx_df']`, which is survivor-only: ATRI has **0 rows in it** on 2026-08-29 and
+    on 2026-08-31 alike, because it delisted in 2024.  So check A -- written specifically
+    because check B CANCELS on the ATRI shape (FMP scales `marketCap` by the same 1/1000, so
+    the ratio is ~1.0) -- could not see ATRI either.  Both checks blind to the one name the
+    stage exists for, one of them silently, and the module's own blind-spot note disclosed it
+    without closing it.
+
+    WHERE ATRI IS LIVE is the PIT dead-merged pool: it appears in the buy2020 carve ("KEPT ON
+    UNKNOWN CURRENCY"), and there `bookToPrice` is a Tier-B, Sign +1, HIGHER-IS-BETTER input
+    to every backtest ranking -- 1000x too favourable and, until this stage, unmeasured.  A
+    contaminated name reaching a graded PIT top-20 moves the beat-rate the CEO reads.
+
+    CHECK B IS DELIBERATELY NOT RUN HERE.  Its comparison is against the saved price grid, and
+    the dead names are largely the ones the grid does not carry -- so "no disagreement" would
+    be an artifact of absence.  Saying it was not run beats printing a zero.
+
+    WHAT THIS STILL CANNOT SEE.  It ranks `bookToPrice` over the merged panel and checks the
+    flagged names against the graded SELECTIONS, but it has no PIT Stage-1 frame, so it makes
+    no claim about the margin to the top-100 cutoff -- the live pass's margin sentence has no
+    counterpart here, and the audit prints no substitute for it.
+
+    REPORT ONLY, like its live twin: nothing downstream consumes it, and correcting a price
+    changes a score, which is the CEO's call.
+    """
+    import price_scale_audit as psa
+    if not survivorship_clean:
+        #  `_build_pit_inputs` degrades to `merged is dmdic` when the delisted inputs are
+        #  absent.  Auditing THAT panel a second time would print a second identical report
+        #  under a heading claiming it covered the dead names -- a stage that reads as
+        #  coverage it does not have is worse than an absent stage.
+        log("[price-scale/PIT] SKIPPED: the run is not survivorship-clean (no delisted "
+            "inputs), so the 'dead-merged' panel IS the live one.  The backtest population "
+            "is NOT audited this run.")
+        return None
+    panel = merged.get("cdx_df") if isinstance(merged, dict) else None
+    if panel is None or not len(panel):
+        log("[price-scale/PIT] no merged cdx_df -- the dead-merged pass did not run.")
+        return None
+
+    #  THE GRADED SELECTIONS, POOLED across anchors.  `top20_deduped` is the list each anchor
+    #  actually ships in the backtest; `ranking` is the Stage-2 pool it is chosen from and is
+    #  the fallback when an anchor carries no deduped list.  Pooling is the right scope for a
+    #  containment question asked once: a flagged name reaching ANY graded anchor's list is
+    #  the finding.
+    selected, pool = [], []
+    for _wid, rec in (per_anchor or {}).items():
+        selected.extend(rec.get("top20_deduped") or [])
+        pool.extend(rec.get("ranking") or [])
+    n_anchors = len(per_anchor or {})
+    n_pit = int(panel["source"].nunique())
+    log("[price-scale/PIT] check A over the DEAD-MERGED panel: %d sources, %d graded anchors, "
+        "%d pooled top-20 names" % (n_pit, n_anchors, len(set(selected))))
+    out = psa.run_audit(
+        panel,
+        stage1_scores=None,          # no PIT Stage-1 frame here; the margin is NOT claimed
+        shipped_sources=sorted(set(selected)) or sorted(set(pool)),
+        run_grid_check=False,
+        panel_label="PIT dead-merged cdx_df -- %d sources, %d graded anchors"
+                    % (n_pit, n_anchors),
+        log=log)
+
+    #  THE NAMES THE LIVE PASS COULD NOT SEE, NAMED.  This difference IS the finding: an
+    #  ALARM present here and absent there is a contaminated name living only in the backtest
+    #  population -- the ATRI shape exactly.  Printed even when empty, because "the second
+    #  pass found nothing new" and "the second pass did not run" must not look alike.
+    dead_only = sorted(_alarm_sources(out) - _alarm_sources(live_audit))
+    if dead_only:
+        log("[price-scale/PIT] ALARM ONLY IN THE BACKTEST POPULATION (invisible to the live "
+            "pass): %s" % ", ".join(dead_only))
+    else:
+        log("[price-scale/PIT] no ALARM name is unique to the dead-merged panel this run.")
+    return out
 
 
 def _build_price_source(log, configdic=None):
@@ -1126,11 +1231,21 @@ def beat_rate_vs_urth(per_anchor, price_source, log, depths=(10, 20),
     Uses the ISSUER-DEDUPED, CARVE-ON top-20 (`per_anchor[wid]["top20_deduped"]`) --
     exactly the general list the pipeline ships (carve partition + issuer-dedup, both
     default ON) -- NOT the raw undeduped pool.  This is the same deduped-top20 basis
-    skill_baseline's filter uses, so the numbers are on a comparable footing (skill's
-    is carve-OFF; the only intended difference is the carve).  Pure returns_core URTH
-    path (rc.beat_rate + rc.benchmark_return, require_exact=True to match skill_baseline
-    and fail loudly on a missing benchmark anchor).  Prints a report and returns the
-    per-window + pooled beat-rate rows."""
+    skill_baseline's filter uses.  Pure returns_core URTH path (rc.beat_rate +
+    rc.benchmark_return_or_none, still require_exact underneath, so a missing benchmark
+    anchor costs one window and not the stage).  Prints a report and returns the
+    per-window + pooled beat-rate rows.
+
+    THE "ONLY DIFFERENCE IS THE CARVE" CLAIM WAS FALSE FOR FOUR DAYS, AND IS NOW CHECKABLE
+    RATHER THAN ASSERTED.  It was written when the anchor sets diverged, corrected for the
+    anchor sets, and left standing while a SECOND divergence -- the Stage-1 solvency veto --
+    was still open: this table runs VETOED (`dhg.rank_all_anchors(stage1_veto=True)`) and
+    `skill_baseline` ran UN-VETOED, so 25.0% and 25.9% were printed side by side on
+    different bases under a sentence saying they were not.  Both stages now stamp their
+    basis through `basis_stamp`, and the header points a reader at the two stamps instead of
+    promising something this function cannot see from here.  A claim about ANOTHER stage's
+    basis belongs in that stage's stamp, not in this one's prose -- which is the general
+    form of the defect, not a detail of it."""
     import numpy as np
     import returns_core as rc
     import depth_horizon_grid as dhg
@@ -1142,8 +1257,9 @@ def beat_rate_vs_urth(per_anchor, price_source, log, depths=(10, 20),
     print(f"#   the shipped general list beats MSCI World by >= {threshold*100:.0f}pp?")
     print(f"#   horizon = {horizon_m}mo   benchmark = {rc.BENCHMARK_VARIANT}")
     print(f"#   CLEAN 36mo windows only ({_clean_window_text()}).")
-    print("#   (skill_baseline reports the same deduped-top20 basis carve-OFF; the")
-    print("#    intended difference between the two is the carve.)")
+    print("#   (skill_baseline reports the same deduped-top20 selection, carve-OFF.  BOTH")
+    print("#    stages stamp their MEASUREMENT BASIS -- read the two stamps before")
+    print("#    comparing the two numbers; do not take it on trust from this line.)")
     print("#" * 72)
 
     rows = []
@@ -1539,6 +1655,43 @@ def _per_band_beat_rate(per_anchor, price_source, merged, horizon_m, threshold):
                 print("#   !!! reporting in them have NO USD cap here and route to")
                 print("#   !!! General. Re-run `python fx_rates.py --historical`.")
                 print("#   !!! MISSING: %s" % ', '.join(_missing[:25]))
+            #  ---- SILENT EXPIRY: the span is checked AGAINST THE ANCHORS, not just printed --
+            #  The committed table is fixed at 2019-01-01..2026-08-07 and static since
+            #  2026-08-08.  It covers every currently graded anchor, so nothing is wrong today
+            #  and the flag is about TIME: each run drifts further from its end date.  Printing
+            #  the span was never the guard -- nothing compared it to anything.  When an anchor
+            #  finally lands past it, every row resolves to None, the cap goes NaN, the name
+            #  routes to unknown-currency -> General, and the header keeps saying
+            #  POINT-IN-TIME.  The look-ahead returns as an absence, which is quieter and no
+            #  better.
+            #
+            #  LOUD, NOT FATAL, and the basis STRING carries it -- a banner scrolls past and a
+            #  basis line does not.  Refusing the stage would take the anchors the table DOES
+            #  cover down with the one it does not, which is the composition defect
+            #  `benchmark_return_or_none` exists to stop one layer over.
+            _graded = [b for w, b in dhg.BUY_ANCHORS if w in dhg.CLEAN_BUY_IDS]
+            _eval = []
+            for _b in _graded:
+                _i = dhg.ANCHOR_IDX[_b] + horizon_m // 12
+                if _i < len(dhg.ANCHORS):
+                    _eval.append(dhg.ANCHORS[_i])
+            _out = fx_pit.uncovered(sorted(set(_graded + _eval)))
+            if _out:
+                fx_basis += (" -- !!! EXPIRED FOR %d GRADED ANCHOR(S): %s"
+                             % (len(_out), ', '.join(str(d) for d in _out)))
+                print("#   " + "!" * 68)
+                print("#   !!! PIT FX TABLE HAS EXPIRED FOR A GRADED ANCHOR.")
+                print("#   !!! table span %s..%s (+%dd carry-forward); NOT covered: %s"
+                      % (_lo.date() if _lo is not None else '?',
+                         _hi.date() if _hi is not None else '?',
+                         fxr.PIT_MAX_FORWARD_DAYS, ', '.join(str(d) for d in _out)))
+                print("#   !!! Every non-USD name at those anchors resolves to NO USD market")
+                print("#   !!! cap and routes to General -- the bands below are WRONG there,")
+                print("#   !!! not merely approximate.  Refresh with")
+                print("#   !!! `python fx_rates.py --historical --from 2019-01-01 --to <today>`")
+                print("#   !!! (one paid call per major currency), or carry a newer")
+                print("#   !!! FxRatesHistorical_*.csv onto this machine -- that is free.")
+                print("#   " + "!" * 68)
     except Exception as _fe:
         print("#   (PIT FX unavailable: %s: %s)" % (type(_fe).__name__, _fe))
     if fx_basis is None:
@@ -1726,8 +1879,10 @@ def run_analysis_suite(resdic, configdic):
     #  level screen structurally cannot see either (16.9% of grid symbols are already under
     #  $1).  Report-only, like its neighbour, and for a sharper reason: its evidence touches
     #  names that are LIVE in scoring, and correcting a price would change a score.
-    _run_stage("vendor price-scale audit (report only, NO correction)",
-               _audit_price_scale_stage, resdic, configdic, log)
+    #  CAPTURED, not discarded: the PIT pass below diffs its ALARM set against this one to
+    #  name the contaminated rows that exist ONLY in the backtest population.
+    price_scale_live = _run_stage("vendor price-scale audit (report only, NO correction)",
+                                  _audit_price_scale_stage, resdic, configdic, log)
     #  Referee BEFORE the price source is built: it is about whether the real grid can be
     #  trusted, so its finding belongs above every number that rides on it.
     _run_stage("level-break referee (report only, NO override)",
@@ -1807,6 +1962,17 @@ def run_analysis_suite(resdic, configdic):
     grid_out = _run_stage("depth x horizon avg-TR grid (DEPLOYED, carve-ON)", _grid)
     per_anchor = grid_out[1] if grid_out else None
 
+    #  ---- Stage 4b: the price-scale audit AGAIN, over the population the grid just ranked.
+    #  HERE and not beside its live twin, for one reason: `merged` and `per_anchor` do not
+    #  exist yet up there.  The live pass reads a survivor-only panel, so it cannot see a
+    #  delisted name at all -- which is every name the backtest adds, including ATRI, the case
+    #  the whole stage was built for.  Running check A a second time over the dead-merged
+    #  panel is what makes the audit cover the backtest inputs rather than only the shipped
+    #  list.
+    _run_stage("vendor price-scale audit -- PIT dead-merged panel (report only)",
+               _audit_price_scale_pit_stage, merged, per_anchor, price_scale_live,
+               clean, log)
+
     # ---- Stage 5: beat-rate vs URTH (operational-target proxy; reuses per_anchor) ----
     def _beat():
         if per_anchor is None or price_source is None:
@@ -1839,9 +2005,15 @@ def run_analysis_suite(resdic, configdic):
         if price_source is None or registry is None:
             raise RuntimeError("skill-baseline skipped: price_source/PIT inputs missing")
         import skill_baseline as sb
+        #  `stage1_veto=True` EXPLICITLY, even though it is now the module default.  This
+        #  is the call site whose silence produced the defect: the grid stage two stages up
+        #  passes the veto and stamps VETOED, this one passed nothing and inherited
+        #  `reproduce_pit_top`'s OFF, so 25.0% (VETOED) and 25.9% (UN-VETOED) were printed
+        #  as a matched pair.  Stating it here means a future change to either default
+        #  cannot re-open the gap without someone editing a line that says what it does.
         res = sb.run_skill_baseline(dmdic, merged, registry, price_source,
                                     cadence_months=36, pick_n=20, oracle_ns=(3, 20),
-                                    n_draws=1000, seed=0,
+                                    n_draws=1000, seed=0, stage1_veto=True,
                                     exchange_filter=pit_exch, log=log)
         print("\n" + "#" * 72)
         print("# SKILL BASELINE  (oracle-best-N ceiling + random floor + ladder)")

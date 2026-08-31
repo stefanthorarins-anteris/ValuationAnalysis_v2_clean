@@ -417,5 +417,65 @@ def test_load_real_never_reads_the_settlement_column():
     assert 'date_requested' in consts, consts
 
 
+# --------------------------------------------------------------------------- #
+#  PROFIT-TIMING: THE BLOCK MAY NOT CLAIM A DIRECTION IT CANNOT SUPPORT       #
+# --------------------------------------------------------------------------- #
+def _legs(n_ex, n_st, st_after=-0.158):
+    ex = pd.DataFrame({'during': [0.10] * n_ex, 'after': [0.20] * n_ex,
+                       'full': [0.30] * n_ex})
+    st = pd.DataFrame({'during': [0.50] * n_st, 'after': [st_after] * n_st,
+                       'full': [0.26] * n_st})
+    return ['e'] * n_ex, ['s'] * n_st, ex, st
+
+
+def test_a_one_name_leg_is_not_printed_as_a_median():
+    """THE DEFECT.  The 08-29 and 08-31 runs both printed `EXITERS (n=6)` beside
+    `STAYERS (n=1)` and then the two medians side by side, from which the readable conclusion
+    was "stayers gave it back: after +2y = -15.8%".  That is one company's price move typeset
+    as a finding about churn, and the block asserted it identically on both runs.
+
+    The values must still be printed -- withholding data is not the fix -- but the word
+    "median" must not be doing work a single observation cannot support."""
+    lines = ric.profit_timing_lines(*_legs(6, 1))
+    text = chr(10).join(lines)
+    assert 'STAYERS (n=1)' in text, 'the count must still be visible'
+    assert 'not a median' in text
+    assert '-15.8%' in text, 'the underlying number must not be hidden'
+    assert 'NO DIRECTIONAL CONCLUSION IS DRAWN' in text
+    assert 'STAYERS' in text.split('NO DIRECTIONAL CONCLUSION IS DRAWN')[1]
+
+
+def test_the_qualification_disappears_once_BOTH_legs_are_big_enough():
+    """A guard that fires always is a guard nobody reads.  With both legs at or above the bar
+    the block reports exactly as before -- this is the half that keeps the qualification
+    meaningful."""
+    lines = ric.profit_timing_lines(*_legs(6, 7))
+    text = chr(10).join(lines)
+    assert 'NO DIRECTIONAL CONCLUSION' not in text
+    assert 'not a median' not in text
+    assert 'EXITERS (n=6)' in text and 'STAYERS (n=7)' in text
+
+
+def test_the_WEAKER_leg_governs_the_claim():
+    """The block's reading is a COMPARISON of two medians, so a healthy leg cannot rescue a
+    thin one -- the claim is only as strong as the weaker side."""
+    text = chr(10).join(ric.profit_timing_lines(*_legs(40, 2)))
+    assert 'NO DIRECTIONAL CONCLUSION IS DRAWN' in text
+    assert 'EXITERS' not in text.split('NO DIRECTIONAL CONCLUSION IS DRAWN')[1].split(
+        'below n=')[0], 'the healthy leg was blamed for the thin one'
+
+
+def test_both_printers_go_through_the_ONE_definition():
+    """`run_in_pipeline` and `main` carried byte-identical copies of this print loop, which is
+    exactly the shape in which an n-guard gets added to one of two copies.  Neither may
+    re-grow its own."""
+    import inspect
+    for fn in (ric.run_in_pipeline, ric.main):
+        src = inspect.getsource(fn)
+        assert 'profit_timing_lines' in src, f'{fn.__name__} does not use the shared printer'
+        assert "d['during'].median()" not in src, (
+            f'{fn.__name__} re-grew its own median print loop')
+
+
 if __name__ == '__main__':
     raise SystemExit(pytest.main([__file__, '-v']))

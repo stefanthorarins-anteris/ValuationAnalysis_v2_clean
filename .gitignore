@@ -127,3 +127,8 @@ baseline_tools/cache_nanpolicy_*.pickle
 # a local run renames it into the gitignored _quarantine/, so git saw a tracked file vanish
 # and a restore would trigger a second quarantine with a -2 suffix. Untracked deliberately.
 pick_log.csv
+
+# The run machine put its old price grids here during the 2026-08-28 refetch and they were
+# swept into a commit. They are `real_prices*` under another name -- the standing rule is that
+# those never enter git. Untracked 2026-08-31; the files themselves are untouched on disk.
+temp/

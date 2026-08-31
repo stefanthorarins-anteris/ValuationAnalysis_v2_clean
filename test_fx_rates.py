@@ -996,3 +996,83 @@ def test_load_pit_rates_is_DETERMINISTIC_when_both_directories_hold_the_same_bas
     (tmp_path / 'output' / 'FxRatesHistorical_2019-01-01_2026-08-10.csv').write_text(
         'currency,date,rate\nGBP,2022-01-03,2.22\n')
     assert fx.load_pit_rates().rate_for('GBP', '2022-01-03') == pytest.approx(2.22)
+
+
+# --------------------------------------------------------------------------- #
+#  SILENT EXPIRY -- the span must be CHECKED against the anchors, not printed  #
+# --------------------------------------------------------------------------- #
+#  The committed table is fixed at 2019-01-01..2026-08-07 and static since 2026-08-08.  It
+#  covers every currently graded anchor, so nothing is wrong today: the whole hazard is TIME.
+#  Every run drifts further from its end date, and the day an anchor lands past it `rate_for`
+#  returns None per row, the market cap resolves to NaN, the name routes to unknown-currency
+#  -> General, and the header goes on printing "FX basis: POINT-IN-TIME" with a span nobody
+#  compared against anything.  The look-ahead that was removed comes back as an absence.
+def _table(dates_rates, currency='SEK'):
+    return fx.PitFxTable(pd.DataFrame(
+        {'currency': [currency] * len(dates_rates),
+         'date': [d for d, _r in dates_rates],
+         'rate': [r for _d, r in dates_rates]}))
+
+
+def test_covers_agrees_with_what_rate_for_will_actually_answer():
+    """`covers` and `rate_for` must draw the SAME line, or the check and the lookup disagree
+    at exactly the edge the check exists for.  The line is the span plus the documented
+    carry-forward, not the raw span."""
+    t = _table([('2022-01-03', 0.11), ('2022-06-30', 0.10)])
+    inside = '2022-07-20'                       # 20 days past the last close
+    outside = '2022-09-30'                      # well past PIT_MAX_FORWARD_DAYS
+    assert fx.PIT_MAX_FORWARD_DAYS == 31, 'the fixture dates assume the documented bound'
+    assert t.covers(inside) and t.rate_for('SEK', inside) is not None
+    assert not t.covers(outside) and t.rate_for('SEK', outside) is None
+    assert not t.covers('2021-12-31'), 'a date BEFORE the series is not covered either'
+    assert t.rate_for('SEK', '2021-12-31') is None
+
+
+def test_uncovered_names_exactly_the_anchors_the_table_cannot_answer():
+    """The whole point is to name them.  A boolean "something is out of range" would leave the
+    operator to work out which anchor, which is how a flag gets ignored."""
+    t = _table([('2022-01-03', 0.11), ('2022-06-30', 0.10)])
+    anchors = ['2022-01-03', '2022-06-30', '2023-12-29', '2024-12-31']
+    assert t.uncovered(anchors) == ['2023-12-29', '2024-12-31']
+    assert t.uncovered(['2022-03-31']) == [], 'an interior date must not be flagged'
+    assert t.uncovered([]) == [] and t.uncovered(None) == []
+
+
+def test_an_empty_table_covers_NOTHING_rather_than_everything():
+    """The failure direction matters.  An empty table answering "covered" would suppress the
+    warning on the one case where nothing at all can be converted."""
+    empty = fx.PitFxTable(pd.DataFrame(columns=['currency', 'date', 'rate']))
+    assert empty.covers('2022-01-03') is False
+    assert empty.uncovered(['2022-01-03']) == ['2022-01-03']
+
+
+def test_a_junk_date_is_treated_as_UNCOVERED_not_as_covered():
+    """Same direction again: an unparseable anchor must not be waved through."""
+    t = _table([('2022-01-03', 0.11)])
+    assert t.covers(None) is False and t.covers('not-a-date') is False
+
+
+def test_the_band_stage_CHECKS_the_span_against_the_graded_anchors():
+    """Wiring, not availability.  `span()` already existed and was already PRINTED -- and
+    printing it was not a guard, because nothing compared it to an anchor.  The stage must
+    call `uncovered`, must say so in the BASIS STRING (a banner scrolls past; a basis line
+    travels with the number), and must NOT refuse the stage -- refusing would take the anchors
+    the table does cover down with the one it does not."""
+    import inspect
+    import sys as _sys
+    _bt = os.path.join(_HERE, 'baseline_tools')
+    if _bt not in _sys.path:
+        _sys.path.insert(0, _bt)
+    import pipeline_analysis as pa
+    src = inspect.getsource(pa._per_band_beat_rate)
+    assert '.uncovered(' in src, 'the span is still only printed, never checked'
+    assert 'EXPIRED FOR' in src and 'fx_basis +=' in src, (
+        'the expiry does not reach the basis string, so a number can still be read without it')
+    i = src.index('.uncovered(')
+    window = src[i:i + 2500]
+    assert 'raise' not in window, (
+        'refusing the stage would lose the anchors the table DOES cover')
+    assert 'fx_rates.py --historical' in window, (
+        'the warning does not say how to resolve it')
+    assert 'free' in window, (
+        'the free remedy (carry an existing CSV) must be named before the paid one')

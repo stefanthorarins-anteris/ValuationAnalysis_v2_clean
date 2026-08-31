@@ -17,7 +17,7 @@ Builds on the certified pipeline as INTERFACES:
   dead_merge.merge_dead_into_dmdic / pit_universe   -> survivorship-clean universe
   stage2_pit.reproduce_pit_top(..., universe_override=pit_universe)
                                                     -> PIT full ranking (depth ~100)
-  returns_core.PriceSource / compute_returns / average_return / benchmark_return
+  returns_core.PriceSource / compute_returns / average_return / benchmark_return_or_none
 Prices: baseline_tools/price_data/real_prices.csv.  Benchmark: URTH (MSCI World TR proxy).
 
 EFFICIENCY: the ranking for a buy anchor does NOT depend on horizon -> rank ONCE per
@@ -439,7 +439,21 @@ def compute_grid(per_anchor, price_source):
             if eval_idx >= len(ANCHORS):
                 continue  # horizon unsupported (no eval anchor in data)
             ev = ANCHORS[eval_idx]
-            bench = rc.benchmark_return(price_source, buy, ev)
+            #  GUARDED, not bare.  `benchmark_return` defaults `require_exact=False`, so a
+            #  missing URTH anchor here did not raise -- it FORWARD-FILLED a stale benchmark
+            #  level and every `excess_*` column in the largest report in the suite silently
+            #  measured against it.  The two failure modes of the same call are opposite and
+            #  both bad: bare-and-lenient invents a number, bare-and-strict raises inside a
+            #  per-anchor loop under a swallowing stage guard and costs the whole grid.
+            #  `benchmark_return_or_none` is the one helper that does neither -- strict
+            #  underneath, one window's cost on top.
+            bench = rc.benchmark_return_or_none(price_source, buy, ev, wid,
+                                                "the depth x horizon grid")
+            if bench is None:
+                #  The whole (anchor, horizon) CELL is skipped -- cells AND pooling rows.
+                #  A cell kept with bench=NaN would print `excess` columns as n/a while the
+                #  pooled rows silently carried the NaN into every depth that includes them.
+                continue
 
             # ONE primitive call over the deepest slice; depth views slice this table.
             top = ranking[:max(DEPTHS)]

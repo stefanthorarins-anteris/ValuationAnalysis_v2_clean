@@ -1182,3 +1182,83 @@ def test_the_all_NaN_refusal_is_OVERRIDABLE_only_by_a_DECLARED_env_list():
         del os.environ[s2._ALLOW_ALL_NAN_ENV]
     with pytest.raises(RuntimeError):
         s2._assert_offline_metric_coverage(out, assigned={"interestCoverage"})
+
+
+# --------------------------------------------------------------------------- #
+#  5  PROGRESS BARS ARE A LIVE AFFORDANCE, NOT LOG CONTENT                     #
+# --------------------------------------------------------------------------- #
+#  A tqdm bar renders with carriage returns.  Redirected into a file it becomes one enormous
+#  line of overwrite fragments: the 2026-08-31 run log grew 1.86 MB -> 3.17 MB while gaining
+#  234 lines of actual content, almost all of it the Stage-1 bar re-rendered once per PIT
+#  anchor across three stages.  A log nobody can grep is a log nobody checks.
+#
+#  tqdm already has the right rule built in -- `disable=None` means "auto-disable when the
+#  output stream is not a TTY" -- so the fix is four characters per bar and the risk is that
+#  the NEXT bar omits them.  Hence a structural sweep rather than a fix at seven sites.
+def _tqdm_constructions():
+    """[(module, lineno, has_disable_kwarg)] for every `tqdm(...)` CALL in the repo root.
+
+    Root only, deliberately: `baseline_tools/` holds hand-run analysis scripts whose output a
+    person is watching, and nothing under it drives a bar inside the nightly suite (the PIT
+    reproduction's bars all come from `calcScore` in the root).  AST, so a mention of tqdm in
+    a comment or an import line cannot fail a test about behaviour."""
+    import ast
+    import glob
+    out = []
+    for path in sorted(glob.glob(os.path.join(_REPO, "*.py"))):
+        base = os.path.basename(path)
+        if base.startswith("test_"):
+            continue
+        with open(path, encoding="utf-8") as fh:
+            src = fh.read()
+        if "tqdm" not in src:
+            continue
+        for node in ast.walk(ast.parse(src)):
+            if not isinstance(node, ast.Call):
+                continue
+            f = node.func
+            name = (f.attr if isinstance(f, ast.Attribute)
+                    else f.id if isinstance(f, ast.Name) else None)
+            if name != "tqdm":
+                continue
+            out.append((base[:-3], node.lineno,
+                        any(kw.arg == "disable" for kw in node.keywords)))
+    return out
+
+
+def test_every_progress_bar_says_what_it_does_off_a_TTY():
+    """No bar may take tqdm's default, which renders unconditionally.
+
+    `disable=None` (auto-disable off a TTY) is the intended answer; `disable=<expr>` is also
+    accepted, because two call sites legitimately gate on their own `verbose` flag.  What is
+    refused is SILENCE on the question -- a bar that has not decided is a bar that spams a
+    log file."""
+    missing = ["%s.py:%d" % (m, ln) for m, ln, has in _tqdm_constructions() if not has]
+    assert not missing, (
+        "these construct a progress bar without deciding what it does off a TTY: "
+        + ", ".join(missing) + ".  Pass `disable=None` (tqdm auto-disables on a non-TTY "
+        "stream) unless the bar has its own reason to gate differently.")
+
+
+def test_the_sweep_reaches_the_bar_that_caused_it():
+    """The Stage-1 scoring bar is the one that runs ~13 times per analysis suite over ~5,000
+    tickers.  A sweep that did not reach it would be a guard blind to its own target."""
+    seen = {m for m, _ln, _has in _tqdm_constructions()}
+    for must in ("calcScore", "postBoRank", "postBo", "getData_fmp"):
+        assert must in seen, "the sweep does not reach %s: %s" % (must, sorted(seen))
+
+
+def test_a_disabled_bar_still_lets_its_diagnostics_through():
+    """The line that makes the whole change safe.  Every warning emitted from inside a bar-
+    driven loop goes through `getData_gen.bar_print`, which is `tqdm.write` -- and `tqdm.write`
+    degrades to a plain write when no bar is live.  Exercised on the real helper, because "we
+    lose no diagnostic line" is the claim the CEO is being asked to accept."""
+    import io as _io
+    from tqdm import tqdm as _tqdm
+    buf = _io.StringIO()
+    bar = _tqdm(total=3, file=buf, disable=None)          # non-TTY -> disabled
+    assert bar.disable is True, "a StringIO is not a TTY; the bar should have disabled itself"
+    _tqdm.write("WARNING: a name degraded", file=buf)
+    bar.update(1)
+    bar.close()
+    assert buf.getvalue() == "WARNING: a name degraded\n", repr(buf.getvalue())

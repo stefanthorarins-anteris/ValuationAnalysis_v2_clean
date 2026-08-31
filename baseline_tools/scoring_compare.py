@@ -20,6 +20,23 @@ Two modes (kept separate so ORIGINAL can run in its own process on reverted code
 
 No network I/O; never prints api_key.
 
+STANDALONE HAND-RUN TOOL -- NOT A PIPELINE STAGE, AND NOTHING HERE EXECUTES ON A RUN.
+------------------------------------------------------------------------------------
+`pipeline_analysis.run_analysis_suite` does not import this module and no other production
+path calls it: grep finds it only in `basis_stamp`'s prose and in tests.  Recorded here
+because it stopped being obvious once this module gained BASIS STAMPS on 2026-08-27 -- half
+of that batch's work landed in a module the nightly run never touches, and the 08-31 run
+review had to establish by grep that it had never executed against real data.  So:
+
+  * its stamps are CORRECT and TESTED (`test_basis_stamp`), and they matter ONLY when a
+    person runs this script by hand.  Do not count them as demonstrated on production data.
+  * it is deliberately NOT wired in.  A nightly N-way comparison would cost a second, third
+    and fourth full PIT reproduction (the single-config grid alone is ~270s on the current
+    panel) to answer a question nobody asks every night; the CEO's decisions about weights
+    and carve are episodic, and this is the tool reached for when one is live.
+  * IF IT IS EVER WIRED IN, this paragraph is wrong and
+    `test_basis_stamp.test_scoring_compare_is_still_a_hand_run_tool` will say so.
+
 Examples:
   python baseline_tools/scoring_compare.py run --configs baseline,carve,equal --workdir W
   python baseline_tools/scoring_compare.py run --configs original --workdir W   # on reverted tree

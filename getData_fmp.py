@@ -107,7 +107,10 @@ def get_fundamentals_fmp(Tickers_df, cdx_df, BoMetric_df, baseurl,
     # smoothing=0.02 -> near-global average rate: per-ticker cost varies by ~an order of
     # magnitude (5 HTTP calls, retries, backoff), and tqdm's default 0.3 makes the ETA on a
     # 3k-ticker run swing wildly. ASCII only: a 4-hour run must not die on a console codepage.
-    pbar = tqdm(total=_bar_total, desc='FMP fundamentals', unit='ticker',
+    #  disable=None -- auto-disable off a TTY; see the note at calcScore's Stage-1 bar.
+    #  The 12h fetch's own progress is separately recorded by `run_logging` events, so the
+    #  log keeps a machine-readable trace of it either way.
+    pbar = tqdm(total=_bar_total, desc='FMP fundamentals', unit='ticker', disable=None,
                 smoothing=0.02, dynamic_ncols=True,
                 bar_format='{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} '
                            '[{elapsed}<{remaining}, {rate_fmt}] {postfix}')
@@ -870,7 +873,8 @@ def symbchRestock(tckrs_df,baseurl,period,limit,api_key,compyear,timdir='old2new
     print(f'Starting symbol restock: {timdir}')
     # Labelled the same way as the fundamentals bar so a run with both is readable.  Nothing
     # inside this loop prints, so it needs no bar-safe writer.
-    pbar = tqdm(total=len(int), desc='Symbol restock', unit='ticker',
+    #  disable=None -- auto-disable off a TTY; see the note at calcScore's Stage-1 bar.
+    pbar = tqdm(total=len(int), desc='Symbol restock', unit='ticker', disable=None,
                 smoothing=0.02, dynamic_ncols=True)
     for ticker in int:
         failbool_lvl2_agg = False

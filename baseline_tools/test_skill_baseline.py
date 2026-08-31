@@ -276,3 +276,171 @@ def test_integration_determinism_and_ordering():
     # (it is the dropped mean by construction); universe rung should be finite.
     uni_dollar = dict(r1["ladder"]["dollar_return"])["universe"]
     assert uni_dollar == uni_dollar and abs(uni_dollar) < sb.DEFAULT_CONTAM_RETURN_CAP
+
+
+# --------------------------------------------------------------------------- #
+#  THE MEASUREMENT BASIS -- 25.9% must not sit beside 25.0% on a different one #
+# --------------------------------------------------------------------------- #
+#  THE DEFECT.  `skill_baseline.window_sets` called `reproduce_pit_top` with no
+#  `apply_stage1_veto`, and `stage2_pit` defaults it False, while `dhg.rank_all_anchors`
+#  defaults it True and stamps VETOED.  So the 2026-08-31 run printed a VETOED beat-rate of
+#  25.0% and this module's UN-VETOED filter top-20 of 25.9% as a matched pair, under a
+#  `pipeline_analysis` sentence reading "the intended difference between the two is the
+#  carve".  The ANCHOR-SET half of that same sentence had already been found false and fixed;
+#  the veto half was still open, and this report was the one of the three the stamping batch
+#  never reached, so it carried no basis at all.
+def _veto_probe(monkeypatch):
+    """Records what `window_sets` asks of the veto and of `reproduce_pit_top`."""
+    import sys
+    import types
+    import dead_merge as dm
+    import stage2_pit as s2
+    seen = {}
+
+    monkeypatch.setattr(sb.dm, "pit_universe", lambda *a, **k: ["A", "B", "C"])
+
+    bo = pd.DataFrame({"source": ["A", "B", "C"], "score": [3.0, 2.0, 1.0]})
+    monkeypatch.setattr(sb.s2, "stage1_boscore", lambda *a, **k: bo.copy())
+
+    def _fake_veto(scores_df, bm_df, pool_label=None, cdx_df=None, **kw):
+        seen["veto_called"] = True
+        seen["veto_pool"] = pool_label
+        seen["veto_got_cdx"] = cdx_df is not None
+        kept = scores_df[scores_df["source"] != "B"].reset_index(drop=True)
+        return kept, {"enabled": True, "applies": True, "n_ejected": 1}
+
+    sv = types.ModuleType("stage1_veto")
+    sv.apply_veto = _fake_veto
+    monkeypatch.setitem(sys.modules, "stage1_veto", sv)
+
+    def _fake_reproduce(merged, buy, **kw):
+        seen["reproduce_veto"] = kw.get("apply_stage1_veto")
+        top100 = ["A", "C"] if kw.get("apply_stage1_veto") else ["A", "B", "C"]
+        return {"top20": top100[:2], "pool_after_norm": top100,
+                "stage1_top100": top100,
+                "basis": ("VETOED (stage-1 solvency gate applied, 1 ejected)"
+                          if kw.get("apply_stage1_veto") else "un-vetoed")}
+
+    monkeypatch.setattr(sb.s2, "reproduce_pit_top", _fake_reproduce)
+
+    merged = {"BoMetric_df": pd.DataFrame({"source": ["A", "B", "C"],
+                                           "date": ["2020-01-01"] * 3}),
+              "cdx_df": pd.DataFrame({"source": ["A", "B", "C"],
+                                      "date": ["2020-01-01"] * 3})}
+    return seen, merged
+
+
+def test_window_sets_applies_the_veto_BY_DEFAULT(monkeypatch):
+    """The default is the fix.  A parameter defaulting False would have left every existing
+    caller -- including the pipeline's -- producing the same mismatched pair."""
+    seen, merged = _veto_probe(monkeypatch)
+    sets, res, _uni = sb.window_sets({}, merged, None, "2020-12-31")
+    assert seen.get("veto_called") is True
+    assert seen.get("reproduce_veto") is True
+    assert seen.get("veto_pool") == "general", "the PIT path must gate the pool production gates"
+    assert seen.get("veto_got_cdx") is True, (
+        "the ad-hoc penalty bucket's corroborator panel was not passed, so a refusal cannot "
+        "be judged -- the same call shape stage2_pit makes")
+    assert res["basis"].startswith("VETOED")
+
+
+def test_the_veto_reaches_the_RUNGS_as_well_as_the_filter(monkeypatch):
+    """NOT a detail.  Correction #1 asserts the derived Stage-1 top-100 equals
+    `reproduce_pit_top`'s, and an ejection PROMOTES the next name -- so vetoing one side only
+    trips that assertion and kills the whole stage.  It is also the right comparator: the
+    random floor must be drawn from the pool the filter actually picks from."""
+    seen, merged = _veto_probe(monkeypatch)
+    sets, res, _uni = sb.window_sets({}, merged, None, "2020-12-31")
+    assert "B" not in sets["universe"], "the ejected name is still in the random-draw universe"
+    assert set(sets["top100"]) == set(res["stage1_top100"]), (
+        "the consistency guard would have fired: rungs and filter on different bases")
+
+
+def test_the_UN_vetoed_basis_stays_REPRODUCIBLE(monkeypatch):
+    """Every skill figure published before 2026-08-31 was un-vetoed.  The escape hatch has to
+    work, or the archive becomes unreproducible -- and the report stamps which one it ran."""
+    seen, merged = _veto_probe(monkeypatch)
+    sets, res, _uni = sb.window_sets({}, merged, None, "2020-12-31",
+                                     apply_stage1_veto=False)
+    assert seen.get("veto_called") is None, "the veto ran on the explicitly un-vetoed path"
+    assert seen.get("reproduce_veto") is False
+    assert "B" in sets["universe"]
+    assert res["basis"] == "un-vetoed"
+
+
+def test_the_report_CARRIES_ITS_BASIS():
+    """The half the 2026-08-27 stamping batch missed.  A number with no basis on it is what
+    let 25.9% be read against 25.0% for four days."""
+    import basis_stamp as bstamp
+    stamped = _report_skeleton("VETOED (stage-1 solvency gate applied, 1125 ejected)")
+    text = sb.format_report(stamped)
+    assert "MEASUREMENT BASIS" in text
+    assert "VETOED" in text
+    assert "Do NOT compare a" in text, "the standing warning is not on the report"
+    #  and carve-OFF -- the one difference from the beat-rate table that remains
+    assert "carve: OFF" in text
+
+
+def test_an_UNSTAMPED_result_says_UNSTAMPED_rather_than_saying_nothing():
+    """Silence is what the defect looked like.  An absent basis must read as 'I do not know',
+    never as a default basis and never as blank."""
+    import basis_stamp as bstamp
+    bare = _report_skeleton(None)
+    bare["basis"] = None
+    text = sb.format_report(bare)
+    assert bstamp.UNSTAMPED in text
+
+
+def _report_skeleton(basis):
+    """The smallest `run_skill_baseline`-shaped dict `format_report` will render."""
+    import basis_stamp as bstamp
+    per = {"2020-12-31": {"basis": basis}}
+    return {
+        "basis": bstamp.of(per),
+        "per_anchor_basis": per,
+        "config": {"stage1_veto": basis is not None, "cadence_months": 36,
+                   "windows": [("2020-12-31", "2023-12-29")], "pick_n": 20,
+                   "n_draws": 10, "seed": 0, "threshold": 0.10, "missing": "fail",
+                   "exchange_filter": "na1 (NYSE/NASDAQ/TSX)"},
+        "filter": {"beat_rate": {"pooled": 0.25, "n": 56},
+                   "dollar_return": {"mean_dropped": 0.4, "mean_winsor": 0.35}},
+        "oracle": {20: {"beat_rate": 0.9, "n": 20,
+                        "dollar_return": {"mean_dropped": 2.0}}},
+        "random": {"universe": {"beat_rate": {"mean": 0.1, "p5": 0.0, "p95": 0.2},
+                                "filter_beat_percentile": 90.0, "n_contam_in_rung": 0}},
+        "ladder": {"beat_rate": [("universe", 0.1), ("filter_top20", 0.25)],
+                   "dollar_return": [("universe", 0.1), ("filter_top20", 0.4)]},
+        "sanity": {"pick_n": 20, "oracle_beat": 0.9, "filter_beat": 0.25,
+                   "random_beat_universe": 0.1, "ordering_holds": True},
+    }
+
+
+def test_the_pipeline_and_the_grid_ask_for_THE_SAME_BASIS():
+    """The property the two printed numbers rest on, asserted where it can rot.
+
+    `dhg.rank_all_anchors` defaults the veto ON because it is the grading instrument; this
+    module now does too; and the suite's own call site states it rather than inheriting it.
+    Any one of those three drifting re-opens the gap."""
+    import inspect
+    import sys as _sys
+    import depth_horizon_grid as dhg
+    assert inspect.signature(dhg.rank_all_anchors).parameters["stage1_veto"].default is True
+    assert inspect.signature(sb.run_skill_baseline).parameters["stage1_veto"].default is True
+    assert inspect.signature(sb.window_sets).parameters["apply_stage1_veto"].default is True
+
+    import pipeline_analysis as pa
+    src = inspect.getsource(pa.run_analysis_suite)
+    i = src.index("run_skill_baseline(")
+    assert "stage1_veto=True" in src[i:i + 400], (
+        "the suite's skill-baseline call no longer states its basis explicitly")
+
+
+def test_the_beat_rate_header_no_longer_ASSERTS_another_stages_basis():
+    """The sentence itself.  "the intended difference between the two is the carve" was a
+    claim about a stage this function cannot see, made in prose, and it was false for four
+    days.  It must point at the stamps instead."""
+    import inspect
+    import pipeline_analysis as pa
+    src = inspect.getsource(pa.beat_rate_vs_urth)
+    assert "intended difference between the two is the carve" not in src
+    assert "stamp" in src.lower()

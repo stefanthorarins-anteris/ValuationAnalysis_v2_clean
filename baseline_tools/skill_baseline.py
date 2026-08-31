@@ -27,7 +27,17 @@ EVERYTHING is a thin view over the CERTIFIED primitives -- NOTHING is re-impleme
   dead_merge.pit_universe        -> the exact as-of-D scored-universe scope
   returns_core.compute_returns   -> per-ticker total return (dividend-inclusive)
   returns_core.beat_rate         -> the count beat-rate (missing='fail' symmetry)
-  returns_core.benchmark_return  -> URTH window return (require_exact)
+  returns_core.benchmark_return_or_none -> URTH window return (require_exact underneath;
+                                   a missing anchor costs ONE WINDOW, not the stage)
+
+MEASUREMENT BASIS: VETOED BY DEFAULT since 2026-08-31, and STAMPED ON THE REPORT.
+This module used to call `reproduce_pit_top` with no `apply_stage1_veto`, which defaults OFF,
+while `depth_horizon_grid` defaults it ON -- so the FILTER top-20 printed here (25.9% on
+2026-08-31) sat beside a beat-rate computed WITH the Stage-1 solvency gate (25.0%), as a
+matched pair, under a `pipeline_analysis` sentence saying the only intended difference was the
+carve.  Both numbers are now on one basis, the veto reaches the random/oracle rungs as well as
+the filter arm (see `window_sets`), and `format_report` carries `basis_stamp.banner_lines` so
+the basis travels with the number.  `stage1_veto=False` reproduces the old figures and says so.
 
 THREE CORRECTIONS baked in (these were bugs in the first ad-hoc run -- do NOT reintroduce):
   (1) UNIVERSE-MATCH: random draws come from the EXACT scored universe (dm.pit_universe
@@ -60,6 +70,7 @@ _REPO = os.path.dirname(_HERE)
 sys.path.insert(0, _REPO)
 sys.path.insert(0, _HERE)
 
+import basis_stamp as bstamp      # the ONE reader for the basis string stage2_pit writes
 import returns_core as rc          # PriceSource, compute_returns, beat_rate, benchmark_return
 import stage2_pit as s2            # reproduce_pit_top, stage1_boscore
 import dead_merge as dm            # merge_dead_into_dmdic, pit_universe, load_registry
@@ -176,18 +187,50 @@ def _pit_bm(merged, universe, D):
     return bm.sort_values(["source", "date"], ascending=[True, False])
 
 
-def window_sets(dmdic, merged, registry, buy, nq_stage1=8, exchange_filter=None):
+def window_sets(dmdic, merged, registry, buy, nq_stage1=8, exchange_filter=None,
+                apply_stage1_veto=True):
     """Return (rung_sets, filter_res, universe) for one buy anchor.
 
     rung_sets  : {'universe': [...], 'top200': [...], 'top100': [...]}  (Stage-1 order)
     filter_res : the reproduce_pit_top result dict (its 'top20' = filter pick, its
-                 'pool_after_norm' = the oracle shortlist).
+                 'pool_after_norm' = the oracle shortlist, its 'basis' = the measurement
+                 basis stamp).
     universe   : the exact as-of-D scored-universe scope (dm.pit_universe).
     exchange_filter : passed to dm.pit_universe.  None = the NA1 default this baseline has
                  always run on; dm.ALL_EXCHANGES opens it to the scored universe.  Threaded
                  2026-08-22; before that the random/oracle rungs were drawn from an
                  NA1-only universe while the filter they are benchmarked against picks from
                  a much wider one -- so the "random floor" was a floor for a different game.
+
+    apply_stage1_veto : run the Stage-1 SOLVENCY VETO, the way production and the depth x
+                 horizon grid do.  DEFAULT TRUE since 2026-08-31, and the default matters
+                 more than the parameter:
+
+                 THE DEFECT IT CLOSES.  `reproduce_pit_top` defaults the veto OFF
+                 (stage2_pit.py -- deliberately, because the tuner's cached fast finish()
+                 does not veto and would abort).  This module never passed it, while
+                 `dhg.rank_all_anchors` defaults it ON.  So the 2026-08-31 run printed the
+                 filter beat-rate at 25.0% on a VETOED basis and this module's FILTER
+                 top-20 at 25.9% on an UN-VETOED one, under a `pipeline_analysis` sentence
+                 saying the only intended difference was the carve.  Two numbers on two
+                 bases, printed as a matched pair.  Same shape as the anchor-set defect
+                 fixed above it, one parameter over.
+
+                 THE VETO IS APPLIED TO THE DERIVED STAGE-1 RANKING TOO, not only to the
+                 filter arm, and that is not incidental: correction #1 asserts our derived
+                 top-100 equals `reproduce_pit_top`'s `stage1_top100`, and an ejection
+                 PROMOTES the next name -- so vetoing one side alone trips that assertion
+                 and kills the stage.  Applying it to both keeps the guard meaningful and
+                 keeps the ladder on ONE basis: the random floor is drawn from the pool the
+                 filter actually picks from, which is what "random from the filter's own
+                 scored universe" was always supposed to mean.
+
+                 WHAT THAT COSTS, STATED.  With the gate inside every rung, the ladder no
+                 longer contains the gate's own contribution -- universe -> top100 ->
+                 filter all sit downstream of it.  That is not a loss: `gate_attribution`
+                 is the stage built to measure the gate against its un-vetoed
+                 counterfactual, and measuring it a second time here, confounded with
+                 fine-ranking skill, would be the worse of the two readings.
     """
     D = pd.Timestamp(buy)
     universe = dm.pit_universe(dmdic, registry, as_of=buy,
@@ -200,10 +243,19 @@ def window_sets(dmdic, merged, registry, buy, nq_stage1=8, exchange_filter=None)
     _cdx_pit = _cdx_pit[pd.to_datetime(_cdx_pit['date'], errors='coerce') <= D]
     bo = s2.stage1_boscore(bm_pit, nq_stage1=nq_stage1,
                            cdx_pit=_cdx_pit)   # full ranked BoScore (public)
+    if apply_stage1_veto:
+        #  THE SAME CALL `stage2_pit.reproduce_pit_top` MAKES, with the same pool label and
+        #  the same ad-hoc-bucket panel, on the same `date <= D` frames (which is what keeps
+        #  it point-in-time).  Not a second veto implementation -- one call to the one
+        #  module, so the two sides cannot drift into different gates.
+        import stage1_veto as sv
+        bo, _veto_report = sv.apply_veto(bo, bm_pit, pool_label="general",
+                                         cdx_df=_cdx_pit)
     scored = bo["source"].tolist()
     rung_sets = {"universe": scored, "top200": scored[:200], "top100": scored[:100]}
 
-    res = s2.reproduce_pit_top(merged, buy, universe_override=universe)
+    res = s2.reproduce_pit_top(merged, buy, universe_override=universe,
+                               apply_stage1_veto=apply_stage1_veto)
     if res is None:
         raise RuntimeError(f"reproduce_pit_top returned None at {buy} (empty PIT frame)")
 
@@ -430,7 +482,7 @@ def run_skill_baseline(dmdic, merged, registry, price_source, *,
                        contam_return_cap=DEFAULT_CONTAM_RETURN_CAP,
                        winsor=DEFAULT_WINSOR, nq_stage1=8,
                        guard_short_history_eps=False, exchange_filter=None,
-                       log=None):
+                       stage1_veto=True, log=None):
     """In-memory skill baseline.  All inputs are OBJECTS (no file paths, no pickle load).
 
     Parameters
@@ -452,6 +504,10 @@ def run_skill_baseline(dmdic, merged, registry, price_source, *,
     seed          : RNG seed (fixed -> reproducible).
     exchange_filter : PIT universe exchange scope (None = NA1 default, dm.ALL_EXCHANGES =
                     no restriction, or an explicit exchangeShortName iterable).
+    stage1_veto   : apply the Stage-1 solvency gate (see `window_sets`).  DEFAULT TRUE --
+                    the same default `dhg.rank_all_anchors` carries, so the number this
+                    module prints and the beat-rate it is printed beside are on ONE basis.
+                    `False` reproduces every figure published before 2026-08-31.
 
     Returns a structured dict (see module docstring); every number is derived from the
     certified primitives.
@@ -472,7 +528,8 @@ def run_skill_baseline(dmdic, merged, registry, price_source, *,
             log(f"[skill_baseline] window {buy} -> {ev}: sets + filter top-{pick_n} ...")
             sets, res, _uni = window_sets(dmdic, merged, registry, buy,
                                           nq_stage1=nq_stage1,
-                                          exchange_filter=exchange_filter)
+                                          exchange_filter=exchange_filter,
+                                          apply_stage1_veto=stage1_veto)
             per_window_ctx.append((buy, ev, res, sets))
     if _short_history_eps_sources:
         log(f"[skill_baseline] short-history-EPS guard fired for "
@@ -530,8 +587,18 @@ def run_skill_baseline(dmdic, merged, registry, price_source, *,
                  "low-priceability edge."),
     }
 
+    #  THE MEASUREMENT BASIS, PER ANCHOR, CARRIED THE WAY `rank_all_anchors` CARRIES IT --
+    #  keyed by buy anchor so `basis_stamp.of` can collapse it to a header and report the
+    #  per-anchor ejection counts.  An unstamped report is what let 25.9% sit beside 25.0%
+    #  for four days; this is the half of that fix the stamping batch never reached.
+    per_anchor_basis = {str(buy): {"basis": res.get("basis")}
+                        for buy, _ev, res, _sets in per_window_ctx}
+
     return {
+        "basis": bstamp.of(per_anchor_basis),
+        "per_anchor_basis": per_anchor_basis,
         "config": {
+            "stage1_veto": stage1_veto,
             "cadence_months": cadence_months, "windows": windows, "pick_n": pick_n,
             "oracle_ns": list(oracle_ns), "ladder_rungs": list(ladder_rungs),
             "n_draws": n_draws, "threshold": threshold, "missing": missing, "seed": seed,
@@ -607,16 +674,31 @@ def load_inputs(pickle_path, dead_path, registry_path, prices_csv, prices_2025_c
 #  Report formatter                                                           #
 # --------------------------------------------------------------------------- #
 def format_report(result):
+    """The report, WITH ITS MEASUREMENT BASIS ON IT.
+
+    IT WENT OUT UNSTAMPED FOR FOUR DAYS.  The 2026-08-27 stamping batch reached
+    `rank_all_anchors`, the beat-rate block and the two-clause banner; this report was the
+    one of the three it did not reach, so its FILTER number was printed beside a stamped
+    beat-rate with nothing on it saying which basis it was on -- and it was on the other
+    one.  The stamp is `basis_stamp.of`, the same reader every other consumer uses; a second
+    implementation of that parse is the failure mode, not a second stamp.
+    """
     c = result["config"]
     L = ["=" * 92,
          "SKILL BASELINE  --  oracle-best-N ceiling + random-N floor (offline)",
-         "=" * 92,
-         f"cadence={c['cadence_months']}mo  pick_n={c['pick_n']}  draws={c['n_draws']}  "
-         f"seed={c['seed']}  threshold=+{c['threshold']*100:.0f}pp vs URTH  "
-         f"missing='{c['missing']}'",
-         f"windows: {c['windows']}",
-         f"PIT universe exchange scope: {c['exchange_filter']}",
-         ""]
+         "=" * 92]
+    L += bstamp.banner_lines(result.get("basis") or bstamp.UNSTAMPED, width=92)
+    L += [f"cadence={c['cadence_months']}mo  pick_n={c['pick_n']}  draws={c['n_draws']}  "
+          f"seed={c['seed']}  threshold=+{c['threshold']*100:.0f}pp vs URTH  "
+          f"missing='{c['missing']}'",
+          f"windows: {c['windows']}",
+          f"PIT universe exchange scope: {c['exchange_filter']}",
+          #  CARVE-OFF is the ONE intended difference from the beat-rate table now that the
+          #  veto and the anchor set match.  Said here rather than only in the other stage,
+          #  so a reader holding this report alone can see what it is not.
+          "carve: OFF (this baseline ranks the un-carved universe; the beat-rate table's "
+          "deployed list is carve-ON)",
+          ""]
     f = result["filter"]
     L.append(f"FILTER  top-{c['pick_n']}  beat-rate = {f['beat_rate']['pooled']*100:5.1f}% "
              f"(n={f['beat_rate']['n']})   "
@@ -685,6 +767,12 @@ def main():
     ap.add_argument("--exchanges", default="na1",
                     help="PIT universe exchange scope: 'na1' (default, unchanged), 'all', "
                          "or a comma-separated exchangeShortName list")
+    #  The escape hatch, not the default: every skill figure published before 2026-08-31 was
+    #  un-vetoed, so reproducing one needs this flag -- and needs to SAY so, which the stamp
+    #  on the report then does.
+    ap.add_argument("--no-stage1-veto", action="store_true",
+                    help="reproduce the pre-2026-08-31 UN-VETOED basis (the report stamps "
+                         "which basis it ran on either way)")
     args = ap.parse_args()
 
     log = lambda *a: print(*a, file=sys.stderr, flush=True)
@@ -701,7 +789,8 @@ def main():
         f"{'NA1 (NYSE/NASDAQ/TSX)' if exch is None else exch}")
     result = run_skill_baseline(dmdic, merged, registry, ps, cadence_months=args.cadence,
                                 pick_n=args.pick_n, n_draws=args.draws, seed=args.seed,
-                                oracle_ns=(3, args.pick_n), exchange_filter=exch, log=log)
+                                oracle_ns=(3, args.pick_n), exchange_filter=exch,
+                                stage1_veto=not args.no_stage1_veto, log=log)
     print(format_report(result))
 
 

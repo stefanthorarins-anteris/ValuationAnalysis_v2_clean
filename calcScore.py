@@ -190,8 +190,24 @@ def simpleScore_fromDict(bm_df,bm_ave,bm_da,n=8,as_of=None,freq_map=None):
     # ONLY -- deliberately no live postfix: this loop maintains no running fail/skip bucket,
     # and `_nan_acct` gets one entry PER TICKER (not per problem name), so its size would
     # just re-display `n`.  Nothing here earns a postfix, so the bar stays plain.
+    #  `disable=None` -- tqdm's own "auto-disable when the stream is not a TTY".
+    #  THE RULE, STATED ONCE HERE BECAUSE THIS IS THE BAR THAT CAUSED IT.  A progress bar is
+    #  a LIVE affordance: it renders with carriage returns, so redirected into a file it
+    #  becomes one enormous line of overwrite fragments.  This particular bar runs once per
+    #  PIT anchor -- seven for the depth x horizon grid, three for gate attribution, three
+    #  for skill_baseline -- over ~5,000 tickers each, and it is most of why the 2026-08-31
+    #  run log went 1.86 MB -> 3.17 MB for 234 more lines of actual content.  A log nobody
+    #  can grep is a log nobody checks.
+    #
+    #  NOTHING DIAGNOSTIC IS LOST, and that is checked rather than hoped: `tqdm.write`
+    #  (which `getData_gen.bar_print` uses for every warning emitted while a bar is live)
+    #  degrades to a plain write when the bar is disabled, and every stage that drives a bar
+    #  already reports its OUTCOME after the loop -- counts, failures, watchdog lines.  What
+    #  disappears is the percentage, which was never evidence.
+    #
+    #  ON A TTY NOTHING CHANGES: run this in a terminal and the bar renders exactly as before.
     pbar = tqdm(total=len(bm_df['source'].unique()), desc='Stage-1 scoring', unit='ticker',
-                smoothing=0.05, dynamic_ncols=True)
+                smoothing=0.05, dynamic_ncols=True, disable=None)
 
     for ticker in bm_df['source'].unique():
         bmdf_tick = bm_df[bm_df['source'] == ticker]

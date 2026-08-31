@@ -220,7 +220,8 @@ def _fetch_profiles_batched(symbols, baseurl, api_key, batch_size=100, pace=None
     # Total is exact: the loop walks `uniq` in batches and advances by len(batch), which sums
     # to len(uniq).  Nothing inside prints, so no bar-safe writer is needed here; `desc`/`unit`
     # only, so the bar says which stage it belongs to.
-    pbar = tqdm(total=len(uniq), desc='Sector/industry profiles', unit='symbol',
+    #  disable=None -- auto-disable off a TTY; see the note at calcScore's Stage-1 bar.
+    pbar = tqdm(total=len(uniq), desc='Sector/industry profiles', unit='symbol', disable=None,
                 dynamic_ncols=True) if uniq else None
     for i in range(0, len(uniq), batch_size):
         batch = uniq[i:i + batch_size]
@@ -1044,7 +1045,11 @@ def findAllSectorsViaScreener(baseurl,api_key):
                          100*baseMegaCap]
 
     T = len(exchanges)*len(betaLowerThan)**2*len(priceMoreThan)**2*len(marketCapLowerThan)**2
-    tqdm(total=len(ass_df['symbol'].unique()))
+    #  disable=None -- auto-disable off a TTY; see the note at calcScore's Stage-1 bar.
+    #  (This bar is constructed and never driven; left in place rather than deleted because
+    #  removing it is a behaviour change to a function nothing in the suite calls, and the
+    #  sweep's rule applies to it the same as to any other.)
+    tqdm(total=len(ass_df['symbol'].unique()), disable=None)
     for ex in exchanges:
         for i in range(0,len(betaLowerThan)-1):
             blt = betaLowerThan[i]

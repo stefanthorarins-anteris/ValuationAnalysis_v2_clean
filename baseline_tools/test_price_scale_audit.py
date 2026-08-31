@@ -211,7 +211,253 @@ def test_the_report_names_its_own_blind_spots_every_run():
     text = "\n".join(said)
     assert "BLIND SPOT" in text.upper()
     assert "marketCap" in text, "the reason check B misses ATRI is not stated"
-    assert "absent from the panel" in text
+    assert "absent from THIS panel" in text
+    #  The blind spot that mattered most was not the one the paragraph named.  Check A reads
+    #  the panel it is given, and the LIVE panel is survivor-only -- ATRI has 0 rows in it on
+    #  both 08-29 and 08-31 -- so the check written because check B cancels on ATRI could not
+    #  see ATRI either.  The paragraph must now say which POPULATION it read and that a second
+    #  pass covers the other one, or a reader takes one pass for both.
+    assert "ATRI" in text and "0 rows in cdx_df" in text
+    assert "PIT dead-merged" in text, (
+        "the report does not say that the dead-merged population is covered elsewhere")
+
+
+# --------------------------------------------------------------------------- #
+#  THE CONTAINMENT PARAGRAPH IS COMPUTED, NOT RECITED                         #
+# --------------------------------------------------------------------------- #
+def _mixed_panel(n_good=40, bad=("BADA", "BADB", "BADC")):
+    """`n_good` ordinary names + `bad` scaled by 1/1000 (price only, ATRI's shape)."""
+    rows = []
+    for i in range(n_good):
+        rows += _repeat("G%03d" % i, 2000.0, 1000, 1000.0, 5000)
+    for b in bad:
+        rows += _repeat(b, 2.0, 1000, 1000.0, 5000)
+    return _panel(rows)
+
+
+def test_the_containment_numbers_MOVE_WITH_THE_PANEL():
+    """THE DEFECT THIS PINS.  `price_scale_audit` printed, unconditionally whenever
+    `n_alarm > 0`, a frozen 2026-08-29 measurement -- "seven of eight rank 1-7 of 4,928 ... No
+    shipped pick is affected: best Stage-1 rank is 119 of 4,934" -- against a 2026-08-31 panel
+    of 4,941.  It read as tonight's number, it happened to be true, and the code did not check
+    it: the first run whose ALARM set moved would have asserted a false all-clear about the
+    shipped list in the log the CEO reads.
+
+    Two panels differing in SIZE and in ALARM COUNT must therefore produce different numbers.
+    A frozen paragraph passes neither half of this."""
+    def _run(panel, bo):
+        said = []
+        psa.run_audit(panel, prices_csv=None, stage1_scores=bo,
+                      shipped_sources=["G000"], run_grid_check=False, log=said.append)
+        return "\n".join(said)
+
+    small = _mixed_panel(n_good=40, bad=("BADA", "BADB"))
+    large = _mixed_panel(n_good=120, bad=("BADA", "BADB", "BADC"))
+    bo_small = pd.DataFrame({"source": sorted(small["source"].unique()),
+                             "score": np.linspace(1, 0, small["source"].nunique())})
+    bo_large = pd.DataFrame({"source": sorted(large["source"].unique()),
+                             "score": np.linspace(1, 0, large["source"].nunique())})
+    t_small, t_large = _run(small, bo_small), _run(large, bo_large)
+
+    assert "of 42 on it" in t_small, t_small          # 40 good + 2 scaled
+    assert "of 123 on it" in t_large, t_large         # 120 good + 3 scaled
+    assert "2 of 2 flagged names" in t_small
+    assert "3 of 3 flagged names" in t_large
+    assert "of 42 of" not in t_large, "the panel size did not move with the panel"
+
+
+def _stripped(fn):
+    """`fn`'s source with every docstring removed.
+
+    SCANNED ON THE BODY, NOT THE PROSE.  The dated 08-29 numbers belong in the docstring --
+    that is the record of what went wrong -- and a token scan that read them there would fail
+    on its own explanation, which trains people to delete the explanation.  Same lesson as
+    `test_price_grid_refetch_decision._strip_docstrings`, and it is a lesson this repo has
+    already had to learn once."""
+    import ast
+    import inspect
+    import textwrap
+    tree = ast.parse(textwrap.dedent(inspect.getsource(fn)))
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef,
+                             ast.Module)) and ast.get_docstring(node) is not None:
+            node.body = node.body[1:]
+    return ast.unparse(tree)
+
+
+def test_no_frozen_08_29_measurement_survives_in_what_the_audit_PRINTS():
+    """The literals themselves, banned from the executable body.  A recomputation that leaves
+    the old numbers in a neighbouring printed sentence has fixed nothing a reader can see."""
+    src = _stripped(psa.run_audit) + _stripped(psa._containment_lines)
+    for frozen in ("4,928", "4,934", "seven of eight", "NINETEEN", "119"):
+        assert frozen not in src, (
+            "a hardcoded 2026-08-29 measurement is still printed as if computed: %r" % frozen)
+
+
+def test_an_absent_input_produces_NOT_CHECKED_and_never_an_all_clear():
+    """The other half of the fix.  With no selected list and no Stage-1 ranking, the audit
+    must SAY it did not check -- an absent input coming out as 'no shipped pick is affected'
+    is the same defect one level down."""
+    said = []
+    psa.run_audit(_mixed_panel(), prices_csv=None, run_grid_check=False, log=said.append)
+    text = "\n".join(said)
+    assert "CONTAINMENT NOT CHECKED" in text
+    assert "NOT an all-clear" in text
+    for reassurance in ("containment holds", "None of the", "Best Stage-1 rank"):
+        assert reassurance not in text, (
+            "the audit reassured about a list it was never given: %r" % reassurance)
+
+
+def test_a_flagged_name_INSIDE_the_selected_list_is_reported_as_NOT_CONTAINED():
+    """The case the frozen paragraph could never report, because it asserted the opposite by
+    construction.  This is the whole reason the sentence had to become a computation."""
+    panel = _mixed_panel()
+    said = []
+    psa.run_audit(panel, prices_csv=None, shipped_sources=["G000", "BADB"],
+                  run_grid_check=False, log=said.append)
+    text = "\n".join(said)
+    assert "NOT CONTAINED" in text and "BADB" in text
+    assert "containment holds" not in text
+
+
+def test_a_flagged_name_INSIDE_the_stage1_cutoff_gets_its_own_sentence():
+    """A negative margin is a different statement, not a smaller number.
+
+    A flagged name inside the top-100 has already reached the Stage-2 pool carrying a
+    contaminated `bookToPrice` -- whether it survives to the shipped list is a separate
+    question.  Formatting that as "a margin of -12 places" would bury the one case the
+    containment paragraph exists to surface, which is how the frozen version read: it could
+    only ever describe comfort."""
+    panel = _mixed_panel(n_good=30, bad=("BADA",))
+    #  BADA ranked 2nd of 31 -> well inside a top-10 cutoff
+    order = ["G000", "BADA"] + ["G%03d" % i for i in range(1, 30)]
+    bo = pd.DataFrame({"source": order, "score": np.linspace(1, 0, len(order))})
+    said = []
+    psa.run_audit(panel, prices_csv=None, stage1_scores=bo, shipped_sources=["G000"],
+                  topn_stage1=10, run_grid_check=False, log=said.append)
+    text = chr(10).join(said)
+    assert "INSIDE THE STAGE-1 CUTOFF" in text and "BADA" in text
+    assert "margin" not in text, "a name inside the cutoff was reported as a margin"
+
+
+def test_check_B_says_NOT_RUN_rather_than_reporting_no_disagreement():
+    """A check that did not run and a check that found nothing are different facts about the
+    data.  On the dead-merged panel the grid carries almost none of the names, so a silent
+    'no decade-scale disagreement' would be an artifact of absence read as an all-clear."""
+    said = []
+    psa.run_audit(_mixed_panel(), prices_csv=None, run_grid_check=False, log=said.append)
+    text = "\n".join(said)
+    assert "NOT RUN on this panel" in text
+    assert "no decade-scale disagreement" not in text
+
+
+def test_bookToPrice_ranking_is_the_same_by_either_route():
+    """`equity/marketCap` (the scorer's own definition) and `bookValuePerShare/price` are the
+    same ratio with `shares` cancelled, so the ranking must not depend on which columns the
+    panel happens to carry.  The fallback exists because `cdx_df` variants differ; a fallback
+    that ranked differently would be a second opinion wearing the first one's label."""
+    panel = _mixed_panel(n_good=20)
+    with_direct = panel.assign(
+        marketCap=panel["price"] * panel["weightedAverageShsOut"],
+        totalStockholdersEquity=panel["bookValuePerShare"] * panel["weightedAverageShsOut"])
+    names = sorted(panel["source"].unique())
+    a = psa.bookToPrice_ranks(panel, names)
+    b = psa.bookToPrice_ranks(with_direct, names)
+    assert a[3] == "bookValuePerShare/price" and b[3] == "equity/marketCap"
+    assert a[0] == b[0], "the two routes disagree about the ranking"
+    assert a[1] == b[1]
+
+
+# --------------------------------------------------------------------------- #
+#  THE AUDIT MUST REACH THE POPULATION IT WAS BUILT FOR                       #
+# --------------------------------------------------------------------------- #
+#  ATRI has ZERO rows in the live `cdx_df` on 2026-08-29 and on 2026-08-31: it delisted in
+#  2024, and the live panel is survivor-only.  Check B cancels on the ATRI shape by
+#  construction (FMP scales `marketCap` by the same 1/1000), and check A -- the check written
+#  BECAUSE of that -- was reading a panel ATRI is not in.  Both checks blind to the motivating
+#  name, in a module whose first test asserts it "fires on the name that motivated it".
+#  Where ATRI IS live is the PIT dead-merged pool, and there `bookToPrice` is a Tier-B,
+#  Sign +1, higher-is-better input to every backtest ranking.
+def _pa():
+    import pipeline_analysis as pa
+    return pa
+
+
+def test_the_suite_runs_check_A_over_the_DEAD_MERGED_panel_too():
+    """Wiring, not availability: the second pass has to be a stage the run executes."""
+    import inspect
+    pa = _pa()
+    src = inspect.getsource(pa.run_analysis_suite)
+    assert "_audit_price_scale_pit_stage" in src, (
+        "the backtest population is still unaudited -- check A reads only the live panel")
+    #  and it must come AFTER the grid, because that is where the graded selections exist
+    assert src.index("depth x horizon avg-TR grid") < src.index(
+        "_audit_price_scale_pit_stage"), (
+        "the PIT audit runs before per_anchor exists, so it can check no containment")
+
+
+def test_the_PIT_pass_does_NOT_run_check_B():
+    """Its names are largely the ones the price grid does not carry, so 'no disagreement'
+    would be an artifact of absence -- an all-clear manufactured by a missing input."""
+    import inspect
+    src = inspect.getsource(_pa()._audit_price_scale_pit_stage)
+    assert "run_grid_check=False" in src
+
+
+def test_the_PIT_pass_REFUSES_to_run_when_the_run_is_not_survivorship_clean():
+    """`_build_pit_inputs` degrades to `merged is dmdic` when the delisted inputs are absent.
+    Auditing that a second time would print an identical report under a heading claiming it
+    covered the dead names -- a stage that READS as coverage it does not have is worse than
+    an absent stage."""
+    said = []
+    out = _pa()._audit_price_scale_pit_stage({"cdx_df": _mixed_panel()}, {}, None,
+                                             False, said.append)
+    assert out is None
+    text = chr(10).join(said)
+    assert "SKIPPED" in text and "NOT audited" in text
+
+
+def test_the_PIT_pass_NAMES_the_alarms_the_live_pass_could_not_see():
+    """The difference IS the finding.  A contaminated name present in the dead-merged panel
+    and absent from the live one is a name whose `bookToPrice` is 1000x too favourable in
+    every backtest ranking and invisible to the shipped-list audit -- the ATRI shape exactly.
+
+    DEAD1 stands in for ATRI: scaled, and absent from the live ALARM set."""
+    live_panel = _mixed_panel(n_good=30, bad=("BADA",))
+    pit_panel = _mixed_panel(n_good=30, bad=("BADA", "DEAD1"))
+    live = psa.run_audit(live_panel, prices_csv=None, run_grid_check=False,
+                         log=lambda *_a: None)
+    said = []
+    _pa()._audit_price_scale_pit_stage(
+        {"cdx_df": pit_panel},
+        {"buy2021": {"top20_deduped": ["G000", "G001"], "ranking": ["G000", "G001"]}},
+        live, True, said.append)
+    text = chr(10).join(said)
+    assert "DEAD1" in text, text
+    assert "ONLY IN THE BACKTEST POPULATION" in text
+    assert "BADA" not in text.split("ONLY IN THE BACKTEST POPULATION")[1].split(chr(10))[0], (
+        "a name the live pass already flagged was reported as new")
+
+
+def test_the_PIT_pass_says_so_when_it_finds_nothing_new():
+    """'The second pass found nothing' and 'the second pass did not run' must not look alike
+    -- the distinction this module already draws for check B, applied to itself."""
+    panel = _mixed_panel(n_good=30, bad=("BADA",))
+    live = psa.run_audit(panel, prices_csv=None, run_grid_check=False, log=lambda *_a: None)
+    said = []
+    _pa()._audit_price_scale_pit_stage({"cdx_df": panel}, {}, live, True, said.append)
+    text = chr(10).join(said)
+    assert "no ALARM name is unique to the dead-merged panel" in text
+
+
+def test_the_live_pass_is_handed_the_runs_OWN_ranking_and_shipped_list():
+    """Without them the containment paragraph can only say NOT CHECKED -- which is honest but
+    useless, and the frozen paragraph existed precisely because nobody had wired the inputs
+    that would let it be computed."""
+    import inspect
+    src = inspect.getsource(_pa()._audit_price_scale_stage)
+    assert "stage1_scores=" in src and "BoScore_df" in src
+    assert "shipped_sources=" in src and "postRank" in src
 
 
 if __name__ == "__main__":

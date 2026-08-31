@@ -707,27 +707,153 @@ def test_the_banner_prints_ONCE_per_process_not_once_per_pool(reimport_pbr, caps
     assert out.count('DCF fetch SKIPPED') == 1, out.count('DCF fetch SKIPPED')
 
 
-def test_the_banner_states_the_LIMITED_SCOPE(reimport_pbr, capsys):
-    """This gates STAGE-2 only.  writeBoAggToCSV and createPresentation make their OWN DCF calls
-    on separate code paths this flag does not touch, so the banner must not read as "no more DCF
-    calls" -- a previous report on this project claimed a mitigation covered more than it did."""
+def test_the_banner_states_the_SCOPE_it_actually_has_AND_what_that_costs(reimport_pbr, capsys):
+    """The banner must describe the run a reader is about to get, and price it.
+
+    THE OLD SHAPE, KEPT AS THE LESSON.  It said "this gates STAGE-2 only" and named
+    `writeBoAggToCSV` / `createPresentation` as paths the flag does NOT touch.  Every word of
+    that was true, it printed on every run, and the 2026-08-31 run fired ~97 live
+    `discounted-cash-flow` GETs out of `writeBoAggToCSV` immediately underneath it.  Nobody
+    costed it for four months, because the note gave a reader nothing to cost it WITH.
+
+    The scope is still narrow -- the CEO ruled on 2026-08-31 to KEEP those two display
+    columns -- so what this now pins is that the line carries the two numbers that turn a
+    disclaimer into a decision: how many calls, and what they buy in the score."""
     pbr = reimport_pbr(None)
     pbr._assert_offline_dcf_is_score_neutral()
     out = capsys.readouterr().out
-    assert 'STAGE-2 only' in out
-    assert 'writeBoAggToCSV' in out and 'createPresentation' in out
+    assert 'SCOPE' in out
+    assert 'writeBoAggToCSV' in out and 'createPresentation' in out, (
+        'the banner does not name the paths that still fetch')
+    assert '117' in out, 'the banner does not say what the un-gated paths COST'
+    assert '0.000' in out, (
+        'the banner does not say what they buy in the score -- the fact that makes the '
+        'trade legible')
+    assert '2026-08-31' in out, 'the banner does not record that this is a decision'
+    #  and it must not claim the display cells go blank -- they do not
+    assert 'reads empty/NaN in any' not in out
 
 
-def test_the_OTHER_DCF_call_sites_are_NOT_gated_by_this_flag(monkeypatch):
-    """Stated as an executable fact, so the scope claim cannot rot: the two post-fetch stages
-    reference no offline flag and still make their own DCF calls."""
-    import inspect
-    import postBo
-    for fn in (postBo.writeBoAggToCSV, postBo.createPresentation):
-        src = inspect.getsource(fn)
-        assert 'discounted-cash-flow' in src, fn.__name__
-        assert 'OFFLINE_NO_DCF' not in src, \
-            "%s now references the flag -- update the scope claim" % fn.__name__
+def _dcf_endpoint_callers():
+    """{module: [(enclosing FunctionDef, its source)]} for every live DCF endpoint call.
+
+    AST, and the ENCLOSING FUNCTION rather than the file: the question is what the code that
+    fires the call says about itself, and a mention of the flag somewhere else in a 2,900-line
+    module answers nothing."""
+    import ast
+    import os
+    out = {}
+    for name in sorted(os.listdir(_HERE)):
+        if not name.endswith('.py') or name.startswith('test_'):
+            continue
+        path = os.path.join(_HERE, name)
+        with open(path, encoding='utf-8') as fh:
+            src = fh.read()
+        if 'v3/discounted-cash-flow' not in src:
+            continue
+        tree = ast.parse(src)
+        parents = {}
+        for node in ast.walk(tree):
+            for child in ast.iter_child_nodes(node):
+                parents[child] = node
+        hits = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
+                continue
+            if 'v3/discounted-cash-flow' not in node.value:
+                continue
+            fn = parents.get(node)
+            while fn is not None and not isinstance(fn, (ast.FunctionDef,
+                                                         ast.AsyncFunctionDef)):
+                fn = parents.get(fn)
+            hits.append((fn, ast.get_source_segment(src, fn) if fn is not None else ''))
+        if hits:
+            out[name[:-3]] = hits
+    return out
+
+
+#  EVERY live DCF call site in the repo, and what the flag does about it.  This registry IS
+#  the scope claim the `postBoRank` banner makes; the tests below hold the code to it in both
+#  directions, so the banner cannot drift from the code and a FOURTH copy of the fetch cannot
+#  appear without somebody writing down which side of the line it is on.
+#
+#  'gated'   -- the enclosing function consults `offline_no_dcf()` and skips.
+#  'kept'    -- it fires unconditionally, BY CEO RULING (2026-08-31), and the enclosing
+#               function must say so with the cost and the weight beside it.
+DCF_CALL_SITES = {
+    'postBoRank._fetch_ticker_dcf': 'gated',
+    'postBo.writeBoAggToCSV': 'kept',
+    'postBo.createPresentation': 'kept',
+}
+
+
+def test_the_set_of_live_DCF_call_sites_is_EXACTLY_the_one_we_wrote_down():
+    """A FOURTH copy of this fetch must not be able to appear quietly.
+
+    The defect was never one bad line: it was that `VA_OFFLINE_NO_DCF` was read in one place
+    while THREE functions fired the endpoint, and nobody could see that from either end.
+    Naming the known offenders is what let the third one exist, so this asks the repo instead
+    of a list -- and EQUALITY, so a site that disappears fails too rather than leaving a stale
+    entry that reads as coverage."""
+    found = {'%s.%s' % (mod, getattr(fn, 'name', '<module level>'))
+             for mod, hits in _dcf_endpoint_callers().items() for fn, _src in hits}
+    assert found == set(DCF_CALL_SITES), (
+        'unregistered DCF call sites: %s; registered but gone: %s.  Every live '
+        'discounted-cash-flow fetch must be recorded in DCF_CALL_SITES as gated by '
+        'offline_no_dcf() or as deliberately kept.'
+        % (sorted(found - set(DCF_CALL_SITES)), sorted(set(DCF_CALL_SITES) - found)))
+
+
+def test_the_GATED_call_site_really_consults_the_flag():
+    """The one path the flag does gate. If this stops being true the banner's core claim --
+    that Stage-2 skips ~225 GETs -- is false, and the score-neutrality guard beside it is
+    guarding nothing."""
+    for mod, hits in _dcf_endpoint_callers().items():
+        for fn, src in hits:
+            where = '%s.%s' % (mod, getattr(fn, 'name', '?'))
+            if DCF_CALL_SITES.get(where) != 'gated':
+                continue
+            assert 'offline_no_dcf' in (src or ''), (
+                '%s is registered as gated but does not consult offline_no_dcf()' % where)
+
+
+def test_the_KEPT_call_sites_carry_the_DECISION_that_keeps_them():
+    """THE REPLACEMENT FOR A TEST THAT PINNED THE BUG.
+
+    This slot used to hold `test_the_OTHER_DCF_call_sites_are_NOT_gated_by_this_flag`, which
+    asserted the defect verbatim and told anyone who fixed it to "update the scope claim".
+    It was instance fifteen of a test asserting the thing it covered, and it is not coming
+    back: what is pinned now is not that the calls are un-gated but that the code SAYS WHY,
+    with the two numbers that make it a decision rather than an oversight.
+
+    Without the weight in particular, the next reader finds ~117 paid calls feeding a display
+    column, reads it as the oversight it looked like on 2026-08-31, and gates it again."""
+    for mod, hits in _dcf_endpoint_callers().items():
+        for fn, src in hits:
+            where = '%s.%s' % (mod, getattr(fn, 'name', '?'))
+            if DCF_CALL_SITES.get(where) != 'kept':
+                continue
+            body = src or ''
+            assert 'VA_OFFLINE_NO_DCF' in body, (
+                '%s does not say that the flag does not gate it' % where)
+            assert 'CEO, 2026-08-31' in body or 'CEO ruling' in body, (
+                '%s does not record WHOSE decision this is or when' % where)
+            assert '0.000' in body, (
+                '%s does not state the scored weight -- the fact that makes ~117 paid calls '
+                'a legible trade instead of a bug' % where)
+            assert '117' in body, (
+                '%s does not state what the decision costs per run' % where)
+
+
+def test_the_sweep_can_SEE_the_call_sites_it_is_about():
+    """A guard blind to its own target is the failure this repo keeps producing, so the
+    sweep's reach is asserted rather than assumed: it must find all three functions that fire
+    the endpoint, by name."""
+    found = {'%s.%s' % (mod, getattr(fn, 'name', '?'))
+             for mod, hits in _dcf_endpoint_callers().items() for fn, _src in hits}
+    for must in ('postBo.writeBoAggToCSV', 'postBo.createPresentation',
+                 'postBoRank._fetch_ticker_dcf'):
+        assert must in found, 'the sweep does not reach %s: %s' % (must, sorted(found))
 
 
 def test_the_saved_run_confirms_SIX_pools_ie_225_calls():

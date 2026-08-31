@@ -124,8 +124,9 @@ def postBoScoreRanking(bmtop, bstop, cdxtop, baseurl, api_key, period='quarter',
     # `desc` distinguishes this from the two postBo bars, and this scorer runs ONCE PER POOL
     # (general + five carve-out cohorts), so the pool label is what makes six identical bars
     # tellable apart.
+    #  disable=None -- auto-disable off a TTY; see the note at calcScore's Stage-1 bar.
     pbar = tqdm(total=len(bstop['source']), desc='Stage-2 scoring [%s]' % (pool_label or 'general'),
-                unit='ticker', smoothing=0.05, dynamic_ncols=True)
+                unit='ticker', smoothing=0.05, dynamic_ncols=True, disable=None)
     for tempcntr, ticker in enumerate(bstop['source']):
         tempcdx = cdxtop.loc[cdxtop['source'] == ticker]
 
@@ -514,13 +515,33 @@ def _assert_offline_dcf_is_score_neutral(weight_override=None):
         _how = ('DEFAULT' if os.environ.get(_DCF_ENV) in (None, '')
                 else '%s=%s' % (_DCF_ENV, os.environ.get(_DCF_ENV)))
         print("!" * 78, flush=True)
+        #  THE LAST CLAUSE USED TO READ "the DCF column reads empty/NaN in any DISPLAY
+        #  that shows it", and that became false the moment anyone looked: the two display
+        #  cells are served by `postBo`'s OWN fetches, which this flag does not gate (see
+        #  the SCOPE line below).  A banner that mis-describes what a reader will see on
+        #  the page is worse than one that says less.
         print("!!! Stage-2 per-ticker DCF fetch SKIPPED (%s) -- saves ~225 live FMP GETs per\n"
               "!!! run (100 general + 5 cohorts x 25).  DcfToPrice w=0.000 in every vector in\n"
-              "!!! force, so AggScore is UNAFFECTED; the DCF column reads empty/NaN in any\n"
-              "!!! DISPLAY that shows it.  Set %s=0 to fetch it live." % (_how, _DCF_ENV),
+              "!!! force, so AggScore is UNAFFECTED.  Set %s=0 to fetch it live." % (_how, _DCF_ENV),
               flush=True)
-        print("!!! NOTE: this gates STAGE-2 only.  writeBoAggToCSV and createPresentation make\n"
-              "!!! their own DCF calls on separate code paths that this flag does NOT touch.",
+        #  THE SCOPE NOTE WAS TRUE AND USELESS, AND IT IS NEITHER NOW.  It read "this
+        #  gates STAGE-2 only.  writeBoAggToCSV and createPresentation make their own DCF
+        #  calls on separate code paths that this flag does NOT touch" -- accurate,
+        #  printed on every run, and the 2026-08-31 run duly fired ~97 live GETs out of
+        #  `writeBoAggToCSV` immediately after this banner announced the fetch was
+        #  skipped.  Nobody costed it, because the note gave a reader no way to.
+        #
+        #  THE SCOPE IS STILL NARROW -- the CEO ruled on 2026-08-31 to KEEP those two
+        #  display columns and accept the calls -- so what changed is that the line now
+        #  carries the two numbers that make it a decision instead of a disclaimer: how
+        #  many calls (~117 a run) and what they buy in the score (0.000, i.e. nothing).
+        #  A caveat a reader cannot price is a caveat a reader skips.
+        print("!!! SCOPE: this gates STAGE-2 SCORING ONLY.  postBo.writeBoAggToCSV\n"
+              "!!! (~97 GETs) and postBo.createPresentation (~20) keep their OWN per-name\n"
+              "!!! DCF fetch -- about 117 paid calls a run -- feeding two DISPLAY cells,\n"
+              "!!! `DCF-to-Price` (AggScore CSV) and `Price-to-fair value` (XLSX).\n"
+              "!!! KEPT DELIBERATELY (CEO, 2026-08-31) even though the scored DcfToPrice\n"
+              "!!! weight is 0.000 -- they move NO score, they are read on the page.",
               flush=True)
         print("!" * 78, flush=True)
 

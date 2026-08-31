@@ -1730,8 +1730,9 @@ def writeBoAggToCSV(fb_df, mscore, cscore, baseurl, api_key, ntopagg, fname_AggS
     # than the ask), and the bar then hangs short of its total forever.  `desc` names the
     # stage because three bars run back-to-back after the fetch and 'the second one' is not
     # an identification.  Display only.
+    #  disable=None -- auto-disable off a TTY; see the note at calcScore's Stage-1 bar.
     pbar = tqdm(total=len(BoComp_tocsv), desc='AggScore CSV', unit='name',
-                smoothing=0.05, dynamic_ncols=True)
+                smoothing=0.05, dynamic_ncols=True, disable=None)
     for _row_i, row in enumerate(BoComp_tocsv.itertuples(), start=1):
         # PAD-TO-LENGTH GUARD (review item 5, 2026-07-31).  My earlier reasoning that a
         # per-row guard was impossible here was wrong: only the NAIVE form is defeated by
@@ -1783,6 +1784,29 @@ def writeBoAggToCSV(fb_df, mscore, cscore, baseurl, api_key, ntopagg, fname_AggS
                 temp_resp_pr = gdg.safe_json_list(
                     f'{baseurl}v3/profile/{symb}?apikey={api_key}', label='profile %s' % symb)
 
+            # ==== VA_OFFLINE_NO_DCF DOES **NOT** GATE THIS FETCH -- CEO, 2026-08-31 ====
+            # DELIBERATE, NOT AN OVERSIGHT, and the weight is written here so it reads as a
+            # trade rather than as a bug.  The flag suppresses the STAGE-2 SCORING fetch only
+            # (`postBoRank._fetch_ticker_dcf`).  This loop and `createPresentation` each keep
+            # their own per-name `v3/discounted-cash-flow` GET -- about 97 here plus about 20
+            # there, so roughly 117 paid calls per run -- and between them they feed exactly
+            # TWO DISPLAY CELLS: `DCF-to-Price` in the AggScore CSV and `Price-to-fair value`
+            # in the XLSX.
+            #
+            # THE COST IS ACCEPTED WITH THE WEIGHT IN VIEW.  The SCORED twin `DcfToPrice`
+            # carries weight **0.000** in every vector in force -- the main one and all five
+            # cohort overrides, asserted by
+            # `test_post_fetch_hardening.test_the_deployed_DcfToPrice_weight_really_IS_zero`.
+            # These calls therefore move no score and buy no ranking accuracy whatever.  They
+            # buy two numbers the CEO reads on the pages he reviews.  Offered all three
+            # options on 2026-08-31 -- gate them, keep them, or find a cheaper source -- he
+            # chose "keep them for now as is".
+            #
+            # SO DO NOT "FIX" THIS BY WIRING THE FLAG IN.  It WAS gated once, on exactly this
+            # evidence, and reverted by that ruling.  Changing it is a CEO decision, not a
+            # cleanup.  `test_post_fetch_hardening` pins the scope claim in both directions:
+            # a NEW DCF call site fails until somebody records it, and this one is recorded
+            # as deliberately ungated.
             _dcf_status = 'bulk'
             if symb in dcf_bulk_dict:
                 temp_resp_dcf = [dcf_bulk_dict[symb]]  # Convert dict to list format
@@ -2340,7 +2364,8 @@ def createPresentation(finalBoRank_df, mscore, cscore, baseurl, api_key, topn, f
     # Total from `symblist`, the list the loop iterates, not from the REQUESTED `topn`:
     # `generalTopN(...).head(topn)` returns fewer names whenever the banded general pool is
     # smaller than the ask, and the bar then stops short of its total for good.  Display only.
-    pbar = tqdm(total=len(symblist), desc='XLSX presentation', unit='page',
+    #  disable=None -- auto-disable off a TTY; see the note at calcScore's Stage-1 bar.
+    pbar = tqdm(total=len(symblist), desc='XLSX presentation', unit='page', disable=None,
                 smoothing=0.05, dynamic_ncols=True)
     _pages_skipped = []
     for symb in symblist[::-1]:
@@ -2366,6 +2391,14 @@ def createPresentation(finalBoRank_df, mscore, cscore, baseurl, api_key, topn, f
         cf = pd.DataFrame(gdg.safe_json_list(
             f'{baseurl}v3/cash-flow-statement/{symb}?period=annual&limit={years}&apikey={api_key}',
             label='cash-flow %s' % symb))
+        # ==== VA_OFFLINE_NO_DCF DOES **NOT** GATE THIS FETCH -- CEO, 2026-08-31 ====
+        # The THIRD DCF call site, and the one the 08-31 finding did not count: about 20 more
+        # per-name GETs on top of the ~97 in the AggScore-CSV loop, roughly 117 per run in
+        # total.  It feeds ONE DISPLAY CELL, `Price-to-fair value`, and the SCORED twin
+        # `DcfToPrice` carries weight **0.000**, so it moves no score.  Gated once on that
+        # evidence and reverted by CEO ruling ("keep them for now as is") -- he reviews these
+        # pages.  Changing it is his decision, not a cleanup.  Fuller note at the same ruling
+        # in `writeBoAggToCSV`.
         dcf_resp = gdg.safe_json_list(
             f'{baseurl}v3/discounted-cash-flow/{symb}?apikey={api_key}', label='dcf %s' % symb)
         dcf = pd.DataFrame.from_dict(dcf_resp) if dcf_resp else pd.DataFrame()

@@ -294,9 +294,188 @@ def check_synthetic_vs_grid(panel, prices_csv, supp_csv=None,
     return per.sort_values(["verdict", "decade_err"]).reset_index(drop=True), stats
 
 
-def run_audit(panel, prices_csv=None, supp_csv=None, log=print, out_csv=None):
-    """Both checks, printed.  Returns the two frames and the counts; changes nothing."""
-    log("[price-scale] vendor price-LEVEL audit (report only -- no price is corrected)")
+def bookToPrice_ranks(panel, sources):
+    """Where `sources` sit on `bookToPrice` within the WHOLE panel, computed now.
+
+    `bookToPrice` is `totalStockholdersEquity / marketCap` (createDicts.py:578, Tier B,
+    Sign +1 -- HIGHER IS BETTER), which is the column a 1000x-under-scaled `marketCap`
+    inflates by exactly one decade.  Ranked DESCENDING, so rank 1 is the most favourable
+    reading in the universe -- which is where a units error lands.
+
+    Returns (ranks:{source: rank}, n_ranked, panel_median, route).  `ranks` is empty when the
+    panel cannot produce the column at all, and the caller must then say the exposure was NOT
+    QUANTIFIED rather than print a number it did not compute.
+
+    FALLBACK, and it is exact rather than approximate: with `totalStockholdersEquity` or
+    `marketCap` absent, `bookValuePerShare / price` is the same ratio with `shares`
+    cancelled top and bottom (the module docstring records that identity as verified on
+    ATRI's own panel), so the ranking is unchanged.  Which route was taken is returned so
+    the log can say it.
+    """
+    cols = getattr(panel, "columns", [])
+    if "totalStockholdersEquity" in cols and "marketCap" in cols:
+        num, den, route = _num(panel, "totalStockholdersEquity"), _num(panel, "marketCap"), "equity/marketCap"
+    elif "bookValuePerShare" in cols and "price" in cols:
+        num, den, route = _num(panel, "bookValuePerShare"), _num(panel, "price"), "bookValuePerShare/price"
+    else:
+        return {}, 0, float("nan"), "unavailable"
+    df = pd.DataFrame({"source": panel["source"].astype(str),
+                       "b2p": num / den.where(den > 0)})
+    per = df.groupby("source")["b2p"].median().dropna()
+    if not len(per):
+        return {}, 0, float("nan"), route
+    #  method='min' so tied readings share the BEST rank -- reporting a contaminated name
+    #  one place better than it is would be the conservative direction, and reporting it
+    #  worse than it is would understate the exposure.
+    ranked = per.rank(ascending=False, method="min").astype(int)
+    want = [str(x) for x in sources]
+    return ({s: int(ranked[s]) for s in want if s in ranked.index},
+            int(len(per)), float(per.median()), route)
+
+
+def _stage1_rank_map(stage1_scores):
+    """{source: rank} from a Stage-1 score frame or an already-ranked sequence.
+
+    Accepts `resdic['BoScore_df']` (a frame with `source` + `score`) and re-sorts it here
+    rather than trusting the order it arrives in -- the rank is the claim, so the sort that
+    produces it belongs beside the claim.  A plain sequence of sources is taken as already
+    ranked.  Anything else -> {} -> the caller says NOT CHECKED."""
+    if stage1_scores is None:
+        return {}
+    cols = getattr(stage1_scores, "columns", None)
+    if cols is not None and "source" in cols:
+        df = stage1_scores
+        if "score" in cols:
+            df = df.sort_values("score", ascending=False)
+        order = [str(x) for x in df["source"].tolist()]
+    else:
+        try:
+            order = [str(x) for x in stage1_scores]
+        except TypeError:
+            return {}
+    return {s: i + 1 for i, s in enumerate(order)}
+
+
+def _containment_lines(internal, panel, stage1_scores, shipped_sources, topn_stage1, label):
+    """The containment paragraph, COMPUTED -- or an explicit refusal to assert one.
+
+    WHAT THIS REPLACES, because the shape matters more than the numbers.  This paragraph was
+    a FROZEN 2026-08-29 measurement printed unconditionally whenever `n_alarm > 0`: "seven of
+    eight rank 1-7 of 4,928 ... best Stage-1 rank is 119 of 4,934".  The 08-31 run printed it
+    verbatim against a panel of 4,941, and it said "eight" only because that night's ALARM
+    count happened to be eight as well.  The conclusion was true that night and the code did
+    not check it -- so the first run whose ALARM set moves would have asserted a false
+    all-clear about the shipped list, in the CEO's own words, in the log he reads.
+
+    THE OTHER HALF OF THE FIX IS THE REFUSAL.  With neither a selected list nor a Stage-1
+    ranking to hand, this says CONTAINMENT NOT CHECKED and asserts nothing.  An absent input
+    must never come out as an all-clear; that is the same failure one level down.
+    """
+    names = [str(x) for x in internal.loc[internal["severity"] == "ALARM", "source"]]
+    L = []
+    if not names:
+        return L
+    ranks, n_ranked, med, route = bookToPrice_ranks(panel, names)
+    if ranks:
+        top = sorted(ranks.values())
+        n_in_head = sum(1 for r in top if r <= len(names))
+        #  NAMES THE PANEL, because this function now runs over two of them and "the live
+        #  scorer" is true of only one.  A containment sentence that does not say which
+        #  population it is about is the frozen-paragraph defect in a different costume.
+        L.append("    THESE FEED A RANKING (%s).  `bookToPrice` (%s, Tier B, higher=better)"
+                 % (label or "live scorer", route))
+        L.append("    is 1000x too FAVOURABLE on a scaled row.  Panel median %.2f; %d of %d "
+                 "flagged names rank" % (med, n_in_head, len(names)))
+        L.append("    in the top %d of %d on it (ranks %s)."
+                 % (len(names), n_ranked,
+                    ", ".join(str(r) for r in top[:12])
+                    + (", ..." if len(top) > 12 else "")))
+    else:
+        L.append("    bookToPrice NOT COMPUTABLE on this panel -- the exposure is NOT "
+                 "quantified this run.")
+
+    #  THE TWO CONTAINMENT QUESTIONS ARE INDEPENDENT and are answered independently.
+    #  "does a flagged name REACH the shipped list" is the one that matters and needs only
+    #  the list; "how far from the cutoff is the nearest one" is the margin and needs the
+    #  Stage-1 ranking.  Coupling them (the first version did) meant the LIVE pass could
+    #  answer both while the PIT pass -- which has a shipped list per anchor but no Stage-1
+    #  frame -- answered neither, and printed NOT CHECKED over a question it could answer.
+    s1 = _stage1_rank_map(stage1_scores)
+    shipped = set(str(x) for x in (shipped_sources or []))
+    flagged = set(names)
+    answered = False
+
+    if shipped:
+        answered = True
+        in_shipped = sorted(flagged & shipped)
+        if in_shipped:
+            L.append("    !!! A FLAGGED NAME IS IN THE SELECTED LIST: %s.  NOT CONTAINED."
+                     % ", ".join(in_shipped))
+        else:
+            L.append("    None of the %d flagged names is among the %d selected -- "
+                     "containment holds this run," % (len(flagged), len(shipped)))
+            L.append("    MEASURED on this run's own list, not inherited from a previous "
+                     "one.")
+    if s1:
+        hit = sorted((r, n) for n, r in s1.items() if n in flagged)
+        if hit:
+            answered = True
+            best_r, best_n = hit[0]
+            #  A NEGATIVE MARGIN IS A DIFFERENT SENTENCE, not a smaller number.  A flagged
+            #  name INSIDE the Stage-1 cutoff has already reached the Stage-2 pool on a
+            #  contaminated criterion, whether or not it survives to the shipped list --
+            #  printing that as "a margin of -12 places" would bury the one case this
+            #  paragraph exists to surface.
+            if best_r <= topn_stage1:
+                L.append("    !!! A FLAGGED NAME IS INSIDE THE STAGE-1 CUTOFF: %s at rank %d "
+                         "of %d, top-%d." % (best_n, best_r, len(s1), topn_stage1))
+                L.append("    It reached the Stage-2 pool carrying a contaminated "
+                         "`bookToPrice`.  Whether it survives")
+                L.append("    to the selected list is the line above; that it got that far "
+                         "is this one.")
+            else:
+                L.append("    Best Stage-1 rank among them: %s at %d of %d against a top-%d "
+                         "cutoff -- a margin" % (best_n, best_r, len(s1), topn_stage1))
+                L.append("    of %d places.  That is where these names happened to land on "
+                         "the OTHER criteria; it is" % (best_r - topn_stage1))
+                L.append("    measured containment, NOT a guard, and a flagged name that is "
+                         "merely mediocre elsewhere")
+                L.append("    enters the list on a units error.")
+        else:
+            L.append("    None of the flagged names appears in the Stage-1 ranking passed "
+                     "here (%d ranked), so" % len(s1))
+            L.append("    no margin is computable for them.")
+    if not answered:
+        L.append("    CONTAINMENT NOT CHECKED: neither a selected list nor a Stage-1 "
+                 "ranking was passed to this")
+        L.append("    audit, so whether a flagged name reaches a shipped or graded list is "
+                 "UNKNOWN this run.")
+        L.append("    Read it as unknown.  It is NOT an all-clear.")
+    else:
+        L.append("    NOT ACTIONED: suppressing or refusing a name changes a score, which "
+                 "is the CEO's call.")
+    if label:
+        L.append("    (panel: %s)" % label)
+    return L
+
+
+def run_audit(panel, prices_csv=None, supp_csv=None, log=print, out_csv=None,
+              stage1_scores=None, shipped_sources=None, topn_stage1=100,
+              panel_label=None, run_grid_check=True):
+    """Both checks, printed.  Returns the two frames and the counts; changes nothing.
+
+    stage1_scores   : the run's Stage-1 score frame (`resdic['BoScore_df']`) or an already-
+                      ranked sequence of sources.  Absent -> the containment claim is NOT
+                      MADE (see `_containment_lines`); it is never assumed.
+    shipped_sources : the Stage-2 survivors actually shipped (`resdic['postRank']['source']`).
+                      Absent -> likewise not asserted.
+    run_grid_check  : check B (synthetic-vs-grid).  False runs check A alone, which is the
+                      shape the PIT dead-merged pass needs: that panel's names are precisely
+                      the ones the price grid does not carry, so check B has nothing to
+                      compare and its "no disagreement" would read as an all-clear.
+    """
+    log("[price-scale] vendor price-LEVEL audit (report only -- no price is corrected)%s"
+        % (" -- panel: %s" % panel_label if panel_label else ""))
     if panel is None or not len(panel) or "source" not in getattr(panel, "columns", []):
         log("[price-scale] no panel available -- audit did not run.")
         return {"internal": pd.DataFrame(), "grid": pd.DataFrame(), "stats": {}}
@@ -318,24 +497,29 @@ def run_audit(panel, prices_csv=None, supp_csv=None, log=print, out_csv=None):
             ps = f"{r.price_over_sales:.3f}" if r.price_over_sales == r.price_over_sales else "n/a"
             log(f"[price-scale]    {r.source:<14}{r.price_over_book:>12.5f}"
                 f"{r.pb_x1000:>10.2f}{ps:>13}  {r.currency}")
-        log("[price-scale]    THESE ARE IN THE LIVE SCORER NOW.  `bookToPrice` "
-            "(equity/marketCap, Tier B, higher=better)")
-        log("[price-scale]    is 1000x too FAVOURABLE on these rows -- panel median 0.51, "
-            "these read 26-836, and seven")
-        log("[price-scale]    of eight rank 1-7 of 4,928 on it.  No shipped pick is affected: "
-            "best Stage-1 rank is 119")
-        log("[price-scale]    of 4,934 against a top-100 cutoff, none reaches postRank -- a "
-            "margin of NINETEEN places,")
-        log("[price-scale]    which is where these names landed on the OTHER criteria, not a "
-            "guard.  NOT ACTIONED HERE:")
-        log("[price-scale]    suppressing or refusing them changes a score, which is the "
-            "CEO's call.")
+        #  COMPUTED, every number of it, from THIS run's panel and THIS run's ranking --
+        #  and explicitly NOT CHECKED when the inputs for it were not passed.  See
+        #  `_containment_lines` for what the frozen version of this paragraph did.
+        for _line in _containment_lines(internal, panel, stage1_scores, shipped_sources,
+                                        topn_stage1, panel_label):
+            log("[price-scale]" + _line)
     else:
         log("[price-scale]    none.  NOTE this is not an all-clear for the price GRID: check "
             "A reads fundamentals only.")
 
-    grid_df, stats = check_synthetic_vs_grid(panel, prices_csv, supp_csv)
-    if not len(grid_df):
+    grid_df, stats = ((pd.DataFrame(), {"reason": "NOT RUN on this panel"})
+                      if not run_grid_check
+                      else check_synthetic_vs_grid(panel, prices_csv, supp_csv))
+    if not run_grid_check:
+        #  DECLINED, and it says so.  "check B found nothing" and "check B was not run" are
+        #  different statements about the data and must never print as the same line -- the
+        #  same distinction `stage1_veto` draws between DECLINED and found-nothing.
+        log("[price-scale] B. synthetic-vs-grid: NOT RUN on this panel.  Its names are "
+            "largely the ones the")
+        log("[price-scale]    price grid does not carry, so 'no disagreement' here would be "
+            "an artifact of")
+        log("[price-scale]    absence rather than a finding.")
+    elif not len(grid_df):
         log(f"[price-scale] B. synthetic-vs-grid: {stats.get('reason', 'no decade-scale disagreement')}.")
     else:
         counts = grid_df["verdict"].value_counts().to_dict()
@@ -355,8 +539,18 @@ def run_audit(panel, prices_csv=None, supp_csv=None, log=print, out_csv=None):
     log("[price-scale]   shape at all (FMP scales `marketCap` by the same 1/1000, so the "
         "ratio is ~1.0); check A")
     log("[price-scale]   cannot see a defect confined to the grid; NEITHER sees a name "
-        "absent from the panel,")
-    log("[price-scale]   which includes every delisted name the live run does not carry.")
+        "absent from THIS panel.")
+    log("[price-scale]   THE PANEL IS THE SCOPE, and it is the one that moved: run against "
+        "the LIVE cdx_df this")
+    log("[price-scale]   misses every delisted name, including ATRI -- 0 rows in cdx_df on "
+        "both 08-29 and 08-31 --")
+    log("[price-scale]   which is the name the stage was built for.  The suite therefore "
+        "runs check A a SECOND")
+    log("[price-scale]   time over the PIT dead-merged panel, where those names live and "
+        "where `bookToPrice`")
+    log("[price-scale]   feeds every backtest ranking.  If you are reading only one of the "
+        "two passes, you are")
+    log("[price-scale]   reading only one population.")
 
     if out_csv:
         try:

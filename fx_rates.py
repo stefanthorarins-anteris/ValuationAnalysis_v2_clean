@@ -922,6 +922,43 @@ class PitFxTable(object):
         lasts = [d[0][-1] for d in self._by_cur.values() if d[0]]
         return (min(firsts) if firsts else None), (max(lasts) if lasts else None)
 
+    def covers(self, when):
+        """True when `when` falls inside what this table can actually answer.
+
+        The span PLUS the documented carry-forward, because `rate_for` answers a date up to
+        `PIT_MAX_FORWARD_DAYS` past the last close and refuses beyond it -- so "covered" has
+        to mean the same thing the lookup means, or the check and the lookup disagree at the
+        edge."""
+        lo, hi = self.span()
+        if lo is None or hi is None:
+            return False
+        try:
+            ts = pd.Timestamp(when)
+        except (TypeError, ValueError):
+            return False
+        if ts is None or pd.isna(ts):
+            return False
+        return lo <= ts <= (hi + pd.Timedelta(days=PIT_MAX_FORWARD_DAYS))
+
+    def uncovered(self, dates):
+        """The subset of `dates` this table cannot answer -- the SILENT-EXPIRY check.
+
+        WHY IT EXISTS.  The committed table is FIXED at 2019-01-01..2026-08-07 and static
+        since 2026-08-08.  It covers every currently graded anchor, so nothing is wrong today;
+        the hazard is entirely one of TIME.  Every run drifts further from its end date, and
+        when an anchor finally falls past it `rate_for` returns None per row, the market cap
+        resolves to NaN, the name routes to unknown-currency -> General, and the header goes on
+        printing "FX basis: POINT-IN-TIME" with a span nobody compared against the anchors.
+        The look-ahead that was just removed comes back as an absence instead, which is
+        quieter and no better.
+
+        A LIST, NOT A RAISE.  The caller decides how loudly to say it: refusing the stage
+        would take a per-band read that is CORRECT for every covered anchor down with the one
+        that is not, which is precisely the composition defect `benchmark_return_or_none`
+        exists to stop one layer over.  Loud and partial beats silent and total.
+        """
+        return [d for d in (dates or []) if not self.covers(d)]
+
     def rate_for(self, currency, when):
         """USD-per-unit for `currency` as of `when`, or None.
 

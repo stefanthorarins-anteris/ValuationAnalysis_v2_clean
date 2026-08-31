@@ -268,6 +268,58 @@ def ic_table(panel, real, buy_eval_pairs, horizon_label):
     return pd.DataFrame(rows), horizon_label
 
 
+#  Fewest priceable names in a LEG before its median is printed as a median.
+#  WHY 5, and why this constant exists at all.  The 2026-08-31 and 2026-08-29 runs both
+#  printed `EXITERS (n=6)` against `STAYERS (n=1)` and then a comparison of the two
+#  medians -- "after[+2y,+4y]" -15.8% for the stayers -- which is one company's three-year
+#  price move typeset as a finding about churn.  A median over one name is that name; over
+#  two it is their mean; the block's entire reading is a COMPARISON of two such numbers, so
+#  the weaker leg sets the strength of the claim.  Five is the point at which a median is at
+#  least the middle of a distribution rather than a re-labelled observation -- deliberately a
+#  low bar, because the aim is to stop the block asserting a direction it cannot support, not
+#  to suppress the data.  THE NUMBERS ARE STILL PRINTED either way; what is withheld below
+#  the bar is the DIRECTIONAL COMPARISON, and the reason is stated on the line.
+PROFIT_TIMING_MIN_LEG_N = 5
+
+
+def profit_timing_lines(ex, st, exdf, stdf, min_leg_n=PROFIT_TIMING_MIN_LEG_N):
+    """The profit-timing block as LINES, with its own n governing what it may claim.
+
+    ONE DEFINITION, TWO CALLERS.  `run_in_pipeline` and `main` each carried their own copy of
+    this print loop and the copies were byte-identical, which is how they would have drifted:
+    a qualification added to the pipeline's copy would have left the hand-run one asserting
+    the old thing.  The n-guard is exactly the kind of change that gets applied to one of two
+    copies.
+
+    WHAT IT STILL CANNOT SEE: nothing here knows whether a name is missing from `real` because
+    it delisted or because the grid never priced its venue, so a small leg is not evidence
+    about churn either.  The line says the count and refuses the direction; it does not
+    explain the count."""
+    L = ["top-20 at D=2020: exit by +2y=%d, stay=%d" % (len(ex), len(st))]
+    legs = [("EXITERS", exdf), ("STAYERS", stdf)]
+    thin = [lbl for lbl, d in legs if d is None or len(d) < min_leg_n]
+    for lbl, d in legs:
+        if d is None or d.empty:
+            L.append("  %s: no priceable" % lbl)
+            continue
+        L.append("  %s (n=%d): during[D,+2y]=%+.1f%%  after[+2y,+4y]=%+.1f%%  full=%+.1f%%"
+                 % (lbl, len(d), d["during"].median() * 100, d["after"].median() * 100,
+                    d["full"].median() * 100))
+        if len(d) < min_leg_n:
+            #  The individual observations, so nothing is hidden -- the point is to stop the
+            #  word "median" doing work it cannot do, not to withhold the data.
+            L.append("     ^ n=%d < %d: this is %s, not a median.  Per name: %s"
+                     % (len(d), min_leg_n,
+                        "one observation" if len(d) == 1 else "%d observations" % len(d),
+                        ", ".join("%+.1f%%" % (v * 100) for v in d["full"])))
+    if thin:
+        L.append("  NO DIRECTIONAL CONCLUSION IS DRAWN: %s below n=%d, so the EXITERS-vs-"
+                 "STAYERS comparison" % (" and ".join(thin), min_leg_n))
+        L.append("  is NOT reported this run.  Read the rows as observations, not as a "
+                 "result about churn.")
+    return L
+
+
 def profit_timing_real(dmdic, panel, real):
     import io, contextlib
     import stage2_pit as s2
@@ -349,12 +401,8 @@ def run_in_pipeline(dmdic, price_source=None, real_prices_csv=None, log=None):
     print("PROFIT-TIMING vs CHURN on REAL prices (D=2020-12 -> +2y -> +4y)")
     print("=" * 72)
     ex, st, exdf, stdf = profit_timing_real(dmdic, panel, real)
-    print(f"top-20 at D=2020: exit by +2y={len(ex)}, stay={len(st)}")
-    for lbl, d in [("EXITERS", exdf), ("STAYERS", stdf)]:
-        if d.empty:
-            print(f"  {lbl}: no priceable"); continue
-        print(f"  {lbl} (n={len(d)}): during[D,+2y]={d['during'].median()*100:+.1f}%  "
-              f"after[+2y,+4y]={d['after'].median()*100:+.1f}%  full={d['full'].median()*100:+.1f}%")
+    for _line in profit_timing_lines(ex, st, exdf, stdf):
+        print(_line)
     print("\n[real_ic] DONE.", flush=True)
     return {"ic_24m": tbl, "exiters": exdf, "stayers": stdf}
 
@@ -395,12 +443,8 @@ def main():
     print("PROFIT-TIMING vs CHURN on REAL prices (D=2020-12 -> +2y -> +4y)")
     print("=" * 72)
     ex, st, exdf, stdf = profit_timing_real(dmdic, panel, real)
-    print(f"top-20 at D=2020: exit by +2y={len(ex)}, stay={len(st)}")
-    for lbl, d in [("EXITERS", exdf), ("STAYERS", stdf)]:
-        if d.empty:
-            print(f"  {lbl}: no priceable"); continue
-        print(f"  {lbl} (n={len(d)}): during[D,+2y]={d['during'].median()*100:+.1f}%  "
-              f"after[+2y,+4y]={d['after'].median()*100:+.1f}%  full={d['full'].median()*100:+.1f}%")
+    for _line in profit_timing_lines(ex, st, exdf, stdf):
+        print(_line)
 
 
 if __name__ == "__main__":
