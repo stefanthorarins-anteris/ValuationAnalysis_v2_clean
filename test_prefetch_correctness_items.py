@@ -847,18 +847,22 @@ def test_the_PE_vendor_FALLBACK_takes_the_SAME_sign_test_as_the_computed_value()
     The fallback is not removed -- a positive vendor P/E for a name whose newest row is simply
     missing is still worth publishing -- it is SIGN-CHECKED, so the column's one promise (a
     published P/E is a positive P/E) holds for every cell whatever its provenance.
+    THE CHECK MOVED WITH THE BEHAVIOUR (2026-09-01) AND GOT STRONGER.  It used to scan
+    `writeBoAggToCSV`'s source for `perat > 0` within 1,400 characters of `priceEarningsRatio`.
+    The decision now lives in `postBo._pe_cell`, extracted precisely because a source scan
+    cannot see a DELETED branch -- a mutation removing the refusal outcome passed the old
+    assertion.  So the promise is asserted BEHAVIOURALLY, on the real function, with the real
+    NEXN number: a published P/E is a positive P/E whatever its provenance.
     """
-    import inspect
     import postBo as pb
-    src = inspect.getsource(pb.writeBoAggToCSV)
-    i = src.index('priceEarningsRatio')
-    block = src[i:i + 1400]
-    assert 'perat > 0' in block, (
+    #  THE MEASURED CASE.  NEXN's vendor P/E was -18.1111 and must not be published.
+    assert pb._pe_cell(None, 'NEXN', set(), -18.1111) == ('NaN', 'none'), (
         'the vendor fallback publishes without a sign test, so a refused loss-maker still '
-        'gets a negative P/E on the CEO\'s sheet')
+        'gets a negative P/E on the CEO sheet')
+    #  a POSITIVE vendor value is still published -- sign-CHECKED, not removed
+    assert pb._pe_cell(None, 'OTHER', set(), 18.1111) == ('18.1111', 'vendor')
     #  and the computed side refuses the same population, so the two agree on the promise
     assert pb._pe_ratio_from_panel({'NEXN': (-0.013804, 4.0)}, 'NEXN') is None
-
 
 # =========================================================================== #
 #  -fsMAnumber IS RETIRED, AND RETIRES AUDIBLY  (CEO, 2026-08-14)              #

@@ -1353,6 +1353,73 @@ def _current_ratio_value(v):
     return f
 
 
+def _pe_cell(pe_ours, symb, refused_sources, vendor_pe):
+    """The published `PE-ratio` cell and WHY -- ('value-or-NaN', tag).
+
+    EXTRACTED SO THE DECISION CAN BE TESTED (2026-09-01).  It lived inline in a ~300-line
+    function beside two API responses, so the only way to check it was to read the source and
+    assert on the ORDER OF TOKENS -- which a mutation that deletes the branch survives, because
+    the token still appears where the set is built.  A three-way decision that picks what the
+    CEO reads deserves to be callable.
+
+    THE THREE OUTCOMES:
+      'ours'    our own panel answered -- 1/(rpy x earningsYield), the normal case.
+      'refused' section 5 judged this name's price side a units error.  PUBLISH NaN AND DO NOT
+                FALL BACK: the vendor's `priceEarningsRatio` is derived from the SAME price the
+                refusal rejected, so falling back republishes the defect (1/1000 of the truth
+                on the ATRI shape, ~100x too small on the QBY0.DE shape) as an absurdly CHEAP
+                positive P/E beside a name in the CEO's list.
+      'vendor'  our panel could not answer for an ORDINARY reason -- a loss-maker, no positive
+                earningsYield -- and the vendor's positive value is a different, honest read.
+    The vendor value keeps its existing sign test: a negative P/E invites "cheap".
+    """
+    if pe_ours is not None:
+        return "{:.4f}".format(pe_ours), 'ours'
+    if str(symb) in (refused_sources or ()):
+        return 'NaN', 'refused'
+    if isinstance(vendor_pe, (int, float)) and not isinstance(vendor_pe, bool) and vendor_pe > 0:
+        return "{:.4f}".format(vendor_pe), 'vendor'
+    return 'NaN', 'none'
+
+
+def _pe_refused_sources(cdx_df):
+    """Sources whose NEWEST row had `earningsYield` REFUSED by nan_policy section 5.
+
+    WHY THE P/E NEEDS THIS AND THE OTHER COLUMNS DO NOT.  `_pe_ratio_from_panel` returns None
+    for a missing OR non-positive yield, and the caller then publishes FMP's
+    `priceEarningsRatio`.  That is right for a LOSS-MAKER -- our panel genuinely cannot answer
+    and the vendor's number is a different, honest reading.  It is WRONG for a units-error
+    refusal: the vendor's P/E is derived from the SAME price the pipeline just judged corrupt,
+    so the fallback republishes the defect the refusal exists to remove.  On the ATRI shape the
+    vendor P/E is 1/1000 of the truth; on the QBY0.DE shape the vendor EPS is ~100x large and
+    the P/E ~100x small.  Either way the deliverable shows an absurdly CHEAP positive P/E
+    beside a name in the CEO's list -- the sign-inversion class this file keeps finding, in a
+    new costume.
+
+    The neighbouring columns were checked and need no equivalent: the dividend yield computes
+    from our own `marketCap` and correctly goes absent with its own banner,
+    `grahamNumberToPrice`'s panel fallback yields non-finite and drops out, and `price` comes
+    from the live profile response rather than from `cdx`.
+
+    Mirrors the `_cr_refused` idiom this file already uses for `currentRatio`: a refusal and an
+    absence are different facts and must not print as one.
+    """
+    try:
+        import nan_policy as _npol
+        cols = getattr(cdx_df, 'columns', [])
+        if cdx_df is None or _npol.SANITY_REFUSED_COLUMN not in cols or 'source' not in cols:
+            return set()
+        df = cdx_df.copy()
+        df['date'] = pd.to_datetime(df['date'], errors='coerce')
+        newest = df.sort_values(['source', 'date'], ascending=[True, False]).groupby(
+            'source', sort=False).head(1)
+        mask = _npol.refused_fields_mask(newest, 'earningsYield').fillna(False)
+        return set(newest.loc[mask.to_numpy(dtype=bool), 'source'].astype(str))
+    except Exception:
+        #  A REPORT column: degrade to the pre-existing behaviour rather than cost the CSV.
+        return set()
+
+
 def _pe_panel_table(cdx_df):
     """{source: (newest earningsYield, rows-per-year)} from the run's OWN panel.
 
@@ -1676,7 +1743,9 @@ def writeBoAggToCSV(fb_df, mscore, cscore, baseurl, api_key, ntopagg, fname_AggS
     #  `_pe_ratio_from_panel`.  Built ONCE for the whole CSV rather than per name: it is a
     #  groupby over the panel, and doing it inside the loop would be 100 passes over it.
     _pe_panel = _pe_panel_table(cdx_df)
+    _pe_panel_refused = _pe_refused_sources(cdx_df)
     _pe_vendor_fallback = []
+    _pe_refused = []
     #  COMPUTED, NOT CONSUMED -- both built once, for the same reason as the P/E table.  See
     #  the register N-3 block above `_graham_to_price_panel_latest` for what these replace and
     #  why an FX patch on the vendor's numbers was the wrong fix.
@@ -1906,26 +1975,24 @@ def writeBoAggToCSV(fb_df, mscore, cscore, baseurl, api_key, ntopagg, fname_AggS
             # The vendor's `priceEarningsRatio` is still READ, but only as a FALLBACK for a
             # name the panel cannot answer for, and it is labelled as such in the log.
             _pe_ours = _pe_ratio_from_panel(_pe_panel, symb)
-            if _pe_ours is not None:
-                pEratioVec.append("{:.4f}".format(_pe_ours))
-            elif len(temp_resp_fr) == 0 or 'priceEarningsRatio' not in temp_resp_fr[0]:
-                pEratioVec.append('NaN')
-            else:
-                perat = temp_resp_fr[0]['priceEarningsRatio']
-                #  THE FALLBACK TAKES THE SAME SIGN TEST AS THE COMPUTED VALUE (reviewer S3,
-                #  2026-08-10).  Without it the refusal was defeated by its own fallback: our
-                #  own P/E is refused precisely when `earningsYield <= 0`, and the vendor's
-                #  P/E on that same name is then NEGATIVE for the same reason -- so 100% of
-                #  the refusing population got published exactly what the refusal exists to
-                #  prevent.  MEASURED on the shipped 2026-08-10 top-100: one name refuses,
-                #  `NEXN` (`earningsYield = -0.013804`), and its published `PE-ratio` was
-                #  **-18.1111**.  A negative P/E invites "cheap"; a loss-maker has none.
-                if (type(perat) == int or type(perat) == float) and perat > 0:
-                    pEratioVec.append("{:.4f}".format(perat))
-                    _pe_vendor_fallback.append(symb)
-                else:
-                    pEratioVec.append('NaN')
-                
+            #  THE DECISION LIVES IN `_pe_cell`, AND THAT IS THE POINT.  It used to be an
+            #  inline four-branch chain in the middle of this ~300-line function, beside two
+            #  API responses, so the only way to check it was to read this source and assert
+            #  on the ORDER OF TOKENS -- and a mutation that DELETED the refusal branch
+            #  survived that assertion, because the token still appears where the set is
+            #  built.  A three-way decision that picks what the CEO reads is now callable.
+            #  The three outcomes, the vendor sign test and the reason a refused name must NOT
+            #  fall back are all documented on `_pe_cell`.
+            _pe_vendor_raw = (temp_resp_fr[0].get('priceEarningsRatio')
+                              if len(temp_resp_fr) and isinstance(temp_resp_fr[0], dict)
+                              else None)
+            _pe_val, _pe_tag = _pe_cell(_pe_ours, symb, _pe_panel_refused, _pe_vendor_raw)
+            pEratioVec.append(_pe_val)
+            if _pe_tag == 'refused':
+                _pe_refused.append(symb)
+            elif _pe_tag == 'vendor':
+                _pe_vendor_fallback.append(symb)
+
             # Check rating
             # Use bulk rating data if available, otherwise fallback to individual call
             if symb in rating_bulk_dict:
@@ -2007,10 +2074,20 @@ def writeBoAggToCSV(fb_df, mscore, cscore, baseurl, api_key, ntopagg, fname_AggS
     #  SAY HOW MANY CELLS THE VENDOR STILL SUPPLIED.  A silently-mixed column is the thing
     #  this change exists to stop, so the count of fallback cells is printed rather than left
     #  to be inferred from the numbers.
+    if _pe_refused:
+        gdg.bar_print(
+            "PE-ratio: %d of %d name(s) publish NaN because section 5 REFUSED their newest "
+            "`earningsYield` as a units error: %s. The vendor's `priceEarningsRatio` was "
+            "DELIBERATELY NOT used for these -- it is derived from the same price the refusal "
+            "rejected, so the fallback would republish the defect. This is NOT the "
+            "loss-maker case reported below."
+            % (len(_pe_refused), len(BoComp_tocsv),
+               ', '.join(map(str, _pe_refused[:20]))))
     if _pe_vendor_fallback:
         gdg.bar_print(
             "PE-ratio: %d of %d name(s) fell back to FMP's `priceEarningsRatio` because our "
-            "own panel could not answer (no positive earningsYield on the newest row): %s. "
+            "own panel could not answer (no positive earningsYield on the newest row, i.e. a "
+            "LOSS-MAKER -- a refused newest row is counted in the line above instead): %s. "
             "Every OTHER cell is COMPUTED as 1/(rpy x earningsYield) from the run's own "
             "panel -- see postBo._pe_ratio_from_panel."
             % (len(_pe_vendor_fallback), len(BoComp_tocsv),

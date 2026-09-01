@@ -99,28 +99,50 @@ TWO CHECKS, AND EACH IS BLIND TO WHAT THE OTHER SEES -- WHICH IS WHY BOTH RUN
      bank a vendor defect.  Check B therefore classifies rather than alarms, and only an
      unexplained near-exact power of ten is raised.
 
-REPORT ONLY.  NEVER A MUTATION, NEVER A SCORE CHANGE -- AND THAT IS A DEFERRAL, NOT A FIX
-------------------------------------------------------------------------------------------
-This module does not correct a price, does not drop a name, and does not touch any score.
-That boundary is the reason Q-38 was held open rather than parked with the rest of the
-price-grid work: its detector touches names that are live in scoring, and changing a score on
-the strength of a heuristic is the CEO's call, not this module's.  So it prints, and what it
-prints is evidence for that decision, not an input to one.
+THIS MODULE IS STILL REPORT-ONLY.  THE PIPELINE IS NOT.  (Q-48 ACTIONED, 2026-09-01)
+------------------------------------------------------------------------------------
+The paragraph that stood here said the deferral was the right call and that a ruling to
+suppress the criterion was "a live option this module deliberately does not take on its own".
+THE CEO REOPENED IT AND RULED THE OTHER WAY: reading a corrupted vendor number is a BUG, not a
+scoring preference, and a correctness defect gets fixed rather than reported.
 
-BE PRECISE ABOUT WHAT THAT LEAVES OPEN.  Reporting does not neutralise the `bookToPrice`
-contamination above; it documents it.  The exposure sits in the live scorer every run, and
-the only thing standing between it and the shipped list is that these eight names are bad
-enough elsewhere to land outside the top 100 by nineteen places.  A CEO ruling to suppress
-the criterion for flagged names, or to refuse the names outright, is a live option this
-module deliberately does not take on its own.
+WHAT CHANGED, AND IT IS NOT IN THIS FILE.  `nan_policy.price_scale_hits` is a third
+input-sanity rule, hooked into `refuse_impossible_cells` at `the refusal hook in getData_fmp.getFundamentalsData` -- the one
+place `tempfund` is both the frame every Stage-1 metric is computed from AND the frame that
+becomes `cdx_df`.  A row whose `price / bookValuePerShare` is under `PB_ALARM` has `price`,
+`marketCap`, `bookValuePerShare` and `earningsYield` set to NaN, and every metric in either
+stage that reads one of them is then absent rather than wrong.  ABSENCE, NOT CORRECTION: no
+price is multiplied by anything, because the observed defects are not one decade (measured:
+QBY0.DE/0CHZ.L are ~100x on the SHARE COUNT, ATRI is 1/1000 on the PRICE, CCM has negative
+equity and no decade at all), so there is no factor to assert.
+
+WHAT THIS MODULE STILL DOES, AND WHY IT MATTERS MORE NOW.  It reports.  But the refusal blanks
+the two legs check A reads, so on a post-2026-09-01 panel the rows this module was built to
+name are invisible to it -- `0 ALARM` over a defect that WAS found.  `refused_upstream` reads
+the `nan_policy.SANITY_REFUSED_COLUMN` stamp and `run_audit` prints the refused sources FIRST,
+so "found nothing" and "already refused" can never print as the same line.  Read the A0 block
+before the ALARM count: on a refusing panel the ALARM count is what SURVIVED the refusal.
+
+WHAT IS STILL OPEN, stated plainly.  The rule UNDER-REACHES: the share-count corruption
+signature is just as common in the 0.02-0.10 price/book band, which is left alone (the density
+table is in `nan_policy`, beside the constant).  And check B is unchanged -- a defect confined
+to the price GRID still only classifies, never refuses.
 
 NO NETWORK.  Reads a panel frame and, optionally, the saved grid CSV.  Nothing else.
 """
 
 import os
+import sys
 
 import numpy as np
 import pandas as pd
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+for _p in (os.path.dirname(_HERE), _HERE):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+
+import nan_policy as npol
 
 #  ---- Check A: price/book ---------------------------------------------------
 #  A 1000x under-scale maps the ORDINARY price/book range [0.5, 10] onto
@@ -128,7 +150,16 @@ import pandas as pd
 #  sits an order of magnitude under the live panel's 0.1st percentile (0.014).
 #  DELIBERATELY NOT TIGHTER: a real distressed equity bottoms out around 0.05-0.10,
 #  so 0.02 keeps a clear gap from anything a market actually prints.
-PB_ALARM = 0.02
+#
+#  THE NUMBER NOW LIVES IN `nan_policy`, AND THIS MODULE IMPORTS IT (Q-48, 2026-09-01).
+#  Since that date the pipeline does not merely REPORT this defect, it REFUSES the
+#  contradicted cells at ingest (`nan_policy.price_scale_hits`, hooked into
+#  `refuse_impossible_cells`).  A reporting threshold and a refusing threshold that
+#  could drift apart would be two definitions of "contaminated" -- the exact failure
+#  this repo has been bitten by repeatedly -- so there is one constant and the
+#  REFUSING side owns it.  The derivation above is the record of how it was set and
+#  is unchanged; only its home moved.
+PB_ALARM = npol.PRICE_SCALE_PB_ALARM
 PB_WATCH = 0.05
 #  Fewest quarters before a name's median price/book is worth reporting.  A single
 #  quarter with a stale marketCap is noise, not a scaling defect -- the defect is
@@ -333,6 +364,54 @@ def bookToPrice_ranks(panel, sources):
             int(len(per)), float(per.median()), route)
 
 
+def refused_upstream(panel, report=None):
+    """{source: n_rows} for sources whose price-scale cells `nan_policy` already refused.
+
+    WHY THIS EXISTS AND WHY IT IS NOT OPTIONAL.  Since 2026-09-01 the ingest REFUSES the
+    contradicted cells rather than only reporting them (`nan_policy.price_scale_hits`).
+    Check A reads `price` and `bookValuePerShare`; the refusal sets BOTH to NaN.  So on a
+    panel built after that change, the very rows this module exists to name are invisible to
+    it, and `0 ALARM` would print over a defect that was found and handled -- indistinguishable
+    from a defect that was never there.  This module's own docstring says the rule: "a detector
+    blind to its own motivating case is worse than none, because it would have been read as an
+    all-clear."
+
+    Reads the `nan_policy.SANITY_REFUSED_COLUMN` stamp, which rides the panel through
+    `pd.concat`, the saved pickle and the `-loadbometric` reload.  A panel without that column
+    (every pre-2026-09-01 pickle, every test frame) refused nothing and returns {}.
+
+    Returns {source: {"rows": int, "worst_ratio": float}}.  `worst_ratio` is NaN unless the
+    run's refusal `report` is passed -- the ratio is NOT recoverable from a refused panel.
+    """
+    col = npol.SANITY_REFUSED_COLUMN
+    if panel is None or col not in getattr(panel, "columns", []) or "source" not in panel.columns:
+        return {}
+    #  `price` is the leg check A cannot do without, so it is the one to key on: any row this
+    #  rule refused has it.  THAT IT IS UNIQUE TO THIS RULE IS AN INVARIANT, NOT A FACT OF
+    #  NATURE (review S4-2): a future `nan_policy` rule naming `price` would make this
+    #  over-report and attribute another rule's refusals to this one.
+    #  `test_price_scale_refusal.py` pins it.
+    mask = npol.refused_fields_mask(panel, "price").fillna(False)
+    if not bool(mask.any()):
+        return {}
+    hit = panel.loc[mask.to_numpy(dtype=bool), "source"].astype(str)
+    out = {src: {"rows": int(n), "worst_ratio": float("nan")}
+           for src, n in hit.value_counts().to_dict().items()}
+    #  THE RATIO, WHEN THE RUN'S REFUSAL REPORT IS TO HAND.  `price_scale_hits` records it per
+    #  cell precisely so the cut can be argued with, and A0 that names a source without saying
+    #  HOW FAR under the cut it sat carries strictly less than the check A line it replaces.
+    #  It is NOT recoverable from the panel -- `marketCap` is one of the refused cells.
+    if report is not None and len(report):
+        rcols = getattr(report, "columns", [])
+        if all(c in rcols for c in ("source", "relation", "ratio")):
+            r = report[report["relation"] == npol.PRICE_SCALE_RELATION]
+            if len(r):
+                for src, v in r.groupby("source")["ratio"].min().items():
+                    if str(src) in out:
+                        out[str(src)]["worst_ratio"] = float(v)
+    return out
+
+
 def _stage1_rank_map(stage1_scores):
     """{source: rank} from a Stage-1 score frame or an already-ranked sequence.
 
@@ -356,7 +435,8 @@ def _stage1_rank_map(stage1_scores):
     return {s: i + 1 for i, s in enumerate(order)}
 
 
-def _containment_lines(internal, panel, stage1_scores, shipped_sources, topn_stage1, label):
+def _containment_lines(internal, panel, stage1_scores, shipped_sources, topn_stage1,
+                       label, extra_flagged=()):
     """The containment paragraph, COMPUTED -- or an explicit refusal to assert one.
 
     WHAT THIS REPLACES, because the shape matters more than the numbers.  This paragraph was
@@ -371,27 +451,67 @@ def _containment_lines(internal, panel, stage1_scores, shipped_sources, topn_sta
     ranking to hand, this says CONTAINMENT NOT CHECKED and asserts nothing.  An absent input
     must never come out as an all-clear; that is the same failure one level down.
     """
-    names = [str(x) for x in internal.loc[internal["severity"] == "ALARM", "source"]]
+    #  THE REFUSED SOURCES ARE PART OF THIS POPULATION (review S3-2, 2026-09-01).  A0 fixed the
+    #  ALARM COUNT and left the sentence underneath it: this paragraph derives its population
+    #  from `internal`, and `check_fundamentals_internal` drops refused rows (`price > 0`) and
+    #  then drops thin sources (`n_pb >= MIN_ROWS`).  So a partially-refused source silently
+    #  DOWNGRADES out of ALARM, and a fully-refused one leaves `internal` altogether -- and if
+    #  that emptied `names`, this function returned [] and printed NOTHING AT ALL.  Not "not
+    #  checked", not an all-clear: silence, over a defect that HAD been found.  That is the
+    #  exact failure the note above forbids, one level up.
+    alarm = [str(x) for x in internal.loc[internal["severity"] == "ALARM", "source"]] if len(internal) else []
+    refused = sorted(str(x) for x in (extra_flagged or ()))
+    names = sorted(set(alarm) | set(refused))
     L = []
     if not names:
         return L
+    if refused:
+        L.append("    POPULATION: %d ALARM on this panel + %d REFUSED UPSTREAM (invisible to "
+                 "check A) = %d name(s)." % (len(alarm), len(refused), len(names)))
     ranks, n_ranked, med, route = bookToPrice_ranks(panel, names)
+    #  THE DENOMINATOR MUST NOT COUNT NAMES THAT CANNOT BE RANKED (review 3, S3-2).
+    #  `bookToPrice_ranks` needs a computable equity/marketCap median, and a FULLY REFUSED
+    #  source has none -- so it leaves `ranks` while staying in `len(names)`, and the head
+    #  count reads "1 of 2 rank in the top 2" about a population whose MOST contaminated
+    #  member silently dropped out of the numerator.  The most-refused names are exactly the
+    #  ones that vanish, so the sentence errs toward an all-clear -- the failure this whole
+    #  block exists to prevent, one level in.
+    n_unrankable = len([x for x in names if x not in ranks])
     if ranks:
         top = sorted(ranks.values())
-        n_in_head = sum(1 for r in top if r <= len(names))
+        n_in_head = sum(1 for r in top if r <= len(ranks))
         #  NAMES THE PANEL, because this function now runs over two of them and "the live
         #  scorer" is true of only one.  A containment sentence that does not say which
         #  population it is about is the frozen-paragraph defect in a different costume.
         L.append("    THESE FEED A RANKING (%s).  `bookToPrice` (%s, Tier B, higher=better)"
                  % (label or "live scorer", route))
         L.append("    is 1000x too FAVOURABLE on a scaled row.  Panel median %.2f; %d of %d "
-                 "flagged names rank" % (med, n_in_head, len(names)))
+                 "RANKABLE flagged names rank" % (med, n_in_head, len(ranks)))
+        if n_unrankable:
+            L.append("    (%d of the %d flagged name(s) are NOT RANKABLE here -- refused on "
+                     "every row, so they have no" % (n_unrankable, len(names)))
+            L.append("    computable bookToPrice at all.  They are the MOST contaminated of "
+                     "the set, not the least.)")
+        #  `len(ranks)`, NOT `len(names)` -- THIS LINE IS THE CONSUMER OF THE THRESHOLD SET
+        #  FOUR LINES UP.  The S3-2 fix moved `n_in_head`'s bound and the printed DENOMINATOR
+        #  to the rankable count and left this, the printed THRESHOLD, on the flagged count.
+        #  The sentence then read "1 of 2 ... in the top 3", which is simply false: both
+        #  ranks were <= 3.  Because `ranks` is a subset of `names` the error is one-signed --
+        #  it UNDER-reports, and it fires exactly when a source is fully refused, which is the
+        #  all-clear bias S3-2 existed to remove.  Fixing lines and not their readers is the
+        #  repeat defect this change has now produced seven times.
         L.append("    in the top %d of %d on it (ranks %s)."
-                 % (len(names), n_ranked,
+                 % (len(ranks), n_ranked,
                     ", ".join(str(r) for r in top[:12])
                     + (", ..." if len(top) > 12 else "")))
     else:
-        L.append("    bookToPrice NOT COMPUTABLE on this panel -- the exposure is NOT "
+        #  WORDING (review 3, S4-3): the PANEL may be perfectly computable -- what is not
+        #  computable is bookToPrice FOR THESE NAMES, typically because every one of their
+        #  rows was refused.  "not computable on this panel" overstates it and reads as a
+        #  data-availability problem rather than as the refusal doing its job.
+        L.append("    bookToPrice NOT COMPUTABLE FOR ANY OF THE %d FLAGGED NAME(S) (the panel "
+                 "itself may be fine; a fully" % len(names))
+        L.append("    refused source has no computable bookToPrice).  The exposure is NOT "
                  "quantified this run.")
 
     #  THE TWO CONTAINMENT QUESTIONS ARE INDEPENDENT and are answered independently.
@@ -401,7 +521,11 @@ def _containment_lines(internal, panel, stage1_scores, shipped_sources, topn_sta
     #  answer both while the PIT pass -- which has a shipped list per anchor but no Stage-1
     #  frame -- answered neither, and printed NOT CHECKED over a question it could answer.
     s1 = _stage1_rank_map(stage1_scores)
-    shipped = set(str(x) for x in (shipped_sources or []))
+    #  NOT `shipped_sources or []`: `or` invokes `__bool__`, which RAISES
+    #  `ValueError: The truth value of a Series is ambiguous` for any pandas Series or
+    #  multi-element ndarray.  Production passes a list so it was latent, but a diagnostic
+    #  that dies on a Series is a diagnostic nobody gets (review S4-3).
+    shipped = set(str(x) for x in ([] if shipped_sources is None else shipped_sources))
     flagged = set(names)
     answered = False
 
@@ -452,8 +576,17 @@ def _containment_lines(internal, panel, stage1_scores, shipped_sources, topn_sta
                  "UNKNOWN this run.")
         L.append("    Read it as unknown.  It is NOT an all-clear.")
     else:
-        L.append("    NOT ACTIONED: suppressing or refusing a name changes a score, which "
-                 "is the CEO's call.")
+        #  WAS "NOT ACTIONED: suppressing or refusing a name changes a score, which is the
+        #  CEO's call."  That sentence was true until the CEO reopened Q-48 and ruled that
+        #  reading a corrupted vendor number is a BUG.  It is actioned now, upstream, per ROW
+        #  -- so a name still reaching this paragraph is one whose SURVIVING rows read this
+        #  way, which is a different and smaller statement than the old one.
+        L.append("    ACTIONED UPSTREAM per row (`nan_policy.price_scale_hits`): a row under "
+                 "price/book %g has its" % PB_ALARM)
+        L.append("    price/marketCap/book-per-share/earningsYield refused at ingest.  A name "
+                 "listed here still has")
+        L.append("    enough SURVIVING rows to read this way -- see the A0 block for what was "
+                 "refused on this panel.")
     if label:
         L.append("    (panel: %s)" % label)
     return L
@@ -461,7 +594,7 @@ def _containment_lines(internal, panel, stage1_scores, shipped_sources, topn_sta
 
 def run_audit(panel, prices_csv=None, supp_csv=None, log=print, out_csv=None,
               stage1_scores=None, shipped_sources=None, topn_stage1=100,
-              panel_label=None, run_grid_check=True):
+              panel_label=None, run_grid_check=True, refusal_report=None):
     """Both checks, printed.  Returns the two frames and the counts; changes nothing.
 
     stage1_scores   : the run's Stage-1 score frame (`resdic['BoScore_df']`) or an already-
@@ -482,6 +615,34 @@ def run_audit(panel, prices_csv=None, supp_csv=None, log=print, out_csv=None,
 
     internal = check_fundamentals_internal(panel)
     n_alarm = int((internal["severity"] == "ALARM").sum()) if len(internal) else 0
+    #  BEFORE the ALARM count, deliberately: on a post-2026-09-01 panel the refusal is the
+    #  reason the count is low, and printing the count first invites reading it as an
+    #  all-clear.  See `refused_upstream`.
+    _refused = refused_upstream(panel, report=refusal_report)
+    if _refused:
+        log("[price-scale] A0. ALREADY REFUSED UPSTREAM: %d source(s), %d row(s) had "
+            "`price`/`marketCap`/`bookValuePerShare`/"
+            % (len(_refused), sum(v["rows"] for v in _refused.values())))
+        log("[price-scale]     `earningsYield` set to NaN at ingest by "
+            "`nan_policy.price_scale_hits` (price/book < %g)." % PB_ALARM)
+        log("[price-scale]     THOSE ROWS ARE INVISIBLE TO CHECK A BELOW -- its two legs are "
+            "the cells that were refused.  The")
+        log("[price-scale]     ALARM count is therefore a count of what SURVIVED the refusal, "
+            "not of the run's exposure.")
+        for _s, _d in sorted(_refused.items(),
+                             key=lambda kv: (-kv[1]["rows"], kv[0]))[:25]:
+            _wr = _d.get("worst_ratio", float("nan"))
+            log("[price-scale]     refused %-14s %3d row(s)   worst marketCap/equity %s"
+                % (_s, _d["rows"],
+                   ("%.5f" % _wr) if _wr == _wr else "n/a (no refusal report passed)"))
+        if len(_refused) > 25:
+            log("[price-scale]     ... and %d more (full list in the run's input-sanity CSV)."
+                % (len(_refused) - 25))
+    else:
+        log("[price-scale] A0. no price-scale cells were refused upstream on this panel "
+            "(either none fired, or the panel")
+        log("[price-scale]     predates the 2026-09-01 refusal rule and carries no "
+            "`%s` stamp)." % npol.SANITY_REFUSED_COLUMN)
     log(f"[price-scale] A. price/book vs the company's OWN balance sheet "
         f"(currency-free, needs no grid): {n_alarm} ALARM, "
         f"{int((internal['severity'] == 'watch').sum()) if len(internal) else 0} watch, "
@@ -501,11 +662,21 @@ def run_audit(panel, prices_csv=None, supp_csv=None, log=print, out_csv=None,
         #  and explicitly NOT CHECKED when the inputs for it were not passed.  See
         #  `_containment_lines` for what the frozen version of this paragraph did.
         for _line in _containment_lines(internal, panel, stage1_scores, shipped_sources,
-                                        topn_stage1, panel_label):
+                                        topn_stage1, panel_label,
+                                        extra_flagged=sorted(_refused)):
             log("[price-scale]" + _line)
     else:
         log("[price-scale]    none.  NOTE this is not an all-clear for the price GRID: check "
             "A reads fundamentals only.")
+        #  ZERO ALARM DOES NOT MEAN ZERO POPULATION.  When every contaminated source was
+        #  refused upstream, `internal` is empty and the containment paragraph used to be
+        #  skipped entirely -- silence over a defect that was found.  It runs on the refused
+        #  set alone.
+        if _refused:
+            for _line in _containment_lines(internal, panel, stage1_scores, shipped_sources,
+                                            topn_stage1, panel_label,
+                                            extra_flagged=sorted(_refused)):
+                log("[price-scale]" + _line)
 
     grid_df, stats = ((pd.DataFrame(), {"reason": "NOT RUN on this panel"})
                       if not run_grid_check

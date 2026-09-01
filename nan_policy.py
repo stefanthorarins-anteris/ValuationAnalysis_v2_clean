@@ -913,7 +913,269 @@ SCALE_SPIKE_FIELDS = {
     'sellingGeneralAndAdministrativeExpenses': 'up',
 }
 
-_SANITY_REPORT_COLS = ['source', 'date', 'relation', 'ratio', 'field', 'value']
+#  ---- PRICE-SCALE CONTRADICTION -- the third rule, and it is NOT an identity ---------------
+#  A row whose `price` is a vanishing fraction of its OWN `bookValuePerShare` is not a
+#  valuation, it is a units error.  Both quantities are per-share and both are in the
+#  company's reporting currency, so every FX effect and every minor-unit convention cancels
+#  and what is left is a price-to-book multiple.
+#
+#  READ THE `IMPOSSIBLE_RELATIONS` PREAMBLE BEFORE MOVING THIS RULE INTO THAT TABLE.  It says,
+#  correctly, that every relation there is a definitional containment or the balance-sheet
+#  identity, so a company cannot fail one BY BEING UNUSUAL -- and it records two statistical
+#  ratios (SG&A/revenue, revenue/totalAssets) that were MEASURED AND REFUSED for exactly the
+#  reason that a legitimate tail overlaps the corrupt population.  Price-to-book is a
+#  statistical rule of that second kind, not an identity, so it is kept SEPARATE and carries
+#  its own evidence.  Folding it into that table would quietly weaken what the table means.
+#
+#  0.02 IS A PROVISIONAL CONSERVATIVE FLOOR, NOT A THRESHOLD, AND THE DIFFERENCE IS THE WHOLE
+#  JUSTIFICATION (review, 2026-09-01).  An earlier version of this note defended the number as
+#  "one definition of contaminated" -- shared with `price_scale_audit`'s `PB_ALARM`.  That is an
+#  argument about CONSISTENCY, and consistency was never the difficulty here: a REPORTING
+#  threshold and a REFUSING threshold have ASYMMETRIC COSTS, so the same number is not
+#  automatically right for both jobs.  Over-reach in the detector costs one line in a log.
+#  Over-reach HERE invents an adverse judgement -- `calcScore.calcByTier` scores a NaN as a FAIL
+#  (`calcScore.calcByTier's `Sign * val > 0` pass test`), so a wrongly-refused row does not abstain, it marks a real company down.
+#  WHAT ACTUALLY SUPPORTS 0.02 is that the two errors differ in KIND, and the earlier wording
+#  here -- "under-reaching costs nothing" -- was the weaker claim and simply false.
+#  UNDER-REFUSING LEAVES A CONTAMINATED NAME READING AS CHEAP IN THE CEO'S LIST, which is the
+#  entire defect this rule exists to remove, so it costs exactly what Q-48 costs.  OVER-REFUSING
+#  invents a FAIL against a real company on evidence nobody has.  Both are real; what separates
+#  them is VISIBILITY.  An under-refusal leaves the pipeline where it already was, on a name the
+#  detector still reports; an over-refusal creates a NEW wrong answer that nothing downstream
+#  reports at all.  That is what puts the cut at the conservative end -- and it is why the cut is
+#  EXPECTED TO MOVE OUTWARD once the conjunction below is measured, rather than treated as
+#  settled.  It is still shared with
+#  `price_scale_audit` -- defined here, imported there -- so the reporting and the refusing sides
+#  can never name different rows; that sharing is worth having, it is simply not the reason the
+#  number is 0.02.  Derivation of the number itself, unchanged, from the module that set it: "a
+#  1000x under-scale maps the ORDINARY price/book range [0.5, 10] onto [0.0005, 0.01], so an
+#  alarm at 0.02 covers a true price/book up to 20 ... a real distressed equity bottoms out
+#  around 0.05-0.10".
+#
+#  WHAT THE THRESHOLD DOES *NOT* HAVE, stated because every other cut in this module has one:
+#  A MEASURED EMPTY BAND.  Row-level log10(price/book) on the 2026-08-29 CUR6K panel (255,090
+#  computable rows) decays smoothly through the cut -- 628 rows in [0.056,0.100), 351 in
+#  [0.032,0.056), then 127, 109, 107, 50, 45, 16 -- with no gap anywhere near 0.02.  So this is
+#  NOT the density argument `SCALE_SPIKE_FACTOR` and the AQI floor rest on and must not be
+#  described as one.
+#
+#  THE EVIDENCE THAT IT IS NEVERTHELESS THE RIGHT KIND OF ROW is an INDEPENDENT WITNESS: the
+#  share count on the row against the source's OWN median share count.  It is REPORTED here and
+#  NOT gated on -- and the reason first given for that was WRONG, so it is corrected rather than
+#  quietly dropped.  It said gating on the witness would be "a second definition of
+#  contaminated".  IT WOULD NOT: A CONJUNCTION IS A NARROWER DEFINITION, NOT A SECOND ONE, and
+#  the witness is computable exactly where this rule runs -- `tempfund` at `the refusal hook in getData_fmp.getFundamentalsData`
+#  is one ticker's whole history, so the source's own median share count is already in hand.
+#  THE REAL REASON IT IS DEFERRED IS SCOPE: `marketCap/equity < 0.10 AND shares >= 5x off own
+#  median` would reach the 0.02-0.10 band and roughly TRIPLE the coverage -- a change in how much
+#  of the universe this rule touches, not a units-error repair -- and its false-refusal rate has
+#  not been measured.  Ship the floor, widen deliberately.  SCHEDULED, NOT DECLINED.  Share-count corruption is what produces this shape when
+#  the price is sound.  Share of rows sitting >= 5x off their own source's median share count,
+#  by price/book band, same panel:
+#      [0.000,0.005)   151 rows  31.8%       [0.020,0.030)    93 rows  24.7%
+#      [0.005,0.010)   119 rows  20.2%       [0.030,0.050)   306 rows  32.0%
+#      [0.010,0.020)   129 rows  20.9%       [0.050,0.100)   687 rows  22.6%
+#      [0.100,0.200) 2,886 rows   9.3%       whole population 255,090 rows  3.45%
+#  A 6-9x enrichment over the base rate inside the cut -- AND THE SAME ENRICHMENT PERSISTS
+#  ABOVE IT.  So this rule UNDER-REACHES BY CONSTRUCTION: it refuses a SUBSET of the
+#  contaminated rows, and rows between 0.02 and 0.10 carry the signature at the same rate and
+#  are LEFT ALONE.  That is this module's over-reach line taken in the conservative direction;
+#  it is NOT a claim that the population above the cut is clean.
+#  Adjudicated by hand on the 08-29 panel, every one a vendor scale break rather than a
+#  valuation: PARR (2.9M shares against $490M of equity, with `price` pinned at exactly 2.20
+#  for eight consecutive quarters), BACTI-B.ST (10,000 shares against SEK 122M of equity),
+#  ZEN.L (6.3M shares against 104M), ANOT.ST (9.3M against 1.10bn), 001230.KS (9.0M for one
+#  quarter between two ~45M quarters), QBY0.DE / 0CHZ.L (199,326 against 24,915,897 -- one
+#  company, two listings, the same break on both).
+#
+#  WHAT THE CONTAMINATION IS WORTH, so severity is judged from a number and not an impression.
+#  Every Stage-1 criterion whose value is a function of a refused field, with its tier weight
+#  (S=1.0, A=0.75, B=0.5, C=0.3, D=0.1, N=0), against a Sigma-w of 17.85 over all five scoring
+#  dicts:
+#      mEarningsYield             earningsYield   S  1.00      mSalesToMarketCap   N  0.00
+#      mFreeCashFlowToMarketCap   marketCap       S  1.00      uGrahamNumberToPrice N 0.00
+#      mBookToPrice               marketCap       B  0.50
+#      dBookToPrice               marketCap       B  0.50
+#      dCFOtoMarketCap            marketCap       B  0.50
+#      PEG (via calcMetrics.peg_local)  price     C  0.30
+#  TOTAL 3.80 of 17.85 = 21.3% OF THE STAGE-1 GATE.  Recorded here because it was first
+#  reported as 2.80 / 15.7% -- an arithmetic slip that dropped the two Tier-B DIFF criteria
+#  (`dBookToPrice` and `dCFOtoMarketCap`, 0.50 each) and understated the exposure by 36%.
+#  `bookToPrice`, the criterion the issue register names, is the FOURTH largest of the eight.
+#
+#  COST on the 2026-08-29 CUR6K panel: 352 rows over 75 of 4,934 sources.  (The per-share form
+#  this rule was first written in fired on 399 rows / 85 sources; see `price_scale_hits` for why
+#  the balance-sheet form is narrower and better founded.)
+#
+#  THE MARKET-CAP SIDE IS REFUSED AND THE BALANCE SHEET IS NOT.  THREE shapes produce this one
+#  signature, and it is the multiplicity -- not the absence of a decade -- that rules out a
+#  corrective factor: there is no single number to multiply by.
+#    * THE ATRI SHAPE, a REAL decade, and it is settled to a traded price (Q-43: bought at
+#      $675.07 "after correcting FMP's 1000x scaling").  FMP serves `price` and `marketCap` at
+#      1/1000 of the tape while the share count and the balance sheet stay sound.  Do not read
+#      the multiplicity as "the decade shape does not exist" -- it does, and it is the case this
+#      whole line of work started from.
+#    * THE QBY0.DE SHAPE.  The SHARE COUNT is ~100x too small on the older rows, so `marketCap`
+#      (= price x shares) is 100x too small and `bookValuePerShare` (= equity / shares) is ~100x
+#      too large, while `price` and `totalStockholdersEquity` are both CORRECT across the break
+#      (equity 92.34M -> 94.17M and price 4.34 -> 3.47 over the same quarter in which marketCap
+#      goes 0.865M -> 86.5M and the share count goes 199,326 -> 24,915,897).
+#    * THE CCM SHAPE, which is NOT a scaling defect at all: negative book equity carrying a
+#      sign-DISAGREEING `bookValuePerShare` (+12,783 against equity -2.10bn).  The balance-sheet
+#      form of the test excludes it; the per-share form did not.
+#  WHY THE REFUSAL IS ONE-SIDED, by evidence rather than by ignorance.  `totalStockholdersEquity`
+#  already carries TWO guards in this module -- `balance_sheet_identity` and the
+#  isolated-scale-spike rule both name it -- and it runs continuous across every adjudicated
+#  break.  `marketCap` carried NONE.  So the contradiction is read against the leg two other
+#  rules already vouch for, and only the cap side, plus the quantities derived from it, abstain.
+#
+#  `earningsYield` RIDES WITH THEM because it is a VENDOR field carrying the same price in its
+#  denominator -- verified on this panel: `earningsYield` equals `netIncomePerShare / price` to
+#  within 1% on 94.9% of 264,601 rows, median ratio 1.000000 -- and it is Stage-1's Tier-S
+#  (w = 1.0) cheapness criterion `mEarningsYield`.  Refusing the price while leaving the
+#  vendor's price-derived yield behind would fix the smaller exposure and keep the larger one.
+#
+#  WHAT IS DELIBERATELY *NOT* REFUSED, so the residual is named rather than implied:
+#    * `weightedAverageShsOut` -- the broken field in the QBY0.DE shape and SOUND in the ATRI
+#      shape, and the contradiction does not identify it.  Refusing it would take out
+#      `dSharesOutstanding` (Tier B) and every per-share vendor field on a name whose defect may
+#      be entirely on the price side.
+#    * `totalStockholdersEquity` -- the leg the test is taken AGAINST, guarded twice already in
+#      this module, measured continuous across every adjudicated break.
+#    * `netIncomePerShare`, `revenue` -- measured sound across the break on the names adjudicated
+#      above; refusing them would remove a correct number.
+#    * STAGE-2 IS NOT MADE CONSERVATIVE BY THIS RULE, AND THAT ASYMMETRY IS DELIBERATE.  Stage-1
+#      scores a NaN as a FAIL (`calcScore.calcByTier's `Sign * val > 0` pass test`), so a refusal there costs the name.  Stage-2
+#      imputes a missing metric to the COLUMN MEDIAN, so a refusal there costs it NOTHING -- it
+#      is a mild reward relative to a bad reading.  That is the right treatment and not an
+#      oversight: a name only reaches the Stage-2 pool by surviving Stage-1, where the refusal
+#      already bit, and inside a 100-name RANKING "no opinion" is what an absent measurement
+#      means.  Penalising it twice would double-count.  Stage-2 metrics that go absent on a
+#      refused name: `earnYield`, `freeCashFlowYield`, `bVpRatio`, `tbVpRatio`,
+#      `grahamNumberToPrice`, `priceGrowth`, Altman's `x4`, `marketCapRevQuants` (via
+#      `stage2_metrics._mcap_for_quants` -> `MCAP_QUANT_MISSING = 0.0`, i.e. neutral) and --
+#      the one that reaches the price side through NO price field at all --
+#      `stage2_metrics.nav_per_share_growth`, whose only contaminated input is
+#      `bookValuePerShare`.  It is an ENDPOINT PAIR (`bvps.iloc[0]` against `bvps.iloc[-1]`), so
+#      ONE refused row at either edge of its window kills the whole metric for that name.
+#    * `grahamNumber` -- built from the RAW `bookValuePerShare` at `getData_fmp.stamp_frequency_and_graham`, which
+#      runs BEFORE the hook at `:178`, so it is NOT refused.  Harmless today only because both of
+#      its consumers divide by `price`, which is.  NAMED AS AN UNDEFENDED INVARIANT: a future
+#      consumer of `grahamNumber` that does not divide by price would read a contaminated number
+#      with nothing to stop it.
+#
+#  THE DETECTOR CANNOT SEE WHAT THIS RULE REMOVES, and that is handled rather than noted: check A
+#  reads `price` and `bookValuePerShare`, this rule refuses BOTH, so it finds nothing on those rows and would print
+#  a CLEAN REPORT over a defect it used to name -- "a detector blind to its own motivating case
+#  is worse than none", in that module's own words.  `price_scale_audit.run_audit` therefore
+#  reads the `SANITY_REFUSED_COLUMN` stamp and reports refused-upstream sources by name, so
+#  "found nothing" and "already refused" can never print as the same line.
+PRICE_SCALE_PB_ALARM = 0.02
+PRICE_SCALE_RELATION = 'price_scale:price_vs_bookValuePerShare'
+PRICE_SCALE_REFUSE = ('price', 'marketCap', 'bookValuePerShare', 'earningsYield')
+
+
+def price_scale_hits(df, pb_alarm=None):
+    """DataFrame [row, relation, ratio, fields] -- one row per price-scale contradiction.
+
+    `ratio` is the price/book multiple itself, so the refusal CSV carries the number that
+    caused the refusal and a reader can argue with the cut without re-deriving anything.
+
+    THE RATIO IS `marketCap / totalStockholdersEquity`, NOT `price / bookValuePerShare`, AND THE
+    REASON IS THE OPPOSITE OF THE ONE FIRST GIVEN (review 2, 2026-09-01).  The first version of
+    this note argued the two forms are ALGEBRAICALLY the same quantity and the restatement
+    therefore costs nothing -- and then, one sentence later, that `bookValuePerShare` is
+    sign-wrong on CCM.  BOTH CANNOT BE TRUE.  `bookValuePerShare` is a RAW FMP FIELD, not
+    `equity / shares` recomputed, so `price / bvps == marketCap / equity` is an EMPIRICAL
+    AGREEMENT that holds where the vendor is self-consistent, not an identity that holds
+    always -- `price` itself IS `marketCap / weightedAverageShsOut`, so `price / (marketCap /
+    shares)` is 1.0 BY CONSTRUCTION and quoting its agreement rate proves nothing.  (An earlier
+    draft cited "98.71% within 0.1%" as evidence; it was a tautology dressed as a measurement
+    and is deleted rather than softened.)  The real asymmetry is that `bookValuePerShare` is a
+    RAW VENDOR FIELD while `totalStockholdersEquity` is the statement line it is supposed to be
+    derived from, so the two forms diverge exactly where the vendor is wrong.  THE RESTATEMENT
+    IS RIGHT *BECAUSE* THEY DIVERGE THERE, not because they agree elsewhere.  The balance-sheet form is the one that does not route the rule's own
+    domain limb through a field the vendor has already corrupted on the rows under test.  `bookValuePerShare` is a raw FMP field, and it is
+    MEASURED WRONG on this rule's own headline live case: CCM carries `bookValuePerShare`
+    +12,783 against `totalStockholdersEquity` -2.10bn -- disagreeing in SIGN.  On the per-share
+    form the `> 0` limb, whose whole job is to keep the rule off genuinely book-insolvent
+    companies, was passed by that sign-wrong number, so the rule fired on all 38 of CCM's rows
+    including its NEWEST.  On the balance-sheet form CCM fires on ZERO rows, which is correct:
+    it is book-insolvent, not mis-scaled.  This is the house's "compute, don't consume vendor
+    fields" applied to the one field the rule's correctness hinged on.
+    MEASURED COST OF THE RESTATEMENT on the 08-29 CUR6K panel: 399 rows / 85 sources -> 352 rows
+    / 75 sources (338 rows common, 61 dropped, 14 added).  Both motivating shapes are preserved
+    unchanged (0CHZ.L 25, QBY0.DE 25, CMCM 23 rows in both), as are PARR, KWS.DE and RBY.TO.
+
+    ALL FOURTEEN NEWLY-REFUSED ROWS ADJUDICATED BY HAND, because a change that ADDS refusals
+    cannot rest on the old population's adjudication:
+      TEN are unambiguous share-count or scale breaks -- ABVX 2013-10 (bvps 4,919 against a
+        source whose real bvps runs 1-10), BEWI.OL 2016-01 and 2017-01 (shares 100,374 and
+        102,999 against 191-236M, bvps reported as exactly 0.0), BTTC 2018-10 (19,933 shares
+        against ~5M), COST.L 1986-10, KEN.L 2016-04 (marketCap 177,060 against equity 10.35M),
+        PPBT 2020-07 and 2020-10 (3,160 and 13,925 shares against a ~137k median), ZAL.DE
+        2013-01 (221,000 shares, bvps 0.0).
+      ONE is caught for the right reason by the new form and was INVISIBLE to the old one:
+        PARR 2010-07 carries a NEGATIVE `bookValuePerShare` (-169.49) against POSITIVE equity
+        (545.6M) -- the CCM defect with the sign reversed -- so the per-share form's `bvps > 0`
+        limb suppressed it.  This is the restatement earning its keep in the other direction.
+      ONE IS ATTRIBUTED TO THE WRONG LEG, and it is a real limitation of the one-sided
+        refusal: ALMDG.PA 2007-10 reports equity 16.18bn against 120-145M in every later
+        period, i.e. it is the BALANCE SHEET that is ~100x out, not the market cap.  The row
+        is still a units error and the contaminated cheapness RATIO is still suppressed
+        (marketCap is refused, so `mBookToPrice` and its siblings go absent), but the field
+        this rule blanks is the sound one.  The equity guards do not cover it either: the
+        break is 134x, under `SCALE_SPIKE_FACTOR`'s 500.
+      THREE ARE GENUINELY AMBIGUOUS and are named rather than counted as wins: SEA1.OL
+        2020-04, 2020-10 and 2021-01.  Their share count is AT the source's own median
+        (witness ratio 1.000), so there is no share-count evidence at all; a shipping name at
+        marketCap 1.1M against 86M of book equity is a plausible deep-distress reading as well
+        as a plausible break.  Their `bookValuePerShare` and `totalStockholdersEquity`
+        disagree by 1.7x, which is the only thing pointing at corruption.
+    So: 11 of 14 sound, 1 right-outcome-wrong-attribution, 3 unresolved.
+
+    STRICTLY POSITIVE ON BOTH LEGS.  NEGATIVE book equity is insolvency -- a real state of a
+    real company, scored as such everywhere else in this pipeline (see the `bookToPrice`
+    mean-dict entry: "A negative book yield is a true measurement of a real company ... it
+    belongs in the ruler").  A non-positive `marketCap` is already handled by the primary limbs.
+    Neither is a units error, so neither fires here.
+
+    THE ASYMMETRY IS NOW BY EVIDENCE RATHER THAN BY IGNORANCE, and that is worth stating because
+    the earlier version of this rule refused BOTH legs on the ground that the panel could not say
+    which was wrong.  It can.  `totalStockholdersEquity` already has TWO guards in this module --
+    `balance_sheet_identity` and the `isolated_scale_spike` rule both name it -- and it runs
+    CONTINUOUS across every break adjudicated by hand (QBY0.DE 92.34M -> 94.17M over the quarter
+    in which `marketCap` goes 0.865M -> 86.5M).  The market-cap side had NO guard at all.  So the
+    contradiction is read as "the cap side cannot be trusted against a balance sheet that two
+    other rules already vouch for", and only the cap side and the quantities derived from it are
+    refused.
+
+    ROW-LEVEL, NOT SOURCE-LEVEL, AND THAT IS THE SUBSTANTIVE CHOICE.  `price_scale_audit`
+    aggregates to a per-source MEDIAN over the whole history because it is REPORTING a name;
+    refusing on that basis would refuse a name's CORRECT current cheapness readings for a break
+    in rows nobody scores.  Measured on the 08-29 panel: of the eight sources that module flags,
+    four (BGMS, ENDUR.OL, IPOK.DE, SEA1.OL) are clean inside the newest-8 Stage-1 window and
+    would have had a sound criterion refused.  A refusal scores as a FAIL in Stage-1, so that is
+    not a neutral over-reach -- it invents an adverse judgement.
+    """
+    empty = pd.DataFrame([], columns=['row', 'relation', 'ratio', 'fields'])
+    if 'marketCap' not in df.columns or 'totalStockholdersEquity' not in df.columns:
+        return empty
+    cut = PRICE_SCALE_PB_ALARM if pb_alarm is None else float(pb_alarm)
+    mcap = pd.to_numeric(df['marketCap'], errors='coerce')
+    equity = pd.to_numeric(df['totalStockholdersEquity'], errors='coerce')
+    with np.errstate(divide='ignore', invalid='ignore'):
+        pb = (mcap / equity).replace([np.inf, -np.inf], np.nan)
+    bad = ((mcap > 0) & (equity > 0) & pb.notna() & (pb < cut)).fillna(False)
+    if not bool(bad.any()):
+        return empty
+    rows = [{'row': idx, 'relation': PRICE_SCALE_RELATION,
+             'ratio': float(pb.loc[idx]), 'fields': PRICE_SCALE_REFUSE}
+            for idx in df.index[bad]]
+    return pd.DataFrame(rows, columns=['row', 'relation', 'ratio', 'fields'])
+
+
+_SANITY_REPORT_COLS = ['source', 'date', 'occ', 'relation', 'ratio', 'field', 'value']
 
 
 def _sum_fields(df, fields):
@@ -985,6 +1247,148 @@ def scale_spike_hits(df, date_col='date'):
     return pd.DataFrame(out, columns=['row', 'relation', 'ratio', 'fields']) if out else empty
 
 
+def refusal_restore_map(report, source_col='source', date_col='date'):
+    """{(source, normalised date): {field: PRE-REFUSAL value}} from a refusal report.
+
+    WHY THIS EXISTS.  A section-5 refusal is an ABSTENTION for SCORING -- the metrics that read
+    the cell go NaN.  It must NOT be an abstention for the DATA-QUALITY GATE, because that gate
+    is what DELETES corrupt history, and a check that is skipped because its input is NaN does
+    not abstain, it PASSES.  `data_quality.check_price_sanity` reads five fields and this
+    module's price-scale rule blanks three of them (`price`, `marketCap`, `earningsYield`), so
+    on a refused row checks 3, 5 and 6 all skip and the row -- previously deleted, with its
+    whole prefix -- comes back merely blanked.  Reproduced end to end on an ATRI-shape fixture:
+    PASS 1 flagged two `mcap_step_break` rows before and none after, and the rows PASS 3 would
+    delete went 7 -> 0.
+
+    THE REPORT ALREADY CARRIES THE PRE-REFUSAL VALUES.  `refuse_impossible_cells` records
+    `value` per refused cell precisely so a refusal can be argued with, and that report reaches
+    the run as `inputSanityRefusals`.  So the fix needs NO shadow column, NO schema change and
+    NO second copy of the fact -- it reads the artifact that already exists.
+
+    THE KEY CARRIES AN OCCURRENCE INDEX, NOT JUST (source, date).  The panel has duplicate
+    `(source, date)` rows -- 296 over 76 sources on the 2026-08-11 CUR3K panel, AAPL among
+    them -- and a two-part key COLLAPSES when both twins are refused, handing twin 0 twin 1's
+    pre-refusal numbers.  `check_price_sanity`'s step check compares ADJACENT market caps, so
+    a borrowed value can create or suppress a break and therefore a prefix deletion; the
+    twins are NOT interchangeable.  The per-row stamp intersection in `data_quality` fixes
+    WHICH FIELDS to restore and cannot fix WHICH ROW, so the key has to carry it.
+    RESIDUAL ASSUMPTION, AND THE FIRST VERSION OF THIS NOTE NAMED THE WRONG MECHANISM.  It
+    said the two sides agree "while a source's rows keep their ingest order ... a re-sort
+    between the two would silently mis-pair the twins".  THERE IS A RE-SORT -- `data_quality`
+    sorts by `(source, date)` before the pass that consumes this map.  What actually makes the
+    pairing hold is that the sort is STABLE: pandas' default preserves the relative order of
+    rows sharing a key, so duplicate `(source, date)` twins keep their ingest order THROUGH
+    the sort and both sides still count them the same way.  The assumption is on the sort's
+    STABILITY, not on its absence -- narrower, checkable, and the thing a future reader needs
+    to know if they ever change that sort's `kind`.
+
+    IT DELIBERATELY RESTORES RATHER THAN ESCALATING.  The alternative -- treating a refused row
+    as a PASS-1 corruption outright -- would have been simpler and is WRONG: PASS 3 removes the
+    whole prefix at or before the newest corrupt date, so it would delete far more history than
+    the pre-refusal pipeline ever did (PARR alone carries 19 scattered refused rows in 80).
+    Restoring the values reproduces the pre-refusal deletion set EXACTLY -- no more, no less --
+    which is the actual requirement: a refusal must not suppress a deletion that would otherwise
+    have happened.
+    """
+    out = {}
+    if report is None or not len(report):
+        return out
+    cols = getattr(report, 'columns', [])
+    if not all(c in cols for c in (source_col, date_col, 'field', 'value')):
+        return out
+    for r in report.itertuples(index=False):
+        key = (str(getattr(r, source_col)),
+               _normalise_refusal_date(getattr(r, date_col)),
+               int(getattr(r, 'occ', 0) or 0))
+        out.setdefault(key, {})[getattr(r, 'field')] = getattr(r, 'value')
+    return out
+
+
+def _normalise_refusal_date(v):
+    """A hashable date key that matches however the panel carries its `date`.
+
+    The report's date comes off the frame it was built from and the panel's comes off the
+    frame being filtered; both are Timestamps on the live path, but a CSV round-trip makes one
+    a string.  Normalising both through `pd.Timestamp` is what stops a silent all-miss -- and
+    a silent all-miss here reads exactly like "nothing was refused", which is the failure this
+    whole function exists to prevent.
+    """
+    try:
+        t = pd.Timestamp(v)
+        return None if pd.isna(t) else t.normalize()
+    except Exception:
+        return str(v)
+
+
+#  The one field the price-scale rule DIVIDES BY that another producer in the same pass can
+#  reject.  Named once, here, so the guard below and the rule's own commentary cannot drift.
+PRICE_SCALE_DIVISOR = 'totalStockholdersEquity'
+
+
+def _drop_price_scale_on_already_refused_equity(hits, verbose=False):
+    """Remove price-scale hits whose row has ALREADY had its equity refused by another rule.
+
+    THE PREMISE THIS ENFORCES WAS PROSE ONLY UNTIL NOW, AND IT IS THE PREMISE THE WHOLE
+    ONE-SIDED DESIGN RESTS ON.  `price_scale_hits` refuses the market-cap side and NOT the
+    balance sheet, on the stated ground that `totalStockholdersEquity` "already carries two
+    guards in this module and runs continuous across every adjudicated break".  But all three
+    producers are computed on the SAME PRE-BLANKING FRAME, so the rule divided by raw equity
+    even on rows where `balance_sheet_identity` or the spike rule had -- in the very same call
+    -- already declared that equity contradictory.  The rule was citing guards it then ignored.
+
+    WHAT THAT COST, on a row with a SOUND price side and an inflated equity: four cells
+    (`price`, `marketCap`, `bookValuePerShare`, `earningsYield`) refused on the strength of a
+    number the pass had already rejected, each scoring as a FAIL in `calcScore.calcByTier` --
+    3.80 of 17.85 of the Stage-1 gate, for no evidential reason.
+
+    THE TWO RULES ARE POSITIVELY COUPLED, NOT INDEPENDENT, so this is a region and not a
+    corner: with assets and liabilities sound and equity inflated by k, the identity (factor
+    100) fires around k >~ 200 for a normal equity/assets ~ 0.5, while `marketCap/equity <
+    0.02` needs only k >~ 50-150 at an ordinary price/book of 1-3.  Every sufficiently large
+    inflated-equity break therefore manufactured a price-scale hit mechanically.
+
+    DROPPING, NOT DOWNGRADING, and only this direction.  A row whose equity is already refused
+    needs no second opinion from a rule that divides by it; the balance-sheet cells stay
+    refused, because the producer that judged them is unaffected.  This is deliberately NOT
+    symmetric -- the price side has no rule vouching for it, so a price-scale hit on a row with
+    SOUND equity still stands.
+
+    IT IS THE ONLY COUPLING THAT CAN FALSIFY A PRODUCER'S OWN PREMISE, AND THAT -- NOT THE
+    FIELD FAMILY -- IS THE LINE.  A derived sweep finds 19 read/refuse couplings; 17 are
+    pre-existing among the identity relations and the spike rule.  An earlier version of this
+    note drew the line at "the other seventeen stay inside the balance sheet", and that does
+    not survive pressure: `ppe_within_assets` can blank a perfectly sound
+    `propertyPlantEquipmentNet` off a corrupt `totalAssets`, which is collateral damage to a
+    sound cell however the fields are grouped.
+    THE DISTINCTION THAT HOLDS IS ABOUT PREMISES.  The seventeen are SYMMETRIC containment
+    tests: each says "these two numbers contradict each other" and refuses BOTH, asserting
+    nothing about which is sound -- so a second rule rejecting one of them cannot contradict
+    anything the first claimed.  The price-scale rule is the only producer whose design
+    ASSERTS that one leg is sound and refuses only the other, on the strength of guards it
+    names.  It is therefore the only one a coupling can FALSIFY: when those guards fire, the
+    premise the asymmetry rests on is gone and the rule was still acting on it.  That is why
+    this one is closed and the other seventeen are reported rather than changed.
+    """
+    if hits is None or not len(hits) or 'relation' not in getattr(hits, 'columns', []):
+        return hits
+    ps = hits['relation'] == PRICE_SCALE_RELATION
+    if not bool(ps.any()):
+        return hits
+    #  Rows any OTHER producer refused the divisor on.
+    other = hits[~ps]
+    bad_rows = {h.row for h in other.itertuples(index=False)
+                if PRICE_SCALE_DIVISOR in (h.fields or ())}
+    if not bad_rows:
+        return hits
+    drop = ps & hits['row'].isin(bad_rows)
+    n = int(drop.sum())
+    if n and verbose:
+        print('INPUT SANITY: %d price-scale hit(s) DROPPED -- their `%s` was already refused '
+              'by another rule on the same row, so the divisor the price-scale test rests on '
+              'is one this pass has itself rejected.' % (n, PRICE_SCALE_DIVISOR), flush=True)
+    return hits[~drop].reset_index(drop=True)
+
+
 def refuse_impossible_cells(df, date_col='date', source_col='source', verbose=False):
     """Replace every cell a relation contradicts with NaN.  Returns (frame, report).
 
@@ -1012,7 +1416,11 @@ def refuse_impossible_cells(df, date_col='date', source_col='source', verbose=Fa
     #  no caller sees a reindexed frame.
     _orig_index = df.index
     df = df.reset_index(drop=True)
-    parts = [impossible_relation_hits(df)]
+    #  THREE RULE PRODUCERS, ALL POSITIONALLY INDEXED AGAINST THE SAME RESET FRAME:
+    #  cross-field impossibility at one instant, the isolated scale spike along TIME, and
+    #  the price-scale contradiction.  The third is per-ROW and needs no neighbours, so it
+    #  runs on the whole frame like the first rather than per source like the spike rule.
+    parts = [impossible_relation_hits(df), price_scale_hits(df)]
     if source_col in df.columns and df[source_col].nunique() > 1:
         for _, sub in df.groupby(source_col, sort=False):
             parts.append(scale_spike_hits(sub, date_col=date_col))
@@ -1026,6 +1434,16 @@ def refuse_impossible_cells(df, date_col='date', source_col='source', verbose=Fa
         df.index = _orig_index
         return df, pd.DataFrame([], columns=_SANITY_REPORT_COLS)
     hits = pd.concat(parts, ignore_index=True)
+    #  Position of each row among the rows sharing its (source, date), in frame order.
+    _occ = {}
+    if source_col in df.columns and date_col in df.columns:
+        _seen = {}
+        for _i, _s, _d in zip(df.index, df[source_col].astype(str),
+                              pd.to_datetime(df[date_col], errors='coerce')):
+            _k = (_s, _d)
+            _occ[_i] = _seen.get(_k, 0)
+            _seen[_k] = _occ[_i] + 1
+    hits = _drop_price_scale_on_already_refused_equity(hits, verbose=verbose)
     out = df.copy()
     rec = []
     refused_by_row = {}
@@ -1041,6 +1459,14 @@ def refuse_impossible_cells(df, date_col='date', source_col='source', verbose=Fa
             rec.append({'source': (df.at[h.row, source_col]
                                    if source_col in df.columns else ''),
                         'date': (df.at[h.row, date_col] if date_col in df.columns else ''),
+                        #  OCCURRENCE INDEX WITHIN (source, date).  `(source, date)` IS NOT
+                        #  UNIQUE on this panel -- 296 duplicate-key rows over 76 sources on
+                        #  the 2026-08-11 CUR3K panel -- so a restore map keyed on it alone
+                        #  COLLAPSES when both twins are refused and hands twin 0 twin 1's
+                        #  numbers.  That is not harmless: `check_price_sanity`'s step check
+                        #  compares ADJACENT market caps, so a borrowed value can create or
+                        #  suppress a break and therefore a whole prefix deletion.
+                        'occ': _occ.get(h.row, 0),
                         'relation': h.relation, 'ratio': h.ratio, 'field': f,
                         'value': df.at[h.row, f]})
             out.at[h.row, f] = np.nan

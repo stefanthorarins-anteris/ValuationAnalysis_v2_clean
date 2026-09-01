@@ -1429,9 +1429,31 @@ def forceNumOnDf(df):
     #                     cannot re-detect the conflict itself.  Coerced to NaN here, the
     #                     watchdog goes dark again -- exactly the failure it was just fixed
     #                     for -- which is why it is listed rather than left to chance.
+    #   sanityRefusedFields    the pipe-joined names of the fields nan_policy section 5
+    #                     REFUSED on this row.  IT IS LOAD-BEARING, NOT DIAGNOSTIC, and this
+    #                     entry is the difference between an abstention and a DELETED COMPANY.
+    #                     `price` and `marketCap` are both in `nan_policy.PRIMARY_POSITIVE`,
+    #                     whose limb is `isna() or <= 0` on a source's NEWEST row, and
+    #                     `primary_eject` removes the WHOLE SOURCE.  The only thing that stops
+    #                     it is `nan_policy.primary_eject's refused_fields_mask subtraction`, `bad & ~refused_fields_mask(...)` --
+    #                     which reads THIS COLUMN.  Coerced to NaN here, the mask reads False
+    #                     everywhere and every refused name is ejected as
+    #                     `primary_input_absent`, with nothing in the removal CSV connecting
+    #                     the loss to the refusal.  MEASURED on seven real 2026-08-11 CUR3K
+    #                     sources through the real ingest tail: 7 kept with the stamp intact,
+    #                     0 kept without it -- 001230.KS, 460860.KS, BTBT, GOLF, OPXS, WLN.PA
+    #                     and ZNWD.L all ejected.  Two of those are adjudicated real
+    #                     scale-break cases named in `nan_policy`'s own rule commentary.
+    #                     It also silently disarms `carveOut.marketcap_fallback_report` and
+    #                     `price_scale_audit.refused_upstream`, i.e. the entire A0 block and
+    #                     the containment paragraph, since all three read this one column.
+    #                     Named from the constant, never as a literal, so the producer and
+    #                     this list cannot drift.
+    import nan_policy as _npol_passthrough
     for _passthrough in ('reportedCurrency', 'period', 'fillingDate', 'acceptedDate',
                          'periodEndDate', 'grahamUndefinedReason',
-                         'reportingFrequency', 'reportingFrequencyConflict'):
+                         'reportingFrequency', 'reportingFrequencyConflict',
+                         _npol_passthrough.SANITY_REFUSED_COLUMN):
         if _passthrough in dftemp.columns:
             preserve.add(_passthrough)
 

@@ -280,7 +280,7 @@ def guarded_row_pass(df, fn, banner_lines, verbose=True):
 
 
 def filter_invalid_data(cdx_df, price_col='price', mcap_col='marketCap',
-                        min_periods_required=8, verbose=True):
+                        min_periods_required=8, verbose=True, sanity_refusals=None):
     """
     Filter out rows with clearly invalid/corrupted price data.
     
@@ -297,6 +297,21 @@ def filter_invalid_data(cdx_df, price_col='price', mcap_col='marketCap',
     -----------
     cdx_df : DataFrame
         The cdx (fundamentals + price) dataframe
+    sanity_refusals : DataFrame, optional
+        The run's `inputSanityRefusals` report (`nan_policy.refuse_impossible_cells`).  The
+        first pass below RESTORES the pre-refusal values from it for the duration of its own
+        row checks, and nothing else reads it.  REQUIRED FOR CORRECTNESS, not a nicety -- the
+        reasoning and the measured before/after live beside the restoration itself.  Absent,
+        that pass announces it is running blind rather than silently skipping the checks whose
+        inputs were blanked.
+
+        THIS DOCSTRING DELIBERATELY NAMES NEITHER THE PASS NUMBERS NOR THE ROW-CHECK FUNCTION.
+        `test_vendor_contamination.test_the_quarantine_runs_BEFORE_the_arithmetic_checks` reads
+        this function's SOURCE and asserts a textual ORDERING over those exact tokens; a
+        parameter doc sits above every pass, so mentioning one here inverts the ordering and
+        breaks a real guard to make room for a comment.  Two drafts of this note did exactly
+        that.  Add no such token above the body.
+
     price_col : str
         Name of price column
     mcap_col : str
@@ -490,12 +505,71 @@ def filter_invalid_data(cdx_df, price_col='price', mcap_col='marketCap',
     corrupt_records = []  # (source, date, reason)
     prev_data = {}  # source -> (prev_price, prev_mcap, prev_date)         [last VALID row]
     prev_row = {}   # source -> (prev_mcap, prev_shares)                   [ADJACENT row]
-    
+
+    #  ---- SECTION-5 RESTORATION, AND WHY THIS GATE MUST NOT SEE A REFUSAL --------------
+    #  A section-5 refusal blanks a cell so the SCORER abstains on it.  This gate is not a
+    #  scorer: it DELETES corrupt history, and every check below is `pd.notna`-guarded, so a
+    #  blanked input does not make a check abstain -- it makes the check PASS.  Since the
+    #  price-scale rule (2026-09-01) blanks `price`, `marketCap` and `earningsYield`, checks
+    #  3, 5 and 6 would skip on exactly the rows most likely to be corrupt, and PASS 3 would
+    #  stop removing the prefix it used to remove.  Measured on an ATRI-shape fixture: two
+    #  `mcap_step_break` flags before, none after; rows PASS 3 would delete 7 -> 0.
+    #  So PASS 1 -- AND ONLY PASS 1 -- reads the pre-refusal values back out of the run's own
+    #  refusal report.  Nothing is written back into the frame; the scorer still sees NaN.
+    _restore = npol.refusal_restore_map(sanity_refusals)
+    _n_restored = 0
+    _occ_seen = {}
+    if (sanity_refusals is not None and len(sanity_refusals)
+            and npol.SANITY_REFUSED_COLUMN not in df.columns and verbose):
+        #  A REPORT WITH NO STAMP COLUMN restores nothing, and the branch below cannot say so
+        #  because it is gated on the column being present.  Silent in that combination until
+        #  now; it means the frame lost the stamp somewhere between the refusal and here,
+        #  which is precisely the failure the ingest-passthrough fix was written for.
+        print('!!! DATA-QUALITY: a section-5 refusal report with %d record(s) was supplied but '
+              'the frame carries NO `%s` column, so NOTHING can be restored and checks 3/5/6 '
+              'will skip on every refused row. The stamp was lost upstream.'
+              % (len(sanity_refusals), npol.SANITY_REFUSED_COLUMN), flush=True)
+    if not _restore and npol.SANITY_REFUSED_COLUMN in df.columns:
+        _stamped = int(df[npol.SANITY_REFUSED_COLUMN].astype(str).str.len().gt(0).sum())
+        if _stamped and verbose:
+            #  LOUD, NEVER SILENT.  "no refusals happened" and "the report was not passed to
+            #  me" are different statements about the data and must never print the same.
+            print('!!! DATA-QUALITY PASS 1 IS RUNNING BLIND ON %d REFUSED ROW(S): the frame '
+                  'carries section-5 refusal stamps but no refusal report was supplied, so '
+                  'checks 3/5/6 will SKIP on those rows and any prefix removal they would '
+                  'have triggered will NOT happen. Pass `sanity_refusals=` (the run keeps it '
+                  'as `inputSanityRefusals`).' % _stamped, flush=True)
+
     for idx, row in df.iterrows():
         source = row.get('source', 'unknown')
+        date = row.get('date', None)
+        #  Restore ONLY for the checks, ONLY on rows that were actually refused, and ONLY
+        #  the fields THIS ROW's own stamp names.
+        #
+        #  THE STAMP IS WHAT MAKES THE KEY SAFE.  `(source, date)` IS NOT UNIQUE on this
+        #  panel -- 296 duplicate-key rows across 76 sources on the 2026-08-11 CUR3K panel,
+        #  AAPL among them -- so a map keyed on it alone would restore one row's pre-refusal
+        #  values onto a DIFFERENT row that shares its date and was never refused, handing
+        #  the checks below numbers that do not belong to the row they are judging.  No
+        #  refusal intersects a duplicate key today, so this is latent rather than live; it
+        #  is closed rather than documented because the fix is free.  `sanityRefusedFields`
+        #  is written PER ROW by section 5, so intersecting the map with it restores exactly
+        #  the cells that were actually blanked on this row and nothing else.
+        #  The occurrence index disambiguates DUPLICATE (source, date) rows -- see
+        #  `nan_policy.refusal_restore_map`.  Counted in frame order on both sides.
+        _k = (str(source), npol._normalise_refusal_date(date))
+        _occ_seen[_k] = _occ_seen.get(_k, -1) + 1
+        _rest = _restore.get(_k + (_occ_seen[_k],)) if _restore else None
+        if _rest:
+            _stamped = {t for t in str(row.get(npol.SANITY_REFUSED_COLUMN, '') or '').split(
+                npol._SANITY_REFUSED_SEP) if t}
+            _rest = {k: v for k, v in _rest.items() if k in _stamped} if _stamped else {}
+        if _rest:
+            row = dict(row)
+            row.update(_rest)
+            _n_restored += 1
         price = row.get(price_col, np.nan)
         mcap = row.get(mcap_col, np.nan)
-        date = row.get('date', None)
         
         prev_price, prev_mcap, prev_date = prev_data.get(source, (None, None, None))
         # The ADJACENT preceding row (valid or not) -- what the market-cap step check
@@ -514,6 +588,10 @@ def filter_invalid_data(cdx_df, price_col='price', mcap_col='marketCap',
         prev_row[source] = (mcap, shares)
 
         if not is_valid:
+            #  `price`/`marketCap` here are the RESTORED values on a restored row -- the
+            #  ones that actually tripped the check.  `corrupt_df` feeds the verbose summary
+            #  only; the artifact a reader keeps is `removed_df`, and the explanation is
+            #  attached there (see `refused_fields` in the removal records below).
             corrupt_records.append({
                 'source': source,
                 'date': date,
@@ -529,6 +607,10 @@ def filter_invalid_data(cdx_df, price_col='price', mcap_col='marketCap',
     # would have SKIPPED PASS 5 (the primary-presence eject) entirely on any panel whose
     # arithmetic checks all pass -- i.e. the eject would have been conditional on unrelated
     # corruption existing.  The passes below are each empty-safe instead.
+    if verbose and _restore:
+        print('Section-5 restoration: PASS 1 evaluated %d refused row(s) against their '
+              'PRE-REFUSAL values (%d row(s) in the refusal report).'
+              % (_n_restored, len(_restore)), flush=True)
     corrupt_df = pd.DataFrame(corrupt_records,
                               columns=['source', 'date', 'price', 'marketCap', 'reason'])
     if verbose and corrupt_df.empty:
@@ -569,11 +651,20 @@ def filter_invalid_data(cdx_df, price_col='price', mcap_col='marketCap',
             # Remove all data at or before the corruption date
             if date <= corruption_date:
                 rows_to_remove.add(idx)
+                #  WHY `refused_fields` IS ON EVERY REMOVAL RECORD.  This frame IS the
+                #  transparency CSV.  On a row section 5 refused, the `price` and `marketCap`
+                #  columns below read NaN -- while the corruption that caused the removal was
+                #  found on the PRE-REFUSAL values restored in the first pass.  Two different
+                #  numbers for one (source, date), with nothing saying why, is how a reader
+                #  concludes the CSV is broken.  Naming the refused fields ON THE ROW makes
+                #  the NaN self-explaining and reconciles the two halves.  Empty string on
+                #  every ordinary row, so nothing else in the file changes shape.
                 removal_records.append({
                     'source': source,
                     'date': date,
                     'price': row.get(price_col, np.nan),
                     'marketCap': row.get(mcap_col, np.nan),
+                    'refused_fields': str(row.get(npol.SANITY_REFUSED_COLUMN, '') or ''),
                     'removal_reason': f"data_before_corruption (corruption at {corruption_date.date()})",
                 })
     
@@ -598,6 +689,7 @@ def filter_invalid_data(cdx_df, price_col='price', mcap_col='marketCap',
                         'date': row.get('date', None),
                         'price': row.get(price_col, np.nan),
                         'marketCap': row.get(mcap_col, np.nan),
+                        'refused_fields': str(row.get(npol.SANITY_REFUSED_COLUMN, '') or ''),
                         'removal_reason': f"insufficient_data_after_corruption (<{min_periods_required} periods)",
                     })
         
@@ -669,6 +761,7 @@ def filter_invalid_data(cdx_df, price_col='price', mcap_col='marketCap',
                     'date': _row.get('date', None),
                     'price': _row.get(price_col, np.nan),
                     'marketCap': _row.get(mcap_col, np.nan),
+                    'refused_fields': str(_row.get(npol.SANITY_REFUSED_COLUMN, '') or ''),
                     'removal_reason': _reason[_row['source']],
                 })
             filtered_df = filtered_df[~_mask].copy()
@@ -677,6 +770,17 @@ def filter_invalid_data(cdx_df, price_col='price', mcap_col='marketCap',
                       % (len(_reason), int(_mask.sum())))
 
     removed_df = pd.DataFrame(removal_records)
+    #  UNIFORM, NOT RAGGED, AND ALWAYS PRESENT.  PASS 0 (quarantine), PASS 0b (currency) and
+    #  PASS 5 (primary-presence eject) build records without `refused_fields`, so
+    #  `pd.DataFrame` would leave NaN there while the arithmetic passes write ''.  Worse, on a
+    #  run where ONLY those passes remove anything the column would be ABSENT ENTIRELY and the
+    #  transparency CSV's header would vary between runs.  A column that means "nothing was
+    #  refused" in three spellings -- '', NaN, and missing -- is a column a reader has to
+    #  guess at, so it is created unconditionally and normalised once.
+    if len(removed_df):
+        if 'refused_fields' not in removed_df.columns:
+            removed_df['refused_fields'] = ''
+        removed_df['refused_fields'] = removed_df['refused_fields'].fillna('').astype(str)
 
     # The PASS 0b status rides out on the frame's `attrs` (the same channel the Stage-2
     # frames use to declare their basis) so that `apply_data_quality_filter` -- which is
@@ -824,10 +928,15 @@ def apply_data_quality_filter(dmdic, verbose=True, save_log=True):
     
     # Filter cdx_df
     clean_cdx, removed_cdx = filter_invalid_data(
-        dmdic['cdx_df'], 
-        price_col='price', 
+        dmdic['cdx_df'],
+        price_col='price',
         mcap_col='marketCap',
-        verbose=verbose
+        verbose=verbose,
+        #  THE RUN'S OWN REFUSAL REPORT.  Without it PASS 1 cannot see the values
+        #  section 5 blanked, and it silently stops deleting rows it used to delete --
+        #  see `nan_policy.refusal_restore_map`.  `.get`, not `[]`: a panel loaded with
+        #  `-loadbometric` predates the key, and PASS 1 announces the blindness itself.
+        sanity_refusals=dmdic.get('inputSanityRefusals'),
     )
     
     _run_id = run_identifier(dmdic)

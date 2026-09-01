@@ -768,6 +768,161 @@ def marketcap_usd_by_source(cdx_df, as_of=None, allow_suffix_fallback=False, fx=
     return df.groupby('source')['_mcap_usd'].last().to_dict()
 
 
+def _on_report_basis(raw_refused, fallback_basis_value, fx_factor, basis):
+    """The refused market cap expressed on the SAME basis as the fallback beside it.
+
+    `raw_refused` is what the refusal report recorded: the RAW vendor `marketCap`, in the
+    company's reporting currency.  The fallback in the same row is USD wherever the currency
+    resolves.  Printing the two side by side without converting mis-states the SIZE of the
+    break -- on a SEK name a 1,000x error reads as 10,000x -- which is the one thing this
+    row exists to convey.
+
+    Returns the basis-scaled refused value, or the fallback-basis value when the report was
+    not supplied (nothing better is knowable then).
+    """
+    if raw_refused is None:
+        return fallback_basis_value
+    try:
+        v = float(raw_refused)
+    except (TypeError, ValueError):
+        return fallback_basis_value
+    if basis != 'USD':
+        return v
+    f = float(fx_factor) if fx_factor == fx_factor and fx_factor else 1.0
+    return v * f
+
+
+def marketcap_fallback_report(cdx_df, as_of=None, report=None):
+    """Sources whose NEWEST market cap is REFUSED, and how far back `last()` then reaches.
+
+    THE BEHAVIOUR THIS MAKES VISIBLE.  `marketcap_usd_by_source` takes the latest NON-NaN
+    row, so a source whose newest `marketCap` was refused by `nan_policy.price_scale_hits`
+    does not become UNKNOWN -- it silently becomes THE PREVIOUS QUARTER'S.  That value then
+    decides the market-cap band, and `postBo.generalTopN` takes the General band as the
+    top-20 the CEO reads.  A silent substitution deciding list membership is not acceptable;
+    a RECORDED one is.
+
+    IT IS RECORDED RATHER THAN REFUSED, AND THAT IS MEASURED, NOT PREFERRED (review S1-2,
+    2026-09-01).  The reviewer's alternative -- treat a refused newest row as unknown -- was
+    checked against the 2026-08-29 CUR6K panel and is WORSE on every case there is.  Seven
+    sources have a refused newest market cap, and on SIX of them the fallback lands on the
+    SOUND number, one quarter back:
+
+        BTTC        refused    1,890  ->  fallback   22,510,000   (4 quarters back)
+        CORE-A.ST   refused  178.4M   ->  fallback   4.474bn      (1 quarter)
+        CORE-B.ST   refused  178.4M   ->  fallback   4.474bn      (1 quarter)
+        CORE-D.ST   refused  178.4M   ->  fallback   4.474bn      (1 quarter)
+        GDC         refused    2.00M  ->  fallback   176.2M       (1 quarter)
+        WLN.PA      refused   71.9M   ->  fallback   436.6M       (1 quarter)
+        CMCM        no unrefused market cap anywhere -> genuinely unknown, already handled
+
+    Discarding those would throw a correct market cap away on six of seven names and band
+    them off nothing.  The fallback is the right ANSWER; it was only ever the wrong SILENCE.
+
+    WHAT THIS STILL CANNOT SEE, and it is the reviewer's sharpest point: the rule's measured
+    under-reach composes here.  A source whose newest rows are refused and whose next row
+    sits just ABOVE the cut is banded off a market cap that is still wrong -- refused rows are
+    skipped, merely-contaminated ones are not.  Nothing here detects that; widening the rule
+    (the conjunction scheduled in `nan_policy`) is what would.
+
+    Returns a DataFrame [source, refused_date, refused_marketCap_usd, fallback_date,
+    fallback_marketCap_usd, basis, rows_back] -- empty when nothing fell back.  The market
+    caps are USD wherever `reportedCurrency` resolves -- the same basis the band is decided on
+    -- and the RAW reporting-currency field where it does not, with `basis` saying which.  USD
+    alone would be correct and EMPTY on every panel predating the currency capture.
+
+    `rows_back` IS A ROW OFFSET, NOT A QUARTER COUNT, and it was called `quarters_back` until
+    a reviewer caught the mislabel.  It counts positions in the source's own newest-first
+    history, so for a SEMI-ANNUAL filer one row is six months, and where the panel carries
+    DUPLICATE `(source, date)` rows -- 296 of them across 76 sources on the 2026-08-11 CUR3K
+    panel -- a tied pair consumes an offset without advancing the calendar at all.  The same
+    tie can silence this report entirely: if the duplicate of a refused newest row is itself
+    unrefused, `last()` takes it and `rows_back` is 0, so a fallback that DID happen is
+    reported as none.  Neither can corrupt the band -- the value returned is a real market
+    cap from a real row either way -- but the number must not be read as a calendar age.
+    """
+    import nan_policy as _npol
+    cols = getattr(cdx_df, 'columns', [])
+    need = ('source', 'date', 'marketCap', _npol.SANITY_REFUSED_COLUMN)
+    if cdx_df is None or not all(c in cols for c in need):
+        return pd.DataFrame([], columns=['source', 'refused_date', 'refused_marketCap_usd',
+                                         'fallback_date', 'fallback_marketCap_usd',
+                                         'basis', 'rows_back'])
+    #  CARRY THE CURRENCY COLUMNS INTO THE PROJECTION.  `marketcap_usd_series` resolves USD
+    #  from `reportedCurrency` (or a materialised `marketCap_usd`), so projecting them away --
+    #  as a first draft of this function did -- made the USD basis unreachable and silently
+    #  relabelled every row 'reporting-currency'.  The label would then have been wrong in
+    #  exactly the direction this function exists to prevent.
+    _extra = [c for c in ('reportedCurrency', 'marketCap_usd') if c in cols]
+    d = cdx_df[list(need) + _extra].copy()
+    d['date'] = pd.to_datetime(d['date'], errors='coerce')
+    if as_of is not None:
+        d = d[d['date'] <= pd.Timestamp(as_of)]
+    d['_refused'] = _npol.refused_fields_mask(d, 'marketCap').fillna(False).to_numpy(dtype=bool)
+    #  USD, ON THE SAME BASIS THE BANDER USES (review 3, S3-4).  This report explains a BAND,
+    #  and `marketcap_usd_by_source` decides that band on `_mcap_usd` -- so selecting the
+    #  fallback row on the RAW `marketCap` could name a row the bander skipped (unresolvable
+    #  currency), and printing the raw value put a reporting-currency number beside a
+    #  USD-decided band.  The author's own table showed the gap: CORE-A.ST's "4.474bn" is SEK,
+    #  about $430M -- a different band entirely.  A transparency artifact added to stop a
+    #  silent substitution must not misdescribe which substitution happened.
+    #  PER SOURCE, USD WHERE IT RESOLVES AND THE RAW FIELD WHERE IT DOES NOT, with the basis
+    #  RECORDED.  USD alone would be right but EMPTY on every panel predating the
+    #  `reportedCurrency` capture -- the same no-op the $25M floor already documents -- and a
+    #  transparency artifact that goes silent on legacy data is worse than one that says which
+    #  basis it used.
+    d['_mc_usd'] = marketcap_usd_series(d, allow_suffix_fallback=False).values
+    d['_mc_raw'] = pd.to_numeric(d['marketCap'], errors='coerce')
+    _has_usd = d.groupby('source')['_mc_usd'].transform(lambda c: c.notna().any())
+    d['_basis'] = np.where(_has_usd, 'USD', 'reporting-currency')
+    d['_mc'] = d['_mc_usd'].where(_has_usd, d['_mc_raw'])
+    #  The refused cell IS NaN on the panel -- that is what refusing means -- so the value
+    #  that was rejected can only come from the refusal report, which records it precisely so
+    #  the decision can be argued with.  Absent, the column is NaN and the fallback half of
+    #  the row still carries the load-bearing fact (how far back the band came from).
+    #  THE REFUSED VALUE MUST BE ON THE SAME BASIS AS THE FALLBACK, or the row compares two
+    #  different currencies and the reader sees a break of the wrong SIZE.  The refusal report
+    #  records the RAW reporting-currency value -- it is what the vendor sent -- while `_mc`
+    #  is USD wherever the currency resolves.  On a SEK name that mismatch turns a 1,000x
+    #  break into a reported 10,000x.  The refused row's own USD value cannot be recovered
+    #  (its `marketCap` is the cell that was blanked), so the source's own FX factor is taken
+    #  from the rows that survived and applied.  `basis == 'reporting-currency'` means the
+    #  factor is 1.0 by construction, so this is a no-op there.
+    _fx = {}
+    with np.errstate(divide='ignore', invalid='ignore'):
+        _ratio = d['_mc_usd'] / d['_mc_raw'].where(d['_mc_raw'] > 0)
+    for _src, _grp in _ratio.groupby(d['source'], sort=False):
+        _v = _grp.replace([np.inf, -np.inf], np.nan).dropna()
+        _fx[str(_src)] = float(_v.median()) if len(_v) else 1.0
+    _was = {}
+    if report is not None and len(report):
+        _rc = getattr(report, 'columns', [])
+        if all(c in _rc for c in ('source', 'date', 'field', 'value')):
+            _r = report[report['field'] == 'marketCap']
+            for _t in _r.itertuples(index=False):
+                _was[(str(_t.source), _npol._normalise_refusal_date(_t.date))] = _t.value
+    d = d.sort_values(['source', 'date'], ascending=[True, False])
+    out = []
+    for src, g in d.groupby('source', sort=False):
+        g = g.reset_index(drop=True)
+        if not len(g) or not bool(g.at[0, '_refused']):
+            continue
+        ok = g.index[(~g['_refused']) & g['_mc'].notna() & (g['_mc'] > 0)]
+        out.append({'source': src,
+                    'refused_date': g.at[0, 'date'],
+                    'refused_marketCap_usd': _on_report_basis(
+                        _was.get((str(src), _npol._normalise_refusal_date(g.at[0, 'date']))),
+                        g.at[0, '_mc'], _fx.get(str(src), 1.0),
+                        g.at[0, '_basis']),
+                    'fallback_date': (g.at[ok[0], 'date'] if len(ok) else pd.NaT),
+                    'fallback_marketCap_usd': (g.at[ok[0], '_mc'] if len(ok) else float('nan')),
+                    'basis': g.at[0, '_basis'],
+                    'rows_back': (int(ok[0]) if len(ok) else -1)})
+    return pd.DataFrame(out, columns=['source', 'refused_date', 'refused_marketCap_usd',
+                                      'fallback_date', 'fallback_marketCap_usd', 'basis',
+                                      'rows_back'])
+
+
 def band_for_marketcap_usd(v):
     """Band label for a USD market cap; None if unknown (caller routes to General).
     Bands are contiguous half-open [lo, hi), so every finite non-negative value maps to
@@ -2971,6 +3126,45 @@ def partition_by_marketcap(ranked_df, cdx_df, names=None):
     df = base.set_index('source').reindex(kept).reset_index()
 
     mcu = marketcap_usd_by_source(cdx_df)            # source -> latest USD market cap
+    #  SAY WHEN A BAND RESTS ON A FALLBACK.  `marketcap_usd_by_source` takes the latest
+    #  NON-NaN row, so a source whose newest market cap was refused is banded off an OLDER
+    #  quarter.  That is the right answer (see `marketcap_fallback_report` for the six-of-seven
+    #  measurement) but it must not be a silent one -- the band decides which deliverable a
+    #  name lands on.  `rows_back == -1` means no unrefused cap exists at all, i.e. the
+    #  name is genuinely unknown and routes to General by the rule below.  `rows_back` is a
+    #  ROW OFFSET, not a calendar age -- see `marketcap_fallback_report`.
+    try:
+        _fb = marketcap_fallback_report(cdx_df)
+        if len(_fb):
+            print('MARKET-CAP BAND FALLBACK: %d source(s) have a REFUSED newest market cap, '
+                  'so their band is taken from an older quarter:' % len(_fb), flush=True)
+            for _r in _fb.itertuples(index=False):
+                #  SIX ARGUMENTS, SIX SPECIFIERS.  This line carried FIVE and put `basis`
+                #  (a string) on the `%d`, so every run where the report had a row raised
+                #  `TypeError: %d format: a real number is required, not str` inside the
+                #  try/except below -- the operator got the header and then the "no record of
+                #  which bands rest on a fallback" warning.  THE DISCLOSURE HAS THEREFORE
+                #  NEVER EMITTED A ROW, and it is the accepted remedy for keeping the
+                #  fallback at all.  A transparency artifact nobody can trip in a test is one
+                #  nobody knows is dead: `test_price_scale_refusal` now drives THIS print
+                #  path, not just the frame builder.
+                #  THE REFUSED VALUE IS NOT KNOWABLE AT THIS CALL SITE, and printing a bare
+                #  `nan` for it would be worse than saying so.  `marketcap_fallback_report`
+                #  recovers it from the run's refusal report, and `partition_by_marketcap`
+                #  does not receive one -- the refused cell on the panel IS NaN, which is what
+                #  refusing means.  Everything load-bearing is still here: which source, both
+                #  dates, the basis and how far back the band came from.
+                _rv = _r.refused_marketCap_usd
+                _rv_s = ('%.6g' % _rv) if _rv == _rv else 'value not recoverable here'
+                print('    %-12s newest %s REFUSED (%s) -> band taken from %s (%.6g %s), '
+                      '%d row(s) back'
+                      % (_r.source, str(_r.refused_date)[:10], _rv_s,
+                         str(_r.fallback_date)[:10], _r.fallback_marketCap_usd,
+                         _r.basis, _r.rows_back), flush=True)
+    except Exception as _fb_err:
+        print('WARNING: market-cap fallback report skipped (%s: %s) -- the BANDING is '
+              'unaffected; this run simply has no record of which bands rest on a fallback.'
+              % (type(_fb_err).__name__, _fb_err), flush=True)
     pending = not currency_data_present(cdx_df)
     general_label = MCAP_BANDS[0][0]
 

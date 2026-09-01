@@ -867,11 +867,17 @@ def _audit_price_scale_stage(resdic, configdic, log):
     BALANCE SHEET, which the scaling does not touch: price/book comes out at 0.0116, i.e. the
     company priced at a hundredth of its own book equity.  See `price_scale_audit`.
 
-    IT DOES NOT GATE, AND THAT IS THE POINT OF THE STAGE.  Q-38 was held OPEN rather than
-    parked with the rest of the price-grid work precisely because its detector reaches names
-    that are live in scoring.  Reading the panel is free; changing a score on a heuristic is
-    the CEO's decision.  So this prints and writes evidence, and nothing downstream consumes
-    it.
+    THIS STAGE DOES NOT GATE.  THE PIPELINE NOW DOES, UPSTREAM (Q-48 actioned, 2026-09-01).
+    The paragraph that stood here said "changing a score on a heuristic is the CEO's decision.
+    So this prints ... and nothing downstream consumes it."  The CEO reopened Q-48 and ruled the
+    other way: reading a corrupted vendor number is a BUG, not a scoring preference.
+    `nan_policy.price_scale_hits` now refuses the contradicted cells at ingest
+    (`the refusal hook in getData_fmp.getFundamentalsData`), so by the time this stage runs, a row under `PB_ALARM` has already
+    had `price`, `marketCap`, `bookValuePerShare` and `earningsYield` set to NaN.
+    THE CONSEQUENCE FOR THIS STAGE IS THAT ITS SILENCE MEANS SOMETHING DIFFERENT: check A reads
+    the two legs the refusal blanks, so on a post-refusal panel it reports what SURVIVED, not
+    the run's exposure.  `run_audit` prints an A0 block naming the refused sources first, off
+    the `nan_policy.SANITY_REFUSED_COLUMN` stamp -- read that before the ALARM count.
     """
     import price_scale_audit as psa
     panel = None
@@ -908,6 +914,10 @@ def _audit_price_scale_stage(resdic, configdic, log):
         supp_csv=_PRICES_2025_CSV if os.path.exists(_PRICES_2025_CSV) else None,
         stage1_scores=_get("BoScore_df"),
         shipped_sources=_get("postRank", "source"),
+        #  THE RUN'S OWN REFUSAL REPORT, so A0 can print HOW FAR under the cut each refused
+        #  source sat.  The ratio is not recoverable from the panel -- `marketCap` is one of
+        #  the cells the refusal blanks -- so without this A0 names sources and no numbers.
+        refusal_report=_get("inputSanityRefusals"),
         panel_label="LIVE cdx_df -- survivor-only; NO delisted name is in it",
         log=log)
 
@@ -948,8 +958,14 @@ def _audit_price_scale_pit_stage(merged, per_anchor, live_audit, survivorship_cl
     no claim about the margin to the top-100 cutoff -- the live pass's margin sentence has no
     counterpart here, and the audit prints no substitute for it.
 
-    REPORT ONLY, like its live twin: nothing downstream consumes it, and correcting a price
-    changes a score, which is the CEO's call.
+    REPORT ONLY *HERE*, AND THAT IS NOW AN ASYMMETRY WORTH KNOWING ABOUT.  Since 2026-09-01 the
+    LIVE ingest refuses the contradicted cells (`nan_policy.price_scale_hits`, Q-48) -- but this
+    pass reads the PIT dead-merged panel, whose rows were assembled from saved delisted
+    fundamentals rather than from tonight's fetch.  Whether they carry the refusal depends
+    entirely on whether the pickle that supplied them was built after that date, and today it
+    was not.  So the backtest ranking can still be reading a contaminated `bookToPrice` while
+    the live scorer is not, and this stage is the only thing that says so.  Do not read a quiet
+    LIVE pass as covering this population.
     """
     import price_scale_audit as psa
     if not survivorship_clean:

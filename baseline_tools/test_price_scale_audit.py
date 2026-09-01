@@ -261,8 +261,13 @@ def test_the_containment_numbers_MOVE_WITH_THE_PANEL():
 
     assert "of 42 on it" in t_small, t_small          # 40 good + 2 scaled
     assert "of 123 on it" in t_large, t_large         # 120 good + 3 scaled
-    assert "2 of 2 flagged names" in t_small
-    assert "3 of 3 flagged names" in t_large
+    #  "RANKABLE" since 2026-09-01: the head count's denominator is the number of flagged
+    #  names that CAN be ranked, not the number flagged.  A fully-refused source has no
+    #  computable bookToPrice, so counting it in the denominator dropped the MOST
+    #  contaminated names out of the numerator and read as an all-clear (review 3, S3-2).
+    #  Both fixtures here are rankable, so the numbers are unchanged -- only the word moved.
+    assert "2 of 2 RANKABLE flagged names" in t_small
+    assert "3 of 3 RANKABLE flagged names" in t_large
     assert "of 42 of" not in t_large, "the panel size did not move with the panel"
 
 
