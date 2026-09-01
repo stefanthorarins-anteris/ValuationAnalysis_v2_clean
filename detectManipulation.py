@@ -524,8 +524,61 @@ def _floor_share_base(share, floor, unit_interval=False):
     return v.where(~refused), int(refused.sum())
 
 
-def detectManipulationWrapper(resdic):
+def forensic_scoring_population(resdic, verbose=True):
+    """Every name the forensic models are RUN for: the general `postRank`, plus the members of
+    each carve cohort whose label rules the models APPLICABLE (Q-66, 2026-09-01).
+
+    UNTIL NOW THIS WAS `postRank['source']` ALONE, which is the general pool -- so no cohort
+    name received an M-Score or a C-Score in ANY artifact: not the CSVs, not the XLSX, not the
+    25-of-45 cohort pages of the deck.  Those pages rendered a blank forensic layer, which was
+    honest about a hole nobody had chosen.
+
+    THE POPULATION IS DECIDED BY `carveOut.cohort_forensic_validity`, AND ONLY BY IT.  Scoring
+    a cohort the house has ruled inapplicable and then discarding the result is worse than not
+    scoring it: the numbers would sit in `mscore_df` / `SLmeanMscore` inside the run pickle,
+    where the next surface to be written will find them and publish them.  A name that is not
+    in this list has no forensic number to leak.  `None` (undetermined -- 'general' and any
+    unknown label) does NOT widen the population beyond `postRank`; only an explicit True does.
+
+    Order is preserved and duplicates removed, so the frames stay deterministic.  The carve is
+    a strict partition on the shipped runs (zero names in both the general pool and a cohort),
+    but the de-dup is not a formality -- `postRank` is the only list whose membership this
+    function does not control.
+    """
     symblist = list(resdic['postRank']['source'])
+    sidelists = resdic.get('carveout_sidelists') or {}
+    if not sidelists:
+        return list(dict.fromkeys(symblist))
+    #  LAZY IMPORT, same reason `contribute_forensic_gap_points` imports `forensicFlags`
+    #  lazily: `carveOut` is a heavy module in the pipeline's import graph and this one is
+    #  imported by `forensicFlags`, so keeping the edge out of module scope keeps the graph
+    #  acyclic no matter which of the three a future caller imports first.
+    import carveOut as _co
+    added = {}
+    for label, sdic in sidelists.items():
+        if _co.cohort_forensic_validity(label) is not True:
+            continue
+        if not sdic or 'postRank' not in sdic or sdic['postRank'] is None:
+            continue
+        names = [s for s in sdic['postRank']['source'] if s not in set(symblist)]
+        symblist += names
+        added[label] = len(names)
+    if verbose:
+        #  SAY WHICH COHORTS WERE ADDED **AND WHICH WERE REFUSED**, in the run log.  A reader
+        #  who sees only the additions cannot tell a cohort that was ruled inapplicable from
+        #  one the carve failed to produce -- and those are opposite facts about the run.
+        refused = sorted(lab for lab in sidelists
+                         if _co.cohort_forensic_validity(lab) is not True)
+        print('FORENSIC POPULATION: general %d name(s)%s. REFUSED (models do not apply, see '
+              'carveOut.COHORT_FORENSIC_REASON): %s'
+              % (len(resdic['postRank']),
+                 ''.join(' + %s %d' % (k, v) for k, v in sorted(added.items())),
+                 ', '.join(refused) or 'none'), flush=True)
+    return list(dict.fromkeys(symblist))
+
+
+def detectManipulationWrapper(resdic):
+    symblist = forensic_scoring_population(resdic)
     # ONE classification for both forensic models (the same map Stage-2 derives, since
     # both come from the same cdx_df).
     freq_map = rp.frequency_by_source(resdic['cdx_df'], verbose=True)

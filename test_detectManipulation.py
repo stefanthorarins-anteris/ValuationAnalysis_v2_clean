@@ -1283,7 +1283,13 @@ def test_a_forensically_INVALID_name_is_NOT_charged_for_lacking_a_Beneish_score(
     tbl = ff.buildForensicFlagTable({**resdic, **det}, 1,
                                     sector_fallback={'AREIT': 'Real Estate'})
     assert tbl['forensicTag'].iloc[0].startswith('financial: forensic-invalid')
-    assert 'does not apply' in tbl['M_abstain_reason'].iloc[0], tbl['M_abstain_reason'].iloc[0]
+    #  `not apply`, not `does not apply` (Q-66).  The sentence is now built from the single
+    #  `forensicReason` string that the CSV, the XLSX and the deck all render, and that string
+    #  names all three models -- "the Beneish / Montier / Sloan models DO not apply to ...".
+    #  The assertion is on the wording-robust stem so that it goes on testing the FACT (the
+    #  row says the model is inapplicable) rather than a particular sentence; the second
+    #  assertion is the one that actually carries the defect, and it is unchanged.
+    assert 'not apply' in tbl['M_abstain_reason'].iloc[0], tbl['M_abstain_reason'].iloc[0]
     assert 'no usable vendor data' not in tbl['M_abstain_reason'].iloc[0]
     print("PASS test_a_forensically_INVALID_name_is_NOT_charged_for_lacking_a_Beneish_score")
 
@@ -1757,16 +1763,25 @@ def test_P4_blanking_at_SOURCE_reaches_every_consumer_of_the_two_columns():
         assert ("'FLAG' if frow.get('%s')" % col) not in pb_src, col
 
     gp_src = open(os.path.join(REPO, 'generate_presentation.py'), encoding='utf-8').read()
-    #  the deck reads the column as a STRING against positive tokens only, so both '' and the
-    #  round-tripped 'nan' fall through to False -- absence-safe by construction, asserted
-    #  here so a future "simplification" to `bool(...)` is a test failure, not a silent flag.
-    assert ("m_flag = str(r0.get('M_flag_gt_-1.78')).strip().lower() in ('true', '1', 'yes')"
-            in gp_src)
-    for probe in ('nan', '', 'False'):
-        assert probe.strip().lower() not in ('true', '1', 'yes')
+    #  THE DECK NOW READS IT THROUGH `ff._flag_true` (Q-66), not through its own inlined
+    #  string test.  The old expression -- `str(...).strip().lower() in ('true','1','yes')` --
+    #  was absence-safe, and was asserted here verbatim precisely so that a "simplification"
+    #  to `bool(...)` would fail this test.  It has been REPLACED rather than simplified: the
+    #  deck's forensic read moved into `forensic_scores`, which routes the column through the
+    #  module's one canonical reader.  That is strictly stronger (one implementation instead of
+    #  two that agree by inspection), so the assertion moves with it rather than being dropped.
+    assert "ff._flag_true(r0.get('M_flag_gt_-1.78'))" in gp_src
+    #  the inlined copy must NOT come back alongside it
+    assert ("str(r0.get('M_flag_gt_-1.78')).strip().lower()" not in gp_src)
+    #  ...and the reader it now depends on really is absence-safe, exercised rather than read
+    for probe in ('', 'nan', 'False', None, float('nan')):
+        assert ff._flag_true(probe) is False, repr(probe)
+    for probe in (True, 'True', 'true', 1):
+        assert ff._flag_true(probe) is True, repr(probe)
     #  and there is exactly ONE construction site for it in the deck -- no second, recomputed
-    #  m_flag that a blanked column would not disarm.
-    assert gp_src.count("m_flag = ") == 2, gp_src.count("m_flag = ")   # the default + the read
+    #  m_flag that a blanked column would not disarm.  (`m_flag` is now ASSIGNED once, from
+    #  `forensic_scores`; the other two mentions READ it.)
+    assert gp_src.count("m_flag = ") == 1, gp_src.count("m_flag = ")
 
     ff_src = open(os.path.join(REPO, 'forensicFlags.py'), encoding='utf-8').read()
     #  the in-module consumer that rebuilds the summary tag after the sector fallback
@@ -1859,6 +1874,335 @@ def test_Q44_the_XLSX_forensic_block_reads_applicability_through_the_ONE_reader(
     print("PASS test_Q44_the_XLSX_forensic_block_reads_applicability_through_the_ONE_reader")
 
 
+# ===========================================================================
+#  Q-66 (2026-09-01): the forensic table reaches the CARVE COHORTS, and refuses
+#  where the models do not apply.
+#
+#  WHAT WAS WRONG.  `buildForensicFlagTable` was scoped to `postRank.head(topn)` -- the
+#  GENERAL pool -- so no cohort name carried an M-Score or a C-Score in any artifact, and 25
+#  of the deck's 45 pages rendered a blank forensic layer: honest about a hole nobody chose.
+#
+#  WHAT MUST NOT BE "FIXED" BY EXTENDING IT BLINDLY.  Extending a structurally-inapplicable
+#  metric is the defect 37f55c6 removed (a green Sloan tick on REITs), so the extension is
+#  three-valued PER COHORT: computed (Mining), refused-with-a-stated-reason (REIT and the
+#  three FIN-*), undetermined.  The argument and the measurements are in the block above
+#  `carveOut.COHORT_FORENSIC_VALIDITY`; these tests pin the MECHANISM, not the ruling.
+# ===========================================================================
+
+def _cohort_fixture():
+    """Two names on one panel: MINEA (Mining -> scored) and AREITX (REIT -> refused).
+
+    The rows are the ordinary `_Q` baseline, so BOTH names are perfectly computable -- which
+    is the point.  A refusal that only ever fires on a name with missing data would be
+    indistinguishable from the vendor-gap abstention that already existed."""
+    rows = [dict(_Q) for _ in range(12)]
+    panel = pd.concat([_build_quarters(rows, 'MINEA'), _build_quarters(rows, 'AREITX')],
+                      ignore_index=True)
+    resdic = {'cdx_df': panel,
+              'postRank': pd.DataFrame({'source': ['GEN1']}),
+              'carveout_sidelists': {
+                  'Mining': {'postRank': pd.DataFrame({'source': ['MINEA']})},
+                  'REIT': {'postRank': pd.DataFrame({'source': ['AREITX']})}},
+              'carveout_labels': pd.Series({'MINEA': 'Mining', 'AREITX': 'REIT'})}
+    return resdic
+
+
+def _cohort_table(resdic):
+    members = {lab: list(sd['postRank']['source'])
+               for lab, sd in resdic['carveout_sidelists'].items()}
+    #  The panel has no GEN1 rows on purpose: the general pool is not what this fixture is
+    #  about, and a general row here would make the Sloan quantile depend on it.
+    det = dm.calcBeneishM(resdic, ['MINEA', 'AREITX'], verbose=False)
+    cdet = dm.calcMontierC(resdic, ['MINEA', 'AREITX'])
+    full = {**resdic, 'mscore_df': det[0], 'SLmeanMscore': det[1],
+            'problemlist_Mscore': det[2], 'cscore_df': cdet[0],
+            'SLmeanCscore': cdet[1], 'problemlist_Cscore': cdet[2]}
+    return ff.buildForensicFlagTable(full, 1, cohort_members=members,
+                                     carve_labels=resdic['carveout_labels'])
+
+
+def test_Q66_the_table_now_carries_the_COHORT_side_lists_at_all():
+    """The hole itself.  Before this change the returned frame had general rows ONLY, so a
+    cohort name could not be found in it by any consumer -- which is why the deck, the XLSX
+    and the side-list CSVs all had nothing to show.
+
+    Also pins `pool` and the PER-POOL rank: with six shortlists in one frame a bare global
+    rank would tell a reader that a cohort's best name is number 101."""
+    tbl = _cohort_table(_cohort_fixture())
+    got = set(tbl['source'])
+    assert {'MINEA', 'AREITX'} <= got, got
+    assert dict(zip(tbl['source'], tbl['pool'])) == {
+        'GEN1': 'general', 'MINEA': 'Mining', 'AREITX': 'REIT'}, tbl[['source', 'pool']]
+    #  rank restarts at 1 inside each pool
+    assert list(tbl[tbl['pool'] == 'Mining']['rank']) == [1]
+    assert list(tbl[tbl['pool'] == 'REIT']['rank']) == [1]
+    #  ...and the RUN'S OWN carve label rides the row, so no consumer needs the undated,
+    #  per-run-rebuilt `sectorsdic_fmp.pickle` to work out which cohort a name was in.
+    assert dict(zip(tbl['source'], tbl['carveLabel']))['MINEA'] == 'Mining'
+    print("PASS test_Q66_the_table_now_carries_the_COHORT_side_lists_at_all")
+
+
+def test_Q66_Mining_is_SCORED_and_REIT_is_REFUSED_WITH_A_STATED_REASON():
+    """The ruling, at the only place it can be observed: two identical fixtures, opposite
+    outcomes, decided by the carve label alone.
+
+    THE REFUSAL IS NOT A DATA GAP.  Both names have the same complete rows, so a REIT row
+    carrying blanks proves the refusal is structural rather than "the vendor let us down" --
+    and `forensicReason` must SAY so, because a blank with no words is indistinguishable, on
+    the page, from an omission."""
+    tbl = _cohort_table(_cohort_fixture()).set_index('source')
+    mine, reit = tbl.loc['MINEA'], tbl.loc['AREITX']
+
+    assert bool(mine['forensicValid']) is True
+    assert pd.notna(mine['M_score_mean']), mine.to_dict()
+    assert pd.notna(mine['C_score_mean']), mine.to_dict()
+    assert mine['forensicReason'] == '', mine['forensicReason']
+    #  a caveat SHIPS WITH the score and is a different field from a reason it is absent
+    assert 'ramp' in mine['forensicNote'].lower() or 'AQI' in mine['forensicNote'], \
+        mine['forensicNote']
+
+    assert bool(reit['forensicValid']) is False
+    assert pd.isna(reit['M_score_mean']) and pd.isna(reit['C_score_mean']), reit.to_dict()
+    assert reit['forensicReason'], 'a refusal with no reason is an omission'
+    assert 'do not apply' in reit['forensicReason'], reit['forensicReason']
+    assert reit['forensicNote'] == '', 'a caveat must never stand in for a refusal'
+    #  the tag agrees with the reason rather than giving a second account of the row
+    assert 'inapplicable' in reit['forensicTag'], reit['forensicTag']
+    print("PASS test_Q66_Mining_is_SCORED_and_REIT_is_REFUSED_WITH_A_STATED_REASON")
+
+
+def test_Q66_a_refused_row_blanks_with_EMPTY_STRING_not_False_and_not_NaN():
+    """`bool(float('nan')) is True`.  A refused row's three-valued cells must be `''` in
+    memory -- NOT `False`, which asserts a negative finding about a name nobody assessed, and
+    NOT `np.nan`, which any truthiness test still to be written would read as a FLAG.
+
+    Asserted on the SLOAN flag as well as on M and C: that column was a plain bool until this
+    change, and it is the one the XLSX renders."""
+    tbl = _cohort_table(_cohort_fixture()).set_index('source')
+    reit = tbl.loc['AREITX']
+    for col in ('M_flag_gt_-1.78', 'C_flag_ge_4', 'sloan_worstQuintile_inShortlist'):
+        v = reit[col]
+        assert v == '', (col, repr(v))
+        assert v is not False and not (isinstance(v, float) and np.isnan(v)), (col, repr(v))
+        #  and the two ONE READERS agree about what it means
+        assert ff._flag_true(v) is False, col
+        assert ff.flag_display(v) == 'not assessed', (col, ff.flag_display(v))
+    #  the driver / fired-flag strings are blank too: no verdict, no breakdown (P-2)
+    assert reit['M_drivers'] == '' and reit['C_flags_fired'] == ''
+    #  ...but the RAW Sloan ratio is still published -- it is arithmetic, not a verdict, and
+    #  suppressing it would hide a magnitude the reader may still want.
+    assert pd.notna(reit['sloanAccruals']), reit.to_dict()
+    print("PASS test_Q66_a_refused_row_blanks_with_EMPTY_STRING_not_False_and_not_NaN")
+
+
+def test_Q66_adding_cohort_rows_leaves_the_GENERAL_POOL_BIT_FOR_BIT():
+    """The regression this change could most easily have caused, and the reason the Sloan
+    worst-quintile cutoff is computed PER POOL.
+
+    `sloan_worstQuintile_inShortlist` is a WITHIN-shortlist rank artifact.  Pooling the
+    general pool with 24 Mining names into one quantile would move the general pool's flags as
+    a SIDE EFFECT of the table having gained rows -- a change to an artifact the CEO has
+    already reviewed, made by a change that was supposed to be additive.  Eleven general names
+    here, five of them with distinct accruals, so the quantile is live rather than degenerate
+    (`_pool_cut` needs n >= 5)."""
+    rows = [dict(_Q) for _ in range(12)]
+    frames, gen = [], []
+    for i in range(11):
+        r = [dict(_Q) for _ in range(12)]
+        #  spread netIncome so the general pool's Sloan values are distinct
+        for q in r:
+            q['netIncome'] = _Q['netIncome'] * (1.0 + 0.30 * i)
+        frames.append(_build_quarters(r, 'G%02d' % i))
+        gen.append('G%02d' % i)
+    #  the cohort names carry LARGE accruals, i.e. exactly the values that would drag a
+    #  pooled 80th percentile upward and unflag general names
+    for j in range(6):
+        r = [dict(_Q) for _ in range(12)]
+        for q in r:
+            q['netCashProvidedByOperatingActivities'] = -abs(_Q['netIncome']) * 5.0
+        frames.append(_build_quarters(r, 'M%02d' % j))
+    panel = pd.concat(frames, ignore_index=True)
+    base = {'cdx_df': panel, 'postRank': pd.DataFrame({'source': gen})}
+    det = dm.calcBeneishM(base, gen + ['M%02d' % j for j in range(6)], verbose=False)
+    cdet = dm.calcMontierC(base, gen + ['M%02d' % j for j in range(6)])
+    full = {**base, 'mscore_df': det[0], 'SLmeanMscore': det[1],
+            'problemlist_Mscore': det[2], 'cscore_df': cdet[0],
+            'SLmeanCscore': cdet[1], 'problemlist_Cscore': cdet[2],
+            'carveout_labels': pd.Series({'M%02d' % j: 'Mining' for j in range(6)})}
+
+    alone = ff.buildForensicFlagTable(full, 11)
+    withco = ff.buildForensicFlagTable(
+        full, 11, cohort_members={'Mining': ['M%02d' % j for j in range(6)]},
+        carve_labels=full['carveout_labels'])
+    wg = withco[withco['pool'] == 'general'].reset_index(drop=True)
+    assert list(wg['source']) == list(alone['source'])
+    for col in alone.columns:
+        if col in ('pool', 'carveLabel', 'forensicReason', 'forensicNote'):
+            continue
+        a = alone[col].tolist()
+        b = wg[col].tolist()
+        same = all((x == y) or (pd.isna(x) and pd.isna(y)) if not isinstance(x, str)
+                   else x == y for x, y in zip(a, b))
+        assert same, (col, a, b)
+    #  ...and the guard is not vacuous: the cohort names really are in the WORST quintile of
+    #  their own pool, so a shared quantile would have had something to move.
+    assert any(withco[withco['pool'] == 'Mining']['sloan_worstQuintile_inShortlist'] == True)
+    print("PASS test_Q66_adding_cohort_rows_leaves_the_GENERAL_POOL_BIT_FOR_BIT")
+
+
+def test_Q66_an_inapplicable_cohort_is_NEVER_SCORED_not_scored_and_hidden():
+    """A number that exists in the frame is a number the next surface will publish.
+
+    `detectManipulationWrapper` widens its population to the cohorts the house has ruled the
+    models APPLICABLE to, and to no others -- so a REIT has no M-Score anywhere in `resdic`,
+    not merely a suppressed one on the page.  This is the difference between the refusal being
+    a property of the pipeline and it being a property of one renderer."""
+    resdic = _cohort_fixture()
+    pop = dm.forensic_scoring_population(resdic, verbose=False)
+    assert 'MINEA' in pop, pop
+    assert 'AREITX' not in pop, pop
+    assert pop[0] == 'GEN1', pop        # general first, order preserved
+    #  and end-to-end through the wrapper: the REIT is absent from the score frames entirely
+    resdic['cdx_df'] = resdic['cdx_df']
+    det = dm.detectManipulationWrapper(resdic)
+    assert 'AREITX' not in set(det['SLmeanMscore']['source']), det['SLmeanMscore']
+    assert 'AREITX' not in set(det['SLmeanCscore']['source'])
+    assert 'MINEA' in set(det['SLmeanMscore']['source'])
+    #  an UNDETERMINED label ('general', or a label this run does not know) must NOT widen the
+    #  population either -- only an explicit True does.
+    r2 = _cohort_fixture()
+    r2['carveout_sidelists'] = {'NoSuchCohort': {'postRank': pd.DataFrame({'source': ['X1']})}}
+    assert dm.forensic_scoring_population(r2, verbose=False) == ['GEN1']
+    print("PASS test_Q66_an_inapplicable_cohort_is_NEVER_SCORED_not_scored_and_hidden")
+
+
+def test_Q66_applySectorFallback_cannot_PROMOTE_a_cohort_refusal_back_to_valid():
+    """The reconciliation runs AFTER the table is built and re-derives `forensicValid` from the
+    two SECTOR sources.  Left alone it would hand a REIT its validity back the moment the API
+    sector came home as `Industrials` -- undoing the ruling one function later, inside a step
+    whose docstring says it only ever ADDS financials.
+
+    Two-sided: the same call must still ADD a financial the pickle missed."""
+    tbl = _cohort_table(_cohort_fixture())
+    #  an API sector that would, on the sector rule alone, make AREITX perfectly valid
+    out = ff.applySectorFallback(tbl, {'AREITX': 'Industrials', 'MINEA': 'Basic Materials'})
+    reit = out.set_index('source').loc['AREITX']
+    assert bool(reit['forensicValid']) is False, out.to_dict('records')
+    assert reit['forensicReason'], 'the reason must survive the reconciliation too'
+    assert pd.isna(reit['M_score_mean']) and reit['M_flag_gt_-1.78'] == ''
+    #  ...and the other direction still works: a general name the API calls a bank is refused,
+    #  AND its scores are blanked rather than left printed beside "does not apply".
+    tbl2 = _cohort_table(_cohort_fixture())
+    tbl2.loc[tbl2['source'] == 'MINEA', 'carveLabel'] = 'general'
+    out2 = ff.applySectorFallback(tbl2, {'MINEA': 'Financial Services'})
+    m = out2.set_index('source').loc['MINEA']
+    assert bool(m['forensicValid']) is False and bool(m['isFinancial']) is True
+    assert pd.isna(m['M_score_mean']), m.to_dict()
+    assert m['M_flag_gt_-1.78'] == '' and m['sloan_worstQuintile_inShortlist'] == ''
+    print("PASS test_Q66_applySectorFallback_cannot_PROMOTE_a_cohort_refusal_back_to_valid")
+
+
+def test_Q66_the_ruling_lives_in_ONE_place_and_the_reason_is_MANDATORY():
+    """`carveOut` owns the labels AND the verdict AND the words.  Three dicts that can drift
+    apart is how `COHORT_FORENSIC_VALIDITY` would acquire a silent default -- so a label that
+    is ruled inapplicable MUST carry a reason, and one ruled applicable must NOT (its caveat
+    belongs in the separate note, or a caveat would render where a refusal belongs).
+
+    THE GUARD IS EXERCISED, NOT GREPPED FOR.  `check_forensic_tables` takes the three dicts as
+    arguments for exactly this reason: a test that asserts a substring of the guard's own error
+    message proves only that somebody typed the message.  Each of the four ways the tables can
+    disagree is fed in and must RAISE."""
+    import carveOut as co
+    assert co.check_forensic_tables() is True, 'the shipped tables must agree'
+
+    V = dict(co.COHORT_FORENSIC_VALIDITY)
+    R = dict(co.COHORT_FORENSIC_REASON)
+    N = dict(co.COHORT_FORENSIC_NOTE)
+
+    def _raises(**kw):
+        try:
+            co.check_forensic_tables(**kw)
+        except ValueError:
+            return True
+        return False
+
+    #  1. a cohort with a verdict and no entry in the reason table at all
+    assert _raises(validity={**V, 'NewCohort': False}, reason=R, note=N)
+    #  2. inapplicable, entry present but EMPTY -- the silent-omission case
+    assert _raises(validity={**V, 'NewCohort': False},
+                   reason={**R, 'NewCohort': ''}, note=N)
+    #  3. applicable but carrying a refusal reason -- a caveat rendered as a refusal
+    assert _raises(validity=V, reason={**R, 'Mining': 'does not apply'}, note=N)
+    #  4. a note keyed on something that is not a carve label
+    assert _raises(validity=V, reason=R, note={**N, 'NotALabel': 'x'})
+    #  ...and the guard is not simply always-raising
+    assert co.check_forensic_tables(validity=V, reason=R, note=N) is True
+
+    #  an UNKNOWN label is undetermined and gets the undetermined WORDS -- never ''
+    assert co.cohort_forensic_validity('NoSuchCohort') is None
+    assert co.cohort_forensic_reason('NoSuchCohort'), 'undetermined still needs words'
+    assert co.cohort_forensic_note('NoSuchCohort') == ''
+    print("PASS test_Q66_the_ruling_lives_in_ONE_place_and_the_reason_is_MANDATORY")
+
+
+def test_Q66_cell_text_is_the_ONE_reader_for_an_optional_TEXT_column():
+    """The third member of the family, and the one that had already fired.
+
+    Every optional string this module publishes -- `M_drivers`, `M_abstain_reason`,
+    `forensicReason`, `forensicNote`, `C_flags_fired` -- is `''` in memory and NaN after a CSV
+    round-trip, and every consumer wrote `str(x or '')`.  NaN is TRUTHY, so that expression
+    short-circuits to the NaN and returns the literal string `'nan'`, which is not empty -- so
+    an `if reason:` branch fires and the surface prints the word "nan" where a sentence goes.
+    Measured before the fix: `Why there is no M / C score: nan` on all five Mining pages of the
+    2026-08-31 deck, i.e. every page the Q-66 extension exists to populate.
+
+    Both directions: a REAL string must survive untouched, or the reader is just a deleter."""
+    for absent in (None, '', '   ', np.nan, float('nan'), 'nan', 'NaN', 'None', 'none'):
+        assert ff.cell_text(absent) == '', repr(absent)
+    for present in ('a reason', '  a reason  ', 'DSRI(+4.00, ratio>neut)'):
+        assert ff.cell_text(present) == present.strip(), repr(present)
+    #  the unsafe idiom really does produce 'nan' -- so the assertions above are load-bearing
+    assert str(float('nan') or '') == 'nan'
+    #  and it survives the round trip that creates the NaN in the first place
+    df = pd.DataFrame({'source': ['A', 'B'], 'forensicReason': ['', 'does not apply']})
+    buf = io.StringIO()
+    df.to_csv(buf, index=False)
+    buf.seek(0)
+    back = pd.read_csv(buf)
+    got = [ff.cell_text(v) for v in back['forensicReason']]
+    assert got == ['', 'does not apply'], (got, list(back['forensicReason']))
+    print("PASS test_Q66_cell_text_is_the_ONE_reader_for_an_optional_TEXT_column")
+
+
+def test_Q66_every_surface_reads_the_ONE_table_and_the_ONE_flag_READER():
+    """Structural, and it is the half a value assertion cannot reach: the side-list CSVs, the
+    AggScore merge and the XLSX block must all index into the SAME `flag_df`.  A second
+    computation of "does Beneish apply here" is how the CSV and the deck come to describe one
+    cohort name two ways.
+
+    Also pins the XLSX's Sloan line, which was the last bare truthiness test left on a
+    three-valued column -- and the dangerous direction: the string 'False' a CSV round-trip
+    produces is TRUTHY, so it would have printed `FLAG`."""
+    pb_src = io.open(os.path.join(REPO, 'postBo.py'), encoding='utf-8').read()
+    assert 'cohort_members=_cohort_members' in pb_src
+    assert "carve_labels=resdic.get('carveout_labels')" in pb_src
+    #  the side-list CSVs merge FROM flag_df rather than recomputing
+    assert 'sl_out = sl_out.merge(flag_df[_fcols]' in pb_src
+    #  the XLSX Sloan line goes through the one reader
+    assert "ff.flag_display(frow.get('sloan_worstQuintile_inShortlist'))" in pb_src
+    assert "'FLAG' if frow.get('sloan_worstQuintile_inShortlist') else 'no'" not in pb_src
+    #  the deck resolves scores through one method, for both the printed number and the icon
+    gp_src = io.open(os.path.join(REPO, 'generate_presentation.py'),
+                     encoding='utf-8').read()
+    assert 'def forensic_scores(self, ticker)' in gp_src
+    assert gp_src.count('_fs = self.forensic_scores(ticker)') >= 2, \
+        'both evaluate_page and section_f_forensic must use the one reader'
+    #  ...and the old aggscore-only read of the flag is gone from the evaluator
+    assert "str(r0.get('M_flag_gt_-1.78')).strip().lower() in ('true', '1', 'yes')" \
+        not in gp_src
+    print("PASS test_Q66_every_surface_reads_the_ONE_table_and_the_ONE_flag_READER")
+
+
 if __name__ == '__main__':
     test_component_directions_exact_row0()
     test_mscore_fold_and_flag_dirty()
@@ -1925,4 +2269,13 @@ if __name__ == '__main__':
     test_Q44_a_real_CSV_round_trip_of_the_column_does_not_become_valid()
     test_Q44_the_undetermined_state_is_RENDERED_as_its_own_word()
     test_Q44_the_XLSX_forensic_block_reads_applicability_through_the_ONE_reader()
+    test_Q66_the_table_now_carries_the_COHORT_side_lists_at_all()
+    test_Q66_Mining_is_SCORED_and_REIT_is_REFUSED_WITH_A_STATED_REASON()
+    test_Q66_a_refused_row_blanks_with_EMPTY_STRING_not_False_and_not_NaN()
+    test_Q66_adding_cohort_rows_leaves_the_GENERAL_POOL_BIT_FOR_BIT()
+    test_Q66_an_inapplicable_cohort_is_NEVER_SCORED_not_scored_and_hidden()
+    test_Q66_applySectorFallback_cannot_PROMOTE_a_cohort_refusal_back_to_valid()
+    test_Q66_the_ruling_lives_in_ONE_place_and_the_reason_is_MANDATORY()
+    test_Q66_cell_text_is_the_ONE_reader_for_an_optional_TEXT_column()
+    test_Q66_every_surface_reads_the_ONE_table_and_the_ONE_flag_READER()
     print("\nALL detectManipulation KNOWN-ANSWER TESTS PASSED")

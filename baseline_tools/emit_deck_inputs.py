@@ -122,8 +122,21 @@ def emit(resdic_path, run_dir, run_date, datasource="fmp", tickerfilter="stock_N
     resdic["moatdf"] = moatdf
 
     # --- forensic models (offline) ------------------------------------------------------
+    #  SCOPED TO THE DECK'S WHOLE MEMBERSHIP, for the same reason `moatIdentifier` above is
+    #  (Q-66).  `detectManipulationWrapper` now scores the general pool PLUS every cohort the
+    #  house has ruled the forensic models applicable to, and `buildForensicFlagTable` is given
+    #  the cohort side-lists so the emitted `ForensicFlagsTop*.csv` carries a row -- scored, or
+    #  refused with a stated reason -- for every page the deck renders.  Emitting the
+    #  general-pool-only table here would reproduce the exact hole the ruling closes, in the
+    #  one tool used to verify that it is closed.
     resdic = {**resdic, **dm.detectManipulationWrapper(resdic)}
-    flag_df = ff.buildForensicFlagTable(resdic, topn)
+    _cohort_members = {lab: list(sd["postRank"]["source"])
+                       for lab, sd in (resdic.get("carveout_sidelists") or {}).items()
+                       if sd and sd.get("postRank") is not None
+                       and not sd["postRank"].empty}
+    flag_df = ff.buildForensicFlagTable(resdic, topn,
+                                        cohort_members=_cohort_members,
+                                        carve_labels=resdic.get("carveout_labels"))
 
     # --- the four files ---------------------------------------------------------------
     tag = "%s_%s" % (datasource, tickerfilter)
@@ -165,10 +178,16 @@ def emit(resdic_path, run_dir, run_date, datasource="fmp", tickerfilter="stock_N
             print("  !! %s unavailable (%s missing) -- it will gap in the deck"
                   % (_key, _col))
     if flag_df is not None and not flag_df.empty:
-        keep = [c for c in ("source", "isFinancial", "financialKind", "forensicValid",
-                            "M_flag_gt_-1.78", "M_drivers", "C_flag_ge_4", "C_flags_fired",
+        keep = [c for c in ("source", "carveLabel", "isFinancial", "financialKind",
+                            "forensicValid", "forensicReason", "forensicNote",
+                            "M_flag_gt_-1.78", "M_drivers", "M_abstain_reason",
+                            "C_flag_ge_4", "C_flags_fired",
                             "sloanAccruals", "sloan_worstQuintile_inShortlist",
                             "forensicTag") if c in flag_df.columns]
+        #  LEFT JOIN ONTO THE GENERAL HEAD, so the cohort rows `flag_df` now carries do NOT
+        #  enter this file: `AggScoreTop*` is the general pool's artifact and widening it
+        #  would change what every reader of it thinks the shortlist is.  The cohort rows
+        #  reach the deck through `ForensicFlagsTop*` below, which is where they belong.
         agg = agg.merge(flag_df[keep], on="source", how="left")
     agg["_SCHEMA_NOTE"] = ("Generated from code commit %s on %s. %s"
                            % (code_provenance(),

@@ -160,6 +160,243 @@ def cohort_forensic_validity(label):
         return None
     return COHORT_FORENSIC_VALIDITY.get(label, None)
 
+
+#  --- WHY EACH ROW OF THE TABLE ABOVE READS THE WAY IT DOES (Q-66, 2026-09-01) -------------
+#  The CEO ruled that the forensic table be EXTENDED TO THE COHORTS.  "Extend where
+#  meaningful" is the ruling, so the extension had to decide, PER COHORT AND PER COMPONENT,
+#  whether Beneish and Montier are measuring what they claim to measure -- extending a
+#  structurally-inapplicable metric is the defect 37f55c6 removed, not a fix.  The rulings
+#  below were argued from what each component measures and MEASURED OFFLINE on the saved
+#  2026-08-31 run (general top-100 = 97 names; each cohort's full side-list, 17-25 names).
+#  They AGREE with the table above -- which is the point of writing them down: that table was
+#  previously a restatement of "sector says financial", and it now has an argument and a
+#  measurement behind every row.
+#
+#  THREE TESTS, applied to each (cohort x model) pair.  A cohort fails if ANY of them fails,
+#  because each on its own is enough to make the printed number untrue:
+#    T1 DEFINEDNESS  -- do the inputs exist AND mean what the model assumes?  Note that an
+#       input can be PRESENT AND INERT (grossProfit == revenue pins GMI at 1.0 by
+#       construction); `absent_components` cannot see that, so it is checked separately.
+#    T2 INFLUENCE    -- does the model's dominant term still carry its weight?  Beneish's
+#       TATA coefficient is 4.679, ~5x the next largest, so a cohort in which TATA is
+#       anaesthetised or detonated is not running Beneish's model.
+#    T3 DISCRIMINATION -- does the score VARY across the cohort?  A score with no dispersion
+#       is a constant printed as a measurement.
+#  And a fourth that only shows up once you compute it:
+#    T4 SELECTION    -- if the model abstains on most of the cohort, is the SCORED subset a
+#       random sample, or the subset the vendor happened to map like a non-cohort filer?
+#
+#  ---- Mining -> APPLICABLE (T1-T4 pass) -------------------------------------------------
+#  A miner is an ordinary operating company: it sells a product, carries inventory and trade
+#  receivables, reports a cost of revenue and depreciates real plant.  Measured on the 24-name
+#  side-list: 0% report zero inventory, 0% report grossProfit == revenue, 0% report zero PP&E,
+#  0% have a permanently-dead `DSOinc`.  All eight Beneish components and all five Montier
+#  flags are defined.  T2: TATA carries a median 23.9% of the model's absolute contribution
+#  (general pool 45.0%) -- reduced, because a miner's assets are ~4x its revenue, but live.
+#  T3: M sd 1.157, IQR 0.721 against the general pool's 1.455 / 0.305 -- more IQR-dispersed
+#  than general.  T4: 19 of 24 score (79%) against general's 82%.  This is the ONE cohort
+#  the extension actually scores, and saying so plainly is better than padding the count.
+#
+#  TWO CAVEATS THAT SHIP WITH THE NUMBER RATHER THAN SUPPRESSING IT (see COHORT_FORENSIC_NOTE):
+#    * AQI IS NEAR-DEGENERATE FOR A MINER.  `AQI`'s base is the share of assets that is
+#      neither current nor net PP&E; its median is 0.087 for Mining against 0.343 for the
+#      general pool, with 21% of the cohort under 0.05 -- because a miner books its mineral
+#      properties INSIDE PP&E, so the residual bucket AQI indexes is small and its
+#      year-on-year ratio is explosive.  The existing `BENEISH_AQI_SHARE_FLOOR` (0.01)
+#      refuses only the bottom of that; the cohort sits just above it.  THREE of the four
+#      Mining M-fires on 2026-08-31 are AQI-driven, and PAAS.TO's AQI mean of 7.85 is the MAG
+#      Silver acquisition moving assets into the residual bucket, not asset quality falling.
+#    * THE CUTOFF IS NOT CALIBRATED FOR THIS COHORT.  M fires on 4 of 19 scored Mining names
+#      (21%) against 2 of 80 general (2.5%).  Beneish is calibrated on a general population,
+#      and a miner's SGI and GMI move with the commodity price.  An elevated fire rate here
+#      is the cutoff being wrong for the cohort, not nineteen miners being crooked.
+#
+#  ---- REIT -> NOT APPLICABLE ------------------------------------------------------------
+#  T4 is decisive: 20 of 24 abstain on the EXISTING vendor-domain guards (83%, against 18%
+#  in the general pool).  The four that score are not a sample of REITs -- they are the four
+#  whose FMP statements happen to carry the lines a non-REIT carries.  Publishing four scores
+#  and twenty blanks tells the reader "four REITs assessed, twenty unassessable" when the
+#  truth is that all twenty-four are outside the model.  T1: 29% report no inventory at all,
+#  so `DSIinc` can never fire; the REIT DEPI median is 3.79 (neutral is 1.0) because
+#  D&A/(D&A+PP&E) for a REIT is set by whether the property is carried at cost or at fair
+#  value -- an accounting REGIME, not a depreciation policy.
+#
+#  AND A CORRECTION TO THE RECORD, made here rather than inherited quietly.  37f55c6 rests
+#  the Sloan ruling on "D&A makes CFO exceed NI BY CONSTRUCTION for a REIT".  That is not
+#  what this panel shows: (NI-CFO)/TA is negative for 62% of REITs against 88% of the general
+#  pool, i.e. the general pool is MORE consistently negative.  The real distortion is
+#  MAGNITUDE, not sign -- a REIT's asset base is enormous relative to its earnings, so the
+#  accrual ratio is compressed (p90-p10 = 0.059 against the general pool's 0.130).  Same
+#  conclusion, different mechanism; the shipped comment overstates its case.
+#
+#  ---- InvestmentVehicle -> NOT APPLICABLE (the strongest case, and the live S2) ----------
+#  T1: 35% report no inventory, 23% report ZERO PP&E, 17% report grossProfit == revenue (COGS
+#  identically zero, so GMI == 1 BY CONSTRUCTION -- present, inert, and invisible to the
+#  abstention machinery), 41% have a dead `DSOinc`.  A closed-end fund or BDC has no trade
+#  receivables, no inventory, no cost of revenue and no depreciable plant: five of Beneish's
+#  eight components and two of Montier's five are asking a question the entity has no answer
+#  to.  T2: TATA is not anaesthetised here, it is DETONATED -- (NI-CFO)/TA spans
+#  -0.744..+0.207 (p10..p90), 7.3x the general pool's 0.130, because a vehicle's net income
+#  is dominated by unrealised marks that never touch operating cash flow.
+#  T3/T4: ONE of 17 scores, and that one is a false positive.  SBET M = +10.343, driven by
+#  SGI +7.69 (revenue up ~10x -- a change of business, the Ethereum-treasury pivot) and AQI
+#  +4.12 (computed from 2 of the 4 window periods, one of them 21.4).  100% of this cohort's
+#  scored population is a false manipulation flag.
+#
+#  ---- BalanceSheetFin -> NOT APPLICABLE -------------------------------------------------
+#  T2 is the cleanest number in the whole analysis: TATA carries 5.7% of the model's absolute
+#  contribution for a bank or insurer, against 45.0% for the general pool -- an EIGHTFOLD
+#  reduction.  A bank's total assets are 10-15x its revenue, so any accrual scaled by assets
+#  rounds to nothing (median -0.0045; p10-p90 spread 0.0375 against general's 0.130).  What
+#  is left is seven small-coefficient ratio terms clustered around neutral, and T3 follows
+#  mechanically: M sd 0.228, IQR 0.136, all eleven scored names between -1.18 and -0.17.  The
+#  model returns approximately the same number for every bank.
+#  T1, on the Montier side: 76% report zero inventory, so `DSIinc` is permanently dead; 12%
+#  have a dead `OCARinc` and 8% a dead `TAgr`, and 6 of 25 cannot reach the >= 4 cutoff AT
+#  ALL.  The Montier scorer has NO abstention (its own note in `detectManipulation` says
+#  so -- the function is deliberately NOT named here, because a structural guard asserts
+#  that no module on the SCORING path mentions the C-score by name, and this module is on
+#  it), so a dead limb does not
+#  blank the score -- it silently lowers it, and the name reads CLEANER.  This cohort's
+#  median C is 2.00, identical to the general pool's, but out of four live flags rather than
+#  five; the same printed number means something materially worse and nothing says so.
+#  T1 again, on AQI: `totalCurrentAssets` is reported for 100% of this cohort.  Banks and
+#  insurers do not publish a classified balance sheet, so AQI's base (median 0.788) is built
+#  on a line the filer never filed.
+#
+#  ---- FinManager -> NOT APPLICABLE (the close call; recorded so it can be re-opened) -----
+#  The case FOR: a fee-earning asset manager is an operating company -- 0% GMI-inert, 0%
+#  DSO-dead, 0% missing receivables, so DSRI genuinely measures fee collection.  The case
+#  AGAINST, which wins on four counts:
+#    1. THE COHORT IS NOT HOMOGENEOUS IN THE PROPERTY THAT DECIDES APPLICABILITY.  FIN-2 is
+#       assigned off an FMP `industry` string plus a curated override, and the note above
+#       `_FIN2_INDUSTRIES` records `Investment - Banking & Investment Services` as an
+#       AMBIGUOUS call routed here -- so IBKR and RJF sit beside TROW and BLK.  A
+#       broker-dealer's balance sheet is a bank's.  A cohort-level "applies" would assert
+#       applicability for names it does not hold for.
+#    2. T2: TATA carries 12.8% -- a quarter of the general pool's.
+#    3. T1: 44% report zero inventory, so `DSIinc` is dead and the C-score under-counts
+#       exactly as it does for the banks.
+#    4. T4: 16 of 25 abstain (64%), the same selection problem as REIT -- AND the one name
+#       that fires is a false positive.  CNS (Cohen & Steers) M = +0.648, driven by TATA
+#       +0.92: its reported operating cash flow swings +67M / -51M / +56M / +55M / -68M /
+#       -109M on a business earning a stable ~40M a quarter, which is consolidated seed-fund
+#       investment purchases running through CFO.  `(NI - CFO)/TA` for a manager that
+#       consolidates its own funds measures HOW MUCH SEED CAPITAL THE FUNDS DEPLOYED, not
+#       accruals.  Its costOfRevenue also falls 73.5M -> 19.5M over three quarters (a vendor
+#       reclassification, not a 74% cost cut), which moves GMI, and its totalCurrentAssets
+#       falls 386M -> 143M over eight quarters, which moves AQI.  Three inputs moving on
+#       presentation rather than on the business.
+#
+#  WHAT THIS COSTS, STATED PLAINLY: of the 25 cohort pages the deck renders, FIVE (Mining's
+#  top-5) gain a real M-Score and C-Score, and TWENTY go from blank-BY-OMISSION to
+#  blank-WITH-A-REASON.  That is the ruling executed correctly, not a shortfall against it.
+COHORT_FORENSIC_REASON = {
+    'general':      'no carve label decided this name -- applicability is undetermined, '
+                    'which is an absence of classification, not a clean reading',
+    'REIT':         'the Beneish / Montier / Sloan models do not apply to a REIT -- 83% of '
+                    'this cohort cannot be scored on vendor data at all, and the minority '
+                    'that can is selected by FMP mapping rather than by anything about the '
+                    'business',
+    'Mining':       '',
+    FIN1_VEHICLE:   'the Beneish / Montier / Sloan models do not apply to a closed-end fund, '
+                    'investment trust or BDC -- it has no trade receivables, no inventory, '
+                    'no cost of revenue and no depreciable plant, and its earnings are '
+                    'unrealised marks that never touch operating cash flow',
+    FIN2_MANAGER:   'the Beneish / Montier / Sloan models do not apply to this cohort -- it '
+                    'mixes fee-earning managers with broker-dealers, the accruals term '
+                    'carries a quarter of its usual weight, and (NI - CFO) here measures '
+                    'consolidated seed-fund flows rather than accruals',
+    FIN3_BALSHEET:  'the Beneish / Montier / Sloan models do not apply to a bank, lender or '
+                    'insurer -- the accruals term carries 5.7% of its usual weight, so the '
+                    'model returns roughly the same number for every name in the cohort',
+}
+
+#  A CAVEAT IS NOT A REFUSAL.  Mining IS scored, and these are the two things that must
+#  travel BESIDE the number for it to be read correctly.  Kept separate from
+#  COHORT_FORENSIC_REASON on purpose: one explains why there is no number, the other
+#  qualifies a number that exists, and collapsing them would let a caveat read as a refusal.
+COHORT_FORENSIC_NOTE = {
+    #  BOTH MODELS, because both were measured firing on Mining for cohort-specific reasons
+    #  that are not accounting misconduct.  Hand-checked on the 2026-08-31 side-list:
+    #    * BENEISH.  Fires on 4 of 19 scored miners (21%) against 2 of 80 general (2.5%), and
+    #      THREE of the four are AQI-driven.  AQI's base -- the share of assets neither current
+    #      nor net PP&E -- has a median of 0.087 here against 0.343 in the general pool,
+    #      because a miner books its mineral properties INSIDE PP&E; the residual bucket is
+    #      small, so its year-on-year ratio is explosive.  PAAS.TO's AQI mean of 7.85 is the
+    #      MAG Silver acquisition moving assets into that bucket.  The fourth, TXG.TO
+    #      (M = +3.60), is 93% DSRI: Torex's receivables went from ~1 day of sales to ~26 and
+    #      back to ~9 as it commissioned Media Luna and moved from selling doré for cash to
+    #      selling copper concentrate on 30-90 day provisional pricing.  A real receivables
+    #      build, a real change of product mix, and not a manipulation signal.
+    #    * MONTIER.  Both C >= 4 names are mines in RAMP-UP, and the score's limbs co-move in a
+    #      ramp by construction: MSA.TO fires NICFOdiv + DSOinc (+83 days) + DSIinc (+102 days)
+    #      + TAgr (+26%), KNT.TO fires all five with TAgr +40-50%.  Building stockpiles,
+    #      building receivables, capitalising a new mine and letting CFO lag NI is what
+    #      commissioning a mine looks like.  On this cohort C >= 4 is a growth detector.
+    'Mining': 'Beneish and Montier are calibrated on a general population and mis-fire on this '
+              'cohort in two known ways: Beneish fires on 21% of scored miners vs 2.5% of the '
+              'general pool, mostly through AQI, whose base is near-degenerate here (median '
+              '0.087 vs 0.343) because mineral properties sit inside PP&E -- so an AQI-driven '
+              'M-score is usually an acquisition; and C >= 4 here is a RAMP-UP detector, '
+              'because asset growth, inventory days, receivable days and the NI-CFO gap all '
+              'rise together while a new mine is commissioned.',
+}
+
+
+def cohort_forensic_reason(label):
+    """The STATED reason a cohort's forensic scores are refused, or '' when they are computed.
+
+    The third value of the three-valued outcome needs WORDS: `not-applicable` with no reason
+    is indistinguishable, on the page, from `we forgot`.  Unknown/absent label -> the
+    'general' reason (undetermined), never ''."""
+    if not isinstance(label, str) or label not in COHORT_FORENSIC_REASON:
+        return COHORT_FORENSIC_REASON['general']
+    return COHORT_FORENSIC_REASON[label]
+
+
+def cohort_forensic_note(label):
+    """A caveat that ships WITH a computed score (Mining), or '' when there is none."""
+    if not isinstance(label, str):
+        return ''
+    return COHORT_FORENSIC_NOTE.get(label, '')
+
+
+def check_forensic_tables(validity=None, reason=None, note=None):
+    """Raise unless the three forensic dicts agree.  Runs at import over the module's own
+    tables; takes them as arguments so a TEST CAN EXERCISE THE GUARD rather than grep for it.
+
+    A guard nobody can fail is a guard nobody has tested -- and this one exists precisely
+    because three dicts keyed on the same labels are how `COHORT_FORENSIC_VALIDITY` would
+    acquire a silent default, which is the Q-44 defect one level up."""
+    validity = COHORT_FORENSIC_VALIDITY if validity is None else validity
+    reason = COHORT_FORENSIC_REASON if reason is None else reason
+    note = COHORT_FORENSIC_NOTE if note is None else note
+    missing = set(validity) - set(reason)
+    if missing:
+        raise ValueError(
+            'carveOut: every carve label with a forensic-validity verdict must also carry a '
+            'stated reason (Q-66). Missing: %s' % sorted(missing))
+    unknown = set(note) - set(validity)
+    if unknown:
+        raise ValueError(
+            'carveOut: COHORT_FORENSIC_NOTE keys must be carve labels. Unknown: %s'
+            % sorted(unknown))
+    #  A cohort ruled APPLICABLE must NOT carry a refusal reason, and one ruled inapplicable
+    #  MUST.  Without this the two could disagree -- a blank score with no words, or a printed
+    #  score beside a sentence saying the model does not apply to it.
+    for lab, ok in validity.items():
+        if ok is True and reason.get(lab):
+            raise ValueError('carveOut: %r is forensic-APPLICABLE but carries a refusal '
+                             'reason; a caveat belongs in COHORT_FORENSIC_NOTE (Q-66).' % lab)
+        if ok is False and not reason.get(lab):
+            raise ValueError('carveOut: %r is forensic-INAPPLICABLE and must state why '
+                             '(Q-66).' % lab)
+    return True
+
+
+check_forensic_tables()
+
 # --- FMP `industry` -> FIN-2 vs FIN-3 (PRIMARY financial classifier) ----------
 # The industry field cleanly separates managers/brokers from banks/lenders/insurers
 # (it does NOT separate FIN-1 vehicles from FIN-2 managers -- BDCs/CEFs also carry

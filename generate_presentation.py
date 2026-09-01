@@ -2077,6 +2077,11 @@ class PresentationBuilder:
         #  `offline_field`.
         self._offline_cache = {}
         self._validity_cache = {}
+        #  Q-66: the per-page forensic scores, resolved once per ticker.  Cached for the same
+        #  reason `_validity_cache` is -- Section F and `evaluate_page` both ask, and a page
+        #  whose printed number and whose verdict icon came from two different lookups is
+        #  exactly the contradiction the pool-basis note elsewhere in this file guards against.
+        self._forensic_score_cache = {}
         self.html_parts = []
 
     #  ------------------------------------------------------------------------------- #
@@ -2236,6 +2241,92 @@ class PresentationBuilder:
             if t is not None:
                 return t, 'carve label %s' % labels.loc[ticker]
         return None, 'unresolved'
+
+    #  ------------------------------------------------------------------------------- #
+    #  THE FORENSIC SCORES FOR EVERY PAGE, NOT JUST THE ONES IN THE AGGSCORE CSV  (Q-66) #
+    #  ------------------------------------------------------------------------------- #
+    #  `evaluate_page` and `section_f_forensic` each read M-Score / C-Score from
+    #  `AggScoreTop100` ALONE, which is the GENERAL pool -- so on the 2026-08-31 deck all 25
+    #  cohort pages rendered a blank forensic layer.  Q-44's note beside `forensic_validity`
+    #  says M/C "stay CSV-only ... there is no offline source for the other 25"; that was true
+    #  when it was written and is no longer, because `ForensicFlagsTop100` now carries a row
+    #  for every cohort side-list name (see `forensicFlags.buildForensicFlagTable`).
+    #
+    #  ONE READER, TWO CALLERS.  The displayed number in Section F and the verdict icon beside
+    #  it come from this method, so the icon cannot annotate a different number from the one
+    #  printed under it -- which is the failure mode this deck already carries a POOL_BASIS
+    #  note about for four other metrics.
+    #
+    #  A BLANK HERE IS STILL A BLANK.  Four of the five cohorts are REFUSED by the Q-66 ruling,
+    #  so their rows carry NaN scores and a filled `forensicReason`; this method returns the
+    #  reason with them, and the caller renders it instead of an unexplained dash.  Nothing
+    #  here invents a score for a name the pipeline declined to assess.
+    def forensic_scores(self, ticker):
+        """{'M-Score','C-Score','M_flag','M_drivers','reason','note','source'} for one page.
+
+        Resolution order, stopping at the first frame that HAS the name: `AggScoreTop100`
+        (the general pool's own artifact, and the only one carrying the API-reconciled
+        columns), then `ForensicFlagsTop100` (which additionally covers every cohort
+        side-list).  Absent from both -> empty strings and NaN, i.e. exactly the pre-Q-66
+        rendering, never a fabricated zero."""
+        cache = self._forensic_score_cache
+        if ticker in cache:
+            return cache[ticker]
+        #  `str(x or '')` IS NOT SAFE ON A CSV-ROUND-TRIPPED CELL, and this is the third time
+        #  this file has had to say so.  A blank `forensicReason` is `''` in memory and NaN
+        #  after the round-trip; `float('nan') or ''` short-circuits to the NaN because NaN is
+        #  TRUTHY, so `str(...)` yields the literal string 'nan' -- which is not empty, so the
+        #  caller's `if reason:` branch fires and the page renders
+        #      Why there is no M / C score:  nan
+        #  BESIDE A REAL M-SCORE.  Measured on the 2026-08-31 deck before this helper existed:
+        #  all five Mining pages, i.e. every page the extension actually scores.  Same family
+        #  as `_flag_true` and `published_forensic_validity`; a text column needs its own
+        #  reader for the same reason the boolean ones do.
+        #  ONE READER, in `forensicFlags` beside `_flag_true` / `published_forensic_validity`,
+        #  not a private copy here -- three near-identical absence readers in three files is
+        #  how the boolean ones came to disagree in the first place.  Aliased locally so the
+        #  call sites below stay readable.
+        import forensicFlags as _fflags
+        _text = _fflags.cell_text
+
+        out = {'M-Score': np.nan, 'C-Score': np.nan, 'M_flag': False, 'M_drivers': '',
+               'reason': '', 'note': '', 'tag': None, 'source': 'unresolved'}
+        for key, src, mcol, ccol in (('aggscore_df', 'AggScoreTop100', 'M-Score', 'C-Score'),
+                                     ('forensic_df', 'ForensicFlagsTop100',
+                                      'M_score_mean', 'C_score_mean')):
+            df = self.data.get(key)
+            if df is None or getattr(df, 'empty', True) or 'source' not in df.columns:
+                continue
+            #  A FRAME THAT HAS THE ROW BUT NOT THE COLUMN IS NOT AN ANSWER.  The offline
+            #  reduced-schema AggScore drops columns by design, and stopping on it would report
+            #  "no M-Score" for a name whose score sits in the very next frame.
+            if mcol not in df.columns and ccol not in df.columns:
+                continue
+            row = df[df['source'] == ticker]
+            if row.empty:
+                continue
+            r0 = row.iloc[0]
+            import forensicFlags as ff
+            out = {
+                'M-Score': safe_float(r0.get(mcol)) if mcol in df.columns else np.nan,
+                'C-Score': safe_float(r0.get(ccol)) if ccol in df.columns else np.nan,
+                #  `_flag_true`, never a bare truthiness test: the column is three-valued and
+                #  `bool(float('nan'))` is True, so a round-tripped blank would invent a
+                #  manipulation flag on a name nobody assessed (P-4).
+                'M_flag': ff._flag_true(r0.get('M_flag_gt_-1.78')),
+                #  `_text`, not `str(x or '')` -- see the note above.  `M_drivers` used the
+                #  unsafe form BEFORE this change too, inline in `evaluate_page`: harmless
+                #  there only by luck, because R5's token test happens not to match 'NAN'.
+                #  It is fixed rather than preserved, because R3 now PRINTS the driver string.
+                'M_drivers': _text(r0.get('M_drivers')),
+                'reason': _text(r0.get('forensicReason')),
+                'note': _text(r0.get('forensicNote')),
+                'tag': (_text(r0.get('forensicTag')) or None),
+                'source': src,
+            }
+            break
+        cache[ticker] = out
+        return out
 
     def ext_val(self, ticker, metric):
         """Raw extended-metric value for a ticker (marker for its own bar)."""
@@ -2433,23 +2524,20 @@ class PresentationBuilder:
         moat = self.get_moat_components(ticker)
         tl_to_equity = safe_float(moat.get('TLtoEquity', np.nan))
 
-        #  aggscore forensic fields.  THE COMMENT THAT USED TO SIT HERE -- "every rendered
+        #  forensic fields.  THE COMMENT THAT USED TO SIT HERE -- "every rendered
         #  name is within Top-100" -- WAS FALSE, and was the whole of Q-44: the deck renders
         #  the general band pages PLUS the top-5 of five carve cohorts, and on 2026-08-29
-        #  exactly 20 of its 45 pages were in that CSV.  M/C stay CSV-only (they are scores,
-        #  and there is no offline source for the other 25 -- they render ⚪ 'value
-        #  unavailable', which is true).  The APPLICABILITY verdict does NOT stay CSV-only;
-        #  see `forensic_validity` for where it really lives and why it defaults to
-        #  undetermined rather than to valid.
-        m_score = c_score = np.nan; m_flag = False; m_drivers = ''
-        agg = self.data.get('aggscore_df')
-        if agg is not None and not agg.empty:
-            ar = agg[agg['source'] == ticker]
-            if not ar.empty:
-                r0 = ar.iloc[0]
-                m_score = safe_float(r0.get('M-Score')); c_score = safe_float(r0.get('C-Score'))
-                m_flag = str(r0.get('M_flag_gt_-1.78')).strip().lower() in ('true', '1', 'yes')
-                m_drivers = str(r0.get('M_drivers') or '')
+        #  exactly 20 of its 45 pages were in that CSV.
+        #  AND THE SECOND HALF OF THAT NOTE IS NOW OUT OF DATE TOO (Q-66).  It said M/C "stay
+        #  CSV-only ... there is no offline source for the other 25", which was true when it
+        #  was written; `ForensicFlagsTop100` now carries a row for every cohort side-list
+        #  name, so `forensic_scores` resolves both frames and the cohort pages that the Q-66
+        #  ruling scores (Mining) render a real number instead of ⚪.  The four cohorts the
+        #  ruling REFUSES still render ⚪ -- but with `forensicReason` beside them, which is
+        #  the difference between a blank we chose and a blank nobody noticed.
+        _fs = self.forensic_scores(ticker)
+        m_score = _fs['M-Score']; c_score = _fs['C-Score']
+        m_flag = _fs['M_flag']; m_drivers = _fs['M_drivers']
         forensic_state, _ = self.forensic_validity(ticker)
 
         # dilution: shares +>10% over 3y (Section-H computation reused)
@@ -2463,8 +2551,20 @@ class PresentationBuilder:
         #  FIRES ON *NOT-ESTABLISHED-VALID*, NOT ON *ESTABLISHED-INVALID* (Q-44).  The two
         #  differ on exactly the names this guard was blind to, and the marker carries WHICH
         #  of the two it is, so an undetermined name is not dressed up as a classified one.
-        low_conf_forensic = (self._VALIDITY_NOTE[forensic_state]
+        #  THE NAME'S OWN REASON WHEN THERE IS ONE (Q-66).  `_VALIDITY_NOTE[False]` says
+        #  "... do not apply to a financial", which is right for a bank and wrong for the four
+        #  different reasons the four refused cohorts actually carry -- a REIT and a BDC are
+        #  refused on different grounds and the reader is entitled to which.  The generic
+        #  sentence remains the fallback for a row with no reason (an older CSV).
+        _why = _fs['reason'] if forensic_state is False and _fs['reason'] else None
+        low_conf_forensic = ((_why or self._VALIDITY_NOTE[forensic_state])
                              if forensic_state is not True else False)   # -> M/C/Sloan 🟡
+        #  A CALIBRATION CAVEAT IS NOT A LOW-CONFIDENCE MARKER, AND DELIBERATELY DOES NOT FIRE
+        #  ONE.  Mining IS scored, so `forensic_state` is True and the icon stays the honest
+        #  value-based verdict.  The legend defines 🟡 here as "it is not established that the
+        #  forensic models apply to the name" -- which is false for a miner -- and amber on all
+        #  five Mining pages forever would be the mirror of the Q-44 guard that could never
+        #  fire.  The caveat rides the TOOLTIP and Section F instead (see `forensicNote`).
         denom_weak = False                                       # -> IncomeQuality/CashConv 🟡
         if not np.isnan(ni_ttm_rev):
             if ni_ttm_rev <= 0:
@@ -2523,6 +2623,19 @@ class PresentationBuilder:
                 + VAL_KEYS,
                 f"Profit without cash: TTM net income {ni_ttm:,.0f} > 0 but TTM operating cash flow "
                 f"{cfo_ttm:,.0f} < 0 — earnings are not turning into cash.")
+        #  A FORENSIC 🚩 ON A COHORT PAGE MUST CARRY THE COHORT'S CAVEAT (Q-66).  Extending the
+        #  scores to Mining also extends R1's Beneish limb, R3 and R5's driver limb onto those
+        #  pages -- and R3 is HIGH tier, i.e. "treat as fact, investigate before buying".  On
+        #  the 2026-08-31 side-list that lands a HIGH flag across seven cells of TXG.TO's page
+        #  for a receivables build caused by moving from doré to copper concentrate, and across
+        #  MSA.TO's for a mine in ramp-up.  Both numbers are TRUE and both inferences are
+        #  wrong for this cohort, which is exactly the case `forensicNote` exists for: the flag
+        #  still fires (the CEO should look), but it stops asserting "the forensic layer
+        #  disagrees with this pick" without saying that the cutoff was not calibrated for a
+        #  miner.  Appended ONLY to the rules that rest on a forensic input -- a caveat on
+        #  R2/R4/R6/R7 would be noise, and a caveat everywhere is a caveat nowhere.
+        _fnote = _fs['note']
+        _caveat = ('  COHORT CAVEAT — ' + _fnote) if _fnote else ''
         # R3 — forensic contradiction on a pick (suppress FIN). M-Score / C-Score limbs ONLY.
         # The Altman-Z limb was REMOVED (soundness audit; re-derived 2026-07-26): our computed
         # "Z" is ~one leverage term (0.6*x4 = mcap/total-liabilities, 66.5% of the score, corr
@@ -2534,9 +2647,17 @@ class PresentationBuilder:
             if not np.isnan(m_score) and m_score > 0: trips.append(f"M-Score {m_score:.2f} > 0")
             if not np.isnan(c_score) and c_score >= 4: trips.append(f"C-Score {c_score:.0f} of 5 ≥ 4")
             if trips:
+                #  WHICH COMPONENT DROVE IT, not just the score.  A HIGH-tier flag that says
+                #  only "M-Score 3.60 > 0" gives the reader a number with no mechanism -- and on
+                #  this deck's Mining pages the mechanism IS the finding (DSRI on a product-mix
+                #  change, AQI on an acquisition).  `m_drivers` is already blanked whenever
+                #  there is no verdict (P-2), so this can never describe a score that does not
+                #  exist.
+                _drv = ('  Driven by: ' + m_drivers) if (m_drivers and not np.isnan(m_score)
+                                                         and m_score > 0) else ''
                 add('R3', ['moatScore', 'returnOnCapitalEmployed', 'grossProfitMargin'] + VAL_KEYS,
                     "Forensic contradiction on a pick: " + "; ".join(trips)
-                    + " — the forensic layer disagrees with this pick.")
+                    + " — the forensic layer disagrees with this pick." + _drv + _caveat)
         # R1 MEDIUM — accrual-backed profitability
         prof_good = ((not np.isnan(roic) and roic > 0.15) or (not np.isnan(roe) and roe > 0.15)
                      or (not np.isnan(gm) and gm > 0.40) or (not np.isnan(op_margin) and op_margin > 0.20))
@@ -2545,10 +2666,14 @@ class PresentationBuilder:
         if not np.isnan(cash_conv) and cash_conv < 0.5: acc_bits.append(f"cash-conversion {cash_conv:.2f} < 0.5")
         if m_flag: acc_bits.append("Beneish M-flag fired")
         if prof_good and acc_bits:
+            #  The caveat rides R1 ONLY when its Beneish limb is one of the bits that fired --
+            #  a Sloan-only or cash-conversion-only R1 is not a Beneish reading and must not be
+            #  qualified as though it were.
+            _r1cav = _caveat if m_flag else ''
             add('R1', ['returnOnCapitalEmployed', 'returnOnEquity', 'grossProfitMargin', 'incomeQuality']
                 + VAL_KEYS,
                 "Accrual-backed profitability: strong profitability alongside " + "; ".join(acc_bits)
-                + " — the returns may not be cash-backed.")
+                + " — the returns may not be cash-backed." + _r1cav)
         # R4 MEDIUM — leverage-inflated ROE (suppress FIN)
         if not is_fin and not np.isnan(roe) and roe > 0.15:
             lev = []
@@ -2572,9 +2697,11 @@ class PresentationBuilder:
         sloan_hi = not np.isnan(sloan_val) and sloan_val > 0.10
         if strong_growth and (sloan_hi or mdriver_hit):
             why = "Sloan > 0.10" if sloan_hi else "Beneish drivers (DSRI/SGI/AQI) elevated"
+            #  Same rule as R1's: qualified only when the limb that fired is the Beneish one.
+            _r5cav = _caveat if (mdriver_hit and not sloan_hi) else ''
             add('R5', ['revenueGrowth', 'freeCashFlowPerShareGrowth'],
                 f"Growth–accrual divergence: strong revenue growth {rev_growth:.0%} with {why} "
-                "— growth may be accrual-driven rather than cash-generative.")
+                "— growth may be accrual-driven rather than cash-generative." + _r5cav)
         # R7 LOW — 'too good' one-off spike vs own history
         def _spike(col):
             if col not in cdx.columns:
@@ -3244,18 +3371,43 @@ class PresentationBuilder:
         fcf_ttm = ttm_sum(cdx, 'freeCashFlow', _rpy_f)
         ni_ttm = ttm_sum(cdx, 'netIncome', _rpy_f)
 
-        m_score = "—"
-        c_score = "—"
+        #  THE SAME READER `evaluate_page` USES (Q-66), so the number printed here and the
+        #  verdict icon printed beside it cannot come from two different lookups -- and so a
+        #  cohort page shows the score `ForensicFlagsTop100` holds for it instead of a dash.
+        #  `sloan` deliberately keeps its AggScore-only read: this row is labelled "as-shipped
+        #  CSV" and the peer-recompute row below it carries the verdict, so widening it would
+        #  make the label false.
+        #  THE VALUE IS PRINTED AS THE PIPELINE STORED IT, not re-formatted: the general pages
+        #  showed `-0.6237` before this change and must go on showing `-0.6237`, so that the
+        #  before/after of THIS change is the cohort pages and nothing else.
+        #  ONE THING DOES CHANGE FOR THE GENERAL POOL, deliberately: an ABSENT score used to
+        #  render the literal string `nan` (17 of the 97 shipped names abstain, 5 of them
+        #  inside the top-20), which is the "broken tool rather than a refusal" reading the
+        #  `M_abstain_reason` work exists to remove.  It now renders the em dash every other
+        #  absent cell on the page uses.
+        _fs = self.forensic_scores(ticker)
+        m_score = "—" if np.isnan(safe_float(_fs['M-Score'])) else _fs['M-Score']
+        c_score = "—" if np.isnan(safe_float(_fs['C-Score'])) else _fs['C-Score']
+        forensic_tag = _fs['tag'] if _fs['tag'] not in (None, '') else "—"
         sloan = "—"
-        forensic_tag = "—"
-
         if aggscore_df is not None:
             ag_row = aggscore_df[aggscore_df['source'] == ticker]
             if not ag_row.empty:
-                m_score = ag_row.iloc[0].get('M-Score', '—')
-                c_score = ag_row.iloc[0].get('C-Score', '—')
                 sloan = ag_row.iloc[0].get('sloanAccruals', '—')
-                forensic_tag = ag_row.iloc[0].get('forensicTag', '—')
+
+        #  WHY THE CELL IS EMPTY, AND WHAT QUALIFIES IT WHEN IT IS NOT (Q-66).  A blank M-Score
+        #  with no sentence beside it reads as a broken tool; the same "presentation must be
+        #  correctly suggestive" constraint that put `M_abstain_reason` in the CSV puts the
+        #  cohort refusal on the page.  The two strings are mutually exclusive by construction
+        #  -- `forensicReason` is '' whenever a score exists and `forensicNote` is '' whenever
+        #  one does not -- so a caveat can never be rendered where a refusal belongs.
+        _extra = ''
+        if _fs['reason']:
+            _extra = ('<tr><td><strong>Why there is no M / C score</strong></td>'
+                      f'<td class="gap-inline">{escape(str(_fs["reason"]))}</td></tr>')
+        elif _fs['note']:
+            _extra = ('<tr><td><strong>Read the scores above with this caveat</strong></td>'
+                      f'<td class="pctile">{escape(str(_fs["note"]))}</td></tr>')
 
         # Sloan accruals RECOMPUTED over the full cohort membership (the as-saved CSV value
         # above pools only the shortlist, so it gets no bar). Winsorized, min-N gated.
@@ -3276,6 +3428,7 @@ class PresentationBuilder:
             <table class="forensic-table">
                 <tr><td><strong>M-Score</strong> {orient_chip('M-Score')}</td><td>{m_score}{mscore_v}</td></tr>
                 <tr><td><strong>C-Score</strong> {orient_chip('C-Score')}</td><td>{c_score}{cscore_v}</td></tr>
+                {_extra}
                 <tr><td><strong>Sloan Accruals</strong> — pipeline value <span class="pctile">(as-shipped CSV; (NI−CFO)/avg assets)</span> {orient_chip('sloanAccruals')}</td><td>{sloan}<span class="pctile"> · no bar/verdict here — see the peer row below</span></td></tr>
                 <tr><td><strong>Sloan Accruals</strong> — peer-pool recompute <span class="pctile">(same definition: (NI−CFO)/avg assets, 12-mo window; THIS row carries the 0.10 bar, the verdict icon and the 🚩)</span> {orient_chip('sloanAccruals')}</td><td>{ratio_format(sloan_cohort)}{sloan_vf} {sloan_bar}</td></tr>
                 <tr><td><strong>Income Quality</strong> {orient_chip('incomeQuality')}</td><td>{ratio_format(income_qual)}{iq_vf}</td></tr>

@@ -204,6 +204,32 @@ def validity_display(v, valid='applies', invalid='INVALID (financial lens)',
     return valid if t else invalid
 
 
+#  THE TEXT COLUMNS NEED A READER TOO, AND FOR THE SAME REASON (Q-66, 2026-09-01).  Every
+#  optional string this module publishes -- `M_drivers`, `M_abstain_reason`, `forensicReason`,
+#  `forensicNote`, `C_flags_fired` -- is `''` in memory and NaN after a CSV round-trip, and
+#  every consumer so far wrote `str(x or '')`.  That is WRONG in the same way `bool(nan)` is:
+#  `float('nan') or ''` short-circuits to the NaN, because NaN is TRUTHY, so the expression
+#  returns the literal string `'nan'` -- which is not empty, so an `if reason:` branch FIRES
+#  and the page renders the word "nan" where a sentence belongs.
+#  IT WAS NOT HYPOTHETICAL: it put `Why there is no M / C score: nan` on all five Mining pages
+#  of the 2026-08-31 deck -- the five pages the Q-66 extension exists to populate.
+def cell_text(v):
+    """A published optional-text cell as a plain string: '' for every shape of absence.
+
+    Absence is `None`, `''`, NaN, and the strings 'nan'/'none' an object column reads back as.
+    One reader, so a new surface cannot re-derive it wrongly -- the `flag_display` of the text
+    columns."""
+    if v is None:
+        return ''
+    try:
+        if not isinstance(v, str) and pd.isna(v):
+            return ''
+    except (TypeError, ValueError):
+        pass
+    s = str(v).strip()
+    return '' if s.lower() in ('nan', 'none') else s
+
+
 def flag_display(v, yes='FLAG', no='no', blank='not assessed'):
     """How a possibly-blank forensic flag is RENDERED, in one place.  The blank gets its own
     word: rendering it as `no` is the P-4 defect itself (a negative finding asserted where the
@@ -218,11 +244,34 @@ def flag_display(v, yes='FLAG', no='no', blank='not assessed'):
     return yes if _flag_true(v) else no
 
 
-def _summary_tag(is_fin, m_finite, c_finite, m_flag, c_flag, sloan_flag):
-    """Summary guidance tag (never an auto-drop). Financials are forensic-invalid
-    and their M/C/Sloan flags are NOT counted."""
-    if is_fin:
-        return 'financial: forensic-invalid (use financial lens)'
+#  A COHORT REFUSAL AND A DATA GAP ARE DIFFERENT FACTS AND MUST NOT SHARE A TAG (Q-66).
+#  `_summary_tag` used to branch on `is_fin` -- the SECTOR classification -- which is only one
+#  of the two sources that can rule the models inapplicable.  A REIT whose sector map came back
+#  `Unknown` but whose CARVE LABEL says REIT would have fallen through to
+#  `data-incomplete: dig-deeper`, i.e. "we tried and the vendor let us down" about a name we
+#  deliberately declined to measure.  The first parameter is now the APPLICABILITY VERDICT, and
+#  `kind` decides only the WORDING -- the 'financial: forensic-invalid' string is preserved
+#  verbatim for the sector-classified case because that is the tag already in every shipped
+#  artifact and in the tests that pin it.
+def _summary_tag(inapplicable, m_finite, c_finite, m_flag, c_flag, sloan_flag,
+                 kind='', label=''):
+    """Summary guidance tag (never an auto-drop). A name the forensic models do not apply to
+    is tagged as such and its M/C/Sloan flags are NOT counted."""
+    if inapplicable:
+        #  `if kind:` ON THE RAW CELL WOULD BE A TRUTHINESS TRAP.  `financialKind` is blank in
+        #  memory but reads back from a CSV as NaN, and `bool(float('nan'))` is True -- so a
+        #  reconciled row with no kind would have taken the 'financial' wording on the strength
+        #  of a missing value.  Same family as `_flag_true`, one column over.
+        kind = '' if kind is None else str(kind).strip()
+        if kind.lower() in ('nan', 'none'):
+            kind = ''
+        label = '' if label is None else str(label).strip()
+        if label.lower() in ('nan', 'none'):
+            label = ''
+        if kind:
+            return 'financial: forensic-invalid (use financial lens)'
+        return ('cohort %s: forensic-inapplicable (see forensicReason)' % label
+                if label else 'forensic-inapplicable (see forensicReason)')
     if not (m_finite and c_finite):
         return 'data-incomplete: dig-deeper'
     nflags = int(m_flag) + int(c_flag) + int(sloan_flag)
@@ -329,8 +378,33 @@ def _cscore_fired(cscore_df, symb, rpy=rp.DEFAULT_ROWS_PER_YEAR):
     return '; '.join(fired)
 
 
-def buildForensicFlagTable(resdic, topn, sector_fallback=None):
-    """Build the per-name forensic-flag table for the top-`topn` shortlist.
+def cohort_applicability(label):
+    """(applies, reason, note) for one carve label -- the ONE reader of the Q-66 ruling.
+
+    `applies` is TRI-STATE: True (computed), False (refused, and `reason` says why in words),
+    None (undetermined -- 'general', or a label this run does not know).  `note` is a caveat
+    that ships WITH a computed score and is '' otherwise; a caveat is not a refusal and the
+    two never share a field.
+
+    Delegates to `carveOut`, which owns the labels AND the argument behind each verdict.  It is
+    imported lazily and its absence is survivable: a caller with no carve information gets
+    `(None, '', '')` and behaves exactly as this module did before Q-66 -- the general pool's
+    reading must not depend on a module it never needed."""
+    if not label:
+        return None, '', ''
+    try:
+        import carveOut as _co
+    except Exception:                                    # pragma: no cover - import guard
+        return None, '', ''
+    return (_co.cohort_forensic_validity(label),
+            _co.cohort_forensic_reason(label),
+            _co.cohort_forensic_note(label))
+
+
+def buildForensicFlagTable(resdic, topn, sector_fallback=None, cohort_members=None,
+                           carve_labels=None):
+    """Build the per-name forensic-flag table for the top-`topn` shortlist AND, when
+    `cohort_members` is supplied, for every carve-cohort side-list beside it (Q-66).
 
     Pure/offline: consumes resdic['postRank'] (rank order), resdic['cdx_df'], and
     the detectManipulation artifacts (mscore_df, cscore_df, SLmeanMscore,
@@ -343,11 +417,46 @@ def buildForensicFlagTable(resdic, topn, sector_fallback=None):
     yields them happens after this table is built); pass it directly when the map is
     already known (e.g. offline tests).
 
-    Returns a DataFrame, one row per shortlisted name, in rank order.
+    `cohort_members`: {carve label -> ordered symbols}, normally each side-list's own
+    `postRank['source']`.  `carve_labels`: the RUN'S OWN label Series (symbol -> label, i.e.
+    `resdic['carveout_labels']`).  Both optional; omitting them reproduces the pre-Q-66
+    general-pool-only table exactly.
+
+    WHY THE LABEL AND NOT THE SECTOR PICKLE.  The pickle is undated and rebuilt every run, and
+    the copy in a working tree is a DIFFERENT TAXONOMY from the copy a run used -- re-deriving
+    a cohort from it flipped six of the 2026-08-29 deck's 45 pages in both directions.  The
+    carve label travels in the same pickle as the shortlist, so it is contemporaneous with the
+    names by construction.  See the block above `carveOut.COHORT_FORENSIC_VALIDITY`.
+
+    THREE-VALUED, NEVER DEFAULTING TO A NUMBER.  Each name's forensic reading is COMPUTED,
+    REFUSED (`forensicReason` says why, and every score/flag column is blank -- '' for the
+    flags, NaN for the scores), or UNDETERMINED.  A refused name is NOT scored and then hidden:
+    the numbers are never produced, so no later surface can find them and publish them.
+
+    Returns a DataFrame, one row per name, cohort rows after the general rows, `rank` counting
+    from 1 WITHIN each pool (a cohort's rank 1 is its own best name, not name 101).
     """
     postRank = resdic['postRank']
     cdx_df = resdic['cdx_df']
-    symblist = list(postRank['source'].head(topn))
+    #  POOLS, IN ORDER.  `pool` and a per-pool `rank` are what let one table carry six
+    #  shortlists without the reader having to guess whether row 104 is "general, rank 104" or
+    #  "REIT, rank 4".  A name that somehow appears in two pools is kept in the FIRST (general
+    #  wins), so the table has exactly one row per name and `merge(..., on='source')` at every
+    #  downstream surface cannot silently duplicate rows.
+    pools = [('general', list(postRank['source'].head(topn)))]
+    _seen = set(pools[0][1])
+    for _lab, _members in (cohort_members or {}).items():
+        _m = [x for x in (list(_members) if _members is not None else []) if x not in _seen]
+        _seen.update(_m)
+        if _m:
+            pools.append((_lab, _m))
+    symblist = [s for _lab, _m in pools for s in _m]
+    label_of = {}
+    if carve_labels is not None:
+        try:
+            label_of = {k: v for k, v in dict(carve_labels).items() if isinstance(v, str)}
+        except Exception:                                # pragma: no cover - defensive
+            label_of = {}
 
     mscore_df = resdic.get('mscore_df', pd.DataFrame())
     cscore_df = resdic.get('cscore_df', pd.DataFrame())
@@ -374,129 +483,233 @@ def buildForensicFlagTable(resdic, topn, sector_fallback=None):
 
     # Sloan worst-quintile threshold WITHIN the shortlist (financials -- from EITHER
     # sector source -- excluded so their invalid readings don't shift the cutoff).
-    valid_sloan = [sloan_map[s] for s in symblist
-                   if not _classify_financial(symb2sector.get(s, 'Unknown'),
-                                              fallback.get(s))[0]
-                   and pd.notna(sloan_map.get(s))]
-    sloan_cut = np.nanquantile(valid_sloan, SLOAN_TOP_QUINTILE) if len(valid_sloan) >= 5 else np.nan
+    #  ONE CUTOFF PER POOL (Q-66).  The flag's own name says "worst quintile WITHIN the
+    #  shortlist", and once cohort names share this table there are SIX shortlists, not one.
+    #  A single pooled cutoff would have two failure modes at once: it would move the GENERAL
+    #  pool's flags (24 Mining names entering its quantile is a change to an artifact the CEO
+    #  already reviewed, made as a side effect of adding rows), and it would compare a miner's
+    #  accruals against an industrials-heavy pool it was never meant to be ranked in.  The
+    #  general pool's cutoff is computed over exactly the names it was computed over before.
+    def _pool_cut(members):
+        vals = [sloan_map[s] for s in members
+                if not _classify_financial(symb2sector.get(s, 'Unknown'),
+                                           fallback.get(s))[0]
+                and pd.notna(sloan_map.get(s))]
+        return np.nanquantile(vals, SLOAN_TOP_QUINTILE) if len(vals) >= 5 else np.nan
+    sloan_cut_by_pool = {lab: _pool_cut(members) for lab, members in pools}
 
     rows = []
-    for rank, symb in enumerate(symblist, start=1):
-        sector = symb2sector.get(symb, 'Unknown')
-        api_sector = fallback.get(symb)
-        is_fin, forensic_valid, fin_kind = _classify_financial(sector, api_sector)
+    for pool_label, members in pools:
+        sloan_cut = sloan_cut_by_pool[pool_label]
+        for rank, symb in enumerate(members, start=1):
+            sector = symb2sector.get(symb, 'Unknown')
+            api_sector = fallback.get(symb)
+            is_fin, sector_valid, fin_kind = _classify_financial(sector, api_sector)
+            #  THE RUN'S OWN LABEL FIRST, the pool it was listed under second.  They agree for
+            #  every cohort row; they differ only if `carve_labels` is absent (older pickle) or
+            #  disagrees with the side-list it came from, and in both cases the pool the name
+            #  was actually ranked in is the better answer than nothing.
+            carve_label = label_of.get(symb, pool_label)
+            label_applies, label_reason, label_note = cohort_applicability(carve_label)
+            #  CONSERVATIVE JOIN, in the same direction as `_classify_financial`'s: EITHER
+            #  source saying "the models do not apply" is decisive, and neither can promote a
+            #  name the other refused.  For the general pool `label_applies` is None, so this
+            #  is `sector_valid` exactly -- the pre-Q-66 value, unchanged.
+            forensic_valid = bool(sector_valid and label_applies is not False)
+            if label_applies is False:
+                forensic_reason = label_reason
+            elif is_fin:
+                forensic_reason = ('the Beneish / Montier / Sloan models do not apply to a '
+                                   '%s' % (fin_kind or 'financial'))
+            else:
+                forensic_reason = ''
+            forensic_note = label_note if forensic_valid else ''
 
-        # M-score
-        m_row = SLmeanMscore[SLmeanMscore['source'] == symb]['M_Score_mean']
-        m_mean = pd.to_numeric(m_row, errors='coerce').iloc[0] if len(m_row) else np.nan
-        m_finite = pd.notna(m_mean) and not np.isinf(m_mean)
-        m_flag = bool(m_finite and m_mean > 0)  # stored M > 0 == standard M > -1.78
-        _rpy = rp.rows_per_year(freq_map, symb)
-        #  NO VERDICT, NO DRIVER BREAKDOWN (P-2, CEO 2026-08-17).  `_mscore_drivers` averages
-        #  each component over the window INDEPENDENTLY, so it happily returns a decomposition
-        #  for a name whose M_Score is NaN -- the components it lists are the ones that WERE
-        #  computable, and the reason the name has no score is one it silently omits.  On the
-        #  2026-08-13 top-100 all 21 `data-incomplete: dig-deeper` rows shipped a populated
-        #  `M_drivers`; RMV.L's read `SGAI(+0.01)...` beside an abstention caused by the gross
-        #  margin, and PSI.TO's was four components all at `+0.00`.  A breakdown asserts "here
-        #  is what drove the verdict" where there is no verdict, which is the same "say nothing
-        #  rather than something unfounded" principle the abstention itself rests on.
-        #  NOTHING IS LOST: `M_abstain_reason` beside it names the missing vendor input, and
-        #  this is the ONE place to blank it -- `ForensicFlagsTop100`, `AggScoreTop100`, the
-        #  XLSX forensic block and the HTML deck's R5 rule all read this column.
-        m_drivers = (_mscore_drivers(mscore_df, symb, _rpy)
-                     if (m_finite and not mscore_df.empty) else '')
-        #  The abstention's REASON, from the same two functions the penalty bucket uses.
-        _absent = absent_components(mscore_df, symb, _rpy)
-        _mwin = (pd.to_numeric(mscore_df[mscore_df['symbol'] == symb]['M_Score'],
-                               errors='coerce').head(rp.scale_window(M_WINDOW, _rpy))
-                 if not mscore_df.empty else pd.Series(dtype='float64'))
-        m_abstain_reason = abstention_reason(_absent, m_finite,
-                                             int(_mwin.notna().sum()), len(_mwin))
-        #  A FORENSICALLY INVALID NAME DID NOT FAIL TO BE MEASURED -- THE MODEL DOES NOT APPLY
-        #  (review H-2, 2026-08-17).  The ad-hoc penalty exempts these names for exactly this
-        #  reason; saying "no usable vendor data" beside a `financial: forensic-invalid` tag
-        #  would describe a measurement we never attempted, and the two artifacts would give
-        #  the reader two different accounts of one row.
-        if is_fin and m_abstain_reason:
-            m_abstain_reason = ('the Beneish model does not apply to a %s -- not measured, '
-                                'and not charged' % (fin_kind or 'financial'))
+            #  ---- THE REFUSAL (Q-66) -----------------------------------------------------
+            #  A NAME THE MODELS DO NOT APPLY TO IS NOT SCORED, and it is not scored HERE --
+            #  before any number is read out of `SLmeanMscore` -- rather than scored and then
+            #  hidden at the presentation layer.  Two reasons, and the second is the one that
+            #  matters: (a) a number that exists in the frame is a number the next surface
+            #  written against this table will find and publish, which is exactly how the deck
+            #  came to print a green Sloan tick on REITs; and (b) `forensicReason` beside the
+            #  blank is what makes this the THIRD value -- refused-with-a-reason -- rather than
+            #  a hole indistinguishable from a vendor gap.
+            #  BLANK IS `''`, NOT NaN, for the flags, for the reason set out at
+            #  `M_flag_gt_-1.78` below: `bool(float('nan')) is True`, so a NaN blank would
+            #  invent a manipulation flag on the very names we just declined to assess.
+            if not forensic_valid:
+                m_mean = np.nan
+                m_finite = False
+                m_flag = False
+                m_drivers = ''
+                c_mean = np.nan
+                c_finite = False
+                c_flag = False
+                c_fired = ''
+                #  ONE SENTENCE, NOT TWO ACCOUNTS OF ONE ROW.  `M_abstain_reason` and
+                #  `forensicReason` must not disagree about why the cell is empty, so the
+                #  refusal writes both from the same string.
+                m_abstain_reason = forensic_reason + ' -- not measured, and not charged'
+                sloan_val = sloan_map.get(symb, np.nan)
+                #  THE SLOAN FLAG BECOMES BLANK TOO, not False.  `False` here says "assessed,
+                #  and not in the worst quintile" about a name excluded from the quantile
+                #  entirely -- the P-4 defect one column to the left, pointing the same way.
+                #  The raw `sloanAccruals` VALUE is still published: it is an arithmetic ratio,
+                #  not a verdict, and suppressing it would hide the magnitude the reader may
+                #  still want.  Its verdict is what is withheld.
+                sloan_flag = ''
+                #  THE LABEL OUTRANKS THE SECTOR IN THE *TAG* TOO, so the tag and
+                #  `forensicReason` cannot give two accounts of one row.  Passing `fin_kind`
+                #  unconditionally produced a cohort whose rows split between
+                #  'financial: forensic-invalid' and 'cohort REIT: forensic-inapplicable'
+                #  purely on whether the sector pickle happened to know the name -- and the
+                #  reason column beside them already said the cohort.  When the LABEL is what
+                #  refused, the tag says the cohort; the financial wording survives for a name
+                #  the SECTOR refused and no cohort ruling covered (every general-pool row).
+                tag = _summary_tag(True, m_finite, c_finite, m_flag, c_flag, False,
+                                   kind=('' if label_applies is False else fin_kind),
+                                   label=carve_label)
+            else:
+                # M-score
+                m_row = SLmeanMscore[SLmeanMscore['source'] == symb]['M_Score_mean']
+                m_mean = pd.to_numeric(m_row, errors='coerce').iloc[0] if len(m_row) else np.nan
+                m_finite = pd.notna(m_mean) and not np.isinf(m_mean)
+                m_flag = bool(m_finite and m_mean > 0)  # stored M > 0 == standard M > -1.78
+                _rpy = rp.rows_per_year(freq_map, symb)
+                #  NO VERDICT, NO DRIVER BREAKDOWN (P-2, CEO 2026-08-17).  `_mscore_drivers` averages
+                #  each component over the window INDEPENDENTLY, so it happily returns a decomposition
+                #  for a name whose M_Score is NaN -- the components it lists are the ones that WERE
+                #  computable, and the reason the name has no score is one it silently omits.  On the
+                #  2026-08-13 top-100 all 21 `data-incomplete: dig-deeper` rows shipped a populated
+                #  `M_drivers`; RMV.L's read `SGAI(+0.01)...` beside an abstention caused by the gross
+                #  margin, and PSI.TO's was four components all at `+0.00`.  A breakdown asserts "here
+                #  is what drove the verdict" where there is no verdict, which is the same "say nothing
+                #  rather than something unfounded" principle the abstention itself rests on.
+                #  NOTHING IS LOST: `M_abstain_reason` beside it names the missing vendor input, and
+                #  this is the ONE place to blank it -- `ForensicFlagsTop100`, `AggScoreTop100`, the
+                #  XLSX forensic block and the HTML deck's R5 rule all read this column.
+                m_drivers = (_mscore_drivers(mscore_df, symb, _rpy)
+                             if (m_finite and not mscore_df.empty) else '')
+                #  The abstention's REASON, from the same two functions the penalty bucket uses.
+                _absent = absent_components(mscore_df, symb, _rpy)
+                _mwin = (pd.to_numeric(mscore_df[mscore_df['symbol'] == symb]['M_Score'],
+                                       errors='coerce').head(rp.scale_window(M_WINDOW, _rpy))
+                         if not mscore_df.empty else pd.Series(dtype='float64'))
+                m_abstain_reason = abstention_reason(_absent, m_finite,
+                                                     int(_mwin.notna().sum()), len(_mwin))
+                #  A FORENSICALLY INVALID NAME DID NOT FAIL TO BE MEASURED -- THE MODEL DOES NOT APPLY
+                #  (review H-2, 2026-08-17).  The ad-hoc penalty exempts these names for exactly this
+                #  reason; saying "no usable vendor data" beside a `financial: forensic-invalid` tag
+                #  would describe a measurement we never attempted, and the two artifacts would give
+                #  the reader two different accounts of one row.
+                #  THAT RULE NOW LIVES IN THE REFUSAL BRANCH ABOVE, and the `if is_fin ...` override
+                #  that used to sit here is DELETED rather than left as belt-and-braces (Q-66).  It
+                #  became UNREACHABLE the moment the refusal moved earlier -- `forensic_valid` is
+                #  `not is_fin` ANDed with the cohort ruling, so reaching this line proves `is_fin`
+                #  is False -- and a dead branch whose comment says it fires is a worse artifact
+                #  than no branch: the next reader trusts it and looks for the behaviour elsewhere.
+                #  The SENSE it carried is preserved -- the refusal still ends "-- not measured,
+                #  and not charged" -- but the sentence in front of it is now `forensicReason`,
+                #  which names all three models rather than Beneish alone and covers the cohort
+                #  refusal as well as the sector one.  One string, so the CSV, the XLSX and the
+                #  deck cannot give three accounts of one empty cell.
 
-        # C-score
-        c_row = SLmeanCscore[SLmeanCscore['source'] == symb]['C_Score_mean']
-        c_mean = pd.to_numeric(c_row, errors='coerce').iloc[0] if len(c_row) else np.nan
-        c_finite = pd.notna(c_mean) and not np.isinf(c_mean)
-        c_flag = bool(c_finite and c_mean >= C_FLAG_CUTOFF)  # THE flag: C >= 4
-        #  THE SAME RULE ON THE C SIDE (P-2), AND ITS MEASURED EFFECT TODAY IS ZERO -- said
-        #  here so nobody reads the symmetry as evidence of a live defect.  `C_Score` is a
-        #  COUNT (`(cols > 0).sum()`, NaN > 0 = False), so `C_Score_mean` is NaN only when a
-        #  name produces no forensic rows at all: 0 of 2,629 on the 2026-08-13 panel.  The
-        #  guard is here because the asymmetry -- one column self-limiting, its neighbour not
-        #  -- is exactly how the M side acquired this defect, not because a row needs it now.
-        c_fired = (_cscore_fired(cscore_df, symb, _rpy)
-                   if (c_finite and not cscore_df.empty) else '')
+                # C-score
+                c_row = SLmeanCscore[SLmeanCscore['source'] == symb]['C_Score_mean']
+                c_mean = pd.to_numeric(c_row, errors='coerce').iloc[0] if len(c_row) else np.nan
+                c_finite = pd.notna(c_mean) and not np.isinf(c_mean)
+                c_flag = bool(c_finite and c_mean >= C_FLAG_CUTOFF)  # THE flag: C >= 4
+                #  THE SAME RULE ON THE C SIDE (P-2), AND ITS MEASURED EFFECT TODAY IS ZERO -- said
+                #  here so nobody reads the symmetry as evidence of a live defect.  `C_Score` is a
+                #  COUNT (`(cols > 0).sum()`, NaN > 0 = False), so `C_Score_mean` is NaN only when a
+                #  name produces no forensic rows at all: 0 of 2,629 on the 2026-08-13 panel.  The
+                #  guard is here because the asymmetry -- one column self-limiting, its neighbour not
+                #  -- is exactly how the M side acquired this defect, not because a row needs it now.
+                c_fired = (_cscore_fired(cscore_df, symb, _rpy)
+                           if (c_finite and not cscore_df.empty) else '')
 
-        # Sloan
-        sloan_val = sloan_map.get(symb, np.nan)
-        sloan_flag = bool(forensic_valid and pd.notna(sloan_val)
-                          and pd.notna(sloan_cut) and sloan_val >= sloan_cut)
+                # Sloan -- the worst quintile of THIS POOL (see `_pool_cut`)
+                sloan_val = sloan_map.get(symb, np.nan)
+                sloan_flag = bool(pd.notna(sloan_val) and pd.notna(sloan_cut)
+                                  and sloan_val >= sloan_cut)
 
-        tag = _summary_tag(is_fin, m_finite, c_finite, m_flag, c_flag, sloan_flag)
+                tag = _summary_tag(False, m_finite, c_finite, m_flag, c_flag, sloan_flag,
+                                   kind=fin_kind, label=carve_label)
 
-        rows.append({
-            'rank': rank,
-            'source': symb,
-            'sectorPickle': sector,
-            'sectorAPI': api_sector if api_sector else '',
-            'isFinancial': is_fin,
-            'forensicValid': forensic_valid,
-            'financialKind': fin_kind,
-            'M_score_mean': round(m_mean, 4) if m_finite else np.nan,
-            #  NO VERDICT, NO BOOLEAN VERDICT (P-4, 2026-08-29) -- the same rule as `M_drivers`
-            #  above, one column to its left.  `M_flag_gt_-1.78 = False` on a row with no
-            #  M-score asserts "this name is NOT a manipulator" about a name the pipeline has
-            #  just declared unassessable; on the 2026-08-29 top-100 that was 17 of 97 rows,
-            #  FIVE of them inside the top-20 (ranks 2, 4, 7, 9, 10).  A False here is not the
-            #  absence of a finding, it is a finding -- and the reader has no way to tell it
-            #  from the 78 rows where the model actually ran and returned a real 'no'.
-            #  THE COLUMN BECOMES THREE-VALUED (True / False / blank) and therefore OBJECT
-            #  dtype.  `''` is the blank, not `np.nan`, deliberately: the two are identical in
-            #  the CSV (both write an empty cell) but not in memory, and `bool(np.nan)` is
-            #  True -- so a NaN blank would turn any truthiness test still to be written into a
-            #  FALSE RED FLAG, which is worse than the defect being fixed.  `''` also matches
-            #  the blank `M_drivers` / `C_flags_fired` already use in the neighbouring columns.
-            #  Consumers must go through `_flag_true` / `flag_display`, which handle all three.
-            'M_flag_gt_-1.78': m_flag if m_finite else '',
-            'M_drivers': m_drivers,
-            #  WHY THE CELL BESIDE IT IS EMPTY (CEO, 2026-08-16).  After the O-13 domain
-            #  guards a fifth of the shortlist abstains, and a blank M with no explanation
-            #  reads as a broken tool rather than as a refusal -- which is the CEO's standing
-            #  "presentation must be correctly suggestive" constraint applied to a hole.
-            #  '' for a name that HAS a verdict, so the column is self-limiting; the same
-            #  string is what `adhoc_penalty` charged the name on, from one shared function,
-            #  so the CSV cannot explain the abstention differently from the bucket.
-            'M_abstain_reason': m_abstain_reason,
-            'C_score_mean': round(c_mean, 4) if c_finite else np.nan,
-            #  THE SAME RULE ON THE C SIDE, AND ITS MEASURED EFFECT TODAY IS ZERO -- stated
-            #  rather than implied, exactly as `C_flags_fired` states it: `C_Score` is a COUNT,
-            #  so `C_score_mean` is NaN only for a name that produces no forensic rows at all
-            #  (0 of 97 on the 2026-08-29 top-100).  Present because an asymmetry between two
-            #  adjacent columns -- one self-limiting, one not -- is how the M side acquired
-            #  this defect in the first place.
-            'C_flag_ge_4': c_flag if c_finite else '',
-            'C_flags_fired': c_fired,
-            'sloanAccruals': round(sloan_val, 4) if pd.notna(sloan_val) else np.nan,
-            'sloan_worstQuintile_inShortlist': sloan_flag,
-            'inLegacyProblemlist_M': symb in problem_M,
-            # detectManipulation's own problemlist_Cscore.  RENAMED from
-            # 'legacyProblemC_strict_gt4': that header asserted a `> 4` cutoff that no
-            # longer exists (both sides are now C_FLAG_CUTOFF), so the old name would
-            # keep claiming a threshold the code does not use.  It now agrees with
-            # C_flag_ge_4 except where the score is non-finite (which the problemlist
-            # also collects, deliberately -- that is the cross-check it provides).
-            'problemlistC': symb in problem_C,
-            'forensicTag': tag,
-        })
+            rows.append({
+                #  `pool` + a per-pool `rank` (Q-66).  Before this table carried cohort rows,
+                #  `rank` alone was unambiguous; with six shortlists in one file it is not, and
+                #  a reader (or a merge) that assumes global rank would mis-order five of them.
+                'pool': pool_label,
+                'rank': rank,
+                'source': symb,
+                #  THE RUN'S OWN CARVE LABEL, carried as PROVENANCE for the applicability
+                #  verdict beside it -- so a reader can tell a refusal decided by the label
+                #  from one decided by the sector map, and so a re-derivation from a
+                #  working-tree sector pickle is never necessary.
+                'carveLabel': carve_label,
+                'sectorPickle': sector,
+                'sectorAPI': api_sector if api_sector else '',
+                'isFinancial': is_fin,
+                'forensicValid': forensic_valid,
+                'financialKind': fin_kind,
+                'M_score_mean': round(m_mean, 4) if m_finite else np.nan,
+                #  NO VERDICT, NO BOOLEAN VERDICT (P-4, 2026-08-29) -- the same rule as `M_drivers`
+                #  above, one column to its left.  `M_flag_gt_-1.78 = False` on a row with no
+                #  M-score asserts "this name is NOT a manipulator" about a name the pipeline has
+                #  just declared unassessable; on the 2026-08-29 top-100 that was 17 of 97 rows,
+                #  FIVE of them inside the top-20 (ranks 2, 4, 7, 9, 10).  A False here is not the
+                #  absence of a finding, it is a finding -- and the reader has no way to tell it
+                #  from the 78 rows where the model actually ran and returned a real 'no'.
+                #  THE COLUMN BECOMES THREE-VALUED (True / False / blank) and therefore OBJECT
+                #  dtype.  `''` is the blank, not `np.nan`, deliberately: the two are identical in
+                #  the CSV (both write an empty cell) but not in memory, and `bool(np.nan)` is
+                #  True -- so a NaN blank would turn any truthiness test still to be written into a
+                #  FALSE RED FLAG, which is worse than the defect being fixed.  `''` also matches
+                #  the blank `M_drivers` / `C_flags_fired` already use in the neighbouring columns.
+                #  Consumers must go through `_flag_true` / `flag_display`, which handle all three.
+                'M_flag_gt_-1.78': m_flag if m_finite else '',
+                'M_drivers': m_drivers,
+                #  WHY THE CELL BESIDE IT IS EMPTY (CEO, 2026-08-16).  After the O-13 domain
+                #  guards a fifth of the shortlist abstains, and a blank M with no explanation
+                #  reads as a broken tool rather than as a refusal -- which is the CEO's standing
+                #  "presentation must be correctly suggestive" constraint applied to a hole.
+                #  '' for a name that HAS a verdict, so the column is self-limiting; the same
+                #  string is what `adhoc_penalty` charged the name on, from one shared function,
+                #  so the CSV cannot explain the abstention differently from the bucket.
+                'M_abstain_reason': m_abstain_reason,
+                'C_score_mean': round(c_mean, 4) if c_finite else np.nan,
+                #  THE SAME RULE ON THE C SIDE, AND ITS MEASURED EFFECT TODAY IS ZERO -- stated
+                #  rather than implied, exactly as `C_flags_fired` states it: `C_Score` is a COUNT,
+                #  so `C_score_mean` is NaN only for a name that produces no forensic rows at all
+                #  (0 of 97 on the 2026-08-29 top-100).  Present because an asymmetry between two
+                #  adjacent columns -- one self-limiting, one not -- is how the M side acquired
+                #  this defect in the first place.
+                'C_flag_ge_4': c_flag if c_finite else '',
+                'C_flags_fired': c_fired,
+                'sloanAccruals': round(sloan_val, 4) if pd.notna(sloan_val) else np.nan,
+                'sloan_worstQuintile_inShortlist': sloan_flag,
+                'inLegacyProblemlist_M': symb in problem_M,
+                # detectManipulation's own problemlist_Cscore.  RENAMED from
+                # 'legacyProblemC_strict_gt4': that header asserted a `> 4` cutoff that no
+                # longer exists (both sides are now C_FLAG_CUTOFF), so the old name would
+                # keep claiming a threshold the code does not use.  It now agrees with
+                # C_flag_ge_4 except where the score is non-finite (which the problemlist
+                # also collects, deliberately -- that is the cross-check it provides).
+                'problemlistC': symb in problem_C,
+                'forensicTag': tag,
+                #  THE THIRD VALUE, IN WORDS (Q-66).  `forensicValid=False` says the models do
+                #  not apply; this says WHY, in the sentence the deck and the XLSX render.  A
+                #  refusal with no reason is indistinguishable, on the page, from an omission,
+                #  which is the whole complaint that produced this change.  '' when the name
+                #  was scored -- self-limiting, like `M_drivers` and `M_abstain_reason`.
+                'forensicReason': forensic_reason,
+                #  A CAVEAT ON A SCORE THAT EXISTS -- never a reason it does not.  Only Mining
+                #  carries one today (calibration + the near-degenerate AQI base); see
+                #  `carveOut.COHORT_FORENSIC_NOTE`.  Kept in its own column so a caveat can
+                #  never be rendered where a refusal belongs.
+                'forensicNote': forensic_note,
+            })
 
     return pd.DataFrame(rows)
 
@@ -514,40 +727,108 @@ def applySectorFallback(flag_df, api_sector_map):
     tag. Pure/offline; returns a NEW DataFrame (input unchanged).
 
     `api_sector_map`: dict symbol -> API sector label ('NaN'/''/None treated as
-    unknown, i.e. no fallback signal)."""
+    unknown, i.e. no fallback signal).
+
+    THREE THINGS CHANGED HERE FOR Q-66, all of them "this function must not undo what
+    `buildForensicFlagTable` just decided":
+
+    1. IT CANNOT PROMOTE A COHORT-REFUSED NAME BACK TO VALID.  It re-derived `forensicValid`
+       from the two SECTOR sources alone, so a name the carve label had ruled inapplicable
+       would come back valid the moment its API sector read `Industrials` -- silently undoing
+       the ruling one function later, in a step whose docstring says it only ever ADDS
+       financials.  The carve label travels on the row (`carveLabel`) precisely so this
+       reconciliation can read it.
+    2. A NAME THAT BECOMES INAPPLICABLE HERE IS BLANKED, not just re-tagged.  Previously a
+       general-pool name that the API sector reclassified as a bank kept its computed M-Score
+       and C-Score and merely gained a `financial: forensic-invalid` tag -- a printed number
+       beside a sentence saying the model does not apply to it.  ZERO rows on the 2026-08-31
+       run (all 97 were already valid from both sources), so this is closing the route rather
+       than fixing a live wrong cell -- said plainly rather than implied.
+    3. THE SLOAN CUTOFF IS PER POOL, matching `buildForensicFlagTable`.  Pooling all six
+       shortlists into one quantile would move the GENERAL pool's flags as a side effect of
+       the table having gained cohort rows."""
     if flag_df is None or flag_df.empty or not api_sector_map:
         return flag_df
 
     df = flag_df.copy()
+    #  A pre-Q-66 frame has neither column; `.get` on a Series is not available, so the
+    #  columns are resolved once here and every loop below reads the resolved list.  Absent
+    #  `carveLabel` -> `cohort_applicability` returns None -> the sector sources decide, which
+    #  is exactly the pre-Q-66 behaviour.
+    labels = (list(df['carveLabel']) if 'carveLabel' in df.columns else [''] * len(df))
+    pools = (list(df['pool']) if 'pool' in df.columns else ['general'] * len(df))
 
-    is_fin_list, valid_list, kind_list, api_list = [], [], [], []
-    for _, row in df.iterrows():
+    is_fin_list, valid_list, kind_list, api_list, reason_list = [], [], [], [], []
+    for (_, row), lab in zip(df.iterrows(), labels):
         pickle_sector = row.get('sectorPickle', 'Unknown')
         api_sector = api_sector_map.get(row['source'])
         if api_sector in (None, '', 'NaN', 'nan'):
             api_sector = None
-        is_fin, valid, kind = _classify_financial(pickle_sector, api_sector)
+        is_fin, sector_valid, kind = _classify_financial(pickle_sector, api_sector)
+        label_applies, label_reason, _ = cohort_applicability(lab)
+        valid = bool(sector_valid and label_applies is not False)
+        if label_applies is False:
+            reason = label_reason
+        elif is_fin:
+            reason = ('the Beneish / Montier / Sloan models do not apply to a %s'
+                      % (kind or 'financial'))
+        else:
+            reason = ''
         is_fin_list.append(is_fin)
         valid_list.append(valid)
         kind_list.append(kind)
+        reason_list.append(reason)
         api_list.append(api_sector if api_sector else '')
 
     df['sectorAPI'] = api_list
     df['isFinancial'] = is_fin_list
     df['forensicValid'] = valid_list
     df['financialKind'] = kind_list
+    df['forensicReason'] = reason_list
+
+    #  BLANK THE SCORES OF ANYTHING NEWLY REFUSED, before the cutoff is computed off them.
+    newly_refused = [not v for v in valid_list]
+    if any(newly_refused):
+        for _col, _blank in (('M_score_mean', np.nan), ('M_flag_gt_-1.78', ''),
+                             ('M_drivers', ''), ('C_score_mean', np.nan),
+                             ('C_flag_ge_4', ''), ('C_flags_fired', '')):
+            if _col in df.columns:
+                #  `.astype(object)` first: assigning '' into a bool column would coerce the
+                #  whole column, and assigning it into a float column raises on some pandas
+                #  builds.  The three-valued columns are object dtype by design (see
+                #  `M_flag_gt_-1.78` in the builder).
+                if _blank == '':
+                    df[_col] = df[_col].astype(object)
+                df.loc[newly_refused, _col] = _blank
+        if 'M_abstain_reason' in df.columns:
+            df['M_abstain_reason'] = df['M_abstain_reason'].astype(object)
+            df.loc[newly_refused, 'M_abstain_reason'] = [
+                r + ' -- not measured, and not charged'
+                for r, bad in zip(reason_list, newly_refused) if bad]
+        if 'forensicNote' in df.columns:
+            df['forensicNote'] = df['forensicNote'].astype(object)
+            df.loc[newly_refused, 'forensicNote'] = ''
 
     # Recompute the Sloan worst-quintile cutoff with the reconciled financial set
-    # excluded (so newly-identified financials no longer contaminate the quantile).
-    mask_valid = df['forensicValid'].astype(bool)
-    sv = pd.to_numeric(df.loc[mask_valid, 'sloanAccruals'], errors='coerce').dropna()
-    sloan_cut = np.nanquantile(sv, SLOAN_TOP_QUINTILE) if len(sv) >= 5 else np.nan
+    # excluded (so newly-identified financials no longer contaminate the quantile),
+    # ONE CUTOFF PER POOL -- see the docstring's point 3.
+    sloan_cut_by_pool = {}
+    for pool in dict.fromkeys(pools):
+        mask = [p == pool and v for p, v in zip(pools, valid_list)]
+        sv = pd.to_numeric(df.loc[mask, 'sloanAccruals'], errors='coerce').dropna()
+        sloan_cut_by_pool[pool] = (np.nanquantile(sv, SLOAN_TOP_QUINTILE)
+                                   if len(sv) >= 5 else np.nan)
 
     new_sloan_flag, new_tag = [], []
-    for _, row in df.iterrows():
+    for (_, row), lab, pool in zip(df.iterrows(), labels, pools):
         valid = bool(row['forensicValid'])
+        sloan_cut = sloan_cut_by_pool.get(pool, np.nan)
         sval = pd.to_numeric(pd.Series([row['sloanAccruals']]), errors='coerce').iloc[0]
-        sflag = bool(valid and pd.notna(sval) and pd.notna(sloan_cut) and sval >= sloan_cut)
+        #  BLANK, NOT False, when the models do not apply -- the same three-valued rule the
+        #  builder applies (a `False` here asserts "assessed, and not in the worst quintile"
+        #  about a name excluded from the quantile).
+        sflag = (bool(pd.notna(sval) and pd.notna(sloan_cut) and sval >= sloan_cut)
+                 if valid else '')
         m_finite = pd.notna(row.get('M_score_mean'))
         c_finite = pd.notna(row.get('C_score_mean'))
         #  `_flag_true`, NOT `bool(...)` (P-4): the published columns are now three-valued and
@@ -557,7 +838,13 @@ def applySectorFallback(flag_df, api_sector_map):
         #  so this is closing the route, not a live wrong tag.
         m_flag = _flag_true(row.get('M_flag_gt_-1.78'))
         c_flag = _flag_true(row.get('C_flag_ge_4'))
-        tag = _summary_tag(bool(row['isFinancial']), m_finite, c_finite, m_flag, c_flag, sflag)
+        #  Same label-outranks-sector rule as the builder's, so the reconciliation cannot
+        #  re-word a tag the builder already agreed with `forensicReason`.
+        _label_refused = cohort_applicability(lab)[0] is False
+        tag = _summary_tag(not valid, m_finite, c_finite, m_flag, c_flag,
+                           _flag_true(sflag),
+                           kind=('' if _label_refused else row.get('financialKind', '')),
+                           label=lab)
         new_sloan_flag.append(sflag)
         new_tag.append(tag)
 

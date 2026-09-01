@@ -23,6 +23,7 @@ the exact expressions that produced the wrong numbers; the behavioural ones call
 that did not exist.  The numeric constants are MEASURED off the shipped 2026-08-13 run and
 are cited as such, so a future reader can re-derive them rather than trust them.
 """
+import io
 import inspect
 import os
 
@@ -1040,12 +1041,35 @@ def test_the_deck_LEGEND_states_the_precedence_it_renders():
 
 
 def test_the_deck_R5_rule_cannot_fire_off_a_driver_string_that_has_no_M_score():
-    """*** P-2. ***  R5 reads `M_drivers` from the AggScore CSV and fires "Beneish drivers
-    (DSRI/SGI/AQI) elevated" on a token match.  The column is now BLANK for any name without
-    an M-score (forensicFlags.buildForensicFlagTable), so the deck inherits the fix and must
-    not carry its own recomputation that would defeat it."""
+    """*** P-2. ***  R5 reads `M_drivers` from the published CSV and fires "Beneish drivers
+    (DSRI/SGI/AQI) elevated" on a token match.  The column is BLANK for any name without an
+    M-score (forensicFlags.buildForensicFlagTable), so the deck inherits the fix and must not
+    carry its own recomputation that would defeat it.
+
+    Q-66 MOVED THE READ, NOT THE RULE.  The read that used to sit inline in `evaluate_page`
+    now sits inside `forensic_scores`, the one method both `evaluate_page` and Section F
+    resolve through -- so the assertion moves to its new site, plus the assignment that carries
+    it into the rule.  The two assertions that actually hold the defect shut (no local
+    recomputation; the rule keys off the published string) are unchanged.
+
+    THE FORM CHANGED TOO, AND ON PURPOSE.  `str(r0.get('M_drivers') or '')` returns the literal
+    `'nan'` for a blank that has been through a CSV, because NaN is truthy.  It was harmless
+    for THIS rule only by luck -- R5's token test happens not to match 'NAN' -- and it stopped
+    being harmless when R3 began printing the driver string.  It reads through `_text` now, and
+    the useless-half guard below is what stops that becoming "assert some function was
+    called"."""
     src = inspect.getsource(gp)
-    assert "m_drivers = str(r0.get('M_drivers') or '')" in src
+    assert "'M_drivers': _text(r0.get('M_drivers'))" in src
+    #  and `_text` really neutralises both shapes of blank -- exercised, not assumed
+    b = object.__new__(gp.PresentationBuilder)
+    b.data = {'aggscore_df': pd.DataFrame([{'source': 'X', 'M-Score': 1.0, 'C-Score': 1.0,
+                                            'M_drivers': np.nan}]),
+              'forensic_df': None, 'carveout_labels': None}
+    b._validity_cache = {}
+    b._forensic_score_cache = {}
+    assert b.forensic_scores('X')['M_drivers'] == '', b.forensic_scores('X')
+    assert "m_drivers = _fs['M_drivers']" in src, \
+        'the rule must be fed from the one published-column reader'
     assert '_mscore_drivers' not in src, 'the deck must READ the published column, not rebuild it'
     #  and the rule still keys off that variable, so a blank column disarms it
     assert "mdriver_hit = any(tok in m_drivers.upper()" in src
@@ -1230,3 +1254,186 @@ def test_Q44_the_LEGEND_states_the_third_state_it_now_renders():
     legend = gp.PresentationBuilder._icon_legend(None)
     assert 'forensic models apply' in legend, legend
     assert 'no forensic classification for it exists in this run' in legend, legend
+
+
+# =========================================================================== #
+#  Q-66 -- THE FORENSIC SCORES REACH THE COHORT PAGES, OR SAY WHY THEY DO NOT  #
+# =========================================================================== #
+#  Q-44 closed the APPLICABILITY half of this: it made the deck resolve "do the forensic
+#  models apply to this name" for all 45 pages instead of 20.  It explicitly left the SCORES
+#  alone -- its note said M/C "stay CSV-only ... there is no offline source for the other 25",
+#  which was true then.  It is not now: `forensicFlags.buildForensicFlagTable` writes a row for
+#  every cohort side-list name, scored where the models apply and blank-with-a-reason where
+#  they do not.  So the 25 cohort pages stop rendering a forensic layer that is blank BY
+#  OMISSION and start rendering one that is either populated or explained.
+#
+#  MEASURED, OFFLINE, ON THE 2026-08-31 RUN (`--no-augment`, no network, no pipeline run):
+#  45 pages / 1,665 verdict cells; 39 cells change, ALL of them on cohort pages (Mining 29,
+#  REIT 5, InvestmentVehicle 5) and ZERO on the 20 general-pool pages.  Pages carrying a real
+#  M-Score go 15 -> 19, a real C-Score 20 -> 25.
+
+
+def _score_deck(agg_df, forensic_df=None):
+    """A builder with just enough state for `forensic_scores` / `forensic_validity`."""
+    b = object.__new__(gp.PresentationBuilder)
+    b.data = {'aggscore_df': agg_df, 'forensic_df': forensic_df, 'carveout_labels': None}
+    b._validity_cache = {}
+    b._forensic_score_cache = {}
+    return b
+
+
+def test_Q66_a_cohort_page_resolves_its_scores_from_the_FORENSIC_csv():
+    """The hole: a cohort name is not in `AggScoreTop100` (the general pool's artifact), so the
+    deck's aggscore-only read returned NaN for it and the page rendered a no-value icon on both
+    forensic rows -- on 25 of 45 pages.
+
+    The general pool must still resolve from `AggScoreTop100`, not from the forensic CSV: that
+    file is the only one carrying the API-reconciled columns, and quietly re-sourcing 20 pages
+    would be a change nobody asked for.  The -99.0 sentinel is what makes that assertion real
+    rather than coincidental."""
+    agg = pd.DataFrame([{'source': 'TNK', 'M-Score': -0.62, 'C-Score': 3.0,
+                         'M_flag_gt_-1.78': False, 'M_drivers': 'AQI(+0.16)'}])
+    fdf = pd.DataFrame([
+        {'source': 'TNK', 'M_score_mean': -99.0, 'C_score_mean': -99.0,
+         'M_flag_gt_-1.78': True, 'M_drivers': 'WRONG', 'forensicValid': True,
+         'forensicReason': '', 'forensicNote': ''},
+        {'source': 'TXG.TO', 'M_score_mean': 3.5957, 'C_score_mean': 3.0,
+         'M_flag_gt_-1.78': True, 'M_drivers': 'DSRI(+4.00, ratio>neut)',
+         'forensicValid': True, 'forensicReason': '', 'forensicNote': 'cohort caveat here'},
+    ])
+    d = _score_deck(agg, fdf)
+    #  the cohort name now HAS a score, and it is the forensic table's
+    tx = d.forensic_scores('TXG.TO')
+    assert tx['M-Score'] == 3.5957 and tx['C-Score'] == 3.0, tx
+    assert tx['source'] == 'ForensicFlagsTop100'
+    assert tx['M_flag'] is True and 'DSRI' in tx['M_drivers']
+    assert tx['note'] == 'cohort caveat here' and tx['reason'] == ''
+    #  the general name still resolves from AggScore -- the -99.0 sentinel proves precedence
+    tn = d.forensic_scores('TNK')
+    assert tn['M-Score'] == -0.62 and tn['source'] == 'AggScoreTop100', tn
+    assert tn['M_flag'] is False and tn['M_drivers'] == 'AQI(+0.16)', tn
+    #  a name in neither frame is still absent, never a fabricated zero
+    zz = d.forensic_scores('NOSUCH')
+    assert np.isnan(zz['M-Score']) and np.isnan(zz['C-Score']) and zz['source'] == 'unresolved'
+    print("PASS test_Q66_a_cohort_page_resolves_its_scores_from_the_FORENSIC_csv")
+
+
+def test_Q66_a_REFUSED_cohort_page_says_WHY_instead_of_an_unexplained_dash():
+    """A blank with no sentence beside it reads as a broken tool rather than as a refusal --
+    the same "presentation must be correctly suggestive" constraint that put
+    `M_abstain_reason` on the page.  Four of the five cohorts are refused by the Q-66 ruling,
+    so this is what 20 of the 25 cohort pages render.
+
+    Two-sided, because the failure mode is symmetric: a page that HAS a score must not render
+    a refusal sentence, and a page carrying only a CAVEAT must render the caveat and not the
+    refusal wording."""
+    fdf = pd.DataFrame([
+        {'source': 'HST', 'M_score_mean': np.nan, 'C_score_mean': np.nan,
+         'M_flag_gt_-1.78': '', 'M_drivers': '', 'forensicValid': False,
+         'forensicReason': 'the Beneish / Montier / Sloan models do not apply to a REIT',
+         'forensicNote': ''},
+        {'source': 'TXG.TO', 'M_score_mean': 3.5957, 'C_score_mean': 3.0,
+         'M_flag_gt_-1.78': True, 'M_drivers': 'DSRI', 'forensicValid': True,
+         'forensicReason': '', 'forensicNote': 'ramp-up caveat'},
+    ])
+    d = _score_deck(pd.DataFrame(columns=['source', 'M-Score', 'C-Score']), fdf)
+    hst = d.forensic_scores('HST')
+    assert np.isnan(hst['M-Score']) and hst['reason'].startswith('the Beneish'), hst
+    assert hst['note'] == '', 'a caveat must never stand in for a refusal'
+    #  ...and the blank flag reads as a NON-verdict, not as a manipulation flag
+    assert hst['M_flag'] is False, hst
+    txg = d.forensic_scores('TXG.TO')
+    assert txg['reason'] == '' and txg['note'] == 'ramp-up caveat'
+    #  the section that renders them keeps the two strings in mutually exclusive branches
+    src = inspect.getsource(gp.PresentationBuilder.section_f_forensic)
+    assert "if _fs['reason']:" in src and "elif _fs['note']:" in src, src
+    assert 'Why there is no M / C score' in src
+    assert 'Read the scores above with this caveat' in src
+    #  and the em dash, not the literal string 'nan', is what an absent score renders as
+    assert 'm_score = "—" if np.isnan(safe_float(_fs[\'M-Score\'])) else' in src, src
+    print("PASS test_Q66_a_REFUSED_cohort_page_says_WHY_instead_of_an_unexplained_dash")
+
+
+def test_Q66_the_LOW_CONFIDENCE_note_carries_the_cohorts_OWN_reason():
+    """Q-44's note said "... do not apply to a financial" for every refused page.  That is
+    right for a bank and wrong for the four different grounds the four refused cohorts carry --
+    a REIT and a BDC are refused for different reasons and the reader is entitled to which.
+
+    AND A CALIBRATION CAVEAT MUST NOT FIRE THE MARKER.  Mining IS scored, so its pages keep the
+    honest value-based icon; the legend defines the amber marker here as "it is not established
+    that the forensic models apply", which is false for a miner.  Amber on all five Mining
+    pages forever would be the mirror image of the Q-44 guard that could never fire."""
+    src = inspect.getsource(gp.PresentationBuilder.evaluate_page)
+    assert "_why = _fs['reason'] if forensic_state is False and _fs['reason'] else None" in src
+    assert "(_why or self._VALIDITY_NOTE[forensic_state])" in src
+    #  the caveat is appended to the forensic RULES only, and only when their forensic limb fired
+    assert "_caveat = ('  COHORT CAVEAT — ' + _fnote) if _fnote else ''" in src
+    assert "_r1cav = _caveat if m_flag else ''" in src
+    assert "_r5cav = _caveat if (mdriver_hit and not sloan_hi) else ''" in src
+    #  ...and R3, the HIGH-tier rule, names the driver as well as the score: a HIGH flag that
+    #  says only "M-Score 3.60 > 0" is a number with no mechanism, and on a Mining page the
+    #  mechanism IS the finding.
+    assert "_drv = ('  Driven by: ' + m_drivers)" in src
+    #  the caveat must NOT be routed into the low-confidence marker: nothing between the
+    #  marker's assignment and the verdict block mentions it.  (`_caveat` is constructed
+    #  further down, immediately before the flag rules -- which is the only place it belongs.)
+    between = src.split('low_conf_forensic = ')[1].split('# ---- verdicts')[0]
+    assert '_caveat' not in between, between
+    assert src.index('low_conf_forensic = ') < src.index("_caveat = ("), \
+        'the caveat is built after the low-confidence marker, so it cannot reach it'
+    print("PASS test_Q66_the_LOW_CONFIDENCE_note_carries_the_cohorts_OWN_reason")
+
+
+def test_Q66_a_ROUND_TRIPPED_blank_reason_does_not_render_the_literal_nan():
+    """FOUND BY RE-RENDERING THE DECK, NOT BY REASONING (2026-09-01).
+
+    `str(x or '')` is not safe on a cell that has been through a CSV.  A blank `forensicReason`
+    is `''` in memory and NaN after the round-trip, and `float('nan') or ''` short-circuits to
+    the NaN because NaN is TRUTHY -- so `str(...)` yields the literal `'nan'`, which is not
+    empty, so the caller's `if reason:` branch fires and the page renders
+
+        Why there is no M / C score:  nan
+
+    BESIDE A REAL M-SCORE.  Measured on the 2026-08-31 deck: all five Mining pages, i.e. every
+    page the Q-66 extension actually scores -- the fix's own output, wrong on exactly the rows
+    it was written to populate.  Third member of the same family as `_flag_true` and
+    `published_forensic_validity`: a text column needs its own reader too.
+
+    Both directions, because the useless half is easy to write: a REAL reason must survive."""
+    fdf = pd.DataFrame([
+        #  the blank-reason row: scored, so the page must say nothing about why it is not
+        {'source': 'TXG.TO', 'M_score_mean': 3.5957, 'C_score_mean': 3.0,
+         'M_flag_gt_-1.78': True, 'M_drivers': 'DSRI(+4.00)', 'forensicValid': True,
+         'forensicReason': '', 'forensicNote': 'ramp-up caveat', 'forensicTag': 'single-flag'},
+        #  a refused row whose NOTE is blank -- the mirror image
+        {'source': 'HST', 'M_score_mean': np.nan, 'C_score_mean': np.nan,
+         'M_flag_gt_-1.78': '', 'M_drivers': '', 'forensicValid': False,
+         'forensicReason': 'the models do not apply to a REIT', 'forensicNote': '',
+         'forensicTag': 'cohort REIT: forensic-inapplicable'},
+    ])
+    #  THROUGH A REAL CSV, not a hand-built NaN: the round trip is the mechanism, and a
+    #  hand-placed np.nan would pass on a fix that only handled one of its two shapes.
+    buf = io.StringIO()
+    fdf.to_csv(buf, index=False)
+    buf.seek(0)
+    back = pd.read_csv(buf)
+    d = _score_deck(pd.DataFrame(columns=['source', 'M-Score', 'C-Score']), back)
+
+    scored = d.forensic_scores('TXG.TO')
+    assert scored['reason'] == '', repr(scored['reason'])
+    assert scored['note'] == 'ramp-up caveat', repr(scored['note'])
+    assert scored['M_drivers'] == 'DSRI(+4.00)'
+    refused = d.forensic_scores('HST')
+    assert refused['reason'] == 'the models do not apply to a REIT'
+    assert refused['note'] == '', repr(refused['note'])
+    assert refused['M_drivers'] == '', repr(refused['M_drivers'])
+    #  ...and nothing anywhere in the resolved payload is the string 'nan'
+    for k, v in list(scored.items()) + list(refused.items()):
+        assert not (isinstance(v, str) and v.strip().lower() == 'nan'), (k, v)
+    #  ONE READER, not a private copy: the deck delegates to `forensicFlags.cell_text`, which
+    #  sits beside `_flag_true` and `published_forensic_validity`.  Three near-identical
+    #  absence readers in three files is how the BOOLEAN ones came to disagree.
+    src = inspect.getsource(gp.PresentationBuilder.forensic_scores)
+    assert '_text = _fflags.cell_text' in src, src
+    assert 'def _text(' not in src, 'a private copy of the absence reader has come back'
+    print("PASS test_Q66_a_ROUND_TRIPPED_blank_reason_does_not_render_the_literal_nan")
