@@ -1,0 +1,8 @@
+criterion,constant,n_observed,n_pass,pass_rate,breach,proposed_constant,breach_streak,advisory,streak_participant
+mBookToPrice,0.5,39616,21462,0.5417508077544426,0,,0,1,1
+mEarningsYield,0.01,39631,18427,0.4649642956271606,0,,0,1,1
+mDebtEquityRatio,0.5,37744,18660,0.4943832132259432,0,,0,1,1
+mFreeCashFlowToMarketCap,0.0075,39567,19473,0.49215255136856473,0,,0,1,1
+mEquityToAssets,0.4,39587,21451,0.54186980574431,0,,0,1,1
+mGrossProfitMargin,0.4,39676,17890,0.4509023087004738,0,,0,1,1
+mNetProfitMargin,0.05,39676,18800,0.4738380885169876,0,,0,1,1
