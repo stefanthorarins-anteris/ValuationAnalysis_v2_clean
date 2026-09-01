@@ -1018,7 +1018,25 @@ def writeResWrapper(resdic):
     # + Sloan accruals + financial indicator from decoration to decision-support.
     # Covers ntopagg so both the CSV (ntopagg) and the presentation (ntopxlsx) can
     # index into it. FLAGS, NOT VERDICTS: nothing here drops a name.
-    flag_df = ff.buildForensicFlagTable(resdic, ntopagg)
+    #  AND IT NOW COVERS THE CARVE COHORTS TOO (Q-66, CEO ruling 2026-09-01).  It was scoped to
+    #  `postRank.head(ntopagg)` -- the GENERAL pool -- so no cohort name received an M-Score or
+    #  a C-Score in ANY artifact: not this CSV, not the XLSX, not the 25 of the deck's 45 pages
+    #  that are cohort pages.  ONE TABLE, not one per surface: the side-list CSVs, the AggScore
+    #  merge, the XLSX block and the deck all index into this frame, so a cohort name cannot be
+    #  described differently in two files.
+    #  WHAT THE TABLE DOES WITH EACH COHORT IS `carveOut`'s RULING, NOT THIS CALL'S -- Mining is
+    #  scored, the other four are REFUSED WITH A STATED REASON.  See the block above
+    #  `carveOut.COHORT_FORENSIC_VALIDITY` for the per-component argument and the measurements.
+    #  `carveout_labels` is passed as well as the membership: it is the run's own label for each
+    #  name, and re-deriving it from the working tree's `sectorsdic_fmp.pickle` (undated, and a
+    #  DIFFERENT TAXONOMY from the copy a run used) flipped six of the 2026-08-29 deck's pages.
+    _cohort_members = {lab: list(sd['postRank']['source'])
+                       for lab, sd in (resdic.get('carveout_sidelists') or {}).items()
+                       if sd and sd.get('postRank') is not None
+                       and not sd['postRank'].empty}
+    flag_df = ff.buildForensicFlagTable(resdic, ntopagg,
+                                        cohort_members=_cohort_members,
+                                        carve_labels=resdic.get('carveout_labels'))
     fname_forensic = f'ForensicFlagsTop{ntopagg}-{fidag}_{datasource}_{tickerfilter}.csv'
 
     # create csv listing the ntopagg stocks. writeBoAggToCSV fetches the API
@@ -1084,7 +1102,26 @@ def writeResWrapper(resdic):
             sl_df = sdic['postRank'].head(ntopagg).copy()
             keep = [c for c in ['source', 'AggScore', pbr.ROR_COLUMN] if c in sl_df.columns]
             fname_sidelist = f'SideList_{label}_Top{ntopagg}-{fidag}_{datasource}_{tickerfilter}.csv'
-            sl_df[keep].to_csv(fname_sidelist, index=False)
+            sl_out = sl_df[keep]
+            #  THE FORENSIC READING TRAVELS WITH THE SIDE-LIST (Q-66).  These five CSVs are the
+            #  only artifact in which a cohort name appears at all outside the deck, and until
+            #  now they carried a score and a rank and nothing about whether the forensic layer
+            #  had anything to say.  Merged FROM `flag_df` -- the same table the AggScore CSV,
+            #  the XLSX and the deck read -- rather than recomputed here, so a cohort name
+            #  cannot be described one way in this file and another way on its deck page.
+            #  For four of the five cohorts every one of these cells is BLANK with
+            #  `forensicReason` filled in: that is the ruling, stated in the file, and it is why
+            #  the reason column is merged even though the score columns will be empty.
+            if flag_df is not None and not flag_df.empty:
+                _fcols = [c for c in ['source', 'carveLabel', 'forensicValid',
+                                      'forensicReason', 'forensicNote', 'M_score_mean',
+                                      'M_flag_gt_-1.78', 'M_drivers', 'M_abstain_reason',
+                                      'C_score_mean', 'C_flag_ge_4', 'C_flags_fired',
+                                      'sloanAccruals', 'sloan_worstQuintile_inShortlist',
+                                      'forensicTag'] if c in flag_df.columns]
+                if len(_fcols) > 1:
+                    sl_out = sl_out.merge(flag_df[_fcols], on='source', how='left')
+            sl_out.to_csv(fname_sidelist, index=False)
             sidelist_fnames.append(fname_sidelist)
             print(f'Carve-out side-list written to: {fname_sidelist}')
     except Exception as _e:
@@ -2259,7 +2296,14 @@ def writeBoAggToCSV(fb_df, mscore, cscore, baseurl, api_key, ntopagg, fname_AggS
         #  `M_abstain_reason` RIDES THE SAME MERGE (CEO, 2026-08-16), for the same reason
         #  `forensicTag` does: the HTML deck reads this CSV, not the forensic one, so a reason
         #  that stopped here would explain the abstention in the artifact the CEO opens least.
-        forensic_cols = ['source', 'isFinancial', 'financialKind', 'forensicValid',
+        #  `carveLabel` / `forensicReason` / `forensicNote` RIDE THE SAME MERGE (Q-66), for the
+        #  reason `M_abstain_reason` was added to it: the deck reads THIS CSV for a general-pool
+        #  name, so a refusal reason that stopped at the forensic CSV would explain the blank in
+        #  the artifact the CEO opens least.  `forensicNote` is the caveat that ships WITH a
+        #  score (Mining only today) and is deliberately a different column from the reason a
+        #  score is absent -- a caveat rendered where a refusal belongs would read as a refusal.
+        forensic_cols = ['source', 'carveLabel', 'isFinancial', 'financialKind',
+                         'forensicValid', 'forensicReason', 'forensicNote',
                          'M_flag_gt_-1.78', 'M_drivers', 'M_abstain_reason', 'C_flag_ge_4',
                          'C_flags_fired', 'sloanAccruals',
                          'sloan_worstQuintile_inShortlist', 'forensicTag']
@@ -2659,12 +2703,32 @@ def createPresentation(finalBoRank_df, mscore, cscore, baseurl, api_key, topn, f
             #  reader anyway -- the deck's copy of this same expression is what made its
             #  low-confidence guard unable to fire at all.
             _fv = ff.published_forensic_validity(frow.get('forensicValid'))
+            #  THE REASON, NOT A CATEGORY (Q-66).  The banner used to name only the financial
+            #  KIND, which is the sector classification -- so a name refused by its CARVE LABEL
+            #  would have read "INVALID for " with an empty kind.  `forensicReason` is the one
+            #  sentence the CSV, this cell and the deck all render, so the three cannot give the
+            #  reader three accounts of one blank.
+            #  `ff.cell_text`, not `str(x or '')`: NaN is TRUTHY, so the short-circuit form
+            #  yields the literal string 'nan' for a blank that has been through a CSV -- which
+            #  then reads as a REASON and prints "nan" where the applicability sentence goes.
+            #  `flag_df` reaches this function in memory today, so the unsafe form is latent
+            #  here rather than live; it is routed through the shared reader anyway, because
+            #  the identical expression WAS live one layer over in the deck (it put
+            #  "Why there is no M / C score: nan" on all five Mining pages) and a second copy
+            #  of a defect that has already fired once is not worth keeping.
+            _reason = ff.cell_text(frow.get('forensicReason'))
             if _fv is not True:
                 ws.cell(row=frow0, column=fcol + 1).value = (
-                    f"INVALID for {frow.get('financialKind', 'financial')} — use financial lens"
+                    (_reason or
+                     f"INVALID for {frow.get('financialKind', 'financial')} — use financial lens")
                     if _fv is False else
                     'forensic applicability NOT DETERMINED for this name — no '
                     'classification in this run; not a clean reading')
+            #  A CAVEAT ON A SCORE THAT EXISTS gets its own line and only when there IS one --
+            #  never in the cell above, which is where a refusal goes.
+            elif ff.cell_text(frow.get('forensicNote')):
+                ws.cell(row=frow0, column=fcol + 1).value = (
+                    'READ WITH THIS CAVEAT — ' + ff.cell_text(frow.get('forensicNote')))
             forensic_items = [
                 ('Summary tag', frow.get('forensicTag', '')),
                 #  THREE-VALUED, NOT TRUTHY (P-4, 2026-08-29).  `M_flag_gt_-1.78` is BLANK on a
@@ -2683,8 +2747,15 @@ def createPresentation(finalBoRank_df, mscore, cscore, baseurl, api_key, topn, f
                 ('Montier C >= 4?', ff.flag_display(frow.get('C_flag_ge_4'))),
                 ('  C flags fired', frow.get('C_flags_fired', '') or '-'),
                 ('Sloan accruals', frow.get('sloanAccruals', '')),
-                ('  Sloan worst-quintile (within shortlist)?',
-                 'FLAG' if frow.get('sloan_worstQuintile_inShortlist') else 'no'),
+                #  THREE-VALUED HERE TOO (Q-66).  This line was a bare truthiness test, which
+                #  had both of the failure modes its two neighbours already guard against: a
+                #  blank rendered as `no` asserts "assessed, and not in the worst quintile"
+                #  about a name excluded from the quantile entirely, and the string 'False' a
+                #  CSV round-trip produces is TRUTHY, so it would have printed `FLAG`.  The
+                #  column now carries `''` for a name the models do not apply to, so it goes
+                #  through the same one reader as the M and C flags above.
+                ('  Sloan worst-quintile (within its pool)?',
+                 ff.flag_display(frow.get('sloan_worstQuintile_inShortlist'))),
                 ('Financial (bank/insurer/REIT)?', 'YES' if frow.get('isFinancial') else 'no'),
             ]
             for i, (label, val) in enumerate(forensic_items, start=1):
