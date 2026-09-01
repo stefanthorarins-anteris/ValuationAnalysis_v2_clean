@@ -1775,6 +1775,90 @@ def test_P4_blanking_at_SOURCE_reaches_every_consumer_of_the_two_columns():
     print("PASS test_P4_blanking_at_SOURCE_reaches_every_consumer_of_the_two_columns")
 
 
+# =========================================================================== #
+#  Q-44 -- THE OTHER HALF OF P-4: A BLANK APPLICABILITY CELL IS NOT A VALID ONE
+# =========================================================================== #
+#  P-4 closed `M_flag_gt_-1.78` / `C_flag_ge_4`, where a blank read as True INVENTS a finding.
+#  `forensicValid` is the same column shape pointing the other way: a blank read as True
+#  SUPPRESSES one -- it asserts the Beneish / Montier / Sloan models apply to a name nobody
+#  classified, and every marker keyed off it then declines to fire.  Every consumer wrote
+#  `bool(row.get('forensicValid', True))`, i.e. exactly that default.
+
+def test_Q44_a_blank_forensicValid_reads_as_UNDETERMINED_not_as_valid():
+    """*** Q-44, 2026-08-31. ***  `published_forensic_validity` is the one reader, and its
+    contract is that the blank gets its own value.  `None`, never True.
+
+    TWO-SIDED, and the second side is the one a lazy fix breaks: a cell that SAYS true must
+    still read True, or the fix has traded a silent default for a column that never says
+    anything -- which would put every name permanently in the low-confidence state and make
+    the marker as uninformative as the one it replaces.
+    """
+    import forensicFlags as ff
+    #  the blank, in all four shapes it reaches a consumer in
+    for blank in (None, '', '   ', float('nan'), np.nan, 'nan', 'NaN', 'none', 'None'):
+        assert ff.published_forensic_validity(blank) is None, repr(blank)
+    #  ...and the two real answers still come through, in memory and after a CSV round-trip
+    for yes in (True, np.bool_(True), 'True', 'true', 'TRUE', '1', 'yes', 1):
+        assert ff.published_forensic_validity(yes) is True, repr(yes)
+    for no in (False, np.bool_(False), 'False', 'false', '0', 'no', 0):
+        assert ff.published_forensic_validity(no) is False, repr(no)
+    #  THE NaN TRAP, stated as its own assertion because it is the whole reason `''` is the
+    #  blank on the neighbouring columns: `bool(float('nan')) is True`.
+    assert bool(float('nan')) is True
+    assert ff.published_forensic_validity(float('nan')) is not True
+
+
+def test_Q44_a_real_CSV_round_trip_of_the_column_does_not_become_valid():
+    """The blank arrives as `''` in memory and as NaN through a CSV, and the two are the same
+    fact.  Asserted against a real round-trip rather than a hand-written NaN, because that is
+    the path the deck actually reads the column on."""
+    import forensicFlags as ff
+    df = pd.DataFrame({'source': ['A', 'B', 'C'], 'forensicValid': [True, False, '']})
+    buf = io.StringIO()
+    df.to_csv(buf, index=False)
+    back = pd.read_csv(io.StringIO(buf.getvalue()))
+    got = [ff.published_forensic_validity(v) for v in back['forensicValid']]
+    assert got == [True, False, None], (got, list(back['forensicValid']))
+
+
+def test_Q44_the_undetermined_state_is_RENDERED_as_its_own_word():
+    """`validity_display` is to `forensicValid` what `flag_display` is to the M/C flags: the
+    one place the three states become words.  Rendering undetermined as `applies` is the Q-44
+    defect itself; rendering it as INVALID overstates a classification nobody made."""
+    import forensicFlags as ff
+    assert ff.validity_display(True) == 'applies'
+    assert 'INVALID' in ff.validity_display(False)
+    assert ff.validity_display('') == 'not determined'
+    assert ff.validity_display(np.nan) == 'not determined'
+    assert ff.validity_display(None) == 'not determined'
+    #  three DISTINCT strings, or the reader cannot tell the states apart on the page
+    assert len({ff.validity_display(v) for v in (True, False, '')}) == 3
+
+
+def test_Q44_the_XLSX_forensic_block_reads_applicability_through_the_ONE_reader():
+    """The wiring check for the OTHER surface that renders this column.  `postBo`'s XLSX block
+    tested `not bool(frow.get('forensicValid', True))` -- the same truthy-with-a-True-default
+    read that made the deck's guard dormant, and it fails silently in the direction that
+    SUPPRESSES the "INVALID for a financial" banner.
+
+    WHAT THIS CANNOT CATCH, stated as the P-4 wiring test states it: this reads the consumers
+    that exist TODAY.  A surface written tomorrow as `if row['forensicValid']:` ships the same
+    defect with the suite green.  The real guard is `published_forensic_validity` making the
+    correct read the easy one.
+    """
+    pb_src = open(os.path.join(REPO, 'postBo.py'), encoding='utf-8').read()
+    assert "ff.published_forensic_validity(frow.get('forensicValid'))" in pb_src
+    assert "bool(frow.get('forensicValid', True))" not in pb_src, \
+        'the truthy-with-a-True-default read is back in the XLSX block'
+    gp_src = open(os.path.join(REPO, 'generate_presentation.py'), encoding='utf-8').read()
+    assert "forensic_valid = True" not in gp_src, 'the deck default is back'
+    assert "ff.published_forensic_validity(" in gp_src
+    ff_src = open(os.path.join(REPO, 'forensicFlags.py'), encoding='utf-8').read()
+    #  ONE definition of the tri-state, as with `_flag_true`
+    assert ff_src.count('def published_forensic_validity(') == 1
+    print("PASS test_Q44_the_XLSX_forensic_block_reads_applicability_through_the_ONE_reader")
+
+
 if __name__ == '__main__':
     test_component_directions_exact_row0()
     test_mscore_fold_and_flag_dirty()
@@ -1837,4 +1921,8 @@ if __name__ == '__main__':
     test_P4_C_flag_is_blanked_on_the_SAME_rule_with_a_measured_effect_of_ZERO()
     test_P4_a_blank_survives_the_CSV_round_trip_as_a_NON_verdict_not_as_a_FLAG()
     test_P4_blanking_at_SOURCE_reaches_every_consumer_of_the_two_columns()
+    test_Q44_a_blank_forensicValid_reads_as_UNDETERMINED_not_as_valid()
+    test_Q44_a_real_CSV_round_trip_of_the_column_does_not_become_valid()
+    test_Q44_the_undetermined_state_is_RENDERED_as_its_own_word()
+    test_Q44_the_XLSX_forensic_block_reads_applicability_through_the_ONE_reader()
     print("\nALL detectManipulation KNOWN-ANSWER TESTS PASSED")

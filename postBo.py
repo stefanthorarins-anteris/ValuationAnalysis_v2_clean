@@ -2573,9 +2573,21 @@ def createPresentation(finalBoRank_df, mscore, cscore, baseurl, api_key, topn, f
             frow0 = psdf_row + 13
             ws.cell(row=frow0, column=fcol).font = bold_font
             ws.cell(row=frow0, column=fcol).value = 'FORENSIC FLAGS (guidance, not a drop)'
-            if not bool(frow.get('forensicValid', True)):
+            #  THREE-VALUED, NOT TRUTHY-WITH-A-True-DEFAULT (Q-44, 2026-08-31).  This is the
+            #  P-4 defect in the column one to the left, pointing the other way: a blank read
+            #  as True SUPPRESSES the banner, i.e. it asserts the Beneish / Montier / Sloan
+            #  models apply to a name nobody classified.  `bool(np.nan)` is True as well, so a
+            #  round-tripped blank lands on the same silent branch.  Latent here today
+            #  (`buildForensicFlagTable` always writes a real bool), and routed through the one
+            #  reader anyway -- the deck's copy of this same expression is what made its
+            #  low-confidence guard unable to fire at all.
+            _fv = ff.published_forensic_validity(frow.get('forensicValid'))
+            if _fv is not True:
                 ws.cell(row=frow0, column=fcol + 1).value = (
-                    f"INVALID for {frow.get('financialKind', 'financial')} — use financial lens")
+                    f"INVALID for {frow.get('financialKind', 'financial')} — use financial lens"
+                    if _fv is False else
+                    'forensic applicability NOT DETERMINED for this name — no '
+                    'classification in this run; not a clean reading')
             forensic_items = [
                 ('Summary tag', frow.get('forensicTag', '')),
                 #  THREE-VALUED, NOT TRUTHY (P-4, 2026-08-29).  `M_flag_gt_-1.78` is BLANK on a

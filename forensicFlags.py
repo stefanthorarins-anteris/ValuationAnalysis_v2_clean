@@ -151,6 +151,59 @@ def _flag_true(v):
     return bool(v)
 
 
+#  A FORENSIC-VALIDITY CELL IS ALSO THREE-VALUED, AND ITS BLANK IS THE DANGEROUS ONE
+#  (Q-44, 2026-08-31).  `forensicValid` says whether the Beneish / Montier / Sloan models
+#  APPLY to a name at all -- it is a statement about the business model, not about the data --
+#  and every consumer so far has read it with `bool(row.get('forensicValid', True))`, i.e. it
+#  DEFAULTS TO VALID.  That default is the same class of error `_flag_true` closes one column
+#  to the left, pointing the other way: `M_flag_gt_-1.78` blank defaulting to True invents a
+#  finding, `forensicValid` blank defaulting to True SUPPRESSES one -- it asserts "the fraud
+#  models apply to this name" about a name nobody classified, and every downstream
+#  low-confidence marker keyed off it then silently declines to fire.
+#
+#  SO THE ABSENCE GETS ITS OWN VALUE.  `None` means UNDETERMINED: not valid, not invalid, not
+#  assessed.  A caller that needs a binary must decide which way undetermined falls AND SAY SO
+#  AT ITS OWN CALL SITE -- which is the whole point, because the two consumers want opposite
+#  defaults (a display marker should fire on undetermined; a Sloan-quantile exclusion should
+#  not).  ONE reader, so a new surface cannot re-derive it wrongly.
+def published_forensic_validity(v):
+    """Tri-state read of a published `forensicValid` cell: True / False / None.
+
+    `None` for a blank -- absent key, `''`, NaN after a CSV round-trip, or the string 'nan'
+    that an object column reads back as.  NEVER True: a name nobody classified is not a name
+    classified as forensically valid, and defaulting it to True is precisely how the deck's
+    low-confidence guard came to be unable to fire (Q-44).  Accepts the shapes the column
+    reaches a consumer in: a Python/NumPy bool in memory, 'True'/'False' from a CSV, and the
+    blank in either of its two forms."""
+    if v is None:
+        return None
+    if isinstance(v, str):
+        t = v.strip().lower()
+        if t in ('true', '1', 'yes'):
+            return True
+        if t in ('false', '0', 'no'):
+            return False
+        return None                      # '' and 'nan' both land here
+    try:
+        if pd.isna(v):
+            return None
+    except (TypeError, ValueError):
+        pass
+    return bool(v)
+
+
+def validity_display(v, valid='applies', invalid='INVALID (financial lens)',
+                     blank='not determined'):
+    """How a tri-state forensic validity is RENDERED, in one place -- the `flag_display`
+    of this column.  The undetermined state gets its own words: showing it as `applies` is
+    the Q-44 defect itself, and showing it as `INVALID` overstates a classification nobody
+    made."""
+    t = published_forensic_validity(v)
+    if t is None:
+        return blank
+    return valid if t else invalid
+
+
 def flag_display(v, yes='FLAG', no='no', blank='not assessed'):
     """How a possibly-blank forensic flag is RENDERED, in one place.  The blank gets its own
     word: rendering it as `no` is the P-4 defect itself (a negative finding asserted where the

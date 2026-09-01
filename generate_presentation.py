@@ -1390,11 +1390,19 @@ def _verdict_state_band(rule, v):
 #  `_low_conf_note`'s absent-value branch is now unreachable through `compute_verdict` and is
 #  kept deliberately as the belt to this brace (a direct assertion in the test exercises it),
 #  so a future re-ordering cannot silently restore the false sentence as well as the icon.
-def _low_conf_note(value):
-    """The Y2 low-confidence note, told apart from the case where there is no value."""
-    if np.isnan(safe_float(value)):
-        return 'value unavailable, and this metric is also flagged low-confidence (see 🚩/forensic)'
-    return 'value present but flagged low-confidence (see 🚩/forensic)'
+def _low_conf_note(value, reason=None):
+    """The Y2 low-confidence note, told apart from the case where there is no value.
+
+    `reason` names WHICH low-confidence determination fired.  It exists because the guard now
+    has two genuinely different triggers and a reader cannot act on the icon without knowing
+    which one it is: "the forensic models do not apply to a bank" is a statement about the
+    business, "we could not determine whether they apply" is a statement about our own
+    coverage (Q-44).  An unnamed 🟡 collapses them into one shrug."""
+    base = ('value unavailable, and this metric is also flagged low-confidence'
+            if np.isnan(safe_float(value))
+            else 'value present but flagged low-confidence')
+    why = str(reason).strip() if reason and not isinstance(reason, bool) else ''
+    return f'{base} — {why} (see 🚩/forensic)' if why         else f'{base} (see 🚩/forensic)'
 
 
 def compute_verdict(metric_key, value, cohort_label=None, low_conf=False):
@@ -1402,7 +1410,9 @@ def compute_verdict(metric_key, value, cohort_label=None, low_conf=False):
     (1) no rule / suppressed for cohort -> ⚪ 'gray'; (2) else NO VALUE -> ⚪ 'gray, value
     unavailable'; (3) else Y2 low-confidence -> 🟡 'neutral'; (4) else value vs rule.
     Returns (state, note) where state in {good,neutral,warn,gray} or (None, None) when the
-    metric takes NO icon. `low_conf` carries the caller's Y2 determination.
+    metric takes NO icon. `low_conf` carries the caller's Y2 determination: falsy for none,
+    or truthy to fire -- and when it is a non-empty STRING that string is the REASON, rendered
+    into the note (Q-44).  A bare `True` still works and reads exactly as before.
 
     (2) BEFORE (3) is the P-5 ruling: absence outranks low confidence.  A missing value and an
     uncertain value are different facts, and rendering the missing one as the uncertain one
@@ -1416,7 +1426,7 @@ def compute_verdict(metric_key, value, cohort_label=None, low_conf=False):
         if st is None:
             return 'gray', 'value unavailable'
         if low_conf:
-            return 'neutral', _low_conf_note(value)
+            return 'neutral', _low_conf_note(value, low_conf)
         return st, r['note']
     if metric_key in VERDICT_FLOORS:
         f = VERDICT_FLOORS[metric_key]
@@ -1426,7 +1436,7 @@ def compute_verdict(metric_key, value, cohort_label=None, low_conf=False):
         if np.isnan(v):
             return 'gray', 'value unavailable'
         if low_conf:
-            return 'neutral', _low_conf_note(value)
+            return 'neutral', _low_conf_note(value, low_conf)
         bad = (v < f['floor']) if f['bad'] == 'below' else (v > f['floor'])
         return ('warn', f['note']) if bad else ('gray', 'no positive standalone rule (peer-relative)')
     if metric_key in VERDICT_GRAY:
@@ -2066,6 +2076,7 @@ class PresentationBuilder:
         #  the deck renders cohort, side-list and market-cap-band names too.  See
         #  `offline_field`.
         self._offline_cache = {}
+        self._validity_cache = {}
         self.html_parts = []
 
     #  ------------------------------------------------------------------------------- #
@@ -2146,6 +2157,85 @@ class PresentationBuilder:
             #  i.e. exactly the pre-fix behaviour -- and must never cost the deck.
             log.info(f'offline fields unavailable for {ticker}: {type(_e).__name__}: {_e}')
             return {}
+
+    #  ------------------------------------------------------------------------------- #
+    #  FORENSIC APPLICABILITY FOR EVERY PAGE, NOT JUST THE ONES IN THE CSV  (Q-44)       #
+    #  ------------------------------------------------------------------------------- #
+    #  THE DEFECT.  `evaluate_page` read `forensicValid` from `AggScoreTop100` ALONE and
+    #  DEFAULTED IT TO True for anything absent.  `AggScoreTop100` is the GENERAL pool, which
+    #  `carveOut` has already stripped of every financial -- so `forensicValid == False` does
+    #  not occur in it and never has (0 rows across all seven saved runs, 08-13 -> 08-29), and
+    #  the 25 of 45 pages that are not in the file at all took the True default.  The guard
+    #  therefore could not fire on any deck the pipeline produces: not rarely, STRUCTURALLY.
+    #  A guard that cannot fire is worse than no guard, because on the page it reads as
+    #  coverage -- the reader infers "no low-confidence marker, so the forensic reading stands".
+    #
+    #  WHERE THE STATE ACTUALLY LIVES.  Not in one place, so this reads three, in order of how
+    #  directly each one saw the name, and stops at the first that has an answer:
+    #    1. `AggScoreTop100.forensicValid`   -- the run's own determination, and the only one
+    #       reconciled against the API sector (`postBo` -> `ff.applySectorFallback`).
+    #    2. `ForensicFlagsTop100.forensicValid` -- same determination pre-reconciliation; a
+    #       real fallback rather than a duplicate, because the AggScore CSV is a MERGE and the
+    #       column can be absent from it (the offline reduced schema drops columns).
+    #    3. `carveout_labels` -- the run's own carve label for the name, mapped by
+    #       `carveOut.cohort_forensic_validity`.  This is what covers the 25 cohort pages:
+    #       `carveOut.classify` routes off the same sector labels `forensicFlags` calls
+    #       bank/insurer/REIT, so the label already carries the verdict.
+    #
+    #  AND NOTHING ELSE -- DELIBERATELY.  The obvious fourth source is `sectorsdic_fmp.pickle`,
+    #  and reading it here would be a defect, not a fallback: it is UNDATED and rebuilt every
+    #  run, `resolve_run_artifacts` refuses exactly this kind of cross-run substitution for the
+    #  dated artifacts, and the two copies on this machine are not even the same TAXONOMY (40
+    #  keys / 40,164 symbols in the repo, 11 / 11,499 in the transfer dir -- see carveOut's own
+    #  warning).  Measured: classifying the 45 pages of the 2026-08-29 deck from the repo copy
+    #  instead of the run's flips SIX of them, in both directions.  A guard wired to a source
+    #  that can silently disagree with the run is the Q-44 shape again with extra steps.
+    #
+    #  THE DEFAULT IS NOT True.  Unresolved is `None` -- undetermined -- and the caller fires
+    #  the low-confidence marker on it.  An absent classification is an ABSENCE; asserting the
+    #  fraud models apply to a name nobody classified is the assertion that made this guard
+    #  dormant in the first place.
+    _VALIDITY_NOTE = {
+        True:  '',
+        False: 'the forensic models (Beneish / Montier / Sloan) do not apply to a '
+               'financial — read this on a financial lens',
+        None:  'we could not determine whether the forensic models apply to this name '
+               '— this is an absence of classification, not a clean reading',
+    }
+
+    def forensic_validity(self, ticker):
+        """(tri_state, source) for one page name. `tri_state` is True / False / None, where
+        None means UNDETERMINED and is never silently promoted to True."""
+        cache = self._validity_cache
+        if ticker not in cache:
+            cache[ticker] = self._resolve_forensic_validity(ticker)
+        return cache[ticker]
+
+    def _resolve_forensic_validity(self, ticker):
+        import forensicFlags as ff
+        for key, src in (('aggscore_df', 'AggScoreTop100'),
+                         ('forensic_df', 'ForensicFlagsTop100')):
+            df = self.data.get(key)
+            if df is None or getattr(df, 'empty', True) or 'forensicValid' not in df.columns:
+                continue
+            row = df[df['source'] == ticker]
+            if row.empty:
+                continue
+            t = ff.published_forensic_validity(row.iloc[0].get('forensicValid'))
+            if t is not None:
+                return t, src
+        labels = self.data.get('carveout_labels')
+        if labels is not None and ticker in getattr(labels, 'index', []):
+            try:
+                import carveOut as _co
+                t = _co.cohort_forensic_validity(labels.loc[ticker])
+            except Exception as _e:
+                log.info(f'carve-label validity unavailable for {ticker}: '
+                         f'{type(_e).__name__}: {_e}')
+                t = None
+            if t is not None:
+                return t, 'carve label %s' % labels.loc[ticker]
+        return None, 'unresolved'
 
     def ext_val(self, ticker, metric):
         """Raw extended-metric value for a ticker (marker for its own bar)."""
@@ -2343,18 +2433,24 @@ class PresentationBuilder:
         moat = self.get_moat_components(ticker)
         tl_to_equity = safe_float(moat.get('TLtoEquity', np.nan))
 
-        # aggscore forensic fields (Top-100 CSV; every rendered name is within Top-100).
-        m_score = c_score = np.nan; forensic_valid = True; m_flag = False; m_drivers = ''
+        #  aggscore forensic fields.  THE COMMENT THAT USED TO SIT HERE -- "every rendered
+        #  name is within Top-100" -- WAS FALSE, and was the whole of Q-44: the deck renders
+        #  the general band pages PLUS the top-5 of five carve cohorts, and on 2026-08-29
+        #  exactly 20 of its 45 pages were in that CSV.  M/C stay CSV-only (they are scores,
+        #  and there is no offline source for the other 25 -- they render ⚪ 'value
+        #  unavailable', which is true).  The APPLICABILITY verdict does NOT stay CSV-only;
+        #  see `forensic_validity` for where it really lives and why it defaults to
+        #  undetermined rather than to valid.
+        m_score = c_score = np.nan; m_flag = False; m_drivers = ''
         agg = self.data.get('aggscore_df')
         if agg is not None and not agg.empty:
             ar = agg[agg['source'] == ticker]
             if not ar.empty:
                 r0 = ar.iloc[0]
                 m_score = safe_float(r0.get('M-Score')); c_score = safe_float(r0.get('C-Score'))
-                fv = str(r0.get('forensicValid')).strip().lower()
-                forensic_valid = fv not in ('false', '0', 'no', 'nan', 'none', '')
                 m_flag = str(r0.get('M_flag_gt_-1.78')).strip().lower() in ('true', '1', 'yes')
                 m_drivers = str(r0.get('M_drivers') or '')
+        forensic_state, _ = self.forensic_validity(ticker)
 
         # dilution: shares +>10% over 3y (Section-H computation reused)
         dilution = False
@@ -2364,7 +2460,11 @@ class PresentationBuilder:
                 dilution = True
 
         # ---- Y2 low-confidence guards ----
-        low_conf_forensic = not forensic_valid                   # -> M/C/Sloan 🟡
+        #  FIRES ON *NOT-ESTABLISHED-VALID*, NOT ON *ESTABLISHED-INVALID* (Q-44).  The two
+        #  differ on exactly the names this guard was blind to, and the marker carries WHICH
+        #  of the two it is, so an undetermined name is not dressed up as a classified one.
+        low_conf_forensic = (self._VALIDITY_NOTE[forensic_state]
+                             if forensic_state is not True else False)   # -> M/C/Sloan 🟡
         denom_weak = False                                       # -> IncomeQuality/CashConv 🟡
         if not np.isnan(ni_ttm_rev):
             if ni_ttm_rev <= 0:
@@ -2755,6 +2855,25 @@ class PresentationBuilder:
         _why = '' if _why is None or (isinstance(_why, float) and np.isnan(_why)) else str(_why)
         if _why.strip() and _why.strip().lower() != 'nan':
             forensic_tag = f"{forensic_tag} <span class=\"forensic-why\">— {_why}</span>"
+        #  AND WHETHER THE MODELS APPLY AT ALL (Q-44, 2026-08-31).  25 of the 45 pages on the
+        #  2026-08-29 deck have no row in that CSV, so the chip above them read a bare
+        #  em-dash -- and a bare em-dash beside the word "Forensic" is read as "nothing to
+        #  report", which is the silence-as-approval failure the icon legend exists to
+        #  prevent.  The applicability verdict is resolvable for those pages (see
+        #  `forensic_validity`); the tag is not, so this states the one it has and names its
+        #  own source, rather than leaving the reader to infer either.
+        _vstate, _vsrc = self.forensic_validity(ticker)
+        if _vstate is not True:
+            _vtxt = ('forensic models INVALID here (financial) — use a financial lens'
+                     if _vstate is False else
+                     'applicability NOT DETERMINED — no forensic classification for this '
+                     'name in this run')
+            #  ITS OWN CLASS, not `forensic-why`.  That one explains why an M-score is
+            #  ABSENT (a statement about the vendor's data); this states whether the models
+            #  APPLY AT ALL (a statement about the business).  Sharing a class would let a
+            #  future test or style change treat the two as one fact.
+            forensic_tag = (f'{forensic_tag} <span class="forensic-applic">— {_vtxt} '
+                            f'[{escape(str(_vsrc))}]</span>')
 
         # HOW MUCH OF THIS SCORE IS MEASURED (register N-4, CEO 2026-08-13).
         # Placed IMMEDIATELY BESIDE `Forensic`, deliberately and not anywhere else: the exact
@@ -3499,7 +3618,16 @@ class PresentationBuilder:
             '<div class="leg-note">The 🚩 is independent of the verdict icon — a 🟢🚩 or ⚪🚩 '
             'is valid (a good/no-rule number can still be flagged). A MISSING value always shows ⚪ '
             'even when it is also low-confidence: absence is the stronger fact, so it is the '
-            'one the icon reports. Hover any icon for the rule '
+            'one the icon reports. '
+            #  THE THIRD STATE, SAID OUT LOUD (Q-44).  M-Score / C-Score / Sloan carry a
+            #  🟡 whenever the forensic models are not ESTABLISHED to apply -- which covers
+            #  both a name classified as a financial and a name nobody classified.  Hover
+            #  gives which; the legend must not let the reader read the second as the first.
+            'M-Score / C-Score / Sloan show 🟡 whenever it is not established that the '
+            'forensic models apply to the name — either because it is a financial (they do '
+            'not apply) or because no forensic classification for it exists in this run '
+            '(we do not know); hover says which. '
+            'Hover any icon for the rule '
             'and, for a flag, the mechanism + offending metric + values + tier + rule id.</div>'
             #  THE VALENCE OF THE FIELDS ADDED 2026-08-13, STATED ON THE PAGE.  A marker whose
             #  direction the reader has to infer is a marker that can be inferred backwards,
@@ -3753,7 +3881,11 @@ nav.sidebar {
    statement about the vendor's data, and rendering a data gap in alarm-red would read as a
    forensic red flag -- the exact inversion the CEO ruled against for the imputed-share
    marker. */
-.forensic-why {
+.forensic-why,
+/* ...and, in the same muted italic and for the same reason, whether the forensic MODELS
+   apply to this name at all (Q-44).  Also not the tag's red: "the Beneish model does not
+   apply to a REIT" is a scope statement, not a finding about the company. */
+.forensic-applic {
     color: #6c757d;
     font-style: italic;
     font-weight: normal;

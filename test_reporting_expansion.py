@@ -914,15 +914,19 @@ def test_the_TTM_helpers_no_longer_carry_the_dropna_then_head_expression():
 #  "incomplete" reads as a broken tool at that rate.
 # ---------------------------------------------------------------------------
 
-def _deck_with_forensic(agg_row, forensic_df=None):
+def _deck_with_forensic(agg_row, forensic_df=None, carveout_labels=None):
     b = object.__new__(gp.PresentationBuilder)
     b.data = {'aggscore_df': pd.DataFrame([agg_row]),
               'postrank_df': pd.DataFrame({'source': [agg_row['source']],
                                            'AggScore': [0.5], 'moatScore': [7.0]}),
               'forensic_df': forensic_df,
+              #  Q-44: the deck's forensic-applicability guard reads the run's own carve
+              #  labels for the pages the AggScore CSV does not contain.
+              'carveout_labels': carveout_labels,
               'profile_map': {}, 'fx_table': None, 'fill_by_name': {}, 'clone_map': {},
               'fx_label': None}
     b._offline_cache = {}
+    b._validity_cache = {}
     return b
 
 
@@ -1045,3 +1049,184 @@ def test_the_deck_R5_rule_cannot_fire_off_a_driver_string_that_has_no_M_score():
     assert '_mscore_drivers' not in src, 'the deck must READ the published column, not rebuild it'
     #  and the rule still keys off that variable, so a blank column disarms it
     assert "mdriver_hit = any(tok in m_drivers.upper()" in src
+
+
+# =========================================================================== #
+#  Q-44 -- A GUARD STRUCTURALLY BLIND TO WHAT SITS BENEATH IT                 #
+# =========================================================================== #
+#  `evaluate_page` set `low_conf_forensic = not forensic_valid`, and resolved `forensicValid`
+#  from `AggScoreTop100` ALONE with a `True` default.  That CSV is the GENERAL pool, which
+#  `carveOut` has already stripped of every financial, so `False` does not occur in it (0 rows
+#  across all seven saved runs, 08-13 -> 08-29) -- and 25 of the 45 pages on the 2026-08-29
+#  deck are not in the file at all and took the default.  The guard could not fire on any deck
+#  the pipeline produces.  It shipped nothing wrong; it silently shipped no coverage while the
+#  page read as covered.
+#
+#  MEASURED, OFFLINE, ON THE 2026-08-29 RUN (`--augment off`, no network, no pipeline run):
+#  45 pages, 1,665 verdict cells / 1,755 `compute_verdict` calls; under the fix the guard
+#  resolves 25 pages valid and 20 invalid (was: 45 valid, 0 invalid) and TEN cells change
+#  icon, every one of them `sloan` on a REIT (5) or InvestmentVehicle (5) page.
+
+
+def _validity_deck(agg_df, labels=None, forensic_df=None):
+    b = object.__new__(gp.PresentationBuilder)
+    b.data = {'aggscore_df': agg_df, 'forensic_df': forensic_df,
+              'carveout_labels': labels}
+    b._validity_cache = {}
+    return b
+
+
+def test_Q44_the_guard_resolves_the_pages_that_are_NOT_in_the_AggScore_CSV():
+    """*** Q-44, 2026-08-31. ***  The whole defect in one assertion: a carve-cohort page has
+    no row in `AggScoreTop100`, and must NOT therefore be treated as forensically valid.
+
+    The run's own `carveout_labels` is the source, and it is the source ON PURPOSE -- see the
+    comment on `_resolve_forensic_validity`.  It travels inside the same Boresults pickle as
+    the shortlist, so it cannot disagree with the run; the sector pickle can and does (it is
+    undated, rebuilt per run, and the two copies on this machine are different taxonomies --
+    classifying the 45 pages from the repo copy instead of the run's flips SIX of them).
+    """
+    agg = pd.DataFrame({'source': ['TNK'], 'forensicValid': [True]})
+    labels = pd.Series({'TNK': 'general', 'HST': 'REIT', 'PSEC': 'InvestmentVehicle',
+                        'FRP.L': 'FinManager', 'NMIH': 'BalanceSheetFin',
+                        'DPM.TO': 'Mining'}, name='carve_label')
+    d = _validity_deck(agg, labels)
+    #  the CSV still wins where it has the name
+    assert d.forensic_validity('TNK') == (True, 'AggScoreTop100')
+    #  ...and the four financial cohorts are now REACHED, which they never were
+    for t in ('HST', 'PSEC', 'FRP.L', 'NMIH'):
+        state, src = d.forensic_validity(t)
+        assert state is False, (t, state, src)
+        assert 'carve label' in src, (t, src)
+    #  TWO-SIDED: a cohort that is NOT financial must keep its real verdicts, or the fix has
+    #  replaced a guard that never fires with one that always does.
+    assert d.forensic_validity('DPM.TO')[0] is True
+
+
+def test_Q44_an_unresolvable_page_is_UNDETERMINED_and_the_default_is_not_True():
+    """The exact defect class P-4 fixed at source, in the other column: the DEFAULT.
+
+    NOTHING ON THE 2026-08-29 DECK EXERCISES THIS -- all 45 pages resolve (25 valid, 20
+    invalid) -- so it is asserted here rather than measured.  It is the state a future deck
+    reaches the moment it renders a name outside the top-100 whose carve label is 'general',
+    or reads a Boresults pickle that predates `carveout_labels`.
+    """
+    agg = pd.DataFrame({'source': ['TNK'], 'forensicValid': [True]})
+    d = _validity_deck(agg, pd.Series({'TNK': 'general'}, name='carve_label'))
+    #  a name nobody classified
+    assert d.forensic_validity('NEWNAME') == (None, 'unresolved')
+    #  'general' is NOT 'non-financial': an UNMAPPED name also lands in general, so the label
+    #  certifies nothing.  This is the assertion that stops the fix reintroducing the default
+    #  one level further down.
+    assert co.cohort_forensic_validity('general') is None
+    assert co.cohort_forensic_validity(None) is None
+    assert co.cohort_forensic_validity('NoSuchCohort') is None
+    #  no carve labels at all (a pre-label pickle) -> undetermined, never valid
+    assert _validity_deck(agg, None).forensic_validity('HST') == (None, 'unresolved')
+
+
+def test_Q44_a_BLANK_forensicValid_in_the_CSV_falls_through_instead_of_reading_as_valid():
+    """The published column is three-valued and arrives as NaN through a CSV.  The old read
+    (`str(...).strip().lower() not in ('false','0','no','nan','none','')`) mapped the blank to
+    False -- i.e. INVALID -- which is the opposite over-claim: it would assert 'this is a
+    financial' about a name nobody classified.  Neither: fall through to the next source."""
+    agg = pd.DataFrame({'source': ['HST', 'TNK'], 'forensicValid': [np.nan, True]})
+    labels = pd.Series({'HST': 'REIT', 'TNK': 'general'}, name='carve_label')
+    d = _validity_deck(agg, labels)
+    state, src = d.forensic_validity('HST')
+    assert state is False and 'carve label' in src, (state, src)
+    #  ...and with nothing behind it, a blank is UNDETERMINED, not INVALID and not VALID
+    assert _validity_deck(agg, None).forensic_validity('HST') == (None, 'unresolved')
+
+
+def test_Q44_the_ForensicFlags_CSV_is_a_real_fallback_not_a_duplicate():
+    """The AggScore CSV is a MERGE and the offline reduced schema can drop the column; the
+    forensic CSV of the same run carries it independently."""
+    agg = pd.DataFrame({'source': ['HST'], 'CycleHeat': [0.1]})       # no forensicValid at all
+    fdf = pd.DataFrame({'source': ['HST'], 'forensicValid': [False]})
+    d = _validity_deck(agg, None, forensic_df=fdf)
+    assert d.forensic_validity('HST') == (False, 'ForensicFlagsTop100')
+
+
+def test_Q44_evaluate_page_no_longer_carries_the_default_that_made_the_guard_dormant():
+    """A BEHAVIOURAL test cannot see a guard that never fires -- that is the whole shape of
+    this defect -- so the wiring is asserted structurally as well: the literal default is
+    gone, and the guard keys off `is not True` (three states) rather than `not` (two)."""
+    src = inspect.getsource(gp.PresentationBuilder.evaluate_page)
+    assert 'forensic_valid = True' not in src, src[:400]
+    assert 'low_conf_forensic = not forensic_valid' not in src
+    assert 'self.forensic_validity(ticker)' in src
+    assert 'forensic_state is not True' in src
+    #  and the resolver never returns the old default for an unknown name
+    rsrc = inspect.getsource(gp.PresentationBuilder._resolve_forensic_validity)
+    assert "return None, 'unresolved'" in rsrc, rsrc
+
+
+def test_Q44_the_marker_says_WHICH_of_the_two_low_confidence_facts_it_is():
+    """`INVALID because it is a bank` and `we never classified it` are different facts and an
+    unnamed amber collapses them.  Three DISTINCT notes, and the valid state fires nothing."""
+    notes = gp.PresentationBuilder._VALIDITY_NOTE
+    assert not notes[True]                          # valid -> no marker at all
+    assert notes[False] and notes[None]
+    assert notes[False] != notes[None]
+    assert 'do not apply' in notes[False]
+    assert 'could not determine' in notes[None]
+    #  the reason reaches the rendered hover note, and the bare-`True` caller is unchanged
+    n = gp.compute_verdict('sloan', 0.02, 'REIT', low_conf=notes[False])[1]
+    assert 'value present but flagged low-confidence' in n and 'do not apply' in n
+    assert gp.compute_verdict('sloan', 0.02, 'REIT', low_conf=True)[1] == (
+        u'value present but flagged low-confidence (see \U0001f6a9/forensic)')
+    #  P-5 still outranks it: an ABSENT value is still white even with a named reason
+    assert gp.compute_verdict('sloan', np.nan, 'REIT', low_conf=notes[None]) == (
+        'gray', 'value unavailable')
+
+
+def test_Q44_every_carve_label_the_pipeline_can_emit_has_a_STATED_validity():
+    """The structural guard that would have caught this being written wrong.  A cohort added
+    to `classify` without an entry here inherits `None` silently -- fail-safe in direction,
+    but it would put a whole cohort permanently in the undetermined state with nobody
+    noticing.  Read off `classify`'s own source so the two cannot drift."""
+    src = inspect.getsource(co.classify)
+    emitted = {'general'}
+    for tok, const in (("label = 'REIT'", 'REIT'), ("label = 'Mining'", 'Mining')):
+        assert tok in src
+        emitted.add(const)
+    for const in (co.FIN1_VEHICLE, co.FIN2_MANAGER, co.FIN3_BALSHEET):
+        emitted.add(const)
+    missing = emitted - set(co.COHORT_FORENSIC_VALIDITY)
+    assert not missing, 'carve labels with no stated forensic validity: %s' % sorted(missing)
+    #  the financial cohorts are the point of the table -- pin their direction, not just
+    #  their presence
+    assert co.COHORT_FORENSIC_VALIDITY['REIT'] is False
+    assert co.COHORT_FORENSIC_VALIDITY[co.FIN1_VEHICLE] is False
+    assert co.COHORT_FORENSIC_VALIDITY[co.FIN2_MANAGER] is False
+    assert co.COHORT_FORENSIC_VALIDITY[co.FIN3_BALSHEET] is False
+    assert co.COHORT_FORENSIC_VALIDITY['Mining'] is True
+
+
+def test_Q44_the_page_STATES_the_applicability_it_could_not_read_from_the_CSV():
+    """A bare em-dash beside the word `Forensic` on 25 of 45 pages reads as `nothing to
+    report`.  The page now says which of the three states it is, and names its source."""
+    labels = pd.Series({'HST': 'REIT'}, name='carve_label')
+    d = _deck_with_forensic({'source': 'HST'}, carveout_labels=labels)
+    html = d.section_b_flags('HST')
+    assert 'forensic models INVALID here' in html, html
+    assert 'carve label REIT' in html, html
+    #  its own class -- the M-abstention reason is a different fact and must stay separable
+    assert 'forensic-applic' in html and 'forensic-why' not in html
+    #  a name the run classified VALID says nothing extra (silence is correct there)
+    d2 = _deck_with_forensic({'source': 'TNK', 'forensicTag': 'clean', 'forensicValid': True})
+    assert 'forensic-applic' not in d2.section_b_flags('TNK')
+    #  and the undetermined state is worded as an ABSENCE, not as a clean reading
+    d3 = _deck_with_forensic({'source': 'ZZZZ'})
+    h3 = d3.section_b_flags('ZZZZ')
+    assert 'NOT DETERMINED' in h3 and 'unresolved' in h3, h3
+
+
+def test_Q44_the_LEGEND_states_the_third_state_it_now_renders():
+    """Same rule as P-5's legend test: the only copy of the icon spec the CEO reads is the
+    legend on the page, so a state the code can render and the legend cannot explain is a
+    silent spec drift."""
+    legend = gp.PresentationBuilder._icon_legend(None)
+    assert 'forensic models apply' in legend, legend
+    assert 'no forensic classification for it exists in this run' in legend, legend

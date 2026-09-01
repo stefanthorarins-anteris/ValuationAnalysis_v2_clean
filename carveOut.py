@@ -126,6 +126,40 @@ FIN1_VEHICLE = 'InvestmentVehicle'
 FIN2_MANAGER = 'FinManager'
 FIN3_BALSHEET = 'BalanceSheetFin'
 
+#  --- WHAT EACH CARVE LABEL SAYS ABOUT THE FORENSIC MODELS (Q-44, 2026-08-31) -------------
+#  `classify` above routes ENTIRELY off the run's own sector map: REIT <- 'Real Estate',
+#  Mining <- 'Basic Materials', the three FIN-* <- 'Financial Services'.  Those are the same
+#  labels `forensicFlags._sector_is_financial` calls bank/insurer/REIT, so a carve label
+#  ALREADY CARRIES the Beneish/Montier/Sloan applicability verdict -- and it carries it in a
+#  RUN ARTIFACT (`carveout_labels`, inside the Boresults pickle), contemporaneous with the
+#  shortlist by construction.  That matters more than it sounds: the sector pickle is UNDATED
+#  and rebuilt per run, the copy in a working tree is a DIFFERENT TAXONOMY from the copy a run
+#  used (see the block above `_load_sector_map`), and re-deriving validity from whichever map
+#  happens to be on disk flipped 6 of the 45 pages of the 2026-08-29 deck.  Reading the label
+#  the run itself assigned has no such failure mode.
+#
+#  'general' IS NOT 'NON-FINANCIAL'.  A name with NO sector also lands in general -- `classify`
+#  falls through to its default -- so the label certifies nothing about it.  It maps to None
+#  (undetermined), not True.  Stated here, next to the labels, so that adding a cohort forces
+#  the question rather than inheriting a silent default.
+COHORT_FORENSIC_VALIDITY = {
+    'general':      None,        # non-financial OR unmapped -- the label cannot tell them apart
+    'REIT':         False,       # sector 'Real Estate'      -> forensic models do not apply
+    'Mining':       True,        # sector 'Basic Materials'  -> ordinary operating company
+    FIN1_VEHICLE:   False,       # all three FIN-* labels are sector 'Financial Services',
+    FIN2_MANAGER:   False,       # so the Beneish / Montier / Sloan models do not apply to
+    FIN3_BALSHEET:  False,       # any of them
+}
+
+
+def cohort_forensic_validity(label):
+    """Tri-state (True / False / None) applicability of the forensic models to a name, from
+    the carve label the RUN gave it.  `None` for 'general' and for any unknown/absent label:
+    undetermined, never assumed valid (Q-44)."""
+    if not isinstance(label, str):
+        return None
+    return COHORT_FORENSIC_VALIDITY.get(label, None)
+
 # --- FMP `industry` -> FIN-2 vs FIN-3 (PRIMARY financial classifier) ----------
 # The industry field cleanly separates managers/brokers from banks/lenders/insurers
 # (it does NOT separate FIN-1 vehicles from FIN-2 managers -- BDCs/CEFs also carry
