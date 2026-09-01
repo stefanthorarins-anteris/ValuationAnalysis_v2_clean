@@ -981,6 +981,11 @@ def test_load_pit_rates_is_DETERMINISTIC_when_both_directories_hold_the_same_bas
     must never shadow a fresh one written where the current writer puts them.
     """
     monkeypatch.chdir(tmp_path)
+    #  `load_pit_rates` searches EVIDENCE_DIR *and* `output/`, and EVIDENCE_DIR stopped
+    #  following the CWD on 2026-08-31 (register Q-29) -- so without this the "root" leg of
+    #  the tie pointed at the REAL repo root and the test measured the wrong precedence.
+    #  `tmp_path` IS the stand-in repo root here, which is what the two legs must straddle.
+    monkeypatch.setattr(fx._tu, 'EVIDENCE_DIR', str(tmp_path))
     (tmp_path / 'output').mkdir()
     name = 'FxRatesHistorical_2019-01-01_2026-08-08.csv'
     (tmp_path / name).write_text('currency,date,rate\nGBP,2022-01-03,1.35\n')

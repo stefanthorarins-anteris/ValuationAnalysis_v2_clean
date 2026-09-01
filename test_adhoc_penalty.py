@@ -168,7 +168,20 @@ def test_the_evidence_file_is_MATCHED_by_the_transfer_manifest_and_by_NO_denylis
     assert fnmatch.fnmatch(name, 'AdHocPenaltyBucket_*.csv')
     assert not tu.is_denied(name)
     #  ...and it is written where `glob.glob` looks, which is the whole point of the move.
-    assert tu.EVIDENCE_DIR == '.'
+    #  THIS USED TO ASSERT `EVIDENCE_DIR == '.'` (fixed 2026-08-31, register Q-29).  That
+    #  pinned the very defect the move was about: `'.'` resolves against the CWD, so the
+    #  destination of every evidence CSV depended on where the operator happened to launch
+    #  the run from.  The manifest globs run from the repo root, so a run launched anywhere
+    #  else wrote its evidence somewhere the transfer could not see.  The property the
+    #  transfer actually needs is that the writer's directory is the one `glob.glob` scans
+    #  -- i.e. the repo root -- REGARDLESS of the CWD, so that is what is asserted, and it
+    #  is asserted from a DIFFERENT derivation (this test file's own location) rather than
+    #  by restating `transfer_utils`' expression back at it.
+    assert os.path.isabs(tu.EVIDENCE_DIR), (
+        'EVIDENCE_DIR must not be CWD-relative -- that is the whole of Q-29')
+    assert (os.path.normcase(os.path.realpath(tu.EVIDENCE_DIR))
+            == os.path.normcase(os.path.realpath(os.path.dirname(os.path.abspath(__file__))))), (
+        'EVIDENCE_DIR must be the repo root, which is where the transfer manifest globs')
 
 
 # --------------------------------------------------------------------------- #

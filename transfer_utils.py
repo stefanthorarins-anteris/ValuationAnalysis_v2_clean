@@ -66,7 +66,7 @@ DENYLIST_PATTERNS = ['*key*', '*pem', 'fmpAPIkey.txt']
 # `meanBars._prior_streaks` READS the prior calibration CSVs back from the directory it writes
 # to, to chain the breach-streak hysteresis, and it is git-TRACKED -- moving it would strand
 # that history and silently restart every streak at zero.  It is unaffected by this change.
-EVIDENCE_DIR = '.'
+EVIDENCE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # Top-level key filenames the post-copy safety net actively removes if present.
 KEY_FILENAMES = ('fmpAPIkey.txt',)

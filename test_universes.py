@@ -844,6 +844,11 @@ def _get_tickers_with_delist(tmp_path, monkeypatch, delisted, rows=None):
     monkeypatch.setattr(gdg, 'safe_get', _fake_get)
     monkeypatch.setattr(fas, 'ensure_sector_industry_maps', lambda *a, **k: None)
     monkeypatch.chdir(tmp_path)
+    #  The prune record goes to `transfer_utils.EVIDENCE_DIR` = the repo root, which stopped
+    #  following the CWD on 2026-08-31 (register Q-29).  Without this the helper overwrites
+    #  the tracked `DelistedPrune_<today>.csv` -- it did, before conftest's guard existed.
+    import transfer_utils as _tu
+    monkeypatch.setattr(_tu, 'EVIDENCE_DIR', str(tmp_path))
     out = gdg.get_tickers('fmp', 'https://x/', 'KEY', [], 'stock_NA1_EU1',
                           sfilt='all', mcapf=-1, fn='')
     return out

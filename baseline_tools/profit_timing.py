@@ -71,13 +71,27 @@ def run(D="2021-12-31", D1="2022-12-31", D3="2024-12-31"):
         during = ex["during_hold"].median()
         after = ex["after_exit"].median()
         print("\n  READ: ", end="")
-        if after > during + 0.05:
-            print("profit accrues AFTER exit -> PREMATURE CHURN (ranking dropped them")
-            print("        too early) -> churn is largely noise -> MODEL problem.")
-        elif during > after + 0.05:
-            print("profit accrues DURING hold -> churn looks HEALTHY (ran, then cooled).")
+
+        # Minimum-n guard before directional conclusion.
+        # A ±0.05 band comparison is meaningless at tiny n; below the floor,
+        # print the data and explicitly state "no directional conclusion",
+        # so absence is visible to the reader. Floor is a judgment call, not
+        # a statistical test: n >= 3 is the minimum where central tendency
+        # has any meaning (single obs is pure noise; n=2 easily swayed by outliers).
+        MIN_N_FLOOR = 3
+
+        if len(ex) < MIN_N_FLOOR:
+            print(f"n = {len(ex)}, below the floor of {MIN_N_FLOOR} -- NO DIRECTIONAL CONCLUSION DRAWN")
+            print(f"    underlying medians: during={during*100:+6.1f}%, after={after*100:+6.1f}%")
         else:
-            print("during ~ after -> ambiguous; no clean timing signal.")
+            # Note: the ±0.05 band below is undocumented (source unknown).
+            if after > during + 0.05:
+                print("profit accrues AFTER exit -> PREMATURE CHURN (ranking dropped them")
+                print("        too early) -> churn is largely noise -> MODEL problem.")
+            elif during > after + 0.05:
+                print("profit accrues DURING hold -> churn looks HEALTHY (ran, then cooled).")
+            else:
+                print("during ~ after -> ambiguous; no clean timing signal.")
     print("=" * 72)
 
 

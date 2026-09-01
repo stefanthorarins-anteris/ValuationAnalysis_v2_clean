@@ -431,6 +431,11 @@ def main():
                  "date (hundreds-thousands). Pass --i-understand-high-volume "
                  "and run ONLY on a personal machine if you truly need it.")
     if args.endpoint == "batch":
+        # NOTE: The multi-symbol form of v3/historical-price-full (e.g.
+        # /A,B,C,D,E for up to 5 symbols per call) returns nothing useful on our
+        # API key. The working practice is one symbol per call. DO NOT attempt
+        # to "optimize" this back to the multi-symbol form without confirming the
+        # key now supports it (would require a paid test call to verify).
         sys.exit("The per-symbol batch fallback is intentionally not implemented "
                  "in this low-volume baseline tool. Use --endpoint bulk.")
 

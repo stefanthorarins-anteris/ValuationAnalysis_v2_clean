@@ -330,6 +330,12 @@ def test_the_COULD_NOT_APPLY_fact_reaches_an_ARTIFACT(tmp_path, monkeypatch):
     witness at all on those paths.  'Applied' was evidenced and 'could not apply' was not --
     the wrong asymmetry."""
     monkeypatch.chdir(tmp_path)
+    #  `chdir` ALONE DOES NOT ISOLATE THIS TEST (2026-08-31).  `EVIDENCE_DIR` is the repo
+    #  root and no longer resolves against the CWD, so the writer would put a REAL
+    #  `CurrencyExclusionStatus_<today>.csv` on top of the tracked one in the repo.  It did
+    #  exactly that, to four tracked run-evidence CSVs, before the guard in `conftest.py`
+    #  existed.  Redirect the constant, which is the seam every writer reads.
+    monkeypatch.setattr(dq._tu, 'EVIDENCE_DIR', str(tmp_path))
     no_ccy = _panel('ARS').drop(columns=['reportedCurrency'])
     dq.apply_data_quality_filter({'cdx_df': no_ccy}, verbose=False, save_log=True)
     #  REPO ROOT since 2026-08-10 (CEO): `output/` did not reach Drive on the 2026-08-10
@@ -349,6 +355,12 @@ def test_the_status_file_APPENDS_so_the_IDEMPOTENT_second_pass_cannot_erase_the_
     overwriting writer would replace pass 1's 'EXCLUDED BMA' with pass 2's 'no match' --
     the accumulate-never-assign defect of 2026-08-07, rebuilt in a new file."""
     monkeypatch.chdir(tmp_path)
+    #  `chdir` ALONE DOES NOT ISOLATE THIS TEST (2026-08-31).  `EVIDENCE_DIR` is the repo
+    #  root and no longer resolves against the CWD, so the writer would put a REAL
+    #  `CurrencyExclusionStatus_<today>.csv` on top of the tracked one in the repo.  It did
+    #  exactly that, to four tracked run-evidence CSVs, before the guard in `conftest.py`
+    #  existed.  Redirect the constant, which is the seam every writer reads.
+    monkeypatch.setattr(dq._tu, 'EVIDENCE_DIR', str(tmp_path))
     d = {'cdx_df': pd.concat([_panel('ARS', source='BMA'), _clean_panel('AAPL')],
                              ignore_index=True)}
     d = dq.apply_data_quality_filter(d, verbose=False, save_log=True)
@@ -362,6 +374,12 @@ def test_the_removal_CSV_carries_a_RUN_IDENTIFIER(tmp_path, monkeypatch):
     """F-9: `output/` now receives removal records from the pipeline AND from a standalone
     backtest, and a bare timestamp cannot tell them apart."""
     monkeypatch.chdir(tmp_path)
+    #  `chdir` ALONE DOES NOT ISOLATE THIS TEST (2026-08-31).  `EVIDENCE_DIR` is the repo
+    #  root and no longer resolves against the CWD, so the writer would put a REAL
+    #  `CurrencyExclusionStatus_<today>.csv` on top of the tracked one in the repo.  It did
+    #  exactly that, to four tracked run-evidence CSVs, before the guard in `conftest.py`
+    #  existed.  Redirect the constant, which is the seam every writer reads.
+    monkeypatch.setattr(dq._tu, 'EVIDENCE_DIR', str(tmp_path))
     d = {'cdx_df': _panel('ARS'), 'universe': 'stock_CUR3K',
          'universe_fingerprint': 'abc123'}
     dq.apply_data_quality_filter(d, verbose=False, save_log=True)
@@ -506,7 +524,14 @@ def _run_all_capturing(monkeypatch, tmp_path, dmdic_in, **kw):
     #  calls getDataFetchConfiguration purely to default `loadfname`, and that reads
     #  `fmpAPIkey.txt` at import-of-config time.
     monkeypatch.setattr(bt.cf, 'getDataFetchConfiguration', lambda *a, **k: {})
-    monkeypatch.chdir(tmp_path)          # any CSV the filter writes lands in tmp
+    monkeypatch.chdir(tmp_path)
+    #  THE COMMENT HERE USED TO READ "any CSV the filter writes lands in tmp".  It did not
+    #  (fixed 2026-08-31, register Q-29): `EVIDENCE_DIR` is the repo root and does not
+    #  follow the CWD, so `run_all`'s data-quality filter was dropping a real
+    #  `removed_data_quality_<stamp>.csv` into the REPO ROOT on every run of this test --
+    #  silently, because the test only ever asserted on the frame.  `conftest.py`'s write
+    #  guard is what made it visible.
+    monkeypatch.setattr(dq._tu, 'EVIDENCE_DIR', str(tmp_path))
     with pytest.raises(_StopAfterLoad):
         bt.run_all(buy_years=[2021], eval_years_list=[1], verbose=False,
                    save_results=False, **kw)

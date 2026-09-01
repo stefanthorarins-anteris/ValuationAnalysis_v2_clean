@@ -80,6 +80,26 @@ def _cells_path(workdir, config):
     return os.path.join(workdir, f"cells_{config}.csv")
 
 
+def _build_diagnostic_rows(per_anchor, config):
+    """Build diagnostic rows from per_anchor results, excluding nested structures.
+
+    Filters out nested dict/list values that would bloat the CSV with unreadable cells:
+    - "ranking": full stage-2 ordering (~100 symbols)
+    - "top20_deduped": deduped top-20 list
+    - "stage1_veto": veto report dict with rejection flags
+
+    Args:
+        per_anchor: dict of anchor_id -> per-anchor-result dict
+        config: config name string
+
+    Returns:
+        list of dicts suitable for pd.DataFrame()
+    """
+    return [{"config": config, "anchor": wid, **{k: v for k, v in a.items()
+             if k not in ("ranking", "top20_deduped", "stage1_veto")}}
+            for wid, a in per_anchor.items()]
+
+
 def run_configs(configs, workdir, args, log):
     os.makedirs(workdir, exist_ok=True)
     price_source = rc.PriceSource(args.prices)
@@ -98,8 +118,7 @@ def run_configs(configs, workdir, args, log):
         #  to the numbers, or absent; travelling in the same row it cannot be.
         df.insert(1, "basis", bstamp.of(per_anchor))
         # attach the per-anchor universe diagnostics (for the flag table)
-        diag_rows = [{"config": config, "anchor": wid, **{k: v for k, v in a.items()
-                     if k not in ("ranking",)}} for wid, a in per_anchor.items()]
+        diag_rows = _build_diagnostic_rows(per_anchor, config)
         pd.DataFrame(diag_rows).to_csv(
             os.path.join(workdir, f"diag_{config}.csv"), index=False)
         df.to_csv(_cells_path(workdir, config), index=False)

@@ -41,6 +41,11 @@ def _floor_inputs(n=40):
 
 def _carve(monkeypatch, tmp_path, pool, bo, cdx, tickers, dv_by_symbol, **kw):
     monkeypatch.chdir(tmp_path)
+    #  `partition_universe` writes DollarVolumeFloor_/DedupSurvivorReport_/CurrencyFloorFlips_
+    #  into `transfer_utils.EVIDENCE_DIR`, which is the REPO ROOT and does NOT follow the CWD
+    #  (register Q-29, 2026-08-31).  `chdir` alone therefore aims the writer at the tracked
+    #  run evidence; this aims it at the tmp dir the assertions glob.
+    monkeypatch.setattr(co._tu, 'EVIDENCE_DIR', str(tmp_path))
     monkeypatch.setattr(co, '_load_sector_map', lambda *a, **k: {s: 'Technology' for s in pool})
     monkeypatch.setattr(co, '_load_industry_map', lambda *a, **k: {s: 'Software' for s in pool})
     monkeypatch.setattr(co, 'dollar_volume_frame',
