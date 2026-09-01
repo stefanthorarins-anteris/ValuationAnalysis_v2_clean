@@ -162,9 +162,25 @@ def buy_only_mask(inc):
 def measured(returns_df):
     """Picks whose return is an OBSERVATION.  The denominator for every figure here.
 
-    EXACTLY the `status == 'ok'` rows: both legs priced at the two chartered anchors.  The two
-    exclusions are `no_buy` (never opened) and `terminal` (opened, but nothing priced the eval
-    leg).  Both are UNKNOWN, and an unknown is coverage, not a data point.
+    EXACTLY the `status == 'ok'` rows: both legs priced at the two chartered anchors.  The
+    exclusions are `no_buy` (never opened), `terminal` (opened, but nothing priced the eval
+    leg) and `indeterminate` (opened, the LISTING LINE ended for an identified reason, and no
+    successor return is measurable).  All three are UNKNOWN, and an unknown is coverage, not
+    a data point.
+
+    'indeterminate' IS EXCLUDED BY NAME AND NOT BY THE OLD `!= 'terminal'` TEST.  That test
+    was written when the status vocabulary was three values, and a new fourth value would
+    have slipped through it into the MEASURED set carrying NaN returns -- which `_returns`
+    then drops, so the pick would have inflated `n_measured` while contributing nothing to
+    any figure: coverage overstated, every clause graded on a denominator that lies.  The
+    exclusion list now lives in `returns_core.UNMEASURED_STATUSES` so the primitive and this
+    module cannot disagree about it.
+
+    A CONTINUITY PICK IS MEASURED, deliberately.  A pick whose position was followed onto a
+    successor line comes back `status == 'ok'` with a return built from that line's OWN two
+    legs at the two chartered anchors -- no substituted price, no stale anchor, no splice.
+    That IS an observation of the chartered window; the only thing that changed is which
+    line was observed, and the `continuity` column says which.
 
     A TERMINAL PICK IS EXCLUDED UNDER **BOTH** POLICIES, deliberately, because "is this an
     OBSERVATION" is a property of the DATA and not of the terminal-valuation policy laid over
@@ -178,18 +194,29 @@ def measured(returns_df):
     inc = rc.included(returns_df)
     if not len(inc):
         return inc
-    return inc[inc["status"].astype(str) != "terminal"]
+    return inc[~inc["status"].astype(str).isin(rc.UNMEASURED_STATUSES)]
 
 
 def coverage_counts(returns_df, depth_n):
     """One place that decides what is measured and what is merely absent.
 
-    The four counts PARTITION the shipped picks -- `n_measured + n_terminal_stale +
-    n_buy_only + n_no_buy == n_selected` whenever the frame holds every shipped pick -- so a
-    reader can see WHAT the missing picks are missing, rather than only how many.  The split
-    of `n_terminal` into `n_terminal_stale` and `n_buy_only` is the one that matters: a stale
-    last-observed price and a bare buy price are both unmeasured, but only the first ever
-    looked like a measurement.
+    The counts PARTITION the shipped picks -- `n_measured + n_terminal_stale + n_buy_only +
+    n_indeterminate + n_no_buy == n_selected` whenever the frame holds every shipped pick --
+    so a reader can see WHAT the missing picks are missing, rather than only how many.  The
+    split of `n_terminal` into `n_terminal_stale` and `n_buy_only` is the one that matters
+    most: a stale last-observed price and a bare buy price are both unmeasured, but only the
+    first ever looked like a measurement.
+
+    `n_indeterminate` IS ITS OWN BUCKET, added with the Q-42 continuity fix and deliberately
+    NOT folded into `n_terminal`.  It is the population where the line ended for an
+    identified reason and no successor return is measurable -- unmeasured like the others,
+    but the only bucket for which -100% is not merely unproven but positively refuted.  If it
+    were folded in, the partition would still close and the reader would have no way to see
+    the difference, which is the whole point of printing a partition.
+
+    `n_continued` is NOT part of the partition and must not be added to it: those picks are
+    inside `n_measured` already.  It is reported so a reader can see how many of the measured
+    picks were measured on a SUCCESSOR line rather than their own.
     """
     inc = rc.included(returns_df)
     n_buy_only = int(buy_only_mask(inc).sum()) if len(inc) else 0
@@ -201,6 +228,8 @@ def coverage_counts(returns_df, depth_n):
             "n_terminal": int(cnt["n_terminal"]),
             "n_terminal_stale": max(0, int(cnt["n_terminal"]) - n_buy_only),
             "n_buy_only": n_buy_only,
+            "n_indeterminate": int(cnt["n_indeterminate"]),
+            "n_continued": int(rc.continuity_counts(returns_df)["n_reattached"]),
             "n_no_buy": int(cnt["n_no_buy"]),
             "coverage": (float(n_measured) / n_selected) if n_selected else float("nan")}
 
@@ -287,7 +316,14 @@ def unmeasured_reason(counts):
     buckets = [(int(counts.get("n_no_buy", 0) or 0), "never opened (no buy price)"),
                (int(counts.get("n_buy_only", 0) or 0), "priced at the buy anchor only"),
                (int(counts.get("n_terminal_stale", 0) or 0),
-                "carrying only a stale earlier price")]
+                "carrying only a stale earlier price"),
+               #  Named as its own reason for the same purpose as its own bucket: "the line
+               #  ended and we know why" reads differently from "nothing priced it", and a
+               #  reader deciding whether to spend a call to settle a pick needs the
+               #  difference.
+               (int(counts.get("n_indeterminate", 0) or 0),
+                "on a listing line that ended for an identified reason, exit value not "
+                "measurable (NOT a loss)")]
     accounted = int(counts.get("n_measured", 0) or 0) + sum(n for n, _ in buckets)
     unaccounted = max(0, n_sel - accounted)
     if unaccounted:
@@ -323,6 +359,15 @@ def downside_clause(returns_df, depth_n, horizon_m=CHARTERED_HORIZON_M, floor=Fa
       portfolio_return    equal-weight mean over the PRICED picks -- the point estimate, and
                           NOT the chartered clause when coverage < 1
       lower_bound         equal-weight mean over all `depth_n` with every unpriced pick at -100%
+                          -- INCLUDING the `indeterminate` ones, and that is deliberate.
+                          A BOUND IS NOT A BOOKING.  Q-42 stopped the harness BOOKING a
+                          line-discontinuity as a -100% return; it does not stop -100% being
+                          the arithmetic floor of what an unknown pick could have returned,
+                          which is all this column ever claimed.  Exempting the
+                          indeterminate picks would RAISE the bound, and the bound is the
+                          only route to a partial-coverage PASS, so that change could
+                          manufacture a PASS out of a coverage gap -- exactly the direction
+                          this module refuses to move in.
       flip_return         average return the unpriced picks would need for the FULL portfolio
                           to clear the bar (nan at full coverage -- nothing to flip)
       verdict             PASS | FAIL | INDETERMINATE
@@ -485,7 +530,20 @@ POLICY_CAVEAT = (
 COVERAGE_CAVEAT = (
     "n_selected is what the anchor SHIPPED; n_measured is what could be priced at BOTH chartered "
     "anchors. terminal picks -- stale (an eval leg substituted from an earlier anchor) and "
-    "buy_only (priced at the buy anchor alone) -- and no_buy picks are all UNMEASURED, not flat "
-    "and not losses. Both clauses are graded over n_selected with the unmeasured picks treated "
-    "as unknown: the portfolio is unbounded above so it can only prove PASS or stay "
-    "INDETERMINATE, while the beat-rate is bounded both ways so [lo, hi] can prove PASS or FAIL.")
+    "buy_only (priced at the buy anchor alone) -- indeterminate picks (the listing LINE ended for "
+    "an identified reason and no successor return is measurable) and no_buy picks are all "
+    "UNMEASURED, not flat and not losses. Both clauses are graded over n_selected with the "
+    "unmeasured picks treated as unknown: the portfolio is unbounded above so it can only prove "
+    "PASS or stay INDETERMINATE, while the beat-rate is bounded both ways so [lo, hi] can prove "
+    "PASS or FAIL.")
+
+CONTINUITY_CAVEAT = (
+    "n_continued picks were measured on a SUCCESSOR listing line, not their own: the issuer "
+    "continued through a re-domicile / ticker change / exchange move and the position was "
+    "followed onto the line it became (issuer_continuity.py, one auditable row per line with its "
+    "evidence). Both legs come off the successor, never a splice of the old buy leg against the "
+    "new eval leg. Residual, unfixed and stated: where the successor line trades in a different "
+    "currency the return is in the SUCCESSOR's currency (VMD.TO CAD -> VMD USD), so the "
+    "CAD/USD move over the window sits inside that pick's number. The map covers ONLY the lines "
+    "listed in it -- every other discontinuity in the panel still books the stale PRIMARY and "
+    "the -100% FLOOR.")

@@ -25,6 +25,35 @@ price-data coverage gap -- NOT distinguished by the price source):
     set, so the sensitivity is a column, not a policy baked into the number.
     MISSING BUY price -> status='no_buy', returns NaN; derived views EXCLUDE it.
 
+ISSUER CONTINUITY IS CHECKED BEFORE THE TERMINAL POLICY (register Q-42, 2026-08-31)
+-----------------------------------------------------------------------------------
+The terminal policy above answers "the eval leg is missing, what is this worth?".  It is the
+right question only when we do not know WHY the leg is missing.  For a LISTING-LINE
+DISCONTINUITY -- re-domicile, ticker change, exchange move, share-class reorganisation,
+preferred-series redemption -- we sometimes DO know, and then both readings are wrong in the
+same direction: the FLOOR books a total capital loss for a company that is demonstrably
+still trading, and PRIMARY marks the position at a price one or two anchor-years stale.
+
+So `compute_returns` now consults `issuer_continuity` FIRST, and only for tickers whose eval
+leg is missing:
+
+    status='ok'            the successor line prices BOTH chartered anchors, so the position
+                           is followed onto it and the return is that line's OWN two-leg
+                           ratio -- never a splice of the old buy leg against the new eval
+                           leg, which would book an unquantified FX return.  This IS an
+                           observation of the window; `target_clauses.measured` counts it.
+    status='indeterminate' the line is a KNOWN discontinuity but no successor return is
+                           measurable.  total_return AND total_return_floor are NaN: the
+                           -100% is refuted by the evidence in the map row, and the stale
+                           substituted price was never an observation.  UNMEASURED, and
+                           counted as its own bucket so it is never silently dropped.
+
+`terminal_flag` is True for 'indeterminate' as well as 'terminal', so every existing caller
+that branches on `terminal_flag` to apply a missing-value policy keeps treating it as
+missing rather than reading a number off it.  The `continuity` column carries the audit
+string (which line, which successor, which event) for the rows where the map fired, and is
+"" everywhere else.  Pass `continuity={}` to reproduce the pre-Q-42 behaviour exactly.
+
 PRICE SOURCE is injected (dependency-inversion) so the primitive is reusable against any
 adjusted-close provider.  PriceSource here reads the year-end anchor grid in
 real_prices.csv; buy/eval dates must be anchors on that grid (exact match).
@@ -67,6 +96,7 @@ import numpy as np
 import pandas as pd
 
 import benchmark_loader as bl
+import issuer_continuity as icont
 
 # Year-end anchors present in the standard real_prices.csv, chronological.
 DEFAULT_ANCHORS = ["2018-12-31", "2019-12-31", "2020-12-31",
@@ -77,7 +107,22 @@ BENCHMARK_SYMBOL = "URTH"
 BENCHMARK_VARIANT = "URTH (iShares MSCI World ETF) adjClose, TR-proxy for MSCI World Net TR USD"
 
 RETURNS_COLS = ["ticker", "buy_adjClose", "eval_adjClose", "terminal_adjClose",
-                "total_return", "total_return_floor", "terminal_flag", "status"]
+                "total_return", "total_return_floor", "terminal_flag", "status",
+                "continuity"]
+
+#  The status vocabulary, named once so callers stop spelling the strings.  'indeterminate'
+#  is the Q-42 addition and it is NOT a sub-kind of 'terminal': every place that decides what
+#  is MEASURED must exclude both, and every place that partitions coverage must count them
+#  separately, because "we do not know why the leg is missing" and "we know the line changed
+#  and cannot price the successor" are different facts about the grid.
+STATUS_OK = "ok"
+STATUS_TERMINAL = "terminal"
+STATUS_INDETERMINATE = icont.STATUS_INDETERMINATE
+STATUS_NO_BUY = "no_buy"
+
+#  Statuses that are NOT an observation of the window.  One definition so `target_clauses`
+#  and the grid cannot drift apart on it.
+UNMEASURED_STATUSES = (STATUS_TERMINAL, STATUS_INDETERMINATE)
 
 #  How far back the per-venue holiday fill may reach for a symbol unpriced AT an anchor.
 #
@@ -283,7 +328,7 @@ class PriceSource:
 # --------------------------------------------------------------------------- #
 #  THE PRIMITIVE                                                              #
 # --------------------------------------------------------------------------- #
-def compute_returns(tickers, buy_date, eval_date, price_source):
+def compute_returns(tickers, buy_date, eval_date, price_source, continuity=None):
     """Per-ticker total return over [buy_date, eval_date].  TICKER-AGNOSTIC.
 
     Parameters
@@ -293,33 +338,70 @@ def compute_returns(tickers, buy_date, eval_date, price_source):
     buy_date     : anchor at which the position is opened (adjClose_buy).
     eval_date    : anchor at which the position is valued (adjClose_eval).
     price_source : a PriceSource (or any object with .price / .last_before).
+    continuity   : the issuer-continuity map (see the module docstring and
+                   `issuer_continuity`).  None -> the module's own validated table, which
+                   is the DEFAULT and the fixed behaviour.  `{}` -> the map is off and the
+                   pre-Q-42 terminal policy is reproduced bit-for-bit; that switch exists so
+                   a test can pin the defect rather than describe it.
 
     Returns
     -------
     DataFrame[RETURNS_COLS], one row per input ticker (order preserved):
-      total_return       : PRIMARY policy -- real eval leg, or (eval missing) the last
-                           available adjClose before eval as terminal.  NaN if no buy leg.
+      total_return       : PRIMARY policy -- real eval leg, or (eval missing, line followed
+                           through a discontinuity) the successor line's own two-leg return,
+                           or (eval missing, no continuity) the last available adjClose
+                           before eval as terminal.  NaN if no buy leg, and NaN for an
+                           'indeterminate' pick.
       total_return_floor : FLOOR policy   -- eval missing => -100%.  Equals total_return
-                           when the eval leg is present.  NaN if no buy leg.
-      terminal_flag      : True iff the eval leg was missing and a terminal was applied.
-      status             : 'ok' | 'terminal' | 'no_buy'.
+                           when the eval leg is present or the line was followed.  NaN if no
+                           buy leg, and NaN for an 'indeterminate' pick -- a -100% there
+                           would contradict the evidence that put the pick in that bucket.
+      terminal_flag      : True iff no eval leg was observed for THIS pick and a policy had
+                           to be applied -- 'terminal' and 'indeterminate' alike, so a caller
+                           branching on it keeps treating both as missing.
+      status             : 'ok' | 'terminal' | 'indeterminate' | 'no_buy'.
+      continuity         : audit string when the continuity map fired; "" otherwise.
+
+    ORDER OF THE THREE TESTS IS LOAD-BEARING.  Buy leg, then REAL eval leg, then continuity.
+    A line that prices both chartered anchors is measured on its own legs and the map is
+    never consulted -- so a map row can never override a real observation, and a future price
+    refetch that fills VMD.TO's 2024 anchor silently takes precedence over the map rather
+    than fighting it.
     """
+    cmap = icont.load() if continuity is None else dict(continuity)
     rows = []
     for t in tickers:
         p_buy = price_source.price(t, buy_date)
         if p_buy is None or p_buy == 0 or (isinstance(p_buy, float) and np.isnan(p_buy)):
-            rows.append((t, np.nan, np.nan, np.nan, np.nan, np.nan, False, "no_buy"))
+            rows.append((t, np.nan, np.nan, np.nan, np.nan, np.nan, False,
+                         STATUS_NO_BUY, ""))
             continue
         p_eval = price_source.price(t, eval_date)
         if p_eval is not None and not (isinstance(p_eval, float) and np.isnan(p_eval)):
             r = p_eval / p_buy - 1.0
-            rows.append((t, p_buy, p_eval, p_eval, r, r, False, "ok"))
+            rows.append((t, p_buy, p_eval, p_eval, r, r, False, STATUS_OK, ""))
             continue
-        # eval leg missing -> terminal policy
+        # eval leg missing -> is this a KNOWN listing-line discontinuity?
+        cont = icont.resolve(t, buy_date, eval_date, price_source, cmap) if cmap else None
+        if cont is not None and cont["kind"] == "continued":
+            #  BOTH legs are the SUCCESSOR's, so `eval/buy - 1 == total_return` still holds
+            #  row-wise and anything recomputing the ratio from the columns gets the same
+            #  number.  The pick's own buy price is recoverable from the grid and from the
+            #  map row; what must not happen is the two currencies meeting in one ratio.
+            r = cont["total_return"]
+            rows.append((t, cont["buy_px"], cont["eval_px"], cont["eval_px"], r, r, False,
+                         STATUS_OK, cont["note"]))
+            continue
+        if cont is not None:
+            rows.append((t, p_buy, np.nan, np.nan, np.nan, np.nan, True,
+                         STATUS_INDETERMINATE, cont["note"]))
+            continue
+        # unexplained missing eval leg -> terminal policy, UNCHANGED
         lb = price_source.last_before(t, eval_date)
         terminal = lb[1] if lb is not None else p_buy  # buy leg guaranteed present
         r_primary = terminal / p_buy - 1.0
-        rows.append((t, p_buy, np.nan, terminal, r_primary, -1.0, True, "terminal"))
+        rows.append((t, p_buy, np.nan, terminal, r_primary, -1.0, True,
+                     STATUS_TERMINAL, ""))
     return pd.DataFrame(rows, columns=RETURNS_COLS)
 
 
@@ -336,9 +418,26 @@ def included(returns_df):
 
 
 def average_return(returns_df, floor=False):
-    """Equal-weight average total return over tickers that had a buy leg."""
+    """Equal-weight average total return over tickers that had a buy leg AND a return.
+
+    THE SECOND HALF OF THAT SENTENCE IS NEW AND IT IS A DENOMINATOR CHANGE, so it is spelled
+    out rather than left to pandas.  Before Q-42 every row with a buy leg carried a number
+    under both policies, so "had a buy leg" and "has a return" were the same set and the
+    distinction could not bite.  An 'indeterminate' pick has a buy leg and NO return under
+    either policy, and `Series.mean()` would have skipped it silently -- an average whose
+    denominator disagrees with the `n_included` printed beside it.  `n_averaged` below is
+    what a caller must print next to this number; `counts()` gives the buckets.
+    """
+    r = averaged_returns(returns_df, floor=floor)
+    return float(r.mean()) if len(r) else float("nan")
+
+
+def averaged_returns(returns_df, floor=False):
+    """The exact rows `average_return` averages -- buy leg present AND a non-NaN return."""
     inc = included(returns_df)
-    return float(inc[_ret_col(floor)].mean()) if len(inc) else float("nan")
+    if not len(inc):
+        return pd.Series(dtype=float)
+    return pd.to_numeric(inc[_ret_col(floor)], errors="coerce").dropna()
 
 
 def excess_return(returns_df, benchmark_ret, floor=False):
@@ -348,12 +447,53 @@ def excess_return(returns_df, benchmark_ret, floor=False):
 
 
 def counts(returns_df):
-    """(n_included, n_terminal, n_no_buy) for a ticker set."""
+    """(n_included, n_terminal, n_indeterminate, n_no_buy) for a ticker set.
+
+    `n_terminal` stays EXACTLY `status == 'terminal'` -- it does not absorb the Q-42
+    'indeterminate' bucket.  Folding them together would have been the smaller diff and it
+    would have hidden the whole finding: an unexplained missing leg and an identified
+    line-discontinuity are different facts, and a reader who cannot see the split cannot
+    tell whether the continuity map is doing anything.
+    """
     return {
-        "n_included": int((returns_df["status"] != "no_buy").sum()),
-        "n_terminal": int((returns_df["status"] == "terminal").sum()),
-        "n_no_buy": int((returns_df["status"] == "no_buy").sum()),
+        "n_included": int((returns_df["status"] != STATUS_NO_BUY).sum()),
+        "n_terminal": int((returns_df["status"] == STATUS_TERMINAL).sum()),
+        "n_indeterminate": int((returns_df["status"] == STATUS_INDETERMINATE).sum()),
+        "n_no_buy": int((returns_df["status"] == STATUS_NO_BUY).sum()),
     }
+
+
+def continuity_counts(returns_df):
+    """What the issuer-continuity map DID to this returns table.
+
+    n_reattached    picks whose eval leg was missing and whose position was followed onto a
+                    successor line -- these are MEASURED, on the successor's own two legs.
+    n_indeterminate picks with an identified discontinuity and no measurable successor
+                    return -- unmeasured, and explicitly NOT booked at -100%.
+    n_terminal      picks with a missing eval leg and NO map row -- the unchanged terminal
+                    policy, still carrying a stale PRIMARY and a -100% FLOOR.
+
+    The third number is the one to read first: it is the population the map does NOT cover,
+    i.e. how much of the defect is still live.
+    """
+    st = returns_df["status"].astype(str)
+    cont = returns_df["continuity"].astype(str) if "continuity" in returns_df else None
+    reattached = int(((st == STATUS_OK) & (cont != "")).sum()) if cont is not None else 0
+    return {
+        "n_reattached": reattached,
+        "n_indeterminate": int((st == STATUS_INDETERMINATE).sum()),
+        "n_terminal": int((st == STATUS_TERMINAL).sum()),
+    }
+
+
+def continuity_report_line(returns_df, where=""):
+    """ONE line saying what the map did, for a run log.  Printed even when it did nothing --
+    "the map found nothing here" and "the map never ran" must not look alike."""
+    c = continuity_counts(returns_df)
+    tag = (" %s" % where) if where else ""
+    return ("[issuer-continuity]%s re-attached=%d  indeterminate=%d  "
+            "booked terminal (no map row, still -100%% under FLOOR)=%d"
+            % (tag, c["n_reattached"], c["n_indeterminate"], c["n_terminal"]))
 
 
 def benchmark_return(price_source, buy_date, eval_date, symbol=BENCHMARK_SYMBOL,
@@ -411,6 +551,11 @@ def beat_rate(returns_df, benchmark_ret, threshold=0.10, missing="fail", floor=F
     benchmark is >= threshold.  Mirrors beat_rate.py's missing-eval policy so it is a
     faithful derived view (no_buy excluded; 'fail' => missing-eval counts as not beating;
     'drop' => excluded; 'zero' => treat stock return as 0).
+
+    AN 'indeterminate' PICK TAKES THE MISSING BRANCH, not a NaN comparison.  It carries
+    `terminal_flag=True` precisely so it lands here and is governed by the caller's stated
+    missing-policy; without that flag `(nan - bench) >= threshold` would evaluate False and
+    the pick would be scored a silent miss under EVERY policy, including 'drop'.
     """
     inc = included(returns_df)
     if benchmark_ret != benchmark_ret:

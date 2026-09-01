@@ -1413,6 +1413,7 @@ def _two_clause_report(clause_inputs, horizon_m, threshold, basis="unknown"):
     `lower_bound`, which is algebraically the number the old FLOOR lower bound produced.
     """
     import pandas as pd
+    import returns_core as rc
     import target_clauses as tc
 
     bar = tc.bond_bar(horizon_m)
@@ -1458,20 +1459,39 @@ def _two_clause_report(clause_inputs, horizon_m, threshold, basis="unknown"):
     #  that already contained most of it, which is how a reader -- and the clause itself --
     #  could read "16 of 20 measured" off an anchor with 9 terminals.  Split and summing to
     #  the shipped count, the line cannot be read that way: every pick is in exactly one bucket.
+    #  `indet` JOINS THE PARTITION, it does not join `stale`.  The columns are printed
+    #  BECAUSE they sum to `shipped`; a fifth bucket that existed in the data and not in this
+    #  row would have broken the sum silently and re-created the exact mis-reading the
+    #  comment above describes, one bucket later.  `cont` is deliberately OUTSIDE the sum
+    #  (those picks are already inside `measured`) and is spaced apart in the header to say so.
     print("\n  --- COVERAGE (what the anchor SHIPPED vs what could be MEASURED) ---")
     print(f"  {'window':24} {'shipped':>8} {'measured':>9} {'stale':>7} {'buy_only':>9} "
-          f"{'no_buy':>7} {'coverage':>9}")
+          f"{'indet':>7} {'no_buy':>7} {'coverage':>9}  | {'cont':>5}")
     for row in per_anchor_out:
         if row["policy"] != "primary":
             continue
         d = row["downside"]
         print(f"  {row['window']:24} {d['n_selected']:>8} {d['n_measured']:>9} "
-              f"{d['n_terminal_stale']:>7} {d['n_buy_only']:>9} {d['n_no_buy']:>7} "
-              f"{d['coverage']*100:>8.1f}%")
+              f"{d['n_terminal_stale']:>7} {d['n_buy_only']:>9} "
+              f"{d.get('n_indeterminate', 0):>7} {d['n_no_buy']:>7} "
+              f"{d['coverage']*100:>8.1f}%  | {d.get('n_continued', 0):>5}")
     print("  measured = BOTH legs priced at the chartered anchors. stale = eval leg substituted")
     print("  from an EARLIER anchor (12-24mo old, so not a reading of this window). buy_only =")
-    print("  priced at the buy anchor alone. no_buy = never opened. The last three are UNKNOWN,")
-    print("  not flat and not losses -- they are what lo/hi and lower_bound bracket.")
+    print("  priced at the buy anchor alone. indet = the listing LINE ended for an identified")
+    print("  reason (re-domicile / ticker change / preferred call) and no successor return is")
+    print("  measurable -- unknown, and the ONE bucket where -100% is positively refuted rather")
+    print("  than merely unproven. no_buy = never opened. Those four are UNKNOWN, not flat and")
+    print("  not losses -- they are what lo/hi and lower_bound bracket, and they sum with")
+    print("  measured to shipped. cont = picks INSIDE measured whose position was followed onto")
+    print("  a SUCCESSOR line (issuer_continuity.py); it is not part of the sum.")
+    #  THE ONE-LINE Q-42 READOUT, pooled over the shipped top-20 of every clean window.
+    #  Printed unconditionally, zeros and all: "the map found nothing in this run" and "the
+    #  map did not run" must not print identically.
+    pooled_rdf_all = pd.concat([ci["rdf"] for ci in clause_inputs], ignore_index=True)
+    print("  " + rc.continuity_report_line(pooled_rdf_all,
+                                           where="(pooled shipped top-%d, %d window(s))"
+                                                 % (tc.CHARTERED_DEPTH, len(clause_inputs))))
+    print(f"  {_wrap(tc.CONTINUITY_CAVEAT)}")
 
     #  ---- DOWNSIDE ----
     print("\n  --- DOWNSIDE CLAUSE: equal-weight portfolio vs the bond bar ---")
@@ -1562,9 +1582,14 @@ def _two_clause_report(clause_inputs, horizon_m, threshold, basis="unknown"):
         pooled_out["floor" if floor else "primary"] = {"downside": dn, "diagnostics": dg}
         if floor:
             continue          # identical to primary by construction; see the POLICY caveat
+        #  `indet` PRINTED HERE TOO.  Without it this line reads
+        #  shipped=40 measured=38 stale=0 buy_only=0 no_buy=0 -- four buckets that no
+        #  longer sum to `shipped`, which is the same silent-partition break the per-window
+        #  table above exists to prevent, one summary line lower.
         print(f"  {'primary':>7}: shipped={dn['n_selected']} "
               f"measured={dn['n_measured']} stale={dn['n_terminal_stale']} "
-              f"buy_only={dn['n_buy_only']} no_buy={dn['n_no_buy']} "
+              f"buy_only={dn['n_buy_only']} indet={dn['n_indeterminate']} "
+              f"no_buy={dn['n_no_buy']} "
               f"portfolio={_pct(dn['portfolio_return']).strip()} "
               f"lower_bound={_pct(dn['lower_bound']).strip()} -> {dn['verdict']}"
               f"   | p25={_pct(dg['p25']).strip()} worst={_pct(dg['worst']).strip()} "

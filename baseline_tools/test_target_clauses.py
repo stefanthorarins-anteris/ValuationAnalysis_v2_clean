@@ -30,7 +30,7 @@ import target_clauses as tc
 # --------------------------------------------------------------------------- #
 #  helpers -- build a returns table with the exact status mix we want to test  #
 # --------------------------------------------------------------------------- #
-def _rdf(ok=(), terminal=(), no_buy=0, buy_only=0):
+def _rdf(ok=(), terminal=(), no_buy=0, buy_only=0, indeterminate=0, continued=()):
     """A returns_core-shaped table.
 
     ok       : iterable of realised total returns ('ok' rows -- both legs priced)
@@ -46,15 +46,30 @@ def _rdf(ok=(), terminal=(), no_buy=0, buy_only=0):
     """
     rows = []
     for i, r in enumerate(ok):
-        rows.append((f"OK{i}", 100.0, 100.0 * (1 + r), 100.0 * (1 + r), r, r, False, "ok"))
+        rows.append((f"OK{i}", 100.0, 100.0 * (1 + r), 100.0 * (1 + r), r, r, False,
+                     "ok", ""))
     for i, r in enumerate(terminal):
-        rows.append((f"TM{i}", 100.0, np.nan, 100.0 * (1 + r), r, -1.0, True, "terminal"))
+        rows.append((f"TM{i}", 100.0, np.nan, 100.0 * (1 + r), r, -1.0, True,
+                     "terminal", ""))
     for i in range(no_buy):
-        rows.append((f"NB{i}", np.nan, np.nan, np.nan, np.nan, np.nan, False, "no_buy"))
+        rows.append((f"NB{i}", np.nan, np.nan, np.nan, np.nan, np.nan, False, "no_buy", ""))
     for i in range(buy_only):
         #  EXACTLY what returns_core.compute_returns emits on the `lb is None` branch:
         #  terminal falls back to the buy price, so the return is a fabricated 0.0.
-        rows.append((f"BO{i}", 100.0, np.nan, 100.0, 0.0, -1.0, True, "terminal"))
+        rows.append((f"BO{i}", 100.0, np.nan, 100.0, 0.0, -1.0, True, "terminal", ""))
+    for i in range(indeterminate):
+        #  Q-42: an identified LISTING-LINE discontinuity with no measurable successor
+        #  return.  NaN under BOTH policies -- not a -100%, because the map row carries
+        #  positive evidence the issuer did not die -- and `terminal_flag` True so a caller
+        #  branching on it still applies its missing-value policy.
+        rows.append((f"ID{i}", 100.0, np.nan, np.nan, np.nan, np.nan, True,
+                     rc.STATUS_INDETERMINATE, "ID%d INDETERMINATE (fixture)" % i))
+    for i, r in enumerate(continued):
+        #  Q-42: the position was followed onto a SUCCESSOR line.  Both legs come off that
+        #  line, so this is `status == 'ok'` and MEASURED; the `continuity` string is the
+        #  only thing distinguishing it from a pick measured on its own line.
+        rows.append((f"CT{i}", 100.0, 100.0 * (1 + r), 100.0 * (1 + r), r, r, False,
+                     "ok", "CT%d->SUCC%d fixture" % (i, i)))
     return pd.DataFrame(rows, columns=rc.RETURNS_COLS)
 
 

@@ -241,6 +241,13 @@ def _sleeves_to_returns_df(result, use_net):
     (or 'terminal' if any sub-period was terminal), terminal_flag set accordingly.
     Invalid sleeves (starved / no-buy) -> status 'no_buy' so rc.beat_rate EXCLUDES
     them from the denominator, matching the certified missing-buy handling.
+
+    THE TRAILING "" IS THE `continuity` COLUMN (RETURNS_COLS, Q-42) and it is empty on
+    purpose: a SLEEVE is a chain of sub-period returns, not a listing line, so no continuity
+    string is meaningful at this level.  The continuity handling has already happened inside
+    each `rc.compute_returns` call the chain was built from -- a sub-period that followed an
+    issuer onto a successor line contributed its real return to `rets[r]` and is NOT flagged
+    terminal, which is the whole benefit arriving here without this function knowing about it.
     """
     key = "sleeve_returns_net" if use_net else "sleeve_returns_frictionless"
     rets = result[key]
@@ -250,13 +257,13 @@ def _sleeves_to_returns_df(result, use_net):
     for r in range(result["N"]):
         tag = f"sleeve{r}"
         if not valid[r] or rets[r] != rets[r]:
-            rows.append((tag, np.nan, np.nan, np.nan, np.nan, np.nan, False, "no_buy"))
+            rows.append((tag, np.nan, np.nan, np.nan, np.nan, np.nan, False, "no_buy", ""))
             continue
         rr = rets[r]
         if term[r]:
-            rows.append((tag, 1.0, np.nan, np.nan, rr, rr, True, "terminal"))
+            rows.append((tag, 1.0, np.nan, np.nan, rr, rr, True, "terminal", ""))
         else:
-            rows.append((tag, 1.0, 1.0 + rr, 1.0 + rr, rr, rr, False, "ok"))
+            rows.append((tag, 1.0, 1.0 + rr, 1.0 + rr, rr, rr, False, "ok", ""))
     return pd.DataFrame(rows, columns=rc.RETURNS_COLS)
 
 

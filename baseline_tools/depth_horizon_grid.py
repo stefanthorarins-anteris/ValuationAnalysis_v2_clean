@@ -407,7 +407,16 @@ def rank_all_anchors(inputs, log, weights="default", carve="off", exchange_filte
 #  Grid computation -- THIN layer over returns_core                           #
 # --------------------------------------------------------------------------- #
 def _cell_from_returns(rdf, bench, scope, clean, buy, ev, h, N, n_available):
-    """Build one grid cell by applying returns_core DERIVED views to a returns table."""
+    """Build one grid cell by applying returns_core DERIVED views to a returns table.
+
+    `n_averaged` IS NOT DECORATION.  Every other count here describes the returns TABLE;
+    `n_averaged` describes the DENOMINATOR the two averages beside it actually used.  Before
+    Q-42 they were the same number (`n_included`), because every included pick carried a
+    return under both policies.  An `indeterminate` pick has a buy leg and no return under
+    either, so it is inside `n_included` and outside the mean -- and a cell that printed only
+    `n_included` would be an average silently divided by something smaller than the count
+    next to it.
+    """
     c = rc.counts(rdf)
     avg_p = rc.average_return(rdf, floor=False)
     avg_f = rc.average_return(rdf, floor=True)
@@ -417,6 +426,9 @@ def _cell_from_returns(rdf, bench, scope, clean, buy, ev, h, N, n_available):
         "n_requested": N, "n_available_rank": n_available,
         "n_included": c["n_included"], "n_missing_buy": c["n_no_buy"],
         "n_affected_eval": c["n_terminal"],
+        "n_indeterminate": c["n_indeterminate"],
+        "n_continued": rc.continuity_counts(rdf)["n_reattached"],
+        "n_averaged": int(len(rc.averaged_returns(rdf, floor=False))),
         "avg_ret_primary": avg_p, "avg_ret_floor": avg_f, "bench_ret": bench,
         "excess_primary": rc.excess_return(rdf, bench, floor=False),
         "excess_floor": rc.excess_return(rdf, bench, floor=True),
@@ -470,6 +482,7 @@ def compute_grid(per_anchor, price_source):
                     "wid": wid, "clean": clean, "horizon_m": h, "rank_pos": pos,
                     "status": row.status, "ret_primary": row.total_return,
                     "ret_floor": row.total_return_floor, "bench": bench,
+                    "continuity": row.continuity,
                 })
 
     pooled = _pool(pool_rows, clean_only=False)
@@ -491,12 +504,32 @@ def _pool(pool_rows, clean_only):
         n_anchors = dh["wid"].nunique()
         for N in DEPTHS:
             sel = dh[dh["rank_pos"] <= N]
-            incl = sel[sel["status"] != "no_buy"]
-            n_missing_buy = int((sel["status"] == "no_buy").sum())
-            n_affected = int((incl["status"] == "terminal").sum())
-            avg_p = float(incl["ret_primary"].mean()) if len(incl) else float("nan")
-            avg_f = float(incl["ret_floor"].mean()) if len(incl) else float("nan")
-            avg_bench = float(incl["bench"].mean()) if len(incl) else float("nan")
+            incl = sel[sel["status"] != rc.STATUS_NO_BUY]
+            n_missing_buy = int((sel["status"] == rc.STATUS_NO_BUY).sum())
+            n_affected = int((incl["status"] == rc.STATUS_TERMINAL).sum())
+            n_indet = int((incl["status"] == rc.STATUS_INDETERMINATE).sum())
+            n_cont = int(((incl["status"] == rc.STATUS_OK)
+                          & (incl["continuity"].astype(str) != "")).sum())
+            #  MEAN OVER THE ROWS THAT HAVE A NUMBER, and the count of them printed beside
+            #  it.  `Series.mean()` skips NaN either way; doing the drop explicitly is what
+            #  lets `n_averaged` be computed from the SAME rows rather than assumed equal to
+            #  `n_included`, which it no longer is once an `indeterminate` pick is in the
+            #  pool (buy leg present, no return under either policy).
+            rp = pd.to_numeric(incl["ret_primary"], errors="coerce").dropna()
+            rf = pd.to_numeric(incl["ret_floor"], errors="coerce").dropna()
+            avg_p = float(rp.mean()) if len(rp) else float("nan")
+            avg_f = float(rf.mean()) if len(rf) else float("nan")
+            #  THE BENCHMARK IS AVERAGED OVER THE SAME ROWS AS `avg_p`, NOT OVER `incl`.
+            #  `bench` is constant within a window, so this pooled mean is really a
+            #  window-weighted average, weighted by how many picks each window contributes.
+            #  Averaging it over `incl` while `avg_p` is averaged over `rp` gives the two
+            #  legs of `excess_primary` DIFFERENT window weights the moment any pick is
+            #  unmeasured -- a small bias, silent, and introduced by the Q-42 NaN rows
+            #  rather than present before them.  Aligning the index costs nothing and
+            #  removes it.  (`excess_floor` reuses this: `rf` and `rp` drop the same rows,
+            #  since a NaN under one policy is a NaN under both.)
+            avg_bench = (float(pd.to_numeric(incl["bench"], errors="coerce")
+                               .loc[rp.index].mean()) if len(rp) else float("nan"))
             out.append({
                 "scope": ("POOLED-CLEAN" if clean_only else "POOLED-ALL"),
                 "clean": clean_only, "buy": f"{n_anchors} anchors", "eval": "",
@@ -504,6 +537,8 @@ def _pool(pool_rows, clean_only):
                 "n_requested": N, "n_available_rank": int(len(sel)),
                 "n_included": int(len(incl)), "n_missing_buy": n_missing_buy,
                 "n_affected_eval": n_affected,
+                "n_indeterminate": n_indet, "n_continued": n_cont,
+                "n_averaged": int(len(rp)),
                 "avg_ret_primary": avg_p, "avg_ret_floor": avg_f, "bench_ret": avg_bench,
                 "excess_primary": (avg_p - avg_bench) if avg_p == avg_p else float("nan"),
                 "excess_floor": (avg_f - avg_bench) if avg_f == avg_f else float("nan"),
@@ -538,7 +573,7 @@ def _grid_block(title, cells_subset, note=""):
 
     hdr = f"  {'depth':>6} |"
     for h in horizons:
-        hdr += f"  {'avgTR('+str(h)+'mo)':>13}  {'excess':>9}  {'flrTR':>9}  {'[incl/aff/nobuy]':>17} |"
+        hdr += f"  {'avgTR('+str(h)+'mo)':>13}  {'excess':>9}  {'flrTR':>9}  {'[incl/aff/indet/nobuy]':>19} |"
     lines.append(hdr)
     lines.append("  " + "-" * (len(hdr) - 2))
 
@@ -549,21 +584,59 @@ def _grid_block(title, cells_subset, note=""):
             c = next((c for c in cells_subset
                       if c["horizon_m"] == h and c["depth_N"] == N), None)
             if c is None:
-                row += f"  {'-':>13}  {'-':>9}  {'-':>9}  {'-':>17} |"
+                row += f"  {'-':>13}  {'-':>9}  {'-':>9}  {'-':>19} |"
                 continue
             any_cell = True
             cap = "*" if c["n_available_rank"] < c["n_requested"] else " "
-            counts = f"[{c['n_included']}/{c['n_affected_eval']}/{c['n_missing_buy']}]{cap}"
+            #  `indet` ADDED TO THE TRIPLE.  The legend makes no arithmetic claim, but the
+            #  triple invites one -- incl minus aff read as "measured" -- and that reading is
+            #  wrong by the indeterminate count the moment one appears.  Cheaper to print the
+            #  fourth number than to rely on nobody doing the subtraction.
+            counts = (f"[{c['n_included']}/{c['n_affected_eval']}/"
+                      f"{c.get('n_indeterminate', 0)}/{c['n_missing_buy']}]{cap}")
             row += (f"  {_pct(c['avg_ret_primary'])}  {_pct(c['excess_primary'])[:9]}"
-                    f"  {_pct(c['avg_ret_floor'])[:9]}  {counts:>17} |")
+                    f"  {_pct(c['avg_ret_floor'])[:9]}  {counts:>19} |")
         if any_cell:
             lines.append(row)
     lines.append("  legend: avgTR=equal-weight avg TOTAL return (primary terminal policy); "
                  "excess=avgTR-benchmark;")
     lines.append("          flrTR=avg TOTAL return under -100% floor for delisted/missing-eval names;")
-    lines.append("          [incl/aff/nobuy]=names included / affected-by-terminal-policy / "
-                 "excluded-for-missing-buy;  * = ranking shallower than N (n_available<N).")
+    lines.append("          [incl/aff/indet/nobuy]=names included / affected-by-terminal-policy /")
+    lines.append("          identified line-discontinuity with no measurable exit (Q-42, NOT a "
+                 "-100%) /")
+    lines.append("          excluded-for-missing-buy;  * = ranking shallower than N "
+                 "(n_available<N).")
     return lines
+
+
+def _continuity_lines(cells):
+    """WHAT THE ISSUER-CONTINUITY MAP DID TO THIS GRID (register Q-42).
+
+    Read at the DEEPEST cell of each (anchor, horizon), because the depth views are nested
+    slices of one returns table -- summing across depths would count the same pick up to
+    five times.  Even that is an over-count across horizons (one pick appears at 12/24/36
+    months), so the number is stated as PICK-CELLS, not picks: it says how many graded cells
+    changed, which is the quantity a reader of this grid cares about.
+
+    PRINTED EVEN WHEN EVERY COUNT IS ZERO.  "The map found nothing in this population" and
+    "the map did not run" are different states and must not print identically -- the same
+    rule `PriceSource.fill_report` follows two modules over.
+    """
+    deepest = max(DEPTHS)
+    sel = [c for c in cells if c.get("depth_N") == deepest and c.get("scope") != "POOLED-ALL"]
+    n_cont = sum(int(c.get("n_continued", 0) or 0) for c in sel)
+    n_indet = sum(int(c.get("n_indeterminate", 0) or 0) for c in sel)
+    n_term = sum(int(c.get("n_affected_eval", 0) or 0) for c in sel)
+    return [
+        "ISSUER CONTINUITY (Q-42) -- a ticker-line discontinuity is NOT a capital loss:",
+        "  re-attached to a successor line and MEASURED ............ %5d pick-cells" % n_cont,
+        "  INDETERMINATE (line ended, exit not measurable) ......... %5d pick-cells" % n_indet,
+        "  booked terminal (no map row: stale PRIMARY, -100%% FLOOR) %5d pick-cells" % n_term,
+        "  counted at depth<=%d over the per-anchor cells; a pick appears once per horizon,"
+        % deepest,
+        "  so these are pick-CELLS, not distinct picks.  The third line is the population the",
+        "  map does NOT cover -- i.e. how much of the defect is still live.",
+    ]
 
 
 def build_report(per_anchor, cells, pooled, pooled_clean):
@@ -590,6 +663,8 @@ def build_report(per_anchor, cells, pooled, pooled_clean):
     lines.append("  MISSING BUY price -> pick EXCLUDED from that bucket (counted as nobuy).")
     lines.append("  NOTE: 'affected' conflates TRUE delisting with real_prices exchange-coverage")
     lines.append("        GAPS (.L/.DE/.ST/.T/.TO absent at some anchors) -- see caveats.")
+    lines.append("")
+    lines += _continuity_lines(cells)
     lines.append("")
 
     lines.append("UNIVERSE & DEGENERACY FLAG (per buy anchor):")
