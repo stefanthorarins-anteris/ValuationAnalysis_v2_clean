@@ -12,7 +12,10 @@ z-score is an exact affine function of the raw value -- which is also why no dow
 consistency check could have caught it: the column looked perfectly well-behaved.
 """
 
+import io
 import os
+import re
+import tokenize
 import sys
 
 import numpy as np
@@ -175,6 +178,73 @@ POSTRANK_METRIC_READERS = {
 }
 
 
+#  PROGRAMMATIC column derivation off a postRank-ish frame -- the "derived" route.
+#  MODULE LEVEL so that `test_the_comment_strip_does_NOT_hide_a_real_column_reference` can
+#  assert against the SAME object the scan uses.  It was local to `_postrank_metric_readers`,
+#  and the guard-the-guard test therefore had to re-type the patterns -- which is how the
+#  `.select_dtypes(` alternative could be disabled by `_strip_comments` for a month with a
+#  green suite: nothing tested that THIS regex survived the strip.
+#
+#  TWO OF THE THREE ALTERNATIVES ARE ADJACENCY-SENSITIVE (the select_dtypes one carries no
+#  whitespace-tolerance at all).  Any future edit to `_strip_comments` must keep tokens at their original line and
+#  column or this pattern goes quiet rather than failing.
+_DERIVED_PAT = re.compile(
+    r"(postRank|postrank_df|postrank|fb_df|fbdf_tocsv|pr)\s*\.\s*columns"
+    r"|for\s+\w+\s+in\s+(postRank|postrank_df|fb_df)\b"
+    r"|\.select_dtypes\(", re.I)
+
+
+def _strip_comments(txt):
+    """`#` comments removed, EVERYTHING ELSE KEPT VERBATIM.
+
+    WHY (2026-08-31).  `_postrank_metric_readers` enrols a file the moment the literal
+    text "postRank" appears anywhere in it, including in prose.  A comment in
+    `scoringWeights.py` recording that a measurement was taken "from the run's own
+    postRank pickle" was enough to flag the WEIGHT VECTOR MODULE -- which imports nothing,
+    reads no frame, and cannot reach a postRank column -- as an unreviewed reader.  A guard
+    that fires on prose trains its reader to add allow-list entries to silence it, and an
+    allow-list padded with modules that do not do the thing is how the list stops meaning
+    anything.
+
+    COMMENTS ONLY, DELIBERATELY -- docstrings are NOT stripped.  The narrower cut is the
+    safe one: a `#` comment can never be a data access, so removing it cannot create a
+    false negative.  A naive docstring strip would instead mis-classify any string token
+    that merely FOLLOWS a newline -- including the second element of a two-line list
+    literal, which is a real column reference and exactly what this scan exists to catch.
+    `test_the_comment_strip_does_NOT_hide_a_real_column_reference` pins both halves.
+
+    *** THE COMMENT IS BLANKED IN PLACE, AND THAT IS THE WHOLE IMPLEMENTATION.  The first
+    version rebuilt the file as `"\n".join(t.string for t in toks ...)`, which does not only
+    remove comments -- it REFLOWS EVERY TOKEN ONTO ITS OWN LINE.  That silently disabled
+    every adjacency-sensitive alternative in `_DERIVED_PAT`: `postRank.select_dtypes(`
+    became `postRank` / `.` / `select_dtypes` / `(` on four separate lines, so
+    the `.select_dtypes(` alternative stopped matching and four repo files lost that
+    route.  The
+    docstring's own safety claim -- "removing it cannot create a false negative" -- was
+    therefore FALSE of the code beneath it: the strip was not removing, it was rewriting.
+    Blanking each comment's span with spaces keeps every other character at its original
+    line AND column, which is what makes the claim true. ***
+
+    Falls back to the raw text if the file will not tokenize, so a syntax error makes the
+    scan MORE inclusive rather than silently empty."""
+    try:
+        toks = list(tokenize.generate_tokens(io.StringIO(txt).readline))
+    except Exception:
+        return txt
+    #  `txt.split("\n")` and not `splitlines()`: tokenize's row numbers come from
+    #  `StringIO.readline`, which breaks on "\n" ONLY, while `splitlines` also breaks on
+    #  \x0b/\x0c/\x85/\u2028 -- a form feed in a source file would desync the row index and
+    #  blank the wrong span.
+    lines = txt.split("\n")
+    for t in toks:
+        if t.type != tokenize.COMMENT:
+            continue
+        (r1, c1), (r2, c2) = t.start, t.end          # a comment never spans lines
+        line = lines[r1 - 1]
+        lines[r1 - 1] = line[:c1] + " " * (c2 - c1) + line[c2:]
+    return "\n".join(lines)
+
+
 def _postrank_metric_readers():
     """Modules that reference postRank AND reach metric columns, by EITHER route.
 
@@ -188,20 +258,15 @@ def _postrank_metric_readers():
       * derived   -- the file iterates or subsets postRank's columns programmatically.
     """
     import glob
-    import re
     metric_names = [m for m, w in _weights().items() if w != 0]
-    # programmatic column derivation off a postRank-ish frame
-    derived_pat = re.compile(
-        r"(postRank|postrank_df|postrank|fb_df|fbdf_tocsv|pr)\s*\.\s*columns"
-        r"|for\s+\w+\s+in\s+(postRank|postrank_df|fb_df)\b"
-        r"|\.select_dtypes\(", re.I)
+    derived_pat = _DERIVED_PAT
     found = {}
     for path in glob.glob(os.path.join(_REPO, "*.py")) + \
             glob.glob(os.path.join(_REPO, "baseline_tools", "*.py")):
         base = os.path.basename(path)
         if base.startswith("test_"):
             continue
-        txt = open(path, encoding="utf-8", errors="replace").read()
+        txt = _strip_comments(open(path, encoding="utf-8", errors="replace").read())
         if "postRank" not in txt and "postrank" not in txt:
             continue
         literal = [m for m in metric_names if ("'%s'" % m) in txt or ('"%s"' % m) in txt]
@@ -230,6 +295,66 @@ def test_the_dtype_derivation_route_is_actually_detected():
     assert "backtest_ols_analysis.py" in found, \
         "the dtype-derivation route is not detected -- the guard has the same blind spot again"
     assert found["backtest_ols_analysis.py"]["derived"] is True
+
+
+def test_the_comment_strip_does_NOT_hide_a_real_column_reference():
+    """Guard the guard, second blind spot.  `_strip_comments` exists to stop PROSE
+    enrolling a file in this scan; it must not stop CODE doing so.
+
+    The case that matters is a metric name in a two-line literal, where the string token
+    follows a newline -- the shape a naive "strip anything that looks like a docstring"
+    would swallow, and a shape that IS a real column reference.  Exercised on synthetic
+    source, and against the SAME helper the scan uses, so this cannot drift from it."""
+    real = ("cols = ['moatScore',\n"
+            "        'earnYield']\n"
+            "x = postRank[cols]\n")
+    assert "'earnYield'" in _strip_comments(real), \
+        "the strip swallowed a REAL column reference in a two-line literal"
+
+    prose = ("# measured from the run's own postRank pickle\n"
+             "A = {'earnYield': 1}\n")
+    stripped = _strip_comments(prose)
+    assert "postRank" not in stripped, "the comment survived the strip"
+    assert "'earnYield'" in stripped, \
+        "the strip removed code as well as the comment"
+
+    #  --- THE ROUTE THE STRIP ACTUALLY BROKE, and which this test was blind to --------- #
+    #  The two assertions above cover the LITERAL-STRING route only, and a string is ONE
+    #  token -- so it survives any reflow.  The first `_strip_comments` rebuilt the file as
+    #  one token per line, which left every literal check green while silently killing
+    #  `\.select_dtypes\(` in `_DERIVED_PAT`.  A guard-the-guard test that only exercises
+    #  the route that cannot break is not guarding anything.
+    #
+    #  Asserted as the PROPERTY (the strip must not move anything) and then against the
+    #  LIVE `_DERIVED_PAT`, not a re-typed copy of it, so the two cannot drift apart.
+    derived_src = ("num = postRank.select_dtypes(include='number')  # trailing comment\n"
+                   "cs = postRank.columns\n"
+                   "for c in postRank:\n"
+                   "    pass\n")
+    out = _strip_comments(derived_src)
+    assert out.count("\n") == derived_src.count("\n"), \
+        "the strip changed the LINE COUNT -- it is reflowing tokens, not removing comments"
+    for i, (raw_line, out_line) in enumerate(zip(derived_src.split("\n"), out.split("\n"))):
+        assert len(raw_line) == len(out_line), (
+            "line %d changed LENGTH: every non-comment character must keep its column, or "
+            "an adjacency-sensitive pattern can be broken silently" % (i + 1))
+    assert "trailing comment" not in out, "the comment survived the strip"
+    for pat in (r"\.select_dtypes\(", r"postRank\s*\.\s*columns",
+                r"for\s+\w+\s+in\s+postRank\b"):
+        assert re.search(pat, out), (
+            "the strip broke the %r route -- a module reaching postRank's columns only that "
+            "way would now escape the scan entirely" % pat)
+    assert _DERIVED_PAT.search(out), \
+        "the LIVE derived-route pattern does not match the stripped source"
+
+    #  ...and each alternative on its own, so a single surviving alternative cannot mask a
+    #  broken one (which is exactly what happened: all four affected repo files matched
+    #  `postRank.columns` as well, so the inventory never changed and nothing failed).
+    for one in ("num = postRank.select_dtypes(include='number')\n",
+                "cs = postRank.columns\n",
+                "for c in postRank:\n    pass\n"):
+        assert _DERIVED_PAT.search(_strip_comments(one)), \
+            "the derived route %r is not detected after the strip" % one.strip()
 
 
 def test_every_allowlist_entry_matches_something():

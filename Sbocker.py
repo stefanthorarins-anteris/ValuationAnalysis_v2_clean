@@ -148,6 +148,17 @@ def transfer_outputs_to_drive(transfer_dir, configdic, verbose=True):
         #  reaches neither the RunProvenance sidecar (which carries counts, not names) nor the
         #  postRank pickle.  Written at root for the reason stated above.
         'Stage1VetoEjections_*.csv',
+        #  The SINGLE-METRIC SHARE CAP REPORT (2026-09-01) -- every name the cap touched and
+        #  every name it COULD NOT cap, with the share before and after.  It ships by exactly
+        #  the rule stated above, and for the sharper reason that the uncappable case needs
+        #  it: the entire justification for letting a name that could not be capped ship with
+        #  its real score is that we DISCLOSED it, and a disclosure that stays on the run
+        #  machine is one the reader was never in a position to have read.  Written at root
+        #  through `transfer_utils.EVIDENCE_DIR`, so this glob is live where `glob.glob`
+        #  looks.  The pattern is added HERE and in `conftest._EVIDENCE_GLOBS` together --
+        #  the writer being "correctly routed through EVIDENCE_DIR and then not given a glob"
+        #  is the identical defect the InputSanityRefusals note below records catching.
+        'ShareCapReport_*.csv',
         #  The TRADED-VALUE FLOOR LIST (CEO, 2026-08-24) -- the names the $1M/day floor
         #  ejected, with the reading that ejected them, plus the names it KEPT because it had
         #  no reading at all.  Ships by exactly the rule stated above, and more sharply than

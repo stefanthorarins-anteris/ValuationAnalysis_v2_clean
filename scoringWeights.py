@@ -361,12 +361,145 @@ def _block_vector(budgets, assignment):
 
 
 # --- B.5  the DEPLOYED vector ----------------------------------------------- #
-# 18 non-zero weights over the 23 canonical keys.  Sigma|w| = 1.000000 exactly (asserted at
+# 19 non-zero weights over the 25 canonical keys (the "18 over 23" this line used to read was
+# stale: `interestCoverage` and `navPerShareGrowth` were appended to POSTNEW_KEYS on
+# 2026-08-06 and the count was never updated -- the live figures are asserted by
+# test_e2_weight_vector, which is why the drift was invisible here).  Sigma|w| = 1.000000
+# exactly for the DERIVED vector AND after the B.5b transfer (asserted at
 # import by `_validate()`, and the exact-float identity is asserted by
-# test_e2_weight_vector).  The five zeros are the three DELIBERATELY_ZEROED metrics plus
-# the two FIN-1-only extractions, which carry no general-pool weight by design.
+# test_e2_weight_vector).  The SIX zeros are the three DELIBERATELY_ZEROED metrics plus the
+# three FIN-1-only columns (`shareCountChange`, `longTermDebtChange`, `navPerShareGrowth`),
+# which carry no general-pool weight by design.  ("five ... two" here was the same 2026-08-06
+# staleness; `test_the_six_zeros_are_the_ones_they_should_be` has had it right all along.)
 DEPLOYED = {k: 0.0 for k in METRIC_KEYS}
 DEPLOYED.update(_block_vector(GENERAL_BUDGETS, GENERAL_ASSIGNMENT))
+
+# --- B.5b  THE THESIS TRANSFER -- the ONE post-derivation adjustment (CEO, 2026-08-31) --- #
+# THIS IS THE ONLY PLACE IN THIS FILE WHERE A WEIGHT IS NOT PURELY DERIVED FROM THE BLOCK
+# MODEL, and it is a deliberate, single, named exception rather than a crack in the scheme.
+# Read all four notes below before adding a second entry to `THESIS_TRANSFER` -- a second
+# entry is how this becomes the hand-entered table E-2 removed.
+#
+# 1. THE RULING, AND WHAT IT RESTS ON.  CEO, 2026-08-31: *"lower earnYield slightly and
+#    increase either some solvency metric or incomeQuality, some cash flow metric or
+#    something like that."*
+#
+#    *** IT IS NOT EVIDENCE-DRIVEN AND NO BACKTEST CAN VALIDATE OR REFUTE IT. ***  The
+#    dedicated analysis (design/losers-vs-beaters-2026-08-31.md) concluded CHANGE NO WEIGHTS
+#    ON THIS EVIDENCE: 42 measured pick-rows in one macro regime, a null AUC band of
+#    [0.28, 0.72], nothing surviving Benjamini-Hochberg, and the flagged configuration barely
+#    present in the graded sample (shipped top-20 median `earnYield` share +27.9% against the
+#    backtest sample's -2.8%).  The CEO overrode that on MECHANISM: a high earnings yield on
+#    a cyclical at the top of a freight cycle is peak-cycle earnings capitalised as permanent,
+#    the textbook value trap, and the backtest cannot see it.  So a future beat-rate movement
+#    is NOT evidence about this transfer in either direction; do not report it as such, and
+#    do not "validate" the transfer by backtesting it.  Argue with the mechanism instead.
+#
+# 2. WHY `incomeQuality` AND NOT SOLVENCY -- the ONE piece of measured evidence in the whole
+#    exercise, and it CORRECTS the CEO's stated instinct.  He offered solvency first.  On the
+#    beaters-vs-losers split, `incomeQuality` was the single metric showing any separation at
+#    all (AUC 0.715, p = 0.059, same sign in all three windows, surviving the removal of
+#    CPH.TO and the repeat tickers), while SOLVENCY measured AUC 0.497 with p = 0.99 -- a coin
+#    flip -- and `interestCoverage` pointed the WRONG WAY in all three windows.  Solvency is
+#    the worse-supported of the two options he named.  That is why the offset lands here.
+#
+# 3. WHY A TARGETED TRANSFER AND NOT A BLOCK-BUDGET MOVE -- this is the substantive design
+#    call, and the block route was rejected on MECHANISM, not on convenience.  Moving delta
+#    from W_P to W_R is the idiomatic edit in this file and it would have moved SIX weights:
+#    `earnYield` -0.4875d, `grahamNumberToPrice` -0.1625d, `bVpRatio` -0.2625d, `tbVpRatio`
+#    -0.0875d, `incomeQuality` +0.6d, `freeCashFlowYield` +0.4d.  Two of those six work
+#    AGAINST the ruling's own mechanism:
+#      * `bVpRatio`/`tbVpRatio` are ASSET cheapness -- the reading that SURVIVES a discredited
+#        E, i.e. exactly what you want to keep when you have just decided the E is suspect.
+#        A W_P cut would cut it.
+#      * `freeCashFlowYield` is a second PRICE-BEARING yield, and a shipper at the top of a
+#        freight cycle has an inflated free-cash-flow yield for the same reason it has an
+#        inflated earnings yield.  A W_R rise would buy more of the very configuration the
+#        ruling is trying to de-weight.
+#    The mechanism names TWO metrics -- the one that capitalises peak earnings and the one
+#    that asks whether the earnings are cash -- so the instrument is a two-metric transfer.
+#    It also keeps `Sigma|w| = 1.000000` EXACTLY, by construction rather than by
+#    renormalisation, so no third metric moves as a side effect.
+#
+# 4. GENERAL VECTOR ONLY.  The five cohorts derive from `GENERAL_BUDGETS` via Rule PROP, not
+#    from `DEPLOYED`, so a post-derivation transfer does not reach them -- and should not:
+#    `earnYield` is already Tier 3 in REIT, OOD in FIN-1, and declared exempt from the thesis
+#    margin in Mining precisely because the cycle question is co-dominant there.  Scoped to
+#    the general pool, which is the pool the CEO's ruling was about, and matching the scope
+#    of `metric_share_cap.CAPPED_POOLS`.
+#
+# THE SIZE, AND WHY 0.006.  "Slightly" was left to the house.  0.006 is a 5.0% cut to
+# `earnYield` (0.119601 -> 0.113601) and a 6.5% lift to `incomeQuality` (0.092511 ->
+# 0.098511), taking their ratio 1.293 -> 1.153.  It is the same resolution the CEO used
+# himself for `CYCLEHEAT_TARGET_W`, and it spends 44% of the distance to the thesis-margin
+# crossover (which sits at d = 0.013545, where the two weights would be equal), so the
+# invariant is not left near-binding and a second identical step is still available.
+#
+# *** THE COST, PRICED RATHER THAN IMPLIED: THIS CONSUMES THE ENTIRE POST-D3 HEADROOM AND
+# THEN SOME.  Section B.6's forward trap says fixing audit D3 promotes `grahamNumberToPrice`
+# to P-E Tier 2 and drops `earnYield` to 0.39*W_P = 0.095681, which today still clears
+# `incomeQuality` = 0.092511 by 0.003170.  After this transfer the post-D3 numbers are
+# 0.089681 vs 0.098511: the margin is -0.008830, i.e. NEGATIVE.  Any d above ~0.0016 breaks
+# it, so this is not a property of 0.006 being too big -- it is that the CEO's ruling and the
+# post-D3 margin are in direct tension whatever the size.  The margin assertion PASSES today
+# and is left in place unrelaxed; what changes is that fixing D3 now REQUIRES a W_P decision
+# in the same breath.  B.6 is updated to say so. ***
+#
+# MEASURED ON THE 2026-08-31 SHIPPED PANEL (offline, from the run's own postRank pickle; the
+# 97-name ranked pool is fixed upstream by Stage-1 `BoScore.head(100)` and cannot move with a
+# Stage-2 weight, and the imputation ladder's exclusion set is invariant because Sigma|w| is
+# preserved and neither metric is imputed for any borderline name):
+#   * the top-20 MEMBERSHIP does not change at all -- the same twenty names, reordered;
+#   * `RMV.L` 9 -> 7, `GCT` 7 -> 9, `MGY` 17 -> 16, `041830.KQ` 16 -> 17; 61 of 97 names hold
+#     rank exactly, the largest move in the whole pool is 6 places (`MAU.PA`);
+#   * Commodity/Freight stays at 9 of the top-20 (45%), unchanged;
+#   * the k-property guard goes 1.01x VIOLATES -> 0.93x OK (reach 0.3141 -> 0.2983 against a
+#     median-to-rank-20 distance of 0.3192).  THE TRANSFER IS WHAT CLEARS THAT GUARD; the
+#     share cap does not and slightly worsens it (see metric_share_cap).  The margin is 7% on
+#     one panel, which is thin enough to flip back on the next.
+THESIS_TRANSFER_DELTA = 0.006
+THESIS_TRANSFER = {
+    'earnYield':     -THESIS_TRANSFER_DELTA,
+    'incomeQuality': +THESIS_TRANSFER_DELTA,
+}
+
+
+def _apply_transfer(vector, transfer):
+    """Add a signed, sum-preserving transfer on top of the derived vector.
+
+    Refuses anything that is not a pure transfer, because the two ways this mechanism goes
+    wrong are both silent: a set of deltas that does not sum to zero changes `Sigma|w|`
+    (and `_validate()` would then halt every import with a message about the BLOCK MODEL,
+    pointing a reader at the wrong file), and a delta large enough to flip a weight's SIGN
+    would invert a metric's meaning while looking like a magnitude edit.  Both raise here,
+    at the point of the mistake.
+    """
+    if abs(sum(transfer.values())) > 1e-15:
+        raise RuntimeError(
+            'scoringWeights: THESIS_TRANSFER must be a pure TRANSFER -- its deltas sum to '
+            '%.17g, not 0, so it would move Sigma|w| off 1.000000. Offset every reduction '
+            'with an exactly equal increase.' % sum(transfer.values()))
+    out = dict(vector)
+    for metric, delta in transfer.items():
+        if metric not in out:
+            raise RuntimeError('scoringWeights: THESIS_TRANSFER names %r, which is not a '
+                               'metric key' % metric)
+        new = out[metric] + delta
+        if out[metric] != 0.0 and (new == 0.0 or (new < 0.0) != (out[metric] < 0.0)):
+            raise RuntimeError(
+                'scoringWeights: THESIS_TRANSFER takes %r from %.6f to %.6f, crossing zero. '
+                'A transfer adjusts a MAGNITUDE; changing a metric\'s sign is a statement '
+                'about its meaning and belongs in GENERAL_ASSIGNMENT, not here.'
+                % (metric, out[metric], new))
+        out[metric] = new
+    return out
+
+
+#  The derived vector is kept under its own name so a reader (and the test suite) can see
+#  exactly what the block model produced and exactly what the transfer changed, rather than
+#  having to re-derive one from the other.
+DEPLOYED_DERIVED = dict(DEPLOYED)
+DEPLOYED = _apply_transfer(DEPLOYED, THESIS_TRANSFER)
 
 # --- B.6  what a future editor needs to know before touching a tier --------- #
 # THE THESIS MARGIN ("Bound 2-prime"): `earnYield` must be the LARGEST SINGLE |w| in the
@@ -381,6 +514,19 @@ DEPLOYED.update(_block_vector(GENERAL_BUDGETS, GENERAL_ASSIGNMENT))
 # (W_R = 0.1748) `incomeQuality` would be 0.10488 and the D3 fix would break the margin
 # unless W_P went to 0.27.  So: fix D3, then RE-RUN the margin assertion; do not fix D3 and
 # a budget in the same change.
+#
+# *** THE TRAP HAS SPRUNG: POST-D3 THE MARGIN IS NOW NEGATIVE, NOT +0.0034 (2026-08-31). ***
+# The paragraph above is kept as written because the reversal is the informative part, but
+# both of its numbers are superseded by the CEO's thesis transfer (section B.5b).  At today's
+# budgets the post-D3 pair would be `earnYield` = 0.39*W_P = 0.095681 against `incomeQuality`
+# = 0.092511, a margin of +0.003170 -- and the transfer moves 0.006 across that same pair, so
+# the post-D3 reading is 0.089681 vs 0.098511 and the margin is **-0.008830**.  Any transfer
+# above d ~ 0.0016 does this, so it is not a consequence of 0.006 being large: the ruling and
+# the post-D3 margin are in direct tension at ANY size.  The assertion still PASSES today
+# (0.113601 vs 0.098511) and is deliberately NOT relaxed.  What changed is the instruction:
+# fixing D3 now requires a W_P decision IN THE SAME CHANGE -- W_P would have to reach ~0.2526
+# for the post-D3 margin to come back to zero -- or an explicit CEO ruling that `incomeQuality`
+# may become the largest weight.  Do not fix D3 and discover this from a failing test.
 #
 # MINING IS DECLARED EXEMPT from the thesis margin, and the reason is not "it fails" -- it
 # is that the failure is NOT RECOVERABLE at any admissible budget.  Post-D3 Mining would

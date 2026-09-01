@@ -104,14 +104,44 @@ def test_the_N_re_budget_hit_the_TARGET_and_paid_for_it_PROPORTIONALLY():
     assert sw.GENERAL_BUDGETS['P'] == pytest.approx(sw.GENERAL_BUDGETS['D'], abs=1e-15)
 
 
-def test_the_general_vector_IS_the_decided_one():
-    """Every one of the 18, to the design's published precision."""
+def test_the_BLOCK_MODEL_still_derives_the_decided_vector():
+    """Every one of the 19, to the design's published precision.
+
+    ASSERTED AGAINST `DEPLOYED_DERIVED`, NOT `DEPLOYED`, SINCE 2026-08-31, and the
+    distinction is the point rather than a technicality.  `DESIGN_GENERAL` is a statement
+    about the BLOCK MODEL -- section 15.3's table at the CEO's decided budgets through two
+    re-budgets -- and that statement is still exactly true.  What is no longer true is that
+    the block model alone produces the SHIPPED vector: the CEO's thesis transfer
+    (scoringWeights B.5b) moves 0.006 from `earnYield` to `incomeQuality` on top of it.
+
+    Re-pinning `DESIGN_GENERAL`'s two entries to the post-transfer numbers would have been
+    the wrong fix and is the pattern this project has filed fifteen times: it would have
+    made a table that documents a DERIVATION silently encode a hand-set adjustment, and the
+    next reader could no longer tell which numbers the block model is responsible for.  The
+    transfer is asserted as a DELTA in the test below instead."""
     for metric, want in DESIGN_GENERAL.items():
-        assert sw.DEPLOYED[metric] == pytest.approx(want, abs=5e-7), metric
-    non_zero = {k: v for k, v in sw.DEPLOYED.items() if v != 0.0}
+        assert sw.DEPLOYED_DERIVED[metric] == pytest.approx(want, abs=5e-7), metric
+    non_zero = {k: v for k, v in sw.DEPLOYED_DERIVED.items() if v != 0.0}
     assert set(non_zero) == set(DESIGN_GENERAL), sorted(
         set(non_zero) ^ set(DESIGN_GENERAL))
     assert len(non_zero) == 19
+
+
+def test_the_SHIPPED_vector_is_the_derived_one_plus_the_CEO_TRANSFER_AND_NOTHING_ELSE():
+    """The shipped vector = block model + `THESIS_TRANSFER`, with no third difference.
+
+    This is the assertion that keeps B.5b from becoming a crack in the scheme: if anyone adds
+    a second post-derivation adjustment, or nudges a weight by hand, `DEPLOYED` stops equalling
+    `DEPLOYED_DERIVED` plus exactly the declared transfer and this fails."""
+    expected = dict(sw.DEPLOYED_DERIVED)
+    for metric, delta in sw.THESIS_TRANSFER.items():
+        expected[metric] += delta
+    for metric in sw.METRIC_KEYS:
+        assert sw.DEPLOYED[metric] == expected[metric], metric
+    moved = [k for k in sw.METRIC_KEYS if sw.DEPLOYED[k] != sw.DEPLOYED_DERIVED[k]]
+    assert moved == [k for k in sw.METRIC_KEYS if k in sw.THESIS_TRANSFER]
+    #  and it is a TRANSFER, so the norm is untouched -- exactly, not to a tolerance
+    assert sw.sum_abs(sw.DEPLOYED) == sw.sum_abs(sw.DEPLOYED_DERIVED) == 1.0
 
 
 def test_the_six_zeros_are_the_ones_they_should_be():
@@ -133,16 +163,58 @@ def test_sigma_abs_w_is_EXACTLY_one_in_float():
     assert sw.sum_abs(sw.DEPLOYED) == 1.0
 
 
-def test_every_block_spends_EXACTLY_its_budget():
-    """The structural property the whole scheme rests on (and what makes Sigma|w| = 1 a
-    consequence rather than a coincidence): sum of |w| over a block's members = W_B."""
+def _spend_by_block(vector):
     per_block = {}
     for metric, (block, _sub, _tier, _sign) in sw.GENERAL_ASSIGNMENT.items():
-        per_block[block] = per_block.get(block, 0.0) + abs(sw.DEPLOYED[metric])
+        per_block[block] = per_block.get(block, 0.0) + abs(vector[metric])
+    return per_block
+
+
+def test_every_block_spends_EXACTLY_its_budget():
+    """The structural property the whole scheme rests on (and what makes Sigma|w| = 1 a
+    consequence rather than a coincidence): sum of |w| over a block's members = W_B.
+
+    ASSERTED ON THE DERIVED VECTOR since 2026-08-31 -- see the next test, which is where
+    the cost of that qualification is stated rather than hidden behind a loosened
+    tolerance here."""
+    per_block = _spend_by_block(sw.DEPLOYED_DERIVED)
     assert set(per_block) == set(sw.GENERAL_BUDGETS)
     for block, spent in per_block.items():
         assert spent == pytest.approx(sw.GENERAL_BUDGETS[block], abs=1e-12), block
     assert sum(sw.GENERAL_BUDGETS.values()) == pytest.approx(1.0, abs=1e-12)
+
+
+def test_the_TRANSFER_BREAKS_the_block_budget_identity_and_that_is_the_price_of_it():
+    """*** THE COST OF THE 2026-08-31 TARGETED TRANSFER, PINNED RATHER THAN TOLERATED. ***
+
+    The block model no longer fully accounts for the SHIPPED vector.  `earnYield` is a P
+    member and `incomeQuality` an R member, so moving 0.006 between them means P now
+    spends 0.006 LESS than its budget and R 0.006 MORE.  "Every block spends exactly its
+    budget" -- the property E-2 was built to guarantee -- is true of `DEPLOYED_DERIVED`
+    and FALSE of `DEPLOYED`.
+
+    That is the real trade against the block-budget alternative (move W_P -> W_R), which
+    would have preserved this identity while moving six weights instead of two, two of
+    them against the ruling's own mechanism -- scoringWeights B.5b argues that call.  It
+    is asserted EXACTLY, per block, so the deviation stays exactly one transfer wide: if
+    a second post-derivation adjustment ever appears, this fails and names the block."""
+    derived = _spend_by_block(sw.DEPLOYED_DERIVED)
+    shipped = _spend_by_block(sw.DEPLOYED)
+    expected_drift = {}
+    for metric, delta in sw.THESIS_TRANSFER.items():
+        block = sw.GENERAL_ASSIGNMENT[metric][0]
+        expected_drift[block] = expected_drift.get(block, 0.0) + delta
+    assert expected_drift == {'P': -sw.THESIS_TRANSFER_DELTA,
+                              'R': +sw.THESIS_TRANSFER_DELTA}
+    for block in sw.GENERAL_BUDGETS:
+        want = derived[block] + expected_drift.get(block, 0.0)
+        assert shipped[block] == pytest.approx(want, abs=1e-12), block
+    #  the identity is broken in P and R and NOWHERE ELSE
+    broken = {b for b in sw.GENERAL_BUDGETS
+              if abs(shipped[b] - sw.GENERAL_BUDGETS[b]) > 1e-12}
+    assert broken == {'P', 'R'}, broken
+    #  ...and the two deviations cancel, which is why Sigma|w| is still exactly 1
+    assert sum(shipped.values()) == pytest.approx(1.0, abs=1e-12)
 
 
 def test_CycleHeat_is_still_NEGATIVE():
@@ -177,13 +249,22 @@ def test_earnYield_is_the_LARGEST_single_weight_in_the_general_vector():
     #  `incomeQuality` are both non-N, so both scale by 0.98005780 and the ratio is invariant.
     #  Asserted anyway -- the invariance is a property of the METHOD (a proportional take),
     #  not a fact about the numbers, and the method is what a future edit would break.
-    assert ey / other == pytest.approx(1.2928, abs=5e-4)
+    #  THE RATIO MOVED ON 2026-08-31 and the invariance claim above is now HALF true, so it
+    #  is corrected rather than deleted.  It is still invariant to a PROPORTIONAL re-budget
+    #  (both metrics scale together), which is what the paragraph above is about -- but the
+    #  CEO's thesis transfer is NOT proportional and moved it deliberately, 1.2928 -> 1.1532.
+    #  The derived vector still reads 1.2928, and both are asserted so a reader can see which
+    #  number belongs to which vector.
+    assert (abs(sw.DEPLOYED_DERIVED[sw.THESIS_METRIC])
+            / abs(sw.DEPLOYED_DERIVED['incomeQuality'])) == pytest.approx(1.2928, abs=5e-4)
+    assert ey / other == pytest.approx(1.1532, abs=5e-4)
     #  ...and the runner-up is still `incomeQuality`, NOT `CycleHeat`.  The N re-budget closed
     #  the gap to the cycle metric from 1.638x to 1.407x, so this is now the assertion that
     #  would catch a further N increase quietly making the cycle the largest weight -- which
     #  is exactly what it already did in the Mining cohort (see the Mining exemption test).
     assert other == pytest.approx(abs(sw.DEPLOYED['incomeQuality']), abs=1e-15)
-    assert ey / abs(sw.DEPLOYED['CycleHeat']) == pytest.approx(1.4071, abs=5e-4)
+    #  and the gap to the cycle metric narrowed again with the transfer, 1.4071 -> 1.3365.
+    assert ey / abs(sw.DEPLOYED['CycleHeat']) == pytest.approx(1.3365, abs=5e-4)
 
 
 def test_the_margin_SURVIVES_the_D3_fix_and_this_is_the_forward_trap():
@@ -210,9 +291,31 @@ def test_the_margin_SURVIVES_the_D3_fix_and_this_is_the_forward_trap():
     ey, iq = abs(v['earnYield']), abs(v['incomeQuality'])
     assert ey == pytest.approx(0.095681, abs=5e-6)
     assert iq == pytest.approx(0.092511, abs=5e-6)
-    assert ey > iq, ('the D3 fix has broken the thesis margin -- see scoringWeights B.6; '
-                     'the recorded remedy is W_P >= 0.27', ey, iq)
+    assert ey > iq, ('the D3 fix has broken the thesis margin in the DERIVED vector -- '
+                     'see scoringWeights B.6', ey, iq)
     assert ey - iq == pytest.approx(0.003170, abs=5e-6), 'and the headroom is this thin'
+
+    #  *** AND THE TRAP HAS ALREADY SPRUNG ON THE SHIPPED VECTOR (2026-08-31). ***
+    #  Everything above is about the DERIVED vector, and on its own it is now a guard
+    #  that is structurally blind to the thing beneath it: it would keep reporting "the
+    #  margin survives D3" while the vector that actually ships fails D3 by -0.0088.
+    #  The CEO's thesis transfer moves 0.006 ACROSS THIS EXACT PAIR, so it comes off
+    #  `earnYield`'s post-D3 0.095681 and goes onto `incomeQuality`'s 0.092511.
+    #
+    #  Asserted as a FAILURE on purpose.  This is not a defect in today's vector --
+    #  today's margin passes and `test_earnYield_is_the_LARGEST_single_weight...` covers
+    #  it.  It is a pre-recorded verdict on a change nobody has made yet: whoever fixes
+    #  D3 must move W_P (to ~0.2526 for a zero margin) or get a CEO ruling that
+    #  `incomeQuality` may become the largest weight.  If a later budget change makes
+    #  this pass again, that is a real event -- update B.5b and B.6 to match; do NOT
+    #  delete the assertion to make it green.
+    ship_ey = ey + sw.THESIS_TRANSFER.get('earnYield', 0.0)
+    ship_iq = iq + sw.THESIS_TRANSFER.get('incomeQuality', 0.0)
+    assert ship_ey < ship_iq, (
+        'the post-D3 margin on the SHIPPED vector is positive again -- scoringWeights '
+        'B.5b and B.6 both state it is negative. A budget must have moved; update both '
+        'notes.', ship_ey, ship_iq)
+    assert ship_ey - ship_iq == pytest.approx(-0.008830, abs=5e-6)
 
 
 @pytest.mark.parametrize('label', ['FinManager'])

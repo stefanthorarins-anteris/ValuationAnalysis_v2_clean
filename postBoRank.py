@@ -11,6 +11,7 @@ import numpy as np
 from tqdm import tqdm
 
 import adhoc_penalty as ap
+import metric_share_cap as msc
 import nan_policy as npol
 import stage2_metrics as sm
 import reporting_period as rp
@@ -229,6 +230,52 @@ def postBoScoreRanking(bmtop, bstop, cdxtop, baseurl, api_key, period='quarter',
     for col in temp_normpsmdf_weighted.columns:
         w = weight_series.get(col, 1)
         temp_normpsmdf_weighted[col] = postScoreMetric_df[col].values * w
+
+    #  --- THE SINGLE-METRIC SHARE CAP (CEO, 2026-08-31) ---------------------------------
+    #  HERE, and the position is forced from both sides: the cap is defined on WEIGHTED
+    #  contributions, so it cannot run before the loop above; and it must run before the
+    #  ad-hoc penalty column is attached, because that column is NOT a metric and must be
+    #  neither part of the share denominator nor itself capped (a CEO data-gap penalty is a
+    #  decision, not a metric reading).  `temp_normpsmdf_weighted` is exactly the metric
+    #  block -- `postScoreMetric_df` minus `source` -- which is why the cap is applied to it
+    #  rather than to `psmdf_normalized`, whose column set also carries identifiers.
+    #
+    #  IT IS NOT EVIDENCE-DRIVEN.  See `metric_share_cap`'s docstring: the analysis said
+    #  change no weights on this evidence, the CEO overrode that on mechanism, and no
+    #  backtest can validate or refute it.  A beat-rate movement is not a verdict on it.
+    #
+    #  GENERAL POOL ONLY (`msc.CAPPED_POOLS`).  The five cohort vectors concentrate weight
+    #  BY DESIGN -- FIN-1 puts 0.275 on `bVpRatio` -- so a 25% cap there would bind on almost
+    #  every member for a structural reason rather than the value-trap shape it is aimed at.
+    _cap_pool = (pool_label or 'general')
+    _cap_report = None
+    if _cap_pool in msc.CAPPED_POOLS:
+        #  `sources` goes into the CAP rather than into the log formatter: the report is
+        #  carried in rankdic and has to be JOINABLE, and `source` is the only key that
+        #  survives (`getAggScore` re-indexes, so row position does not).  The log then
+        #  names the same column the shipped frame does.
+        temp_normpsmdf_weighted, _cap_report = msc.apply_share_cap(
+            temp_normpsmdf_weighted, sources=list(postScoreMetric_df['source']))
+        print(msc.format_report(_cap_report, _cap_pool), flush=True)
+        #  ...and the same disclosure into a SHIPPED ARTIFACT, not only stdout.  A name the
+        #  cap declined ships UNCAPPED, and the whole justification for that is that we said
+        #  so -- which is worth nothing if the saying-so lives in a console log the CEO never
+        #  opens.  Every comparable layer here emits a dated CSV; this one did not until now.
+        #  The writer never raises (see `metric_share_cap.write_evidence_csv`), so a disk or
+        #  permission problem costs the evidence file and not the run.
+        _cap_csv = msc.write_evidence_csv(_cap_report, _cap_pool)
+        print('SINGLE-METRIC SHARE CAP [%s]: per-name detail written to %s'
+              % (_cap_pool, _cap_csv if _cap_csv else
+                 'NOTHING -- the evidence CSV could not be written (see the warning above); '
+                 'the per-name detail exists only in this log and in '
+                 "rankdic['share_cap_report']"), flush=True)
+    else:
+        print('SINGLE-METRIC SHARE CAP [%s]: NOT APPLIED -- this pool is outside '
+              'metric_share_cap.CAPPED_POOLS (%s). That is a scoping decision, not a '
+              'finding that this pool is unconcentrated; the cohort vectors are the MOST '
+              'concentrated in the house.'
+              % (_cap_pool, ', '.join(sorted(msc.CAPPED_POOLS))), flush=True)
+
     psmdf_normalized = pd.concat(
         [postScoreMetric_df[postScoreMetric_df.columns.difference(temp_normpsmdf_weighted.columns)],
          temp_normpsmdf_weighted], axis=1)
@@ -340,6 +387,21 @@ def postBoScoreRanking(bmtop, bstop, cdxtop, baseurl, api_key, period='quarter',
                #  "the ladder ran and removed nobody"; the ladder prints its own NOT APPLIED
                #  banner when it could not look at all.
                'imputed_dropped': imputed_dropped,
+               #  The share cap's per-name report, or None where the pool is outside
+               #  `msc.CAPPED_POOLS`.  Carried rather than left log-only for the reason
+               #  register N-4 gave for `imputed_weight_share`: the one number that says how
+               #  much of a name's score was truncated should be joinable onto the ranked
+               #  artifact, not recoverable only by re-reading a run log.  Its row order is
+               #  `postScoreMetric_df`'s -- i.e. PRE-dedup and PRE-imputation-ladder -- so a
+               #  consumer must join on its `source` COLUMN, never on position.  Position is
+               #  not merely risky here, it is unusable: `postRank` and `psmdf_normalized`
+               #  are ONE object (see above) and `getAggScore` does `reset_index(drop=True)`,
+               #  so neither the index nor the row order of the ranked artifact matches this
+               #  frame.  The `source` column is written by `apply_share_cap` from this
+               #  pool's own `postScoreMetric_df['source']`, which is what makes the join
+               #  above actually work -- the earlier version of this comment told the reader
+               #  to join on a column the report did not have.
+               'share_cap_report': _cap_report,
                'postScoreMetric_raw': postScoreMetric_raw,
                'psmdf_normalized': psmdf_normalized, 'BoAggCorr': BoAggCorr, 'outlierlist': outlierlist,
                'postRank_predupe': postRank_predupe, 'issuer_dupes_dropped': issuer_dupes_dropped,
@@ -1719,6 +1781,42 @@ def single_column_reach_check(postRank, weight_series=None, pool_label=None, top
                 "(%s, |w|=%.3f x max|zeta|=%.3f)"
                 % (pool, reach, worst['column'], abs(worst['weight']),
                    worst['max_abs_zeta']))
+        #  THE POST-CAP REALISED REACH -- an ADDED LINE, and the verdict above is deliberately
+        #  NOT rebased on it.  `reach` is |w| x max|zeta| over the NORMALISATION pool; this is
+        #  the largest contribution any single column actually makes to any name in the
+        #  DELIVERED (post-dedup, post-ladder, post-cap) frame.  They differ even with no cap,
+        #  so switching the verdict to this would silently break comparability with every
+        #  figure the run reviews track -- hence a second line rather than a substitution.
+        #
+        #  IT EXISTS TO STOP ONE SPECIFIC MISREADING: the single-metric share cap is a
+        #  PROPORTIONAL bound and the k-property is an ABSOLUTE-MAGNITUDE one, so the cap does
+        #  NOT bound this quantity.  Measured on 2026-08-31, TNK's `earnYield` contributes
+        #  0.3141 while being only 21.0% of TNK's absolute total, so the cap never touches the
+        #  very contribution the guard is about -- and by compressing the top of the pool the
+        #  cap lowers rank-20 more than the median, moving the RATIO slightly the wrong way.
+        #  Anyone reading "the cap shipped" as "the k-property is handled" is wrong, and this
+        #  line is where they find that out.
+        realised = None
+        try:
+            _w = dict(weight_series) if weight_series is not None else {}
+            _cols = [c for c in postRank.columns
+                     if c in _w and float(_w[c]) != 0.0 and c != 'AggScore']
+            if _cols:
+                _mx = postRank[_cols].abs().max()
+                realised = (str(_mx.idxmax()), float(_mx.max()))
+        except Exception:
+            realised = None
+        def _emit_realised():
+            #  printed AFTER the verdict, never before: the general pool's violation is a
+            #  banner, and a line above it would be read as part of the banner's own
+            #  preamble rather than as the separate statement it is.
+            if realised is not None:
+                print("normalizeAndDropNA[k-property] pool=%-18s REALISED single-column "
+                      "reach %.4f (%s) -- the largest contribution one column actually "
+                      "makes to any DELIVERED name, AFTER any share cap. The cap is "
+                      "PROPORTIONAL and does not bound this; do not read a shipped cap "
+                      "as a k-property remedy."
+                      % (pool, realised[1], realised[0]), flush=True)
         if not (distance > 0):
             #  NOT a violation -- an inapplicable test.  Rank n_used sits at or below this
             #  pool's median, so "carry a median name into the top n_used" is not a statement
@@ -1726,9 +1824,12 @@ def single_column_reach_check(postRank, weight_series=None, pool_label=None, top
             print(head + "  vs median->rank-%d distance %+.4f  -- NOT APPLICABLE: rank %d is "
                          "at or below the median of a %d-name pool, so there is no boundary "
                          "to reach." % (n_used, distance, n_used, n), flush=True)
+            _emit_realised()
             return {'pool': pool, 'reach': reach, 'column': worst['column'],
                     'distance': distance, 'ratio': float('nan'), 'n_used': n_used,
-                    'median': median, 'boundary': boundary, 'applicable': False}
+                    'median': median, 'boundary': boundary, 'applicable': False,
+                    'realised_reach': (realised[1] if realised else float('nan')),
+                    'realised_column': (realised[0] if realised else None)}
         ratio = reach / distance
         line = (head + "  vs median->rank-%d distance %.4f (median %.4f, rank-%d %.4f)  =  "
                        "%.2fx" % (n_used, distance, median, n_used, boundary, ratio))
@@ -1750,9 +1851,12 @@ def single_column_reach_check(postRank, weight_series=None, pool_label=None, top
                          "(|w|=%.3f on one column); a WEIGHTING finding for E-2, not a k "
                          "defect.  No k satisfies this while one column carries that weight."
                   % abs(worst['weight']), flush=True)
+        _emit_realised()
         return {'pool': pool, 'reach': reach, 'column': worst['column'],
                 'distance': distance, 'ratio': ratio, 'n_used': n_used,
-                'median': median, 'boundary': boundary, 'applicable': True}
+                'median': median, 'boundary': boundary, 'applicable': True,
+                'realised_reach': (realised[1] if realised else float('nan')),
+                'realised_column': (realised[0] if realised else None)}
     except Exception as _e:
         print("single_column_reach_check failed (%s: %s) -- scores UNAFFECTED"
               % (type(_e).__name__, _e), flush=True)
