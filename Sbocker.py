@@ -302,7 +302,34 @@ def transfer_outputs_to_drive(transfer_dir, configdic, verbose=True):
     allowlist_dirs = [
         'logs',
         'output',
-        'baseline_tools/price_data'
+        'baseline_tools/price_data',
+        #  THE HTML DECK (2026-09-02).  It became a pipeline stage on this date
+        #  (`deliverables.run_deck_stage`); before that it was hand-run and the last deck
+        #  from a real run was dated 2026-07-17.  A DIRECTORY entry, matching `logs/` and
+        #  `output/`: `presentations/` holds one file per run-date, which is the shape
+        #  those entries exist for.
+        #
+        #  AND ONE CORRECTION TO A CLAIM THIS FILE MAKES TWICE, because it is load-bearing
+        #  and it is WRONG.  The `MeanBarCalibration` and `DedupSurvivorReport` notes both
+        #  say a top-level pattern aimed into a subdirectory is a DEAD GLOB, "which
+        #  glob.glob() resolves from CWD and would therefore match nothing".  Only the
+        #  first half holds: a pattern that NAMES the subdirectory works.  Measured
+        #  2026-09-02 from the repo root -- `glob.glob('presentation_*.html')` -> 0
+        #  matches, `glob.glob('presentations/presentation_*.html')` -> 5.  So a pattern
+        #  WAS available here and the directory entry is a choice, not a necessity.
+        #  Recorded as a finding rather than a rewrite of two unrelated comment blocks.
+        #
+        #  WHAT THIS DOES NOT BUY: the end-of-run transfer RECONCILIATION reports a
+        #  directory group complete when it finds any non-empty file in it, and
+        #  `presentations/` already carries five historical decks.  A run whose deck stage
+        #  failed would therefore still reconcile clean here -- the deliverable audit, not
+        #  the transfer report, is what catches that.
+        #
+        #  IT SHIPS BECAUSE BUILDING IT ON THE RUN MACHINE AND NOT MOVING IT WOULD BE THE
+        #  SAME FAILURE IN A NEW PLACE.  The deck is the 45-page artifact the CEO actually
+        #  reviews; `presentations/` is git-TRACKED, but the run machine's git is not a
+        #  channel the CEO pulls, so Drive is how it reaches him.
+        'presentations'
     ]
 
     # If -ingest_delisted ran, also include delisted outputs AND run_logs/ -- that
@@ -630,6 +657,28 @@ def transfer_outputs_to_drive(transfer_dir, configdic, verbose=True):
         print(f"[TRANSFER] Destination: {transfer_dir}")
 
     return result
+
+
+def _run_date_from_deliverables(fnames, today=None):
+    """The run-date the DELIVERABLES were stamped with, not the one `today()` returns now.
+
+    Every deliverable is named `<kind>-<YYYY-MM-DD>_<datasource>_<tickerfilter>`, stamped
+    from `writeResWrapper`'s own `datetime.today()`.  A run that crosses midnight between
+    that call and the deck stage would otherwise ask for a date whose artifacts do not
+    exist -- and the deck's `resolve_run_artifacts` REFUSES to fall back to another date's
+    files (correctly: that cross-run mixing was a publish-blocker), so the symptom would be
+    a hard failure with a confusing message rather than a wrong deck.  Reading the stamp
+    off the filenames removes the case entirely.
+
+    Falls back to today when no filename carries a date -- which is itself a signal the
+    audit will pick up, since the declared files will not be found either."""
+    import re as _re
+    for f in list(fnames or []):
+        m = _re.search(r'(\d{4}-\d{2}-\d{2})', os.path.basename(str(f)))
+        if m:
+            return m.group(1)
+    from datetime import datetime as _dt
+    return (today or _dt.today().strftime('%Y-%m-%d'))
 
 
 def report_transfer_outcome(result, transfer_dir, emit=print):
@@ -1344,6 +1393,85 @@ def main():
         tu.copy_artifacts_to_transfer_dir(
             configdic.get('transfer_dir'), [postrank_fname], verbose=True)
 
+        # ---- HTML DECK STAGE (2026-09-02) -----------------------------------------
+        # BUILDING THE DELIVERABLES IS NOT OPTIONAL (CEO directive, 2026-09-02).  The
+        # 45-page HTML deck is the artifact the CEO reviews and it had not been rendered
+        # from a real run since 2026-07-17, because `generate_presentation.py` was a
+        # hand-run tool and nobody ran it.  Six and a half weeks of deck fixes -- the ten
+        # unearned green Sloan ticks turned amber, absence-outranks-low-confidence, the
+        # `nan`-string bug, the cohort forensic extension -- were all measured offline and
+        # had never appeared on a page he opened.
+        #
+        # PLACED HERE, i.e. AFTER the postRank pickle is written, because the deck reads
+        # it: `resolve_run_artifacts` requires a same-date postRank + Boresults pickle and
+        # the same-date AggScore + ForensicFlags CSVs, and all four now exist.  It is
+        # BEFORE the pick-log, the analysis suite and the (optional, multi-hour) delisted
+        # ingestion, so the deck is on disk and syncs to Drive with everything else.
+        #
+        # IT ADDS ZERO API CALLS.  `deliverables.deck_command` passes `--augment off
+        # --no-augment`; the deck holds no api_key, builds no FMP url, and its ONLY
+        # network path is the Yahoo augment, which those flags shut off.  MEASURED
+        # 2026-09-02 with every `requests` entry point patched to refuse and the import of
+        # every HTTP client blocked: 0 refusals, no client resident, deck rendered in full.
+        # (The same measurement with `--augment on` produced 1 refusal -- the yfinance
+        # import -- which is what shows the guard was live rather than inert.)
+        #
+        # A FAILURE HERE CANNOT DAMAGE ANYTHING ALREADY WRITTEN: it is a subprocess with a
+        # timeout, `run_deck_stage` never raises, and the outer guard catches an import
+        # failure.  Same shape as the pick-log and analysis-suite stages below.
+        #
+        # THE RUN-DATE COMES FROM THE DELIVERABLE FILENAMES, NOT FROM `today()`.
+        # `writeResWrapper` stamps its files with its OWN `datetime.today()`; a run that
+        # crosses midnight between that call and this one would otherwise ask the deck for
+        # a date whose artifacts do not exist.
+        #  ONE RUN MODE CANNOT PRODUCE A DECK, AND IT IS THE CHEAPEST ONE (review S2,
+        #  2026-09-02).  `-loadboresults` force-disables `saveBoResults`
+        #  (configuration.py:348-351), so this run writes NO same-date Boresults pickle and
+        #  `resolve_run_artifacts` hard-fails rather than mixing in another date's --
+        #  correctly; that cross-run mixing was a publish-blocker.  The deck is therefore
+        #  unavailable in that mode BY CONSTRUCTION, so it is declared not-applicable
+        #  rather than attempted and failed: the audit reports DEGRADED and exits 0.  A
+        #  supported ZERO-QUOTA replay must not look like a broken run to the operator who
+        #  reached for it precisely to spend nothing -- that is the same alarm-fatigue
+        #  error as an uncalibrated byte floor, in a different place.
+        #
+        #  `-loadbometric` IS NOT AFFECTED, checked rather than assumed: it disables only
+        #  `saveBoMetric` (configuration.py:344-347), so `postBoWrapper` still runs and
+        #  `utils.saveWrapper('results', resdic)` still writes
+        #  `Boresults_dic-..._<today>_len...pickle`, which is what the deck resolves.
+        _deck_report = None
+        _run_date = _run_date_from_deliverables(deliverable_fnames)
+        if configdic.get('loadBoResults'):
+            _deck_report = {
+                'kind': 'deck', 'ok': False, 'not_applicable': True, 'path': None,
+                'expected_pages': None, 'returncode': None, 'stderr_tail': '',
+                'reason': ('-loadboresults disables saveBoResults, so this run wrote no '
+                           'same-date Boresults pickle for the deck to read')}
+            print('\nHTML DECK STAGE NOT APPLICABLE: %s' % _deck_report['reason'],
+                  flush=True)
+        try:
+            import deliverables as _dlv
+            if _deck_report is None:
+                print("\n" + "=" * 70)
+                print("HTML DECK STAGE (offline; adds zero API calls)")
+                print("=" * 70)
+                _deck_report = _dlv.run_deck_stage(_run_date, verbose=True)
+                if _deck_report.get('ok'):
+                    print('DECK OK: %s (%s page(s) planned)'
+                          % (_deck_report['path'], _deck_report.get('expected_pages')))
+                else:
+                    print('DECK FAILED: %s' % _deck_report.get('reason'), flush=True)
+        except Exception:
+            import traceback as _tb
+            _dk_banner = ("\n" + "!" * 78 + "\n"
+                          "!!! HTML DECK STAGE COULD NOT BE IMPORTED/STARTED -- RUN CONTINUES !!!\n"
+                          "!!! The deck was NOT rendered this run; the deliverables above are     !!!\n"
+                          "!!! UNAFFECTED. The end-of-run deliverable audit will FAIL on it.      !!!\n"
+                          + "!" * 78 + "\n")
+            print(_dk_banner, file=sys.stderr, flush=True)
+            _tb.print_exc(file=sys.stderr)
+            print(_dk_banner, flush=True)
+
         # ---- PROSPECTIVE PICK-LOG stage (append-only forward track record) --------
         # Append this run's GENERAL top-N + the five cohort side-lists as NEW, immutable
         # rows to pick_log.csv -- one row per (run, list, stock), stamped with the run's
@@ -1449,6 +1577,69 @@ def main():
         else:
             # Explicit disabled case -- never a silent skip.
             print(f"\nDrive transfer DISABLED by {disabled_reason or '-transfer_dir none'}")
+
+        # ---- END-OF-RUN DELIVERABLE AUDIT (2026-09-02) ----------------------------
+        # THE FAILURE THIS CLOSES.  On 2026-09-01 `PresentationTop20-...xlsx` shipped with
+        # ALL 20 OF 20 PAGES SKIPPED -- 4,797 bytes, one empty sheet, against 43,482 bytes
+        # and 20 named sheets the day before -- and the run exited 0.  It was reported at
+        # WARNING severity on line 2209 of a 5,222-line log; the transfer log printed
+        # `(0.00 MB)` beside the `0.04 MB` of every prior run and said nothing.  In the same
+        # event `AggScoreTop100` lost `price`, `beta`, `sector` and `rating_fmp` on 88 of 97
+        # rows.  Nothing failed loudly, so nothing was noticed.
+        #
+        # AFTER THE TRANSFER, DELIBERATELY.  A broken deliverable must still TRAVEL: the
+        # partial artifact and the run log are what the diagnosis is made from, and exiting
+        # before the copy would withhold exactly the evidence the failure needs.  The audit
+        # reports and sets a status; it never withholds and never deletes.
+        #
+        # NON-ZERO EXIT ON `FAILED`, AND THE ARGUMENT FOR IT IS THE COST ASYMMETRY.  A
+        # false alarm costs the operator one glance at a banner that names the file and the
+        # reason; nothing is lost, because everything has already been written and copied.
+        # A false all-clear costs what 2026-07-17 and 2026-09-01 cost.  Exit code 2, not 1,
+        # so "the run crashed" and "the run finished with broken deliverables" stay
+        # distinguishable to anything reading the status.
+        #
+        # A PARTIAL DELIVERABLE (3 of 20 pages) IS `FAILED`, NOT A WARNING.  The deck and
+        # the XLSX exist so the CEO can review each of the twenty names; a missing page
+        # means a name in his list has nothing behind it, so the artifact does not do its
+        # job for that name.  The one real objection is alarm fatigue -- a gate that fires
+        # every run stops being read -- and it is answered by the evidence rather than
+        # waved away: the observed history is BIMODAL, 20 of 20 on 08-31 and 0 of 20 on
+        # 09-01, with no run showing a routine one- or two-page skip.  There is no measured
+        # population of benign partials for this to fire on.  IF THAT CHANGES -- if routine
+        # single-page skips appear -- the right response is a completeness FLOOR, not a
+        # softening to warn-only, and this comment is the record of why.
+        _audit = None
+        try:
+            import deliverables as _dlv
+            _declared = list(deliverable_fnames or []) + [postrank_fname]
+            _audit = _dlv.audit_deliverables(
+                _declared, _run_date,
+                deck_report=_deck_report,
+                xlsx_report=resdic.get('xlsx_report'),
+                http_tally=resdic.get('deliverable_http'))
+            _exit_code = _dlv.emit_audit(_audit)
+        except Exception:
+            # THE AUDIT'S OWN FAILURE IS ITSELF LOUD, and it does NOT fail the run: an
+            # audit that cannot run has established nothing about the deliverables, and
+            # turning "the checker broke" into "the deliverables are broken" would train
+            # the operator to ignore the status the checker exists to set.
+            import traceback as _tb
+            _au_banner = ("\n" + "!" * 78 + "\n"
+                          "!!! DELIVERABLE AUDIT COULD NOT RUN -- THE RUN'S OUTPUT IS UNVERIFIED !!!\n"
+                          "!!! Nothing above is known to be missing; nothing above is known to be !!!\n"
+                          "!!! present either. Check the deliverables by hand this run.           !!!\n"
+                          + "!" * 78 + "\n")
+            print(_au_banner, file=sys.stderr, flush=True)
+            _tb.print_exc(file=sys.stderr)
+            print(_au_banner, flush=True)
+            _exit_code = 0
+
+        if _exit_code:
+            # RAISED, NOT `os._exit`: the `except BaseException` below already recognises
+            # SystemExit and skips the crash banner for it, and the `finally` still closes
+            # the run log. This is the path that block was built for.
+            raise SystemExit(_exit_code)
 
     except BaseException:
         # ---- EXCEPTION HANDLING: write traceback to log before closing ----

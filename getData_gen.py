@@ -10,6 +10,67 @@ import sys
 from tqdm import tqdm
 
 
+# --------------------------------------------------------------------------------- #
+#  HTTP OUTCOME TALLY (2026-09-02)                                                   #
+# --------------------------------------------------------------------------------- #
+#  WHY IT EXISTS.  On 2026-09-01 every one of the twenty presentation pages was skipped
+#  because the per-name vendor calls came back empty, and NOTHING RECORDED WHY.  A page
+#  lost to a 429 and a page lost to a genuinely empty vendor response produce the
+#  identical empty frame -- `safe_json_list` says so in its own docstring -- so the run
+#  could report "20 of 20 skipped" and not distinguish a quota event from a code defect.
+#  The distinction is the one the operator acts on: wait for the quota to reset, or fix
+#  something.
+#
+#  COUNTED PER ATTEMPT, NOT PER CALL SITE, and that is the point: `safe_http_get` retries
+#  a 429 up to `retries` times, and every retry is a separately CHARGED request.  A tally
+#  of call sites would under-report the quota spend by 3x on exactly the runs where it
+#  matters.
+#
+#  A MODULE GLOBAL, like `carveOut`'s FX state, and for the same reason: every call site
+#  in the repo would otherwise have to thread a context object through.  It is READ by
+#  DIFFERENCE (`http_tally_delta`) rather than reset, so two windows can be measured in
+#  one process and no caller can clobber another's baseline.
+#
+#  WHAT IT CANNOT SEE: any request that does not go through `safe_http_get`.  A bare
+#  `requests.get` elsewhere in the repo is invisible here, which is why
+#  `test_post_fetch_hardening` pins the deliverable stages to the hardened helper.
+_HTTP_TALLY = {'calls': 0, 'non_200': 0, 'exceptions': 0, 'by_status': {}}
+
+
+def _tally_attempt(status=None, exception=False):
+    _HTTP_TALLY['calls'] += 1
+    if exception:
+        _HTTP_TALLY['exceptions'] += 1
+        key = 'exception'
+    else:
+        key = status
+        if status != 200:
+            _HTTP_TALLY['non_200'] += 1
+    _HTTP_TALLY['by_status'][key] = _HTTP_TALLY['by_status'].get(key, 0) + 1
+
+
+def http_tally_snapshot():
+    """A deep-enough copy of the tally to serve as a baseline for `http_tally_delta`."""
+    return {'calls': _HTTP_TALLY['calls'], 'non_200': _HTTP_TALLY['non_200'],
+            'exceptions': _HTTP_TALLY['exceptions'],
+            'by_status': dict(_HTTP_TALLY['by_status'])}
+
+
+def http_tally_delta(baseline):
+    """What happened between `baseline` and now.  `baseline=None` -> the whole process."""
+    base = baseline or {'calls': 0, 'non_200': 0, 'exceptions': 0, 'by_status': {}}
+    bs = base.get('by_status') or {}
+    out = {'calls': _HTTP_TALLY['calls'] - base.get('calls', 0),
+           'non_200': _HTTP_TALLY['non_200'] - base.get('non_200', 0),
+           'exceptions': _HTTP_TALLY['exceptions'] - base.get('exceptions', 0),
+           'by_status': {}}
+    for k, v in _HTTP_TALLY['by_status'].items():
+        d = v - bs.get(k, 0)
+        if d:
+            out['by_status'][k] = d
+    return out
+
+
 def bar_print(msg):
     """`print()` replacement for anything emitted while a tqdm progress bar is live.
 
@@ -41,7 +102,21 @@ def safe_get(url, params=None, headers=None, timeout=10, retries=3, backoff=1):
     attempt = 0
     while attempt < retries:
         try:
-            resp = requests.get(url, params=params, headers=headers, timeout=timeout)
+            #  TALLIED HERE TOO, not only in `safe_http_get`.  This is a SECOND charged
+            #  path (the universe build, `gains.py`, `findAllSectors.py`), and a tally
+            #  that counted one of two would make "requests spent" quietly wrong --
+            #  worse than absent.
+            #
+            #  The try wraps ONLY the GET, so exactly one tally lands per attempt: a
+            #  raised connect/read error is counted as an exception attempt and re-raised
+            #  to the handler below unchanged, and the `raise_for_status` HTTPError that
+            #  follows a 4xx is NOT double-counted (its status was already recorded).
+            try:
+                resp = requests.get(url, params=params, headers=headers, timeout=timeout)
+            except requests.RequestException:
+                _tally_attempt(exception=True)
+                raise
+            _tally_attempt(getattr(resp, "status_code", None))
             resp.raise_for_status()
             try:
                 return resp.json()
@@ -126,6 +201,10 @@ def safe_http_get(url, params=None, headers=None, timeout=10, retries=3, backoff
         try:
             resp = _get(url, params=params, headers=headers, timeout=timeout)
             last_resp = resp
+            #  ONE CHARGED REQUEST HAS NOW HAPPENED, whatever the caller does with it.
+            #  Tallied here rather than at either return so a retried 429 counts three
+            #  times, which is what the quota counts.
+            _tally_attempt(getattr(resp, "status_code", None))
             if getattr(resp, "status_code", None) in retry_statuses:
                 attempt += 1
                 if attempt >= retries:
@@ -134,6 +213,9 @@ def safe_http_get(url, params=None, headers=None, timeout=10, retries=3, backoff
                 continue
             return resp                  # non-retryable status (2xx/4xx-non-429) -> done
         except requests.RequestException as e:
+            #  A raised request may still have left the machine (a read timeout is a sent
+            #  request), so it counts as an attempt with no status.
+            _tally_attempt(exception=True)
             attempt += 1
             if attempt >= retries:
                 warnings.warn(f"Failed to GET {url} after {retries} attempts: {e}")

@@ -966,6 +966,14 @@ def writeResWrapper(resdic):
     fidag = datetime.today().strftime('%Y-%m-%d')
     fb_df = resdic['postRank']
 
+    #  THE DELIVERABLE-STAGE HTTP WINDOW (2026-09-02).  Baseline at the top, delta at the
+    #  bottom, so `deliverables.audit_deliverables` can say whether the vendor was
+    #  refusing calls WHILE THESE FILES WERE WRITTEN rather than at some point in the
+    #  preceding twelve hours.  Written onto `resdic` for the same reason the per-stage
+    #  reports are: `Sbocker.main` needs them and this function's return value is a list
+    #  of filenames that three call sites already consume as such.
+    _deliv_http_base = gdg.http_tally_snapshot()
+
     # --- market-cap band segmentation (ADDITIVE size axis over the general pool) ---
     # GROUP the existing general ranking (postRank) by USD market cap: General (>$300M)
     # -> top-20; Mid ($150-300M)/Small ($50-150M)/Micro (<$50M) -> top-5 each. No re-score,
@@ -1081,13 +1089,30 @@ def writeResWrapper(resdic):
     # GUARDED (fix, 2026-07-31), same reasoning as the AggScore CSV above: ~7 API calls x
     # ntopxlsx names, previously unguarded, and everything after it (side-lists, band CSVs,
     # reviewReference, pick-log) died with it.
+    #  THE REPORT SURVIVES THE GUARD.  `resdic['xlsx_report']` is set to None FIRST, so a
+    #  stage that raised leaves an EXPLICIT "no expectation was recorded" rather than the
+    #  key being absent -- which the audit would otherwise be unable to distinguish from
+    #  an older resdic that predates the report.
+    resdic['xlsx_report'] = None
     try:
-        createPresentation(fb_df, mscore, cscore, baseurl, api_key, ntopxlsx, fname_presentationtop, years, flag_df,
-                           bands=marketcap_bands)
+        resdic['xlsx_report'] = createPresentation(
+            fb_df, mscore, cscore, baseurl, api_key, ntopxlsx, fname_presentationtop,
+            years, flag_df, bands=marketcap_bands)
     except Exception as _e:
         print(f'WARNING: presentation XLSX stage failed ({type(_e).__name__}: {_e}); '
               f'{fname_presentationtop} may be missing or partial. Every LATER deliverable '
               f'(side-lists, band CSVs, reviewReference, pick-log) still runs.', flush=True)
+    else:
+        _xr = resdic['xlsx_report'] or {}
+        if _xr.get('skipped'):
+            #  SAID ONCE MORE, AT THE STAGE BOUNDARY.  `createPresentation` already prints
+            #  a skipped-page summary from inside its progress bar; on 2026-09-01 that line
+            #  landed at line 2209 of a 5,222-line log.  This one is what the end-of-run
+            #  audit banner will repeat, and it is here so the count is in the log even if
+            #  the audit itself is skipped.
+            print('!!! PRESENTATION XLSX INCOMPLETE: %d of %d page(s) written to %s'
+                  % (_xr.get('written'), _xr.get('expected'), fname_presentationtop),
+                  flush=True)
 
     # Phase-1 carve-out: write each labeled side-list (REIT / Mining / investment
     # vehicles) as its own compact CSV alongside the main deliverables. Best-effort
@@ -1291,6 +1316,25 @@ def writeResWrapper(resdic):
     except Exception as _e:
         print(f'WARNING: industry counter skipped ({type(_e).__name__}: {_e}); '
               f'deliverables unaffected.', flush=True)
+
+    #  CLOSE THE HTTP WINDOW opened at the top of this function.  Guarded: an audit
+    #  input must never be the thing that costs a deliverable.
+    try:
+        resdic['deliverable_http'] = gdg.http_tally_delta(_deliv_http_base)
+        _dh = resdic['deliverable_http']
+        _429 = (_dh.get('by_status') or {}).get(429, 0)
+        print('DELIVERABLE-STAGE HTTP: %d request(s), %d x 429, %d non-200. Every retry '
+              'is a separately charged request.'
+              % (_dh.get('calls', 0), _429, _dh.get('non_200', 0)), flush=True)
+    except Exception as _e:
+        print(f'WARNING: deliverable HTTP tally unavailable '
+              f'({type(_e).__name__}: {_e}); the audit will not be able to attribute a '
+              f'failure to throttling.', flush=True)
+
+    #  THE DECLARED SET, RECORDED FOR THE AUDIT.  Same list this function returns and the
+    #  same list the RunProvenance sidecar carries -- deliberately not a second
+    #  enumeration.  `deliverables.audit_deliverables` measures reality against THIS.
+    resdic['declared_deliverables'] = list(deliverables)
 
     # Return the human-readable top-N deliverables just written (same pattern as
     # utils.saveWrapper returning its pickle name) so Sbocker.main can copy them to
@@ -2489,6 +2533,15 @@ def createPresentation(finalBoRank_df, mscore, cscore, baseurl, api_key, topn, f
     pbar = tqdm(total=len(symblist), desc='XLSX presentation', unit='page', disable=None,
                 smoothing=0.05, dynamic_ncols=True)
     _pages_skipped = []
+    #  THE STAGE DECLARES WHAT IT MEANT TO WRITE (2026-09-02).  On 2026-09-01 all twenty
+    #  pages were skipped and the file shipped as one empty sheet, and no consumer could
+    #  tell that from a legitimately small run, because this function returned None: the
+    #  only record of `len(symblist)` was a printed sentence.  `deliverables.audit_
+    #  deliverables` needs the EXPECTATION from the producer and measures the ACTUAL off
+    #  the workbook, so a stage that reports twenty pages and writes one is still caught.
+    #  The HTTP baseline is taken HERE, i.e. immediately before the per-name loop, so the
+    #  window covers this stage's calls and not the 12-hour fetch's.
+    _http_base = gdg.http_tally_snapshot()
     for symb in symblist[::-1]:
         # HARDENED (fix, 2026-07-31): seven bare `requests.get(...).json()` calls per name,
         # x topn names, run immediately after 12+ hours of sustained API load and with no
@@ -2778,7 +2831,15 @@ def createPresentation(finalBoRank_df, mscore, cscore, baseurl, api_key, topn, f
     wb.close()
     pbar.close()
 
-    return None
+    #  THE STAGE'S OWN REPORT.  `expected` is `len(symblist)` -- the list the loop
+    #  iterated, NOT the requested `topn`: `generalTopN(...).head(topn)` returns fewer
+    #  names whenever the banded general pool is smaller than the ask, so auditing
+    #  against `topn` would fire on every legitimately small run.  `written` is derived,
+    #  not counted separately, so it cannot disagree with `skipped`.
+    return {'kind': 'xlsx', 'path': fname, 'requested': topn,
+            'expected': len(symblist), 'written': len(symblist) - len(_pages_skipped),
+            'skipped': list(_pages_skipped),
+            'http': gdg.http_tally_delta(_http_base)}
 
 # Function to resize columns in an Excel sheet
 def resize_columns(ws):

@@ -5,15 +5,30 @@ generate_presentation.py -- Standalone HTML presentation generator for investmen
 Turns a saved pipeline run into one self-contained HTML presentation for manual post-filter review.
 Reads saved artifacts only (read-only on all pipeline inputs). Re-runnable in minutes on any run dir.
 
+ALSO RUN AS A PIPELINE STAGE (2026-09-02): `deliverables.run_deck_stage` invokes this file as a
+subprocess on every pipeline run, with `--augment off --no-augment`.  Before that it was hand-run
+only, and the last deck rendered from a real run was dated 2026-07-17 -- six and a half weeks in
+which every deck fix was measured offline and never reached a page the CEO opened.
+
 CLI:
     python generate_presentation.py --run-dir <dir> [--out <path>] [--augment on|off]
 
 Defaults:
     --run-dir: HomeGDrive (where pulled runs land)
-    --augment: off (offline-safe verify; 'on' fetches from FMP gracefully with gap-fallback)
+    --augment: **ON**.  Two corrections to what this block used to claim, both verified
+        2026-09-02 against the source and against a run with every HTTP client blocked:
+          * the default is ON, not off -- `argparse` sets `default='on'` (see `main`), so an
+            unqualified invocation DOES go to the network;
+          * it fetches from **Yahoo Finance via yfinance**, NOT from FMP.  This module holds no
+            api_key, builds no FMP url and never imports `requests`.  The distinction matters
+            because FMP is the metered subscription: `--augment on` costs ZERO FMP quota.
+        `--augment off` (or `--no-augment`) makes the run fully offline: measured at ZERO
+        requests, with no HTTP client module imported at all.  Missing Yahoo data degrades to
+        gap tags on the page.
 
 Output:
     presentation_<run_date>.html (fully self-contained: inline CSS, inline SVG, no external refs)
+    plus one machine-readable `DECK-MANIFEST ...` line on stdout, parsed by `deliverables`.
 """
 
 import os
@@ -2077,6 +2092,17 @@ class PresentationBuilder:
         #  `offline_field`.
         self._offline_cache = {}
         self._validity_cache = {}
+        #  WHAT THIS BUILD MEANT TO RENDER, and what it did (2026-09-02).  NOT
+        #  `_page_tickers()`: that list is de-duplicated (it is the Yahoo FETCH set, where a
+        #  name wanted twice must be fetched once), and in the banded layout it also misses
+        #  band names outside the flat top-20 -- measured on the 08-04 artifacts, 45 unique
+        #  tickers against 53 rendered pages, because a name in both the general pool and a
+        #  cohort gets a page in each.  Auditing 53 pages against an expectation of 45 would
+        #  report a healthy deck as over-complete and, worse, would hide a 45-page shortfall.
+        #  So the plan is accumulated by the render loops themselves, WITH duplicates, in
+        #  render order.
+        self._page_plan = []
+        self._pages_built = 0
         #  Q-66: the per-page forensic scores, resolved once per ticker.  Cached for the same
         #  reason `_validity_cache` is -- Section F and `evaluate_page` both ask, and a page
         #  whose printed number and whose verdict icon came from two different lookups is
@@ -3547,6 +3573,22 @@ class PresentationBuilder:
         """
         return html
 
+    def _render_pages(self, tickers, cohort_label):
+        """Render a run of name pages, recording the PLAN and the COUNT as it goes.
+
+        THE ONE SEAM.  `build_html` had three separate render loops and each would have
+        needed its own plan bookkeeping; a page count kept beside the loops rather than
+        by them is a count that goes stale the next time a fourth section is added.  This
+        is the only place a name page is produced from a list, so the expectation and the
+        rendering cannot disagree.  Byte-identical output to the loops it replaces: same
+        order, same `enumerate(..., 1)` rank, same concatenation."""
+        out = []
+        for i, ticker in enumerate(tickers or [], 1):
+            self._page_plan.append((ticker, cohort_label))
+            out.append(self.build_name_page(ticker, i, cohort_label))
+            self._pages_built += 1
+        return ''.join(out)
+
     def build_name_page(self, ticker, rank, cohort_label='general'):
         """Build complete page for one name."""
         html = f"""
@@ -3654,8 +3696,7 @@ class PresentationBuilder:
                 title = escape(self._BAND_TITLES.get(label, label))
                 content += (f'<div class="cohort-section"><h2>Band: {title} '
                             f'(top-{N})</h2></div>\n')
-                for i, ticker in enumerate(tickers, 1):
-                    content += self.build_name_page(ticker, i, 'general')
+                content += self._render_pages(tickers, 'general')
         else:
             # FALLBACK (pending currency / no band data): the original single flat general
             # top-20, with a note. NEVER the confusing flat-top-20 + appendix-bands shape.
@@ -3665,14 +3706,12 @@ class PresentationBuilder:
             note = (' — market-cap bands pending currency data (correct from next full run)'
                     if pend else '')
             content += f'<div class="cohort-section"><h1>General Top-20{note}</h1></div>\n'
-            for i, ticker in enumerate(top_20, 1):
-                content += self.build_name_page(ticker, i, 'general')
+            content += self._render_pages(top_20, 'general')
 
         # Sector cohort sections (orthogonal; unchanged).
         for cohort_label, tickers in cohort_names.items():
             content += f'<div class="cohort-section"><h1>Cohort: {cohort_label}</h1></div>\n'
-            for i, ticker in enumerate(tickers, 1):
-                content += self.build_name_page(ticker, i, cohort_label)
+            content += self._render_pages(tickers, cohort_label)
 
         content += "</div>"
 
@@ -4411,6 +4450,37 @@ def main():
             else:
                 log.info("HTML is self-contained (no external resource loads; SVG inlined; "
                          "outbound <a> links only)")
+
+        # ---- THE MACHINE-READABLE MANIFEST (2026-09-02) ------------------------
+        #  ONE line, `k=v` tokens, parsed by `deliverables._parse_deck_manifest`.  It
+        #  reports what this build PLANNED; the auditor counts the pages in the file it
+        #  just wrote and compares.  A deck that reports 45 and writes 3 is caught by that
+        #  comparison, which is the whole reason the producer does not also get to report
+        #  the actual.
+        #
+        #  `net_clients` is the offline claim, MEASURED rather than asserted: with
+        #  `--augment off` no FETCHING client is ever imported, so this reads NONE.  It
+        #  goes in the run log, where a future change that quietly puts the network back
+        #  into every pipeline run would be visible.
+        #
+        #  `requests` IS DELIBERATELY NOT IN THIS LIST, and the reason is measured, not
+        #  assumed.  It is absent after merely importing this module, but it BECOMES
+        #  resident during `load_run_data`, which lazily imports `carveOut`,
+        #  `vendor_contamination` and `reviewReference` -- pipeline modules that import it
+        #  at module level and are not asked to fetch anything.  Reporting it would print
+        #  `net_clients=requests` on every offline run and read as "the deck called FMP",
+        #  which is false: with every `requests` entry point patched to refuse, this exact
+        #  invocation made ZERO calls (2026-09-02).  A resident client is not a call, and a
+        #  token that is misread is worse than one that is absent.  The five below are
+        #  different: nothing in this repo's import graph pulls any of them in, so one
+        #  going resident IS evidence the deck reached for the network.
+        _clients = sorted(m for m in ('yfinance', 'curl_cffi', 'httpx',
+                                      'aiohttp', 'pycurl') if m in sys.modules)
+        print('DECK-MANIFEST expected_pages=%d rendered_pages=%d augment=%s '
+              'net_clients=%s run_date=%s bytes=%d out=%s'
+              % (len(builder._page_plan), builder._pages_built,
+                 'on' if augment else 'off', ','.join(_clients) or 'NONE',
+                 data['run_date'], os.path.getsize(out_path), out_path), flush=True)
 
         return 0
 
