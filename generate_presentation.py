@@ -1727,6 +1727,124 @@ def resolve_run_artifacts(run_dir, run_date=None):
     return chosen, postrank_file, boresults_file, aggscore_file, forensic_file
 
 
+# =========================================================================== #
+#  THE P/E THIS DECK PUBLISHES  (register Q-91 S2, 2026-09-03)                 #
+# =========================================================================== #
+#  THE DEFECT.  One `<td>P/E</td>` label carried TWO DIFFERENT RATIOS.  A name inside the
+#  AggScoreTop100 CSV read that CSV's `PE-ratio`; a name outside it -- the 25 cohort pages
+#  and every market-cap-banded name -- fell through to `1 / earnYield`, where `earnYield` is
+#  Stage-2's SIXTEEN-QUARTER WINDOWED MEAN earnings yield (`stage2_metrics.STAGE2_METRIC_SPEC`,
+#  WINDOW_SCORING).  A trailing-twelve-month multiple and a cycle-length average multiple are
+#  different numbers about a company, and the page printed them side by side under one word
+#  with no marker.  The CSV's own P/E was re-based to `epsTTM / periodEndPrice` earlier the
+#  same day (postBo, CEO ruling: compute don't consume, one basis, label it), which WIDENED
+#  the gap rather than causing it -- TNK moved 2.50 -> 3.81 on the CSV side alone.
+#
+#  THE FIX IS ONE BASIS FOR EVERY NAME, AND IT IS **postBo's**, CALLED -- not re-implemented.
+#  `_pe_ttm_panel_table` / `_pe_refused_sources` / `_pe_ttm_ratio` / `_pe_cell` are imported
+#  and run here on the panel THIS DECK ALREADY HOLDS.  Copying the four-line ratio into this
+#  file would have been quicker and is precisely the defect class the repo keeps finding:
+#  two definitions of one published number drifting apart.  The deck now cannot disagree
+#  with the CSV about what a P/E is, because it does not hold an opinion about it.
+#
+#  WHY THE PANEL AND NOT THE CSV COLUMN, for the names the CSV does have.  Both were checked
+#  on the 2026-09-01 run and they are the SAME NUMBER by construction, not by luck:
+#  `writeBoAggToCSV` is handed `resdic['cdx_dftop100']`, which is
+#  `cdx_df[cdx_df['source'].isin(top100)]` (postBo.py:697) -- a PURE ROW FILTER on `source`,
+#  no column change and no date restriction -- while `Sbocker` writes `resdic['cdx_df']`
+#  itself into the postRank pickle this deck loads, in the same run from the same dict.
+#  Measured: 0 of 100 top-100 cells differ between the two frames.  So reading the panel for
+#  EVERY name costs nothing in agreement and buys two things the CSV read cannot:
+#    * it answers for the 4,961 names in the universe, not the 97 in the CSV, so the cohort
+#      and banded pages get the SAME ratio instead of a different one;
+#    * it is immune to a STALE CSV.  The 2026-09-01 CSV on disk predates the P/E re-basing
+#      and has no `PE-ratio_basis` column at all; reading its `PE-ratio` would have put the
+#      superseded 2.4980 on TNK's page under a label claiming the new basis.
+#  THE COUPLING THAT WOULD BREAK THIS is named so it is not rediscovered: if postBo ever
+#  hands `writeBoAggToCSV` a frame that is NOT a pure row-filter of `resdic['cdx_df']`, the
+#  two artifacts can diverge again and this comment is the place that stops being true.
+#
+#  THE VALUE IS ALLOWED TO BE ABSENT, AND NEVER TO BE SUBSTITUTED.  A different quantity
+#  under the same label is worse than a blank, so when the panel cannot answer, the cell
+#  says so and names WHICH of the reasons it is -- the same four tokens the CSV publishes in
+#  `PE-ratio_basis`, so the deck and the CSV describe a missing cell in the same words.
+PE_BASIS_PANEL_UNREADABLE = 'panel-unreadable'
+
+#  WHAT EACH TOKEN MEANS IN A SENTENCE, for the cell itself.  The token is the CSV's exact
+#  string and goes in the basis column beside the number, where a reader can match it to the
+#  spreadsheet; the sentence is what a reader who has not read postBo needs to see INSTEAD of
+#  an em-dash, because an unexplained blank reads as a broken tool -- the same argument that
+#  put `M_abstain_reason` on the page.
+PE_ABSENT_REASONS = {
+    'refused-input': 'no P/E — an input was refused as impossible for this name',
+    'no-positive-ttm-eps': 'no P/E — no positive trailing-twelve-month EPS (loss-maker)',
+    #  NO APOSTROPHE IN ANY OF THESE.  Not for the reader's sake -- these go through
+    #  `escape()`, which rewrites `'` to `&#x27;`, and a browser decodes that back to an
+    #  apostrophe, so the PAGE is unaffected either way.  It is so that the rendered source
+    #  contains these sentences VERBATIM: a test, or anyone grepping a shipped deck for the
+    #  reason a P/E is missing, then finds the string as it is written here rather than
+    #  having to know which characters the escaper rewrote.
+    'unavailable': 'no P/E — this name is not in the panel for this run',
+    PE_BASIS_PANEL_UNREADABLE: 'no P/E — the panel P/E table could not be built for this run',
+}
+
+#  THE ONE SENTENCE THAT SAYS WHICH PRICE AND WHICH EARNINGS, on the basis cell's tooltip.
+#  The `price` a reader sees in Section A is a LIVE PROFILE QUOTE IN THE TRADING CURRENCY and
+#  is NOT the denominator here, so a reader who divides the two gets a number that means
+#  nothing.  The CSV makes the identical point beside its own column; saying it in both
+#  places is the point.
+PE_BASIS_TOOLTIP = (
+    "P/E = epsTTM / period-end price, both taken from the newest row of THIS run's own "
+    "fundamentals panel and both in the company's reportedCurrency (period-end price is "
+    "marketCap / weightedAverageShsOut; epsTTM is sum(netIncome over the trailing year) / "
+    "weightedAverageShsOut), so the ratio carries no FX. Identical basis and identical "
+    "computation to the AggScoreTop100 CSV's PE-ratio column (postBo._pe_ttm_ratio). "
+    "NOT the Price shown in Section A, which is a live quote in the trading currency, and "
+    "NOT the inverse of the Earnings Yield bar in Section G, which is a 16-quarter mean.")
+
+
+def build_pe_display(cdx_df):
+    """`({source: (P/E float or None, basis-token)}, absent-token)` for the WHOLE panel.
+
+    Built ONCE per run, not once per page: the table behind it is a groupby over ~270k panel
+    rows and the deck renders 45 pages off it.
+
+    The second element is the token for a name the table has no entry for, and it carries the
+    distinction the CSV draws in its own log: `unavailable` means THIS NAME is not in the
+    panel, whereas `panel-unreadable` means the table itself could not be built (postBo did
+    not import, or its helper raised) -- a FAILURE of the deck, not a property of a company.
+    A wholesale failure that printed as 97 individually-unavailable names would read as a
+    fact about the universe, which is the silently-empty-column failure `postBo` learned to
+    report the hard way.
+    """
+    try:
+        import postBo as _pb
+    except Exception as _e:                                   # pragma: no cover - env only
+        log.warning("P/E: postBo is not importable (%s), so NO name on this deck gets a "
+                    "P/E. This is a deck failure, not a property of these companies.", _e)
+        return {}, PE_BASIS_PANEL_UNREADABLE
+    try:
+        table = _pb._pe_ttm_panel_table(cdx_df)
+        refused = _pb._pe_refused_sources(cdx_df)
+    except Exception as _e:                                   # pragma: no cover - defensive
+        log.warning("P/E: the panel table raised (%s), so NO name on this deck gets a P/E. "
+                    "This is a deck failure, not a property of these companies.", _e)
+        return {}, PE_BASIS_PANEL_UNREADABLE
+    if not table:
+        log.warning("P/E: the panel P/E table is EMPTY -- `price` or `epsTTM` is missing from "
+                    "this run's cdx_df. Every P/E cell on this deck will read as absent, and "
+                    "that is a FAILURE of the computation, not a property of these companies.")
+        return {}, PE_BASIS_PANEL_UNREADABLE
+    out = {}
+    for _s in table:
+        #  `_pe_cell` returns the CSV's own ('value-or-NaN', token) pair, so the decision --
+        #  refusal first, then the computed value, then loss-maker -- is postBo's and is
+        #  tested there.  Only the rendering is this file's business.
+        _cell, _basis = _pb._pe_cell(_pb._pe_ttm_ratio(table, _s), _s, refused)
+        out[_s] = ((None if _cell == 'NaN' else float(_cell)), _basis)
+    return out, _pb.PE_BASIS_UNAVAILABLE
+
+
 def load_run_data(run_dir, valuation_repo, run_date=None):
     """Load all run data from ONE date-consistent run (see resolve_run_artifacts)."""
     run_dir = Path(run_dir)
@@ -1904,10 +2022,17 @@ def load_run_data(run_dir, valuation_repo, run_date=None):
     except Exception as _e:
         log.info(f"market-cap bands skipped: {type(_e).__name__}: {_e}")
 
+    #  THE PUBLISHED P/E, FOR EVERY NAME IN THE PANEL AND ON ONE BASIS (register Q-91 S2).
+    #  Built HERE rather than per page: it is a groupby over the whole panel and the deck
+    #  renders 45 pages.  See `build_pe_display` for why the panel and not the CSV column.
+    pe_display, pe_absent_basis = build_pe_display(cdx_df)
+
     return {
         'run_date': run_date,
         'postrank_df': postrank_df,
         'cdx_df': cdx_df,
+        'pe_display': pe_display,
+        'pe_absent_basis': pe_absent_basis,
         'moatdf': moatdf,
         'tickers_df': tickers_df,
         'marketcap_bands_info': marketcap_bands_info,
@@ -2854,6 +2979,21 @@ class PresentationBuilder:
                 return v, 'offline'
         return default, None
 
+    def pe_published(self, ticker):
+        """`(P/E float or None, basis-token)` -- ONE basis for every page (register Q-91 S2).
+
+        Deliberately NOT routed through `agg_val`/`_field`.  That pair resolves ONE FIELD from
+        whichever artifact has the name, which is right for `price` or `priceCurrency` -- the
+        same quantity, a different capture, and the page labels which.  The P/E's problem was
+        the opposite one: the CSV path and the off-CSV path returned DIFFERENT QUANTITIES, so
+        a resolver that picks a source cannot fix it.  This returns the panel-computed ratio
+        for every name and lets the cell be absent, which is the only answer that keeps one
+        label meaning one thing.
+        """
+        table = self.data.get('pe_display') or {}
+        absent = self.data.get('pe_absent_basis') or PE_BASIS_PANEL_UNREADABLE
+        return table.get(ticker, (None, absent))
+
     def get_cdx_for_ticker(self, ticker):
         """Get the cdx_df rows for a ticker, sorted newest-first."""
         cdx_df = self.data.get('cdx_df')
@@ -3197,23 +3337,37 @@ class PresentationBuilder:
             # and the basis R4's "> 4x" limb uses); the raw cdx field is per-period.
             net_debt_ebitda = self.ext_val(ticker, 'net_debt_ebitda')
             int_cov = compute_interest_coverage(cdx_df)
-            # P/E: general names -> AggScoreTop100['PE-ratio']; fallback / carve names not
-            # in the top-100 CSV -> 1 / earnings yield, guarding non-positive or NaN earnings
-            # (gap-tag rather than emit a garbage negative/huge P/E).
-            # The fallback uses the ANNUALIZED pool-basis earnYield (raw_metric), NOT the raw
-            # cdx latest row: inverting a per-PERIOD yield produced a P/E inflated by the
-            # annualization factor (a quarterly row's yield is ~1/4 of the annual one, so 1/ey
-            # read ~4x too high). 1 / annual-yield is a genuine annual P/E, and it is correct
-            # for semi-annual filers too (the pool basis normalizes them before we scale).
-            pe_ratio = np.nan
-            if aggscore_df is not None and not aggscore_df.empty:
-                ag_row = aggscore_df[aggscore_df['source'] == ticker]
-                if not ag_row.empty:
-                    pe_ratio = safe_float(ag_row.iloc[0].get('PE-ratio'))
-            if np.isnan(pe_ratio):
-                ey = self.raw_metric(ticker, 'earnYield')      # annualized (see above)
-                if not np.isnan(ey) and ey > 0:
-                    pe_ratio = 1.0 / ey
+            # P/E -- ONE BASIS FOR EVERY PAGE (register Q-91 S2). `epsTTM / period-end price`
+            # off this run's own panel, the identical computation the AggScoreTop100 CSV's
+            # `PE-ratio` column uses (postBo's helpers, called -- see `build_pe_display`).
+            #
+            # WHAT THIS REPLACED, kept because the number on the page moved and a reader
+            # comparing decks deserves to know why. The cell used to read the CSV's
+            # `PE-ratio` for a name IN the top-100 and fall through to `1 / earnYield` for a
+            # name outside it -- the 25 cohort pages and every banded name. `earnYield` is
+            # Stage-2's SIXTEEN-QUARTER WINDOWED MEAN, so those pages were showing a
+            # cycle-average multiple beside the top-100's trailing-twelve-month one, under
+            # one `P/E` label, with nothing to tell them apart. The old fallback's own
+            # annualization argument was sound on its own terms and is not the point: a
+            # correct 16-quarter multiple is still a DIFFERENT QUANTITY from the one the
+            # label promises, and mixing two right answers under one word is what made the
+            # column unreadable.
+            #
+            # THERE IS NO FALLBACK NOW, deliberately. `1 / earnYield` still computes for most
+            # of the names this leaves blank, and using it would put the two bases straight
+            # back. A different quantity under the same label is worse than a blank, so the
+            # cell renders ABSENCE and names the reason.
+            pe_ratio, pe_basis = self.pe_published(ticker)
+            pe_value_html = (f'{ratio_format(pe_ratio)}{self._vf(ev, "peRatio")}'
+                             if pe_ratio is not None
+                             else f'<span class="gap-inline">'
+                                  f'{escape(PE_ABSENT_REASONS.get(pe_basis, "no P/E"))}</span>')
+            # THE BASIS SITS IN THE NOTE COLUMN every other row in this table uses for exactly
+            # this ("annualized (pool basis)", "TTM", "latest"), and the string is the CSV's
+            # OWN `PE-ratio_basis` token verbatim, so a reader can match the page to the
+            # spreadsheet without translating between two vocabularies.
+            pe_basis_html = (f'<span title="{escape(PE_BASIS_TOOLTIP)}">'
+                             f'{escape(str(pe_basis))}</span>')
             # FCF yield has no native cdx_df column -- source the raw reviewReference pool
             # value (same metric the cohort distribution is built on).
             fcf_yield = self.raw_metric(ticker, 'freeCashFlowYield')
@@ -3249,7 +3403,7 @@ class PresentationBuilder:
                     <tr><td><strong>Effective Tax</strong></td><td>{pct_format(eff_tax)} {efftax_bar}</td><td>latest, clip[0,1]</td></tr>
                     <tr><td><strong>Days Sales Outstanding</strong></td><td>{ratio_format(dso)} {dso_bar}</td><td>latest</td></tr>
                     <tr><td><strong>Inventory Days</strong></td><td>{ratio_format(inv_days)} {invd_bar}</td><td>goods cohorts</td></tr>
-                    <tr><td><strong>P/E</strong></td><td>{ratio_format(pe_ratio)}{self._vf(ev, 'peRatio')}</td><td>traded or yield inv</td></tr>
+                    <tr><td><strong>P/E</strong></td><td>{pe_value_html}</td><td>{pe_basis_html}</td></tr>
                     <tr><td><strong>FCF Yield (ann.)</strong> {orient_chip('freeCashFlowYield')}</td><td>{pct_format(fcf_yield)}{self._vf(ev, 'freeCashFlowYield')} {fcfy_bar}</td><td>annualized (pool basis)</td></tr>
                 </table>
                 <div class="gap-note">[WACC, EV/EBIT not obtainable from filter data; P/E withheld from peer bar — use earnings-yield bar in Section G]</div>
