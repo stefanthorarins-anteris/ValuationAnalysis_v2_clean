@@ -3,15 +3,20 @@
 WHAT IT IS
 ----------
 A per-name truncation applied to the WEIGHTED metric contributions (`z x w`) after the
-weighting step and before `getAggScore`, so that no single metric may account for more
-than `CAP` of a name's total ABSOLUTE contribution.  A name whose score is dominated by
-one column has that column's contribution cut back and KEEPS COMPETING on the reduced
-score; it is never removed.
+weighting step and before `getAggScore`, so that no metric which is HELPING a name may
+account for more than `CAP` of that name's total ABSOLUTE contribution.  A name whose
+score is carried by one column has that column's contribution cut back and KEEPS
+COMPETING on the reduced score; it is never removed.
 
     contribution_ic = z_ic * w_c            (signed; this IS the AggScore addend)
-    base_i          = sum_c |contribution_ic|
-    share_ic        = |contribution_ic| / base_i
-    ... and after this module runs, max_c share_ic <= CAP for every name i.
+    base_i          = sum_c |contribution_ic|          (BOTH signs -- see DENOMINATOR)
+    share_ic        = contribution_ic / base_i
+    ... and after this module runs, max share_ic <= CAP for every name i, where the max
+    runs over the POSITIVE contributions ONLY.
+
+A NEGATIVE contribution is never truncated, at any magnitude: the cap may PENALISE and
+may never RESCUE.  CEO ruling, 2026-09-01 -- see POSITIVE-ONLY below, which is the single
+most important section in this file for anyone about to change the algebra.
 
 THE CEO'S RULING, AND WHAT IT RESTS ON -- READ THIS BEFORE MOVING ANY NUMBER HERE
 ---------------------------------------------------------------------------------
@@ -209,22 +214,102 @@ every published AggScore is still a unit-weight sum: for the 11-13 capped names 
 panel the effective weight actually summed is below 1, and any consumer quoting an AggScore
 RANGE across names should read the `n_capped` column rather than assume a common scale.
 
-THE CAP IS SYMMETRIC, WHICH FORGIVES AS WELL AS PENALISES -- MEASURED, NOT ASSUMED
+POSITIVE-ONLY: THE CAP MAY PENALISE, IT MAY NEVER RESCUE  (CEO RULING, 2026-09-01)
 ----------------------------------------------------------------------------------
-The rule is stated on |contribution|, so it truncates a large NEGATIVE contribution too: a
-name that is catastrophically bad on one metric has that penalty cut back and RISES.  On
-the 2026-08-31 panel that is the single largest effect the cap has anywhere in the pool --
-`BOSS.DE` climbs 15 places (rank 58 -> 43) because its `freeCashFlowPerShareGrowth` sits at
--38.1% of its absolute contribution, and `JEN.DE` climbs 9 on the same mechanism (-45.7%).
-Four of the thirteen names the cap touches are helped by it, not penalised.
+*** THIS SECTION USED TO DEFEND THE OPPOSITE BEHAVIOUR, AND THE DEFENCE WAS OVERRULED.  It
+argued that truncating a large NEGATIVE contribution too was "the honest reading of no
+single metric decides a name".  The CEO's answer: the cap was set to stop one metric
+carrying a name UP, and forgiving a catastrophic score on one metric is not a side effect of
+that, it is the opposite of it.  The reading is not available any more.  If you want to
+re-open it, argue with the ruling -- do not restore the behaviour because the algebra is
+tidier on |contribution|. ***
 
-This is the honest reading of "no single metric decides a name" and it is what ships, but it
-is NOT what the cap was aimed at, so it is stated here rather than discovered later.  The
-alternative -- truncating only POSITIVE contributions, so the cap can stop a metric carrying
-a name UP but never rescue one it drags DOWN -- was measured on the same panel: it binds on
-10 names instead of 13, produces the SAME top-20, and its largest move is 4 places instead
-of 15.  That is a CEO decision, not a developer's, and it is a three-line change here if he
-wants it.
+WHAT THE SYMMETRIC RULE DID, AND WHY IT IS THE WRONG SIGN.  The rule was stated on
+|contribution|, so it truncated a large negative contribution as readily as a large positive
+one: a name that was catastrophically bad on one metric had that penalty cut back and ROSE.
+That was not a corner case; on both measured panels it was the cap's single largest effect
+anywhere in the pool.
+
+    2026-08-31 panel   13 bound, of which 4 RAISED.  `BOSS.DE` climbed 15 places
+                       (rank 58 -> 43) on a `freeCashFlowPerShareGrowth` sitting at -38.1%
+                       of its absolute contribution; `JEN.DE` climbed 9 on the same
+                       mechanism (-45.7%).
+    2026-09-01 panel   11 bound, of which 4 RAISED -- `JEN.DE` +0.1301 (rank 82 -> 72),
+                       `BOSS.DE` +0.1053 (58 -> 45), `OII` +0.0597, `KFY` +0.0019.
+                       (`ShareCapReport_2026-09-01.csv`, reproducible from that file: all 11
+                       bound rows resolve at k = 1, and the 4 raised rows are exactly the 4
+                       whose dominant contribution is negative.)
+
+A fresh-eyes review on 2026-09-03 reached the same finding independently and put the size of
+it plainly: +0.1301 is LARGER THAN THE RANK-12-TO-RANK-20 SPREAD of the shipped list, and it
+is the wrong sign for an objective that is worried about losers.
+
+THE MEASUREMENT THAT MOTIVATED THE RULING, KEPT.  Positive-only was measured on the 08-31
+panel before it was chosen: it bound on 10 names instead of 13, produced the SAME top-20,
+and its largest move was 4 places instead of 15.  So the instrument gets STRICTLY less
+violent and the deliverable does not move -- which is what made this a cheap ruling to make.
+*** NOT REPRODUCED HERE, AND SAID PLAINLY BECAUSE IT IS THE ONE NUMBER IN THIS SECTION
+NOBODY CAN RE-DERIVE: neither the 08-31 contribution panel nor an 08-31 ShareCapReport is on
+disk, and rank moves need an AggScore vector that no saved artifact for either date carries.
+The 08-31 line above is therefore INHERITED from the note that recorded it, not verified. ***
+
+WHAT IS REPRODUCED, on the two artifacts that do exist (2026-09-03):
+
+    2026-09-01 (from `ShareCapReport_2026-09-01.csv`, exact -- see below)
+                       bound 11 -> 7, RAISED 4 -> 0, total AggScore moved
+                       -0.0966 -> -0.3936.  The 7 that still bind are unchanged, cell for
+                       cell: same `cap_value`, same `agg_delta`.
+    2026-08-11 CUR3K panel (`postRank_2026-08-11_fmp_stock_CUR3K.pickle`, re-run both ways)
+                       see `test_the_saved_panel_...` -- RAISED = 0 under the new rule and
+                       non-zero under the old one, which is what makes the panel a
+                       regression rather than an illustration.
+
+WHY THE 09-01 RECONSTRUCTION IS EXACT AND NOT AN APPROXIMATION, since a report is not a
+panel and normally could not settle this.  Every bound row on that panel has `n_capped = 1`,
+and for a k = 1 row the fixed point satisfies `c = CAP * T` with `T < base_before`, so the
+consistency test `s[1] <= c` forces the SECOND-largest contribution below `CAP *
+base_before`.  Only the dominant metric is therefore over the cap as a share of the original
+base.  Two consequences follow with no further information:
+  * dominant POSITIVE -> the candidate set is the same single metric, `R` is the same, so `c`
+    and `agg_delta` are IDENTICAL under either rule;
+  * dominant NEGATIVE -> there is no candidate over the cap at all, so nothing binds and
+    `agg_delta` becomes exactly 0.
+That is why "bound 11 -> 7, raised 4 -> 0" is a derivation and not an estimate.  It does NOT
+extend to a k > 1 panel, and it does not give ranks.
+
+THE DENOMINATOR STAYS `sum_c |contribution_c|`, OVER BOTH SIGNS -- AND THAT WAS A REAL FORK
+---------------------------------------------------------------------------------------------
+The ruling fixes WHICH contributions may be truncated.  It does not, by itself, say what the
+share is a share OF, and the two candidates give different names:
+
+  (A) base = sum over ALL metrics of |c|          BUILT.  A negative contribution is
+      excluded from the CANDIDATES but stays in the DENOMINATOR at full magnitude.
+  (B) base = sum over the POSITIVE metrics only   NOT BUILT.
+
+(B) is rejected on three grounds and the first is decisive:
+
+  1. IT CHANGES WHAT 0.25 MEANS, AGAIN, AND NOBODY RULED ON THAT.  Dropping the negatives
+     from the denominator SHRINKS it, so every positive share RISES and the cap bites harder
+     and on more names -- and hardest on names that carry big penalties, since those have the
+     smallest positive base.  This file already documents (see the "(i) vs (ii)" section) that
+     0.25 means something WEAKER on the absolute-share distribution than on the signed one the
+     CEO was shown when he picked it.  Moving the denominator a second time, in the
+     tightening direction, would re-level the CEO's number by a developer's choice of
+     denominator.  0.25 is his; the denominator must not be a back door to changing it.
+  2. IT IS INCOHERENT AS A RULE.  Under (B) a name's positive metrics are truncated MORE
+     because it has a big penalty somewhere else.  "No single metric may carry a name up" does
+     not imply "a name with bad news elsewhere may be carried up less" -- that is a second,
+     unargued penalty riding on the first.
+  3. IT REINTRODUCES THE DEGENERACY THE (i)-vs-(ii) SECTION REJECTED (ii) FOR.  A name with no
+     positive contribution has a positive base of ZERO, and a name with one small positive has
+     a base near zero, so the share diverges.  On the 2026-08-31 general pool 37 of 97 names
+     score at or below zero, so this is a populated region, not a corner.  (A) is bounded in
+     [0, 1] for every name whose absolute base is positive and finite, exactly as before.
+
+A fourth fact, recorded as a fact and NOT used as an argument: (A)'s consequence on the 09-01
+panel is exactly derivable from the shipped evidence CSV (above), and (B)'s is not derivable
+from anything on this disk, because the positive base of a row is not in the report.  That is
+a convenience, not a reason, and it must not be cited as one.
 
 WHAT THIS DOES *NOT* FIX -- AND IT IS THE FINDING THAT PROMPTED THE WHOLE EXERCISE
 ----------------------------------------------------------------------------------
@@ -306,27 +391,102 @@ def _k_max(cap):
     return int(np.floor(1.0 / cap - 1e-12))
 
 
-def _cap_value(abs_row, cap):
-    """The fixed-point cap level for one name, or None if no metric exceeds `cap`.
+def _truncation_mask(row, c):
+    """The cells the cap is PERMITTED to truncate: contributions that are HELPING the name
+    and sit above the fixed point `c`.
 
-    `abs_row` is the row's ABSOLUTE contributions (any order).  Returns the value every
-    over-cap metric is truncated to, chosen so that after truncation each of them is
-    EXACTLY `cap` of the new total.  See the module docstring for the derivation.
+    ONE LINE, AND IT IS A FUNCTION FOR TWO REASONS.
+
+    (1) IT IS THE CEO'S 2026-09-01 RULING, so it gets a name and a single home rather than
+    being an inline comparison a reviewer scrolls past.  "The cap may penalise, never
+    rescue" is `row > c` instead of `abs(row) > c`, and that one character is the entire
+    behavioural difference between this module and the one that RAISED four names on the
+    2026-09-01 panel.
+
+    (2) IT MAKES INVARIANT 3 CERTIFIABLE.  `c` is always positive, so no negative
+    contribution can satisfy `row > c` and the no-rescue invariant in
+    `_assert_post_condition` is UNREACHABLE through the shipped code -- which is what a
+    guard should be, and also what makes it impossible to watch fail.  A guard nobody has
+    seen fire is a guard nobody knows works, so the only honest way to certify it is to
+    substitute the pre-ruling absolute mask here and drive the real entry point.
+    `test_mutation_the_SYMMETRIC_mask_is_REJECTED_by_the_no_rescue_invariant` does exactly
+    that; it is the reason this is not inlined.
     """
-    s = np.sort(abs_row)[::-1]
-    if not np.isfinite(s).all() or s.sum() <= 0.0:
+    return row > c
+
+
+def _cap_value(row, cap):
+    """The fixed-point cap level for one name, or None if no POSITIVE contribution exceeds
+    `cap` of the name's absolute total.
+
+    `row` is the row's SIGNED contributions (any order).  IT USED TO BE THE ABSOLUTE ROW,
+    and the change of argument IS the CEO's 2026-09-01 positive-only ruling: the sign of a
+    contribution now decides whether it is a truncation CANDIDATE, so this function cannot
+    be given a row that has already thrown the sign away.
+
+    THE ALGEBRA IS UNCHANGED; ONLY THE CANDIDATE SET SHRANK.  `base` is still the FULL
+    absolute total -- every metric, both signs -- and `R` is still "the absolute mass that
+    is NOT truncated".  What changed is that the negatives are now permanently inside `R`
+    instead of being eligible for `S`:
+
+        base = sum_c |contribution_c|                    (unchanged -- see the DENOMINATOR
+                                                          section of the module docstring)
+        p    = the POSITIVE contributions, descending    (the only candidates)
+        R    = sum|negatives| + sum p[k:]                the absolute mass NOT truncated
+        c    = cap * R / (1 - k*cap)
+        T    = R / (1 - k*cap)                           so c / T == cap exactly
+
+    `R` IS SUMMED DIRECTLY AND MUST NOT BE COMPUTED AS `base - sum(p[:k])`.  It is the same
+    quantity in exact arithmetic and a DIFFERENT one in float64, because the subtraction
+    cancels the whole tail away: on `[0.30, 0.10, 0.05, 1e-15]` the head sums to
+    `0.45000000000000001` against a base of `0.45000000000000001`, so the subtraction returns
+    0.0 (or a negative ulp) and the k = 3 fixed point is lost -- the row then finds no
+    consistent k, ships UNCAPPED, and the `would_erase` guard that is supposed to decline it
+    never runs.  The pre-2026-09-01 code summed `s[k:]` directly and was correct for exactly
+    this reason; writing the subtraction back in is a silent regression that only the
+    1e-15 case in `test_a_FEASIBLE_row_whose_cap_would_ERASE_it_ships_UNCAPPED` catches.
+
+    A CONSEQUENCE WORTH STATING, because it is why the infeasibility test in
+    `apply_share_cap` had to change too: a single negative contribution of any size puts a
+    permanent floor under `R`, so a row that WAS infeasible under the symmetric rule (too few
+    non-zero metrics, fixed point degenerating to c = 0) can be perfectly feasible now.
+    `[+0.30, -0.30, -0.30]` is the case: three non-zero metrics, declined as infeasible by
+    the old count test, and under this rule R = 0.60, c = 0.20, post-cap share exactly 0.25
+    with 80% of the mass surviving.  Deciding feasibility on the raw non-zero COUNT would now
+    decline a row the cap can honour perfectly well.
+    """
+    a = np.abs(row)
+    if not np.isfinite(a).all():
         return None
+    base = float(a.sum())
+    if not np.isfinite(base) or base <= 0.0:
+        return None
+    #  THE CANDIDATES.  `row > 0.0` and not `a > 0.0`: this is the whole ruling in one
+    #  comparison.  A negative contribution is never selected, at any magnitude.
+    p = np.sort(row[row > 0.0])[::-1]
+    if len(p) == 0:
+        return None                           # nothing the cap is permitted to touch
+    #  The negatives are the part of `R` that no k can ever remove.  Held once, outside the
+    #  scan, because it does not depend on k.
+    neg_mass = float(a[row < 0.0].sum())
     #  k is bounded a priori; without this the scan could propose a denominator <= 0.
     k_max = _k_max(cap)
-    for k in range(1, min(len(s), k_max) + 1):
+    for k in range(1, min(len(p), k_max) + 1):
         denom = 1.0 - k * cap
         if denom <= 0.0:                      # unreachable given k_max; kept as a hard stop
             break
-        c = cap * s[k:].sum() / denom
-        below = s[k] if k < len(s) else -np.inf
-        #  consistency: the k-th largest must still be ABOVE the cap value (so it really is
-        #  capped) and the (k+1)-th must be at or BELOW it (so it really is not).
-        if c < s[k - 1] and c >= below:
+        #  SUMMED, NOT SUBTRACTED -- see the docstring.  `base - p[:k].sum()` is the same
+        #  number in real arithmetic and loses the entire tail to cancellation in float64.
+        R = neg_mass + float(p[k:].sum())
+        c = cap * R / denom
+        below = p[k] if k < len(p) else -np.inf
+        #  consistency: the k-th largest POSITIVE must still be ABOVE the cap value (so it
+        #  really is capped) and the (k+1)-th must be at or BELOW it (so it really is not).
+        #  The comparisons run over the positive subsequence only, so the exact-tie hazard
+        #  documented in `_assert_post_condition` is unchanged in character and strictly
+        #  narrower in reach: a tie between a positive and a negative can no longer trigger
+        #  it, because the negative is not in this sequence.
+        if c < p[k - 1] and c >= below:
             return float(c)
     return None
 
@@ -376,6 +536,55 @@ UNCAPPABLE = (STATUS_INFEASIBLE, STATUS_WOULD_ERASE, STATUS_NON_FINITE)
 #  question as the 1%-to-8% band, and it is the CEO's, not this module's.  Measured margin on
 #  the CUR3K panels: the thinnest surviving mass on a committed row is 0.8400 and 0.8058 --
 #  84x and 81x this floor -- so nothing real is anywhere near it today.
+#
+#  #####################################################################################
+#  ##  RE-EXAMINED UNDER POSITIVE-ONLY (2026-09-03).  THE FLOOR IS RETAINED AND ITS      ##
+#  ##  MOTIVATING CASE IS DEAD.  BOTH HALVES OF THAT MATTER.                             ##
+#  #####################################################################################
+#
+#  THE CASE IT WAS BUILT FOR IS NOW UNREACHABLE, AND THE OLD RATIONALE MUST NOT BE READ AS
+#  STILL LIVE.  Every sentence above and in the `would_erase` / `infeasible` sections was
+#  written about ONE harm: the cap replacing a real NEGATIVE score with a fabricated 0.0,
+#  which on a pool where 37 of 97 names score at or below zero is a large PROMOTION invented
+#  by the guard.  Positive-only kills that harm outright, and not by degree -- a committed
+#  truncation now only ever replaces a POSITIVE contribution with a smaller positive one, so
+#  `agg_delta <= 0` identically (INVARIANT 3 in `_assert_post_condition` asserts it).  The
+#  cap can no longer move ANY name upward, so it cannot fabricate a promotion, so the
+#  "annihilation is a promotion" argument that justified this number is spent.  THE CEO FOUND
+#  THIS FLOOR HARD TO UNDERSTAND, and that is why: its rationale depended entirely on the
+#  symmetric behaviour he has now ruled out.
+#
+#  THE MECHANISM, HOWEVER, IS STILL REACHABLE -- with a changed sign and a much narrower
+#  domain.  `base_after >= sum |negative contributions|`, because a negative is never
+#  truncated, so this floor can only fire on a name whose absolute mass is at least 99%
+#  POSITIVE and whose positive tail is degenerate.  `[+0.30, -0.001, 0, 0, 0]` is the shape:
+#  R = 0.001, c = 3.3e-4, surviving mass 0.44% -- declined.  So does the all-positive
+#  `[0.30, 0.10, 0.05, 1e-9]`, which is the row the COUNT test could not see and which is
+#  why this condition is stated on the mass in the first place.
+#
+#  WHY IT IS KEPT ANYWAY, in one sentence: what such a row would ship is not a penalty of a
+#  chosen size but a score of ~0 whose magnitude is set by the epsilon in the tail -- move
+#  that tail from 1e-9 to 1e-3 and the surviving mass moves six orders of magnitude, on a
+#  name whose business did not change.  The instrument the CEO authorised is "truncate a
+#  helping metric to 25% of the base"; collapsing a +0.45 score to 4e-09 is not that
+#  instrument, it is the fixed point degenerating.  A fabricated extreme is refused in
+#  EITHER direction, and that is the whole of the argument now.
+#
+#  *** THE PART THAT IS THE CEO'S CALL AND IS NOT MINE, FLAGGED RATHER THAN DECIDED: the
+#  harm this floor now prevents is a large DEMOTION, and he has just ruled that he wants the
+#  cap to penalise.  A perfectly coherent answer is "let it collapse -- I asked for
+#  penalties, and a name that is 99% one metric deserves nothing".  I have NOT taken that
+#  answer, because the size of the demotion is arbitrary rather than chosen, but the
+#  disagreement is a level question for him and the floor is one line to remove.  What is NOT
+#  available is leaving the floor in place with its old promotion rationale unexamined; that
+#  is the state this block exists to end. ***
+#
+#  INVARIANT 1 of `_assert_post_condition` (`base_after > 0` on a handled row) remains
+#  UNREACHABLE either way, and the reason has changed: `c = 0` requires `R = 0`, which is now
+#  the joint infeasibility condition and is declined before the fixed point is committed.
+#  Removing this floor would therefore NOT surface as a raise -- it would ship a silent
+#  4e-09.  Stated because the tempting argument for retention ("the backstop would catch it")
+#  is false, and a reviewer should not be given a reason that does not hold.
 _MASS_FLOOR = 0.01
 
 
@@ -397,9 +606,15 @@ def apply_share_cap(contrib, cap=CAP, sources=None):
               truncated in place and their SIGN preserved.
       report  one row per name, always the full pool: `source` (when given), `n_capped`
               (0 where nothing bound), `cap_value`, `share_before`, `share_after`,
-              `metric_before`, `contrib_before` (that metric's SIGNED pre-cap contribution --
-              the log's RAISED label is derived from ITS sign, not from `agg_delta`),
-              `base_before`, `base_after`, `status`, and the `agg_delta` this cap costs.
+              `metric_before`, `contrib_before` (that metric's SIGNED pre-cap contribution),
+              `metric_capped` / `pos_share_before` / `pos_share_after` (the largest HELPING
+              contribution -- the only kind the cap may act on, and the pair the
+              post-condition is stated on), `base_before`, `base_after`, `status`, and the
+              `agg_delta` this cap costs.  `agg_delta` is <= 0 for every row by ruling.
+
+    `metric_before` and `metric_capped` DIFFER exactly when a name's biggest driver is a
+    PENALTY.  That is not an edge case to be tidied away -- it is the population the
+    2026-09-01 ruling protects, and `format_report` says so on the name's own line.
 
     A share that is not defined is NaN, never a sentinel.  `share_before = -1.0` used to
     stand for "undefined" here; it printed to the run log as if it were a share, shipped
@@ -444,19 +659,53 @@ def apply_share_cap(contrib, cap=CAP, sources=None):
         if base_before[i] <= 0.0:
             status[i] = STATUS_ALL_ZERO
             continue
-        if int((A[i] > 0.0).sum()) <= k_max:
-            #  INFEASIBLE: the scan could cap every non-zero metric, leaving no tail, so the
-            #  fixed point is c = 0 and committing it would ANNIHILATE the row.  Derived from
-            #  `_k_max` rather than from a second tolerance of its own -- see that function.
+        n_pos = int((C[i] > 0.0).sum())
+        n_neg = int((C[i] < 0.0).sum())
+        if n_pos == 0:
+            #  NOTHING THE CAP IS PERMITTED TO TOUCH, and it is a plain no-bind rather than
+            #  an uncappable row: every contribution this name has is a penalty, and under
+            #  the positive-only ruling a penalty is never truncated at any magnitude.  So
+            #  the name ships unchanged with `status = 'ok'`, `n_capped = 0` -- which is the
+            #  truth ("the cap ran and bound on nothing here"), not a decline.
+            #
+            #  IT IS COUNTED IN THE LOG ANYWAY (`format_report`'s positive-only block),
+            #  because THIS IS THE POPULATION THE OLD SYMMETRIC CAP RESCUED.  A name that is
+            #  100% penalties was exactly the shape whose dominant negative got truncated and
+            #  whose score ROSE, so a reader comparing this run against a pre-ruling one needs
+            #  to be able to see how many such names there were.  `share_before` still reports
+            #  its dominant metric's share, so a single-metric-dominated penalty name remains
+            #  visible in the artifact -- it is simply no longer acted on.
+            continue
+        if n_neg == 0 and n_pos <= k_max:
+            #  INFEASIBLE, AND THE CONDITION IS NOW A JOINT ONE (positive-only, 2026-09-01).
+            #  It used to be `n_nonzero <= k_max` on the ABSOLUTE row.  That test is WRONG
+            #  under this rule and would decline rows the cap can honour: a negative
+            #  contribution can never be truncated, so it stays inside `R` permanently and
+            #  puts a floor under the fixed point.  The degenerate c = 0 therefore needs BOTH
+            #  halves -- no negative anywhere to hold `R` up, AND few enough positives that
+            #  the scan can truncate all of them.  `[+0.30, -0.30, -0.30]` is the row that
+            #  makes the difference concrete: declined by the old count test, and resolved at
+            #  c = 0.20 with 80% of its mass surviving under this one.  See `_cap_value`.
+            #
+            #  WHAT COMMITTING c = 0 WOULD DO HAS ALSO CHANGED SIGN, and the new reading is
+            #  the honest one: such a row is by construction ALL-POSITIVE, so annihilating it
+            #  is a large DEMOTION rather than the invented promotion the symmetric rule
+            #  produced.  It is still declined -- see `_MASS_FLOOR` for why a fabricated
+            #  extreme is refused in either direction -- but a reader must not carry the old
+            #  "0.0 is a promotion" rationale over to this branch.
             status[i] = STATUS_INFEASIBLE
             continue
-        c = _cap_value(A[i], cap)
+        c = _cap_value(C[i], cap)
         if c is None:
             continue
-        over = A[i] > c
+        #  THE RULING, VIA THE ONE FUNCTION THAT ENCODES IT.  Was `A[i] > c` on the
+        #  absolute row, which is what truncated catastrophic penalties and RAISED four names
+        #  on the 2026-09-01 panel.  See `_truncation_mask` for why it is a named function
+        #  and not an inline comparison.
+        over = _truncation_mask(C[i], c)
         #  THE TRUNCATION IS NOT COMMITTED UNTIL THE MASS IS CHECKED.  Counting metrics
         #  catches the row with an EMPTY tail; it does not catch the row with a NEGLIGIBLE
-        #  one, and both end with a fabricated ~0 AggScore.  Computed on a candidate so the
+        #  one, and both end with a fabricated AggScore.  Computed on a candidate so the
         #  row can be left exactly as it arrived.
         cand_base = float(np.where(over, c, A[i]).sum())
         if cand_base < _MASS_FLOOR * base_before[i]:
@@ -465,7 +714,10 @@ def apply_share_cap(contrib, cap=CAP, sources=None):
             continue
         n_capped[i] = int(over.sum())
         cap_value[i] = c
-        C[i, over] = np.sign(C[i, over]) * c
+        #  No `np.sign` any more, and its absence is a statement: everything in `over` is
+        #  positive by construction, so the truncated value IS `c`.  The old
+        #  `np.sign(C[i, over]) * c` existed only to send a truncated negative back to `-c`.
+        C[i, over] = c
 
     capped = pd.DataFrame(C, index=contrib.index, columns=cols)
     A_after = np.abs(C)
@@ -489,6 +741,26 @@ def apply_share_cap(contrib, cap=CAP, sources=None):
     share_after = np.full(len(C), np.nan)
     contrib_before = np.full(len(C), np.nan)
     metric_before = [None] * len(C)
+    #  --- THE POSITIVE SIDE: the quantity the cap now ACTS ON -------------------------- #
+    #  `share_before`/`share_after` are the DOMINANT metric by |contribution| and their
+    #  meaning is deliberately unchanged -- they answer "what drives this name", which is
+    #  still the right question for a reader and is what the value-level tests pin.
+    #
+    #  BUT SINCE 2026-09-01 THEY ARE NO LONGER THE POST-CONDITION'S SUBJECT, and conflating
+    #  the two would be a guard blind to its own rule.  Under positive-only, a name's
+    #  dominant metric can be a NEGATIVE one that the cap is forbidden to touch, so
+    #  `share_after` may legitimately sit ABOVE the cap -- and on a bound row it can even
+    #  RISE (the truncation shrinks the base while the untouched negative keeps its
+    #  magnitude, so its share of a smaller total is larger).  Printing that pair as the
+    #  cap's before/after would read as the cap having INCREASED a concentration.
+    #
+    #  So the positive-side pair is carried explicitly: `metric_capped` is the largest
+    #  HELPING contribution -- the candidate that actually binds -- and
+    #  `pos_share_before`/`pos_share_after` are its share of the absolute base. THESE are
+    #  what `_assert_post_condition` checks and what `format_report` prints on a hit line.
+    pos_share_before = np.full(len(C), np.nan)
+    pos_share_after = np.full(len(C), np.nan)
+    metric_capped = [None] * len(C)
     for i in range(len(C)):
         if defined_before[i]:
             #  the DOMINANT metric by |contribution|.  `None` where there is no dominant
@@ -499,8 +771,20 @@ def apply_share_cap(contrib, cap=CAP, sources=None):
             metric_before[i] = cols[j]
             contrib_before[i] = float(C0[i, j])
             share_before[i] = float(sh_before[i, j])
+            #  ...and the largest POSITIVE one, which is a DIFFERENT column whenever the
+            #  name's biggest driver is a penalty.  `None`/NaN for a name with no positive
+            #  contribution at all: there is no candidate, so there is no share to report,
+            #  and a zero here would read as "its best metric contributes nothing".
+            pos = C0[i] > 0.0
+            if pos.any():
+                jp = int(np.argmax(np.where(pos, C0[i], -np.inf)))
+                metric_capped[i] = cols[jp]
+                pos_share_before[i] = float(C0[i, jp] / base_before[i])
         if defined_after[i]:
             share_after[i] = float(np.nanmax(sh_after[i]))
+            pos_a = C[i] > 0.0
+            if pos_a.any():
+                pos_share_after[i] = float(np.max(C[i][pos_a]) / base_after[i])
 
     data = {
         'n_capped': n_capped,
@@ -509,6 +793,9 @@ def apply_share_cap(contrib, cap=CAP, sources=None):
         'contrib_before': contrib_before,
         'share_before': share_before,
         'share_after': share_after,
+        'metric_capped': metric_capped,
+        'pos_share_before': pos_share_before,
+        'pos_share_after': pos_share_after,
         'agg_delta': agg_delta,
         'base_before': base_before,
         'base_after': base_after,
@@ -627,15 +914,77 @@ def _assert_post_condition(report, cap):
             'be declined before it reaches here. Offenders: %s'
             % (len(destroyed), list(destroyed.index[:10])))
 
+    #  ORDER MATTERS HERE, AND IT WAS CHOSEN AFTER WATCHING BOTH FIRE.  The rescue check
+    #  runs BEFORE the overshoot check because the mutation that matters trips BOTH: restoring
+    #  the pre-ruling absolute mask makes a truncated negative land at `+c`, which both
+    #  rescues the name AND leaves the positive share fractionally over the cap (0.3125 vs
+    #  0.25 on the row used in `test_mutation_the_SYMMETRIC_mask_is_REJECTED_...`).  With the
+    #  overshoot first, the reader gets "the fixed-point search is broken" -- a generic
+    #  algebra complaint pointing at `_cap_value`, which is innocent -- instead of "the cap
+    #  RAISED a name", which names the actual defect and the ruling it breaks.  Diagnosis
+    #  quality is the whole value of an assertion that only ever fires on a code change.
+    #
+    #  The two mutations already in the suite are unaffected, and that was checked rather
+    #  than assumed: a pass-through cap and a one-pass cut both leave `agg_delta <= 0`
+    #  (they truncate positives, or nothing at all), so neither reaches this check and both
+    #  still report the overshoot they are written against.
+
+    #  INVARIANT 3: THE CAP MAY PENALISE AND MAY NEVER RESCUE.  This is the CEO's 2026-09-01
+    #  ruling asserted as algebra rather than trusted to the candidate mask above it.
+    #
+    #  WHY IT IS AN ASSERTION AND NOT A LOG LINE.  Every committed truncation replaces a
+    #  POSITIVE contribution `x` with a smaller positive `c`, so `agg_delta` is a sum of
+    #  strictly negative terms and cannot come out positive in exact arithmetic.  A positive
+    #  `agg_delta` therefore means the candidate selection has been broken -- most plausibly
+    #  by somebody restoring `A[i] > c` or `np.sign(...) * c` in the loop, which is precisely
+    #  the reversion this invariant exists to catch and precisely the shape a reviewer would
+    #  read straight past.  That is an ALGEBRA failure, which this module raises on, not a
+    #  data condition, which it does not.
+    #
+    #  THE TOLERANCE IS RELATIVE TO THE NAME'S OWN MASS, deliberately.  `agg_delta` is a
+    #  difference of two float64 row sums, so cancellation gives it an error that scales with
+    #  `base_before`, not with 1.0 -- an absolute `1e-9` would be far too tight on a
+    #  large-base name and far too loose on a tiny one.  Scaled by the base, the shipped
+    #  panels sit ~13 orders of magnitude inside it while a genuine sign reversion (the
+    #  smallest of the four 2026-09-01 raises was KFY at +0.0019 on a base of ~0.30, i.e.
+    #  ~6e-3 relative) is ~10 orders of magnitude OUTSIDE it.  The gap is wide enough that no
+    #  choice inside it changes any verdict.
+    _rescue_tol = _SHARE_TOL * np.maximum(1.0, handled['base_before'].to_numpy(dtype='float64'))
+    rescued = handled[handled['agg_delta'].to_numpy(dtype='float64') > _rescue_tol]
+    if len(rescued):
+        raise AssertionError(
+            'metric_share_cap: %d name(s) were RAISED by the cap (worst agg_delta %+.6f) -- '
+            'the cap rescued a name instead of penalising it, which the CEO ruled out on '
+            '2026-09-01. A committed truncation only ever replaces a POSITIVE contribution '
+            'with a smaller one, so a positive agg_delta is an ALGEBRA failure and not a data '
+            'condition: check whether the candidate mask in `apply_share_cap` has been '
+            'reverted to the absolute row (`A[i] > c`), or whether `_cap_value` is again '
+            'being handed |contributions| instead of signed ones. Offenders: %s'
+            % (len(rescued), float(rescued['agg_delta'].max()),
+               list(rescued.index[:10])))
+
+
+
     #  THE OVERSHOOT.  This one DOES raise on a row the module tried to cap and failed,
     #  because that is the module being broken rather than the data being awkward -- and
     #  because it is the only thing that detects a cap replaced by a pass-through, which is
     #  a defect no amount of logging would surface.
-    bad = handled[handled['share_after'] > cap + _SHARE_TOL]
+    #
+    #  *** STATED ON `pos_share_after`, NOT ON `share_after`, SINCE THE 2026-09-01 RULING.
+    #  `share_after` is the DOMINANT metric's share of the absolute base, and under
+    #  positive-only a dominant NEGATIVE contribution is one the cap is forbidden to touch --
+    #  so `share_after > cap` is now a legitimate outcome and asserting on it would raise on
+    #  correct behaviour.  Worse, it would raise for the exact population the ruling exists
+    #  to protect: the four names the symmetric cap RAISED on the 2026-09-01 panel are all
+    #  dominant-negative rows.  The post-condition the module actually establishes is
+    #  narrower and is the one that ships: no contribution that HELPS a name may exceed `cap`
+    #  of its absolute total. ***
+    bad = handled[handled['pos_share_after'] > cap + _SHARE_TOL]
     if len(bad):
         raise AssertionError(
-            'metric_share_cap: %d name(s) left the cap ABOVE it (worst %.6f > %.6f) and '
-            'shipped UNCAPPED. `_cap_value` found no consistent k for a row that needed one. '
+            'metric_share_cap: %d name(s) left the cap with a POSITIVE contribution ABOVE it '
+            '(worst %.6f > %.6f) and shipped UNCAPPED. `_cap_value` found no consistent k for '
+            'a row that needed one. '
             'Two known causes: (a) the fixed-point search is broken or has been replaced by '
             'a pass-through -- the usual case, and the reason this raises; (b) the row has '
             'two contributions that tie EXACTLY at the fixed point, where the strict/'
@@ -644,8 +993,10 @@ def _assert_post_condition(report, cap):
             'it has a measured rate of ZERO over 2,000,000 continuous-float rows, 196,000 '
             'jittered real rows and 200 real panel rows, so on live data suspect (a) first '
             'and check whether the row you are looking at has two identical contributions. '
+            '(Positive-only NARROWS (b): a tie between a positive and a negative can no '
+            'longer trigger it, because a negative is not a candidate.) '
             'Offenders: %s'
-            % (len(bad), float(bad['share_after'].max()), cap, list(bad.index[:10])))
+            % (len(bad), float(bad['pos_share_after'].max()), cap, list(bad.index[:10])))
 
 
 def format_report(report, pool_label, cap=CAP, top_n=20):
@@ -664,8 +1015,9 @@ def format_report(report, pool_label, cap=CAP, top_n=20):
     n = len(report)
     hit = report[report['n_capped'] > 0]
     zeroed = report[report['status'] == STATUS_ALL_ZERO]
-    lines = ['SINGLE-METRIC SHARE CAP [%s]: cap %.0f%% of a name\'s ABSOLUTE contribution; '
-             'BOUND on %d of %d name(s)%s'
+    lines = ['SINGLE-METRIC SHARE CAP [%s]: cap %.0f%% of a name\'s ABSOLUTE contribution, '
+             'POSITIVE contributions ONLY (CEO 2026-09-01: the cap may penalise, never '
+             'rescue); BOUND on %d of %d name(s)%s'
              % (pool_label, 100 * cap, len(hit), n,
                 ' -- NOTHING was truncated on this panel' if not len(hit) else '')]
 
@@ -676,8 +1028,12 @@ def format_report(report, pool_label, cap=CAP, top_n=20):
         return str(idx)
 
     if len(hit):
-        lines.append('    (share is |z x w| / sum|z x w|, NOT of the signed AggScore -- see '
-                     'metric_share_cap; the two differ by a factor of ~1.5 on this pool)')
+        lines.append('    (share is (z x w) / sum|z x w|, NOT of the signed AggScore -- '
+                     'see metric_share_cap; the two differ by a factor of ~1.5 on this '
+                     'pool. The pair below is the largest HELPING contribution, which is '
+                     'what the cap acts on; a name\'s biggest DRIVER can be a penalty, '
+                     'and where it is, the line says so and the penalty was left at full '
+                     'value.)')
         #  `n_capped` is printed on EVERY line and it is not decoration: the share pair
         #  shown is the DOMINANT metric's only, so without the count a three-metric cascade
         #  (which erases most of a name's mass) is indistinguishable from a one-metric trim,
@@ -685,52 +1041,100 @@ def format_report(report, pool_label, cap=CAP, top_n=20):
         #  No rank is printed and that is deliberate: this runs BEFORE `getAggScore`, so no
         #  ranking exists yet.  A position printed here would be the scoring frame's row
         #  order, which is not a rank and would be read as one.
-        for idx, row in hit.sort_values('share_before', ascending=False).head(top_n).iterrows():
-            #  THE LABEL IS DERIVED FROM THE DOMINANT METRIC'S OWN SIGN, not from the sign
-            #  of `agg_delta`.  `agg_delta` is the sum of the signed changes across ALL
-            #  capped metrics, so on a k>1 row with mixed signs it can be positive while the
-            #  dominant contribution is positive too -- and the old label then told the
-            #  reader that a POSITIVE dominant metric "was NEGATIVE".  The mechanism claim
-            #  and the direction of the move are now two separate statements, because they
-            #  are two separate facts.
-            dom = row['contrib_before']
-            rose = row['agg_delta'] > 0
-            if dom < 0 and rose:
-                note = '  <-- RAISED: its dominant contribution was NEGATIVE and was truncated'
-            elif dom < 0:
-                note = '  <-- dominant contribution NEGATIVE (net move still down: k > 1)'
-            elif rose:
-                note = ('  <-- RAISED although its dominant contribution was POSITIVE: k > 1 '
-                        'with mixed signs, so the truncated negatives outweigh it')
-            else:
-                note = ''
+        for idx, row in hit.sort_values('pos_share_before',
+                                        ascending=False).head(top_n).iterrows():
+            #  *** THE `RAISED` LABELS ARE GONE, AND THEIR ABSENCE IS THE 2026-09-01
+            #  RULING.  There were three of them and each described something the
+            #  SYMMETRIC cap really did: a truncated negative dominant metric, or a net
+            #  rise on a mixed-sign k > 1 row.  Under positive-only NONE of those states
+            #  is reachable -- every committed truncation lowers a POSITIVE contribution,
+            #  so `agg_delta <= 0` on every row, asserted as INVARIANT 3 in
+            #  `_assert_post_condition`.  Keeping the branches would leave dead prose that
+            #  a future reader would take as evidence the cap can still rescue.  What
+            #  replaces them is the note below, which reports the thing that IS now true
+            #  and is NOT self-evident: the name's biggest driver was a penalty, and the
+            #  cap deliberately did not touch it. ***
+            dom_is_penalty = (row['contrib_before'] < 0
+                              and row['metric_capped'] != row['metric_before'])
+            note = ''
+            if dom_is_penalty:
+                note = ('  <-- its biggest driver is the PENALTY %s at %.4f of |base|, '
+                        'LEFT AT FULL VALUE (positive-only)'
+                        % (row['metric_before'], row['share_before']))
             lines.append('    %-12s  %-26s %.4f -> %.4f  n_capped=%d   AggScore %+.4f%s'
-                         % (_src(idx), row['metric_before'],
-                            row['share_before'], row['share_after'],
+                         % (_src(idx), row['metric_capped'],
+                            row['pos_share_before'], row['pos_share_after'],
                             int(row['n_capped']), row['agg_delta'], note))
         if len(hit) > top_n:
             lines.append('    ... and %d more (full per-name detail in '
                          "rankdic['share_cap_report'])" % (len(hit) - top_n))
         n_multi = int((hit['n_capped'] > 1).sum())
-        lines.append('    total AggScore moved: %+.4f over %d name(s); %d had a NEGATIVE '
-                     'dominant contribution (the cap is symmetric by ruling, see the module '
-                     'docstring) and %d rose on net; %d bound on MORE THAN ONE metric (a '
-                     'cascade -- the share pair above is the dominant metric only)'
+        lines.append('    total AggScore moved: %+.4f over %d name(s), and EVERY move is '
+                     'DOWN or zero BY RULING (%d rose -- any number here other than 0 is a '
+                     'defect, see INVARIANT 3); %d had a NEGATIVE dominant contribution '
+                     'that was LEFT UNTOUCHED; %d bound on MORE THAN ONE metric (a cascade '
+                     '-- the share pair above is the largest HELPING metric only)'
                      % (float(hit['agg_delta'].sum()), len(hit),
-                        int((hit['contrib_before'] < 0).sum()),
-                        int((hit['agg_delta'] > 0).sum()), n_multi))
+                        int((hit['agg_delta'] > 0).sum()),
+                        int((hit['contrib_before'] < 0).sum()), n_multi))
+
+    #  --- WHAT THE SYMMETRIC CAP WOULD HAVE RESCUED, NAMED ----------------------------- #
+    #  THE POPULATION THIS BLOCK EXISTS FOR is the one the 2026-09-01 ruling took out of
+    #  the cap's reach: a name whose biggest driver is a PENALTY over the cap.  Under the
+    #  symmetric rule that penalty was truncated and the name's score ROSE -- 4 of the 13
+    #  bound names on 2026-08-31 and 4 of the 11 on 2026-09-01, and the largest single
+    #  effect the cap had anywhere on either panel.  They now ship with the penalty at
+    #  full value, which makes them INVISIBLE in the block above (nothing bound on them)
+    #  at exactly the moment a reader comparing this run against a pre-ruling one most
+    #  needs to see them.
+    #
+    #  NAMED AND NOT MERELY COUNTED, and the reason is a disclosure that would otherwise
+    #  have been LOST rather than merely changed.  `PET.TO` on the saved 2026-08-11 panel
+    #  is the case that forced this: two non-zero contributions, both negative, so the old
+    #  count-based feasibility test declined it as `infeasible` and the UNCAPPABLE block
+    #  below printed its name.  Under positive-only there is simply nothing to act on, so
+    #  it is an ordinary `status = 'ok'` row -- its score is byte-identical either way, but
+    #  it is a name sitting at 75% of its base on ONE penalty metric and shipping uncapped,
+    #  which is exactly the fact the uncappable block existed to surface.  A change of
+    #  status must not quietly cost a name its line in the log.
+    #
+    #  THE FILTER IS `share_before > cap`, deliberately, and it is what keeps this list
+    #  short and decision-relevant: every name in it is one the symmetric rule WOULD have
+    #  bound on and raised.  A penalty-dominated name UNDER the cap was never touched by
+    #  either rule and is not news.
+    _unreached = report[(report['status'] == STATUS_OK) & (report['n_capped'] == 0)
+                        & (report['contrib_before'] < 0)
+                        & (report['share_before'] > cap)]
+    if len(_unreached):
+        _npos = int(_unreached['pos_share_before'].isna().sum())
+        lines.append('    *** %d name(s) are DOMINATED BY A PENALTY over %.0f%% and were '
+                     'DELIBERATELY NOT CAPPED (positive-only, CEO 2026-09-01): the '
+                     'pre-ruling symmetric cap would have truncated that penalty and '
+                     'RAISED these names. %d of them have NO positive contribution at '
+                     'all. This is the ruling working, not a finding -- but they ship '
+                     'single-metric-dominated, so ALL %d are named here and in %s: %s'
+                     % (len(_unreached), 100 * cap, _npos, len(_unreached),
+                        SHARE_CAP_CSV % '<date>',
+                        ', '.join(_src(i) for i in _unreached.index)))
 
     #  --- THE UNCAPPABLE ROWS.  THIS BLOCK IS THE MITIGATION, NOT A FOOTNOTE ------------
     #  These names ship with the score they would have had if this module did not exist.
     #  Nothing else in the run says so, because nothing raises: if this block is quiet or
     #  gets truncated away, the module is back to hiding exactly what it was built to expose.
     _WHY = {
-        STATUS_INFEASIBLE: ('at most %d non-zero metric contribution(s), so NO truncation '
-                            'can put every metric at or below %.0f%% -- the fixed point '
-                            'would zero the whole row and invent an AggScore of 0.0'
-                            % (_k_max(cap), 100 * cap)),
+        STATUS_INFEASIBLE: ('at most %d contribution(s), ALL OF THEM POSITIVE, so there '
+                            'is no untruncatable tail left to be a share of -- the fixed '
+                            'point would zero the whole row and invent an AggScore of '
+                            '0.0. Positive-only makes this a JOINT condition: one '
+                            'negative contribution can never be truncated, so it holds '
+                            'the tail up and the row becomes feasible'
+                            % _k_max(cap)),
         STATUS_WOULD_ERASE: ('the fixed point would leave under %.0f%% of the name\'s '
-                             'absolute mass -- that is erasing the score, not compressing it'
+                             'absolute mass -- that is erasing the score, not compressing '
+                             'it. Since the positive-only ruling such a row is almost '
+                             'entirely POSITIVE mass, so what is declined here is a '
+                             'fabricated maximal DEMOTION, not the fabricated promotion '
+                             'the symmetric rule produced'
                              % (100 * _MASS_FLOOR)),
         STATUS_NON_FINITE: ('a non-finite (NaN/inf) contribution makes the share undefined '
                             'for the whole row'),
@@ -777,13 +1181,18 @@ def format_report(report, pool_label, cap=CAP, top_n=20):
 #  disclosure that lives only in a console log is a disclosure nobody is obliged to have
 #  read.  This file is what makes that sentence true.
 #
-#  *** TWO ONE-LINE ADDITIONS OUTSIDE THIS MODULE ARE STILL NEEDED FOR IT TO REACH THE CEO,
-#  AND NEITHER FILE WAS IN SCOPE FOR THE CHANGE THAT ADDED THIS WRITER:
-#      Sbocker.allowlist_patterns  needs  'ShareCapReport_*.csv'   (or the file is written
-#          and never transferred to Drive -- written-but-unshipped is the same as unwritten)
-#      conftest._EVIDENCE_GLOBS    needs  'ShareCapReport_*.csv'   (RULE E, so a test that
-#          forgets to redirect the path cannot drop one in the repo root)
-#  Until the first lands, this artifact exists only on the run machine. ***
+#  *** THE TWO ONE-LINE ADDITIONS OUTSIDE THIS MODULE HAVE BOTH LANDED (verified on disk,
+#  2026-09-03).  THIS NOTE PREVIOUSLY SAID THEY WERE STILL NEEDED AND THAT THE ARTIFACT
+#  "exists only on the run machine", WHICH IS NOW FALSE PROSE OF EXACTLY THE KIND THIS FILE
+#  KEEPS A TEST FOR:
+#      Sbocker.allowlist_patterns  has  'ShareCapReport_*.csv'  at `Sbocker.py:161`, so the
+#          file is transferred rather than written-and-stranded
+#      conftest._EVIDENCE_GLOBS    has  'ShareCapReport_*.csv'  at `conftest.py:260` (RULE E,
+#          so a test that forgets to redirect the path cannot drop one in the repo root)
+#  Both are still NAMED here, because `test_the_evidence_CSV_records_what_it_needs_from_
+#  OUTSIDE_this_module` reads this comment: the dependency is real and must stay visible even
+#  though it is currently satisfied -- if either line is deleted, the artifact silently stops
+#  reaching the CEO and nothing else in this module would notice. ***
 SHARE_CAP_CSV = 'ShareCapReport_%s.csv'
 
 #  Header once per process, then append: `postBoScoreRanking` runs ONCE PER POOL, and a
@@ -794,9 +1203,15 @@ _CSV_STARTED = set()
 
 #  Column order is the READING order, not the frame order: who, then what happened to them,
 #  then the numbers behind it.  `pool` leads because the file carries every capped pool.
-CSV_COLUMNS = ('pool', 'source', 'status', 'n_capped', 'metric_before', 'contrib_before',
-               'share_before', 'share_after', 'cap_value', 'base_before', 'base_after',
-               'agg_delta')
+CSV_COLUMNS = ('pool', 'source', 'status', 'n_capped',
+               #  the name's biggest DRIVER (either sign) -- what the name rests on
+               'metric_before', 'contrib_before', 'share_before', 'share_after',
+               #  the largest HELPING contribution -- what the cap is allowed to act on, and
+               #  the pair the post-condition is stated on.  A row where `metric_capped`
+               #  differs from `metric_before` is a name whose dominant metric is a PENALTY
+               #  the cap deliberately left alone (CEO ruling, 2026-09-01).
+               'metric_capped', 'pos_share_before', 'pos_share_after',
+               'cap_value', 'base_before', 'base_after', 'agg_delta')
 
 
 def _evidence_dir():

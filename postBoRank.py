@@ -231,7 +231,14 @@ def postBoScoreRanking(bmtop, bstop, cdxtop, baseurl, api_key, period='quarter',
         w = weight_series.get(col, 1)
         temp_normpsmdf_weighted[col] = postScoreMetric_df[col].values * w
 
-    #  --- THE SINGLE-METRIC SHARE CAP (CEO, 2026-08-31) ---------------------------------
+    #  --- THE SINGLE-METRIC SHARE CAP (CEO, 2026-08-31; POSITIVE-ONLY 2026-09-01) -------
+    #  THE CAP TRUNCATES ONLY CONTRIBUTIONS THAT ARE HELPING A NAME.  CEO ruling,
+    #  2026-09-01: "the cap can penalise, never rescue."  Stated on |contribution|, the cap
+    #  also cut back catastrophic PENALTIES and RAISED those names -- 4 of the 11 it bound on
+    #  the 2026-09-01 panel, `JEN.DE` by +0.1301 (rank 82 -> 72), which is more than the
+    #  rank-12-to-rank-20 spread of the shipped list.  `metric_share_cap` now asserts
+    #  `agg_delta <= 0` for every name (its INVARIANT 3), so this call can no longer move any
+    #  name UP the ranking.  See that module's POSITIVE-ONLY section before changing it.
     #  HERE, and the position is forced from both sides: the cap is defined on WEIGHTED
     #  contributions, so it cannot run before the loop above; and it must run before the
     #  ad-hoc penalty column is attached, because that column is NOT a metric and must be
@@ -257,6 +264,14 @@ def postBoScoreRanking(bmtop, bstop, cdxtop, baseurl, api_key, period='quarter',
         temp_normpsmdf_weighted, _cap_report = msc.apply_share_cap(
             temp_normpsmdf_weighted, sources=list(postScoreMetric_df['source']))
         print(msc.format_report(_cap_report, _cap_pool), flush=True)
+        #  THE REPORT GAINED THREE COLUMNS with the positive-only ruling -- `metric_capped`,
+        #  `pos_share_before`, `pos_share_after` -- and one of the OLD columns changed meaning
+        #  rather than value: `share_after` is the DOMINANT metric's share and may now
+        #  legitimately sit ABOVE the cap, because a dominant PENALTY is one the cap is
+        #  forbidden to touch.  Anything downstream that reads `share_after` as "the share
+        #  after the cap was enforced" must read `pos_share_after` instead.  Nothing in this
+        #  repo does today (this frame is carried in `rankdic` and no consumer reads it), so
+        #  the note is for the next consumer rather than a live fix.
         #  ...and the same disclosure into a SHIPPED ARTIFACT, not only stdout.  A name the
         #  cap declined ships UNCAPPED, and the whole justification for that is that we said
         #  so -- which is worth nothing if the saying-so lives in a console log the CEO never
@@ -1875,8 +1890,14 @@ _MISSING_CSV_STARTED = set()
 #  observed metrics out of 19 while its score is presented as a 19-metric score.
 #
 #      share == 0                 nothing
-#      0 < share < EXCLUDE_AT     ad-hoc penalty, `ceil(share / STEP)` points
+#      0 < share < EXCLUDE_AT     ad-hoc penalty, `ceil((share + uplift) / STEP)` points
 #      share >= EXCLUDE_AT        EXCLUDED from the pool's ranked output; NOT charged
+#
+#  `uplift` is the ADVERSE-ABSENCE MULTIPLIER (CEO, 2026-09-01) and is zero for every column
+#  except those in `ADVERSE_ABSENCE_MULTIPLIER` -- read that block for which columns, at what
+#  level, and why a vendor gap cannot be caught by it.  Note WHERE it appears and where it does
+#  not: it is inside the CHARGE and absent from the CUT, so more adverse data never moves a name
+#  across the exclusion boundary.
 #
 #  *** WHY IT IS ONE LADDER AND WHY THE TOP RUNG IS NOT ALSO CHARGED.  The CEO asked for
 #  both instruments and asked that they "cannot double-count or fight".  Exactly one acts
@@ -1886,10 +1907,14 @@ _MISSING_CSV_STARTED = set()
 #  that un-excludes the top rung silently ships a double charge. ***
 #
 #  MONOTONE ACROSS THE JOIN, which is the property that makes it a ladder rather than two
-#  rules: the charge rises with the share to `RUNGS` points immediately below the cut and
-#  then becomes ejection, which is strictly worse.  Nowhere does more missing data buy a
-#  softer treatment.  (That inversion is a defect this bucket has actually shipped before --
-#  see the MONOTONICITY note in `adhoc_penalty`.)
+#  rules: the charge rises with the share, and then becomes ejection, which is strictly worse.
+#  Nowhere does more missing data buy a softer treatment.  (That inversion is a defect this
+#  bucket has actually shipped before -- see the MONOTONICITY note in `adhoc_penalty`.)
+#  THE MULTIPLIER PRESERVES THIS BECAUSE IT IS MONOTONE IN THE SAME DIRECTION: an uplift only
+#  ever RAISES the effective share, so it can only ever raise the charge, and it is excluded
+#  from the cut so it cannot reorder the two rungs.  Had it been applied to the cut as well, a
+#  name could have jumped from `charged` to `EXCLUDED` on the strength of the multiplier alone
+#  -- which is monotone but is a different instrument from the one the CEO asked for.
 #
 #  THE STEP IS DERIVED FROM THE CEO'S OWN CUT, NOT TUNED SEPARATELY.  `RUNGS` rungs across
 #  the band, so `STEP = EXCLUDE_AT / RUNGS` = 0.025 at today's 0.20.  Move the cut and the
@@ -1897,6 +1922,13 @@ _MISSING_CSV_STARTED = set()
 #  immediately below the cut at 8 points = -0.08 AggScore, which is 24% of the measured
 #  median-to-rank-20 distance (0.3327) -- big enough that the step up to ejection is not a
 #  cliff, small enough that it never removes a name on its own.
+#
+#  THAT CEILING MOVED WITH THE ADVERSE-ABSENCE MULTIPLIER and the old sentence would now be
+#  wrong on its own terms: the largest charge immediately below the cut is
+#  `ceil((EXCLUDE_AT + max uplift) / STEP)`, which is 11 points (-0.11, ~33% of that distance)
+#  for a name whose entire adverse column is imputed at today's x2.0.  Still strictly softer
+#  than ejection, so the join stays monotone -- but "8 points is the worst a charged name can
+#  take" is no longer true and is the kind of stale arithmetic this file gets read for.
 #
 #  *** THIS IS THE FIRST INSTRUMENT TO READ `imputed_weight_share` AT ALL, AND THAT WAS
 #  VERIFIED RATHER THAN ASSUMED.  The ad-hoc bucket has exactly two other charging call
@@ -1925,6 +1957,119 @@ IMPUTED_LADDER_STEP = IMPUTED_EXCLUDE_AT / IMPUTED_LADDER_RUNGS
 CHECK_IMPUTED_WEIGHT = 'imputed_weight_share'
 
 
+#  ###################################################################################
+#  ##        ADVERSE ABSENCE: A PER-METRIC PENALTY MULTIPLIER (CEO, 2026-09-01)       ##
+#  ###################################################################################
+#  THE CEO'S RULING, VERBATIM: *"Ideally we would have the median as the default rule but
+#  then for some metrics we want to punish that. Isn't it easiest to have ad-hoc penalty
+#  multiplier for some metrics?"*
+#
+#  THE FACT IT IS AIMED AT.  Stage-2 fills a missing metric at the pool MEDIAN -- "no
+#  opinion" -- and for most columns that is right: absence says nothing about the company.
+#  For a few, ABSENCE *IS* THE ADVERSE FACT.  `EPStoEPSmean` is NaN for `PBYI` BECAUSE a
+#  recent quarter was a loss; the median fill then scores a loss-maker as typical, and the
+#  name is better off for having no data than it would be for having bad data.  A
+#  counterfactual on the 2026-09-01 pool put that advantage at +0.052 AggScore for PBYI
+#  (rank 12) and +0.072 for EQNR, against a #20/#21 gap of 0.014.
+#
+#  THE FILL STAYS; THE CHARGE IS MULTIPLIED.  Nothing here changes a metric VALUE -- the
+#  median fill is untouched and the z-pool is untouched.  What changes is the ad-hoc penalty
+#  the ladder already levies for imputed weight: the weight attributable to an adverse-absence
+#  column is charged at `MULT` times its own weight share.  That is deliberately the CEO's own
+#  instrument rather than a metric-space imputation, and `nan_policy` is the reason it has to
+#  be: see REFUSED_NOT_IMPUTED['EPStoEPSmean'], which REFUSED a column-space boundary for this
+#  exact metric because the limit is not the metric's worst value -- it is +1.0, the observed
+#  MAXIMUM and the most-REWARDED value, for 25.8% of the 3,888 affected sources, and only
+#  median -1.0 (21st percentile) for the rest.  You cannot pick a defensible NUMBER to put in
+#  the column.  You can pick a defensible SIZE of penalty.  That is the whole reason this lives
+#  here and not in the imputation.
+#
+#  WHICH METRICS -- `EPStoEPSmean` AND NOTHING ELSE TODAY, DERIVED NOT GUESSED.
+#  `nan_policy.TYPE_D` is the repo's existing answer to "for which columns does absence mean
+#  something about the company", and it is exactly two: `grahamNumberToPrice` and
+#  `EPStoEPSmean`.  Of those:
+#    * `grahamNumberToPrice` GETS NO MULTIPLIER, and adding one would DOUBLE-CHARGE it.  Its
+#      adverse absence is already punished in COLUMN space: `nan_policy.BOUNDARY_LIMIT` imputes
+#      0.0 -- the metric floor, below every observed name -- whenever the reason is adverse, so
+#      the cell is not NaN, is not median-filled, and never reaches this ladder at all.  When it
+#      IS NaN the reason is a genuine missing-inputs gap, which is 0.9% of its non-computability
+#      against 99.1% adverse (61,832 newest-8 rows).  So the only `grahamNumberToPrice` fills
+#      this ladder can see are the vendor gaps -- precisely the population the CEO said not to
+#      punish.
+#    * `EPStoEPSmean` GETS IT.  It is the Type-D column whose adverse absence is REFUSED rather
+#      than bounded, so it lands at the median and is charged nothing beyond the ordinary
+#      imputed-weight rung.  It is the metric the CEO named, by the mechanism he named.
+#
+#  MEASURED, ON A SAVED PANEL, BECAUSE "adverse" HAD TO BE SHOWN AND NOT ASSUMED (2026-09-03,
+#  `postRank_2026-08-11_fmp_stock_CUR3K` top-100, offline).  Re-walking
+#  `stage2_metrics.eps_to_eps_mean`'s own gates for every pool name:
+#      91 of 100 computed;  9 NaN and median-filled, of which
+#      7 ADVERSE  (the positivity gate: a recent EPS <= 0)  -- 120030.KS, PBYI, EQNR, NEXN,
+#                  078520.KS, ZD, OMCL
+#      2 GAP      (the name-level calendar-gap refusal: the company stopped filing) -- STRT,
+#                  PET.TO
+#  PBYI and EQNR -- the two names the CEO's counterfactual called out -- come back ADVERSE on a
+#  DIFFERENT panel from the one he was shown, which is the strongest corroboration available
+#  offline.
+#
+#  *** AND IT CANNOT DOUBLE-CHARGE THOSE TWO VENDOR GAPS, WHICH IS THE OBJECTION THIS
+#  MULTIPLIER HAD TO ANSWER.  The reason is MECHANICAL, not lucky.  A calendar-gap refusal is
+#  NAME-LEVEL: nan_policy refuses EVERY windowed metric for a source that stopped filing.  So a
+#  gap name arrives here with a huge `imputed_weight_share` and is EJECTED by the top rung
+#  rather than charged, while an adverse EPStoEPSmean absence is a SINGLE cell worth 5.67% of
+#  the vector.  Measured separation on that panel:
+#      ADVERSE names   imputed share 0.0567 - 0.1368   (1-3 imputed columns)  -> CHARGED
+#      GAP names       imputed share 0.9317 / 0.9489   (17 imputed columns)   -> EXCLUDED
+#  with the cut at 0.20 sitting between them by a factor of ~7.  The multiplier therefore never
+#  reaches a calendar-gapped name, because the ladder has already removed it. ***
+#
+#  THE HOLE, STATED RATHER THAN LEFT FOR SOMEONE TO FIND.  `eps_to_eps_mean` tests
+#  `all(eps.iloc[0:rpy] > 0)`, and `NaN > 0` is False -- so a MISSING recent EPS fails the same
+#  gate as a LOSS and would be charged as adverse.  That is a single-cell absence, so unlike the
+#  calendar-gap case it lands in the CHARGING band where the exclusion rung cannot catch it.
+#  Measured incidence on the 08-11 pool: ZERO of 100 names.  Closing it properly needs a
+#  per-name reason stamp beside the metric (the `grahamUndefinedReason` idiom) in
+#  `stage2_metrics.py`, which was OUTSIDE the file scope of the change that added this -- so it
+#  is a KNOWN OPEN ITEM and not an accepted risk dressed up as complete.  Until it lands, this
+#  multiplier is metric-level and reason-blind within the charging band.
+#
+#  THE LEVEL IS 2.0, AND IT IS CHOSEN TO NEUTRALISE THE ADVANTAGE RATHER THAN TO ADD A
+#  PUNISHMENT -- which is the distinction the earlier ruling on this very metric turns on.
+#  `stage2_metrics.eps_to_eps_mean` records the CEO saying *"I don't think we should punish them
+#  again for it"* about this NaN, and that instruction is what made nan_policy refuse a -1.0
+#  column imputation.  *** THAT IS IN TENSION WITH THE 2026-09-01 RULING AND THE TENSION IS NOT
+#  SMOOTHED OVER HERE: the earlier instruction rejected a FRESH PUNISHMENT of arbitrary size in
+#  metric space; the later one asks for a charge because the fill turned out to be a measured
+#  ADVANTAGE.  A charge that removes a +0.052 gain is not the same object as one that invents a
+#  -1.0 score, and the CEO should be told that this is the reading being shipped. ***  At
+#  MULT = 2.0 a lone adverse `EPStoEPSmean` absence costs 5 ladder points = -0.05 AggScore,
+#  against the +0.052 the counterfactual attributes to the fill; the charge therefore lands at
+#  roughly zero net, not at a net penalty.  1.0 is a no-op.  3.0 would cost PBYI -0.09 against a
+#  +0.052 advantage, i.e. a net punishment of the kind the earlier instruction rules out.
+#  Measured effect on the 08-11 pool at 2.0 (points, and the AggScore they cost):
+#      120030.KS 3->5 (-0.03 -> -0.05)   PBYI    4->6 (-0.04 -> -0.06)
+#      EQNR      5->7 (-0.05 -> -0.07)   NEXN    3->5 (-0.03 -> -0.05)
+#      078520.KS 4->6 (-0.04 -> -0.06)   ZD      6->8 (-0.06 -> -0.08)
+#      OMCL      5->7 (-0.05 -> -0.07)
+#  The number is a CEO level question, not a developer's; 2.0 is the argued default and moving
+#  it is a one-line edit here plus `test_the_adverse_absence_multiplier_LEVEL`.
+#
+#  IT DOES NOT TOUCH THE EXCLUSION RUNG, DELIBERATELY.  The cut is tested on the RAW
+#  `imputed_weight_share`, never on the multiplied one.  The cut measures HOW MUCH of a score is
+#  fill -- a coverage fact that does not change with the reason for the fill -- and the CEO asked
+#  for a penalty multiplier, not an ejection rule.  Multiplying into the cut would let a name
+#  with 12% adverse-imputed weight be EJECTED at MULT = 2.0, which nobody ruled on.
+#
+#  MONOTONICITY ACROSS THE JOIN STILL HOLDS, and the ceiling moved: the largest charge
+#  immediately below the cut was RUNGS = 8 points (-0.08) and is now
+#  `ceil((EXCLUDE_AT + max uplift) / STEP)` = 11 points (-0.11) for a name whose whole adverse
+#  column is imputed.  Ejection is still strictly worse than any charge, so nowhere does more
+#  missing data buy softer treatment.
+ADVERSE_ABSENCE_MULTIPLIER = {
+    'EPStoEPSmean': 2.0,
+}
+
+
 def imputation_ladder(name_df, penalty_book=None, pool_label=None, verbose=True):
     """Charge the low rung, name the high rung.  Returns `(excluded, n_charged)`.
 
@@ -1938,6 +2083,7 @@ def imputation_ladder(name_df, penalty_book=None, pool_label=None, verbose=True)
     as "no name is heavily imputed" would report a clean pool on a run where it never looked.
     """
     excluded, n_charged, pts_total = set(), 0, 0.0
+    n_adverse, adverse_pts = 0, 0.0
     if name_df is None or not len(name_df) or 'imputed_weight_share' not in name_df.columns:
         if verbose:
             print('IMPUTATION LADDER [%s]: NOT APPLIED -- no per-name fill report this pool. '
@@ -1945,25 +2091,67 @@ def imputation_ladder(name_df, penalty_book=None, pool_label=None, verbose=True)
                   % (pool_label or 'general'), flush=True)
         return excluded, n_charged
     share = pd.to_numeric(name_df['imputed_weight_share'], errors='coerce')
+    #  THE ADVERSE-ABSENCE UPLIFT (CEO, 2026-09-01).  Absent on a frame produced before that
+    #  ruling, and the fallback is an explicit all-zero series rather than a `.get` sprinkled
+    #  through the loop: a missing column means "this pool was measured without the adverse
+    #  split", which must charge exactly what it charged before and must SAY so (below), not
+    #  quietly behave as though no name had an adverse absence.
+    _has_adverse = 'adverse_charge_uplift' in name_df.columns
+    uplift = (pd.to_numeric(name_df['adverse_charge_uplift'], errors='coerce').fillna(0.0)
+              if _has_adverse else pd.Series(0.0, index=name_df.index))
     for i, src in enumerate(name_df['source'].values):
         v = share.iloc[i]
         if not np.isfinite(v) or v <= 0:
             continue
         if v >= IMPUTED_EXCLUDE_AT:
+            #  TESTED ON THE RAW SHARE, NEVER THE UPLIFTED ONE -- see
+            #  ADVERSE_ABSENCE_MULTIPLIER.  The cut asks how much of the score is fill, which
+            #  is a coverage fact; multiplying into it would turn a penalty ruling into an
+            #  ejection rule nobody asked for.
             excluded.add(src)
             continue
-        pts = float(math.ceil(v / IMPUTED_LADDER_STEP))
+        u = float(uplift.iloc[i]) if np.isfinite(uplift.iloc[i]) else 0.0
+        #  THE MULTIPLIER ACTS ON THE CHARGE, and it acts by raising the share this name is
+        #  converted to points on.  `u = sum (mult_c - 1) * weight_share_c` over the imputed
+        #  columns whose absence IS the adverse fact, so a column with mult 1.0 -- every column
+        #  not in the table, i.e. every ordinary vendor gap -- contributes nothing and is
+        #  charged EXACTLY as before.  That is what "do not double-charge a genuine vendor gap"
+        #  looks like in arithmetic rather than in prose.
+        pts = float(math.ceil((v + u) / IMPUTED_LADDER_STEP))
         pts_total += pts
         n_charged += 1
+        _adv_share = (float(pd.to_numeric(name_df['adverse_imputed_weight_share'],
+                                          errors='coerce').fillna(0.0).iloc[i])
+                      if 'adverse_imputed_weight_share' in name_df.columns else 0.0)
+        if u > 0:
+            n_adverse += 1
+            #  what the uplift itself cost, for the log: the points this name would NOT have
+            #  been charged without the ruling
+            adverse_pts += pts - float(math.ceil(v / IMPUTED_LADDER_STEP))
         if penalty_book is not None:
-            penalty_book.add(
-                src, CHECK_IMPUTED_WEIGHT,
-                'scored on %.1f%% imputed weight (%s of %s weighted column(s) filled with the '
-                'column neutral z): %s'
-                % (100.0 * v, name_df['n_imputed_cols'].iloc[i],
-                   name_df['n_weighted_cols'].iloc[i],
-                   name_df['imputed_cols'].iloc[i] or '<not itemised>'),
-                pts, pool=pool_label)
+            _why = ('scored on %.1f%% imputed weight (%s of %s weighted column(s) filled with '
+                    'the column neutral z): %s'
+                    % (100.0 * v, name_df['n_imputed_cols'].iloc[i],
+                       name_df['n_weighted_cols'].iloc[i],
+                       name_df['imputed_cols'].iloc[i] or '<not itemised>'))
+            if u > 0:
+                #  THE ADVERSE PART IS NAMED IN THE PENALTY BOOK, not folded into the total.
+                #  `AdHocPenaltyBucket_<date>.csv` is the shipped artifact for this charge, so
+                #  it is the only place a reader can see that part of it is a multiplier rather
+                #  than plain imputed weight -- and the whole justification for charging a
+                #  median-filled cell is that we said which cell and why.
+                _why += ('; of that, %.2f%% sits on ADVERSE-ABSENCE column(s) [%s] charged at '
+                         'x%s (CEO 2026-09-01: absence IS the adverse fact there -- the median '
+                         'fill scores a loss-maker as typical), so the charge is taken on an '
+                         'effective %.1f%% rather than %.1f%%'
+                         % (100.0 * _adv_share,
+                            ', '.join('%s x%.1f' % (c, m)
+                                      for c, m in sorted(ADVERSE_ABSENCE_MULTIPLIER.items())
+                                      if c in str(name_df['imputed_cols'].iloc[i])),
+                            '/'.join('%.1f' % m for _, m
+                                     in sorted(ADVERSE_ABSENCE_MULTIPLIER.items())),
+                            100.0 * (v + u), 100.0 * v))
+            penalty_book.add(src, CHECK_IMPUTED_WEIGHT, _why, pts, pool=pool_label)
     if verbose:
         print('IMPUTATION LADDER [%s]: %d name(s) charged %d point(s) total (%.4f AggScore) '
               'for imputed weight below %.0f%%; %d name(s) EXCLUDED at or above it%s'
@@ -1973,6 +2161,31 @@ def imputation_ladder(name_df, penalty_book=None, pool_label=None, verbose=True)
                      '%s (%.0f%%)' % (r['source'], 100 * r['imputed_weight_share'])
                      for _, r in name_df[name_df['source'].isin(excluded)].iterrows()))),
               flush=True)
+        #  --- THE ADVERSE-ABSENCE MULTIPLIER, REPORTED SEPARATELY -------------------------
+        #  Its cost is INSIDE `pts_total` above, so without this line the ruling is invisible
+        #  in the run log: a name charged 6 points reads identically whether 4 of them are
+        #  ordinary imputed weight and 2 are the multiplier, or all 6 are imputed weight.
+        if not _has_adverse:
+            print('    ADVERSE-ABSENCE MULTIPLIER: NOT APPLIED -- this pool\'s fill report '
+                  'carries no `adverse_charge_uplift` column, so every fill was charged as an '
+                  'ordinary vendor gap. NOT a finding that no name has an adverse absence; '
+                  'the split was not measured.', flush=True)
+        elif n_adverse:
+            print('    ADVERSE-ABSENCE MULTIPLIER [%s]: %d of the %d charged name(s) carry a '
+                  'fill on a column where absence IS the adverse fact; the multiplier added '
+                  '%d point(s) (%.4f AggScore) on top of what imputed weight alone would have '
+                  'cost. The fill itself is UNCHANGED (still the pool median) -- only the '
+                  'charge moved. Per-name detail, including which column and at what '
+                  'multiplier, is in the ad-hoc penalty bucket CSV.'
+                  % (', '.join('%s x%.1f' % (c, m) for c, m
+                               in sorted(ADVERSE_ABSENCE_MULTIPLIER.items())),
+                     n_adverse, n_charged, int(adverse_pts),
+                     -ap.WEIGHT * adverse_pts), flush=True)
+        else:
+            print('    ADVERSE-ABSENCE MULTIPLIER [%s]: ran and bound on NOBODY in this pool '
+                  '-- no charged name had a fill on an adverse-absence column.'
+                  % ', '.join('%s x%.1f' % (c, m) for c, m
+                              in sorted(ADVERSE_ABSENCE_MULTIPLIER.items())), flush=True)
         if penalty_book is None and n_charged:
             print('    NOTE: no penalty book was passed, so the %d charge(s) above were '
                   'COMPUTED AND DISCARDED -- this pool is scored with no imputation penalty.'
@@ -2097,6 +2310,35 @@ def missing_data_fill_report(raw_df, norm_df, weight_series, pool='general',
                 for i in range(len(raw_df))],
             'imputed_cols': [', '.join(c for c in wcols if imp.iloc[i][c])
                              for i in range(len(raw_df))],
+            #  --- ADVERSE ABSENCE (CEO, 2026-09-01) --------------------------------------
+            #  COMPUTED HERE AND NOT IN THE LADDER, and the reason is a denominator.  Both of
+            #  these are shares of `sum|w|` over THIS pool's weighted columns, which is the
+            #  same denominator `imputed_weight_share` above uses -- so the adverse part and
+            #  the whole are guaranteed commensurable.  Deriving them in `imputation_ladder`
+            #  would mean re-deriving `wcols` and its total from a weight mapping that may
+            #  contain columns this frame does not have, and two denominators that must agree
+            #  but are computed in two places is the defect this repo files most often.
+            #
+            #  `adverse_imputed_weight_share` is for a HUMAN reading
+            #  `MissingDataFillReport_<date>.csv`: the fraction of the vector that was filled
+            #  on a column where absence IS the adverse fact.
+            'adverse_imputed_weight_share': [
+                round(sum(abs(float(wser[c])) for c in wcols
+                          if imp.iloc[i][c] and c in ADVERSE_ABSENCE_MULTIPLIER)
+                      / sum(abs(float(wser[k])) for k in wcols), 4)
+                for i in range(len(raw_df))],
+            #  `adverse_charge_uplift` is what the ladder ADDS to the share before converting
+            #  it to points -- `sum (mult_c - 1) * weight_share_c`.  Carried as the uplift
+            #  rather than recomputed from the share above because the table is per-metric: two
+            #  adverse columns with different multipliers cannot be recovered from one share,
+            #  and today's single-entry table must not be what makes the code correct.
+            'adverse_charge_uplift': [
+                round(sum(abs(float(wser[c]))
+                          * (float(ADVERSE_ABSENCE_MULTIPLIER[c]) - 1.0)
+                          for c in wcols
+                          if imp.iloc[i][c] and c in ADVERSE_ABSENCE_MULTIPLIER)
+                      / sum(abs(float(wser[k])) for k in wcols), 6)
+                for i in range(len(raw_df))],
         })
 
         if verbose:

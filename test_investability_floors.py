@@ -20,8 +20,10 @@ import pytest
 
 import adhoc_penalty as ap
 import carveOut as co
+import nan_policy as npol
 import postBo as pb
 import postBoRank as pbr
+import scoringWeights as sw
 
 
 # --------------------------------------------------------------------------- #
@@ -456,6 +458,334 @@ def test_the_bucket_has_exactly_FOUR_charging_call_sites_and_ONE_reads_the_fill_
     assert src.count('CHECK_IMPUTED_WEIGHT') == 2, (
         'the imputation charge is raised from more than one place in postBoRank -- it is one '
         'constant, one definition and one `add`')
+
+
+#  ##################################################################################### #
+#  ##   THE ADVERSE-ABSENCE PENALTY MULTIPLIER (CEO, 2026-09-01)                        ## #
+#  ##################################################################################### #
+#
+#  *** THESE TESTS ARE IN THE WRONG FILE AND IT IS DELIBERATE, SO SAY SO RATHER THAN LET A
+#  READER ASSUME OTHERWISE.  They cover `postBoRank.imputation_ladder` and
+#  `postBoRank.missing_data_fill_report`, whose established home is
+#  `test_investability_floors.py` (section C3).  That file was outside the file scope of the
+#  change that added them -- two other developers were editing the tree concurrently -- so
+#  they were written here, beside the other `postBoRank`-facing tests this file already
+#  carries (the `#  --- THE CALL SITE` section parses `postBoRank.py` with `ast`).  THEY
+#  SHOULD BE MOVED to `test_investability_floors.py` by whoever owns it; leaving them here
+#  permanently means a future editor of the ladder runs its own suite and sees nothing. ***
+#
+#  WHAT THEY ARE WRITTEN AGAINST.  The CEO's ruling keeps the median fill and multiplies the
+#  CHARGE for columns where absence IS the adverse fact.  The two failure modes worth pinning
+#  are the two the ruling itself names: charging a genuine vendor gap (which he ruled out) and
+#  the multiplier silently becoming an ejection rule (which he did not ask for).
+
+def _ladder_frame(rows):
+    """A per-name fill report in `missing_data_fill_report`'s shape.
+
+    `rows` is (source, imputed_weight_share, imputed_cols, adverse_share) -- the adverse
+    UPLIFT is derived from the table rather than passed, so a test cannot accidentally
+    describe an uplift the shipped multiplier would not produce."""
+    out = []
+    for s, share, cols, adv in rows:
+        mult = max([pbr.ADVERSE_ABSENCE_MULTIPLIER.get(c.strip(), 1.0)
+                    for c in cols.split(',')] or [1.0])
+        out.append({'pool': 'general', 'source': s,
+                    'n_imputed_cols': len([c for c in cols.split(',') if c.strip()]),
+                    'n_weighted_cols': 19,
+                    'imputed_weight_share': share,
+                    'imputed_cols': cols,
+                    'adverse_imputed_weight_share': adv,
+                    'adverse_charge_uplift': adv * (mult - 1.0)})
+    return pd.DataFrame(out)
+
+
+def _charge(frame, source):
+    """The AggScore the ladder charges `source`, via a real `PenaltyBook`."""
+    book = ap.PenaltyBook()
+    pbr.imputation_ladder(frame, penalty_book=book, pool_label='general', verbose=False)
+    return float(book.penalty_series([source]).iloc[0])
+
+
+def test_the_multiplier_charges_MORE_for_the_SAME_imputed_share_when_absence_is_ADVERSE():
+    """THE RULING, AS THE ONE COMPARISON THAT ISOLATES IT.  Two names with an IDENTICAL
+    `imputed_weight_share` -- so identical under the pre-ruling ladder, which sees only that
+    number -- must now be charged DIFFERENTLY, because for one of them the missing cell is the
+    adverse fact and for the other it is a vendor gap.
+
+    Both at 0.0881, which is `PBYI`'s measured share on the saved 2026-08-11 panel (its
+    `EPStoEPSmean` at 5.67% of the vector plus one ordinary gap)."""
+    f = _ladder_frame([
+        ('ADVERSE', 0.0881, 'EPStoEPSmean, currentRatio', 0.0567),
+        ('GAPONLY', 0.0881, 'currentRatio, bVpRatio', 0.0),
+    ])
+    adverse, gaponly = _charge(f, 'ADVERSE'), _charge(f, 'GAPONLY')
+    assert adverse < gaponly, (
+        'the adverse-absence name is charged %+.4f and the pure-vendor-gap name %+.4f on the '
+        'SAME imputed share -- the multiplier is not acting' % (adverse, gaponly))
+    #  ...and the sizes, so a multiplier that acted but by a rounding error would fail too
+    assert gaponly == pytest.approx(-0.04, abs=1e-12)      # ceil(0.0881/0.025) = 4 pts
+    assert adverse == pytest.approx(-0.06, abs=1e-12)      # ceil(0.1448/0.025) = 6 pts
+
+
+def test_a_GENUINE_VENDOR_GAP_is_charged_EXACTLY_what_it_was_charged_BEFORE():
+    """THE EXPLICIT CONSTRAINT ON THIS CHANGE: "Do not double-charge a genuine vendor gap."
+    A column with no entry in the table has multiplier 1.0, so its uplift is zero and the
+    arithmetic is bit-for-bit the pre-ruling `ceil(share / STEP)`.
+
+    Asserted against that formula rather than against a remembered number, so it holds if the
+    step or the cut is re-levelled."""
+    import math
+    for share in (0.01, 0.0567, 0.0881, 0.10, 0.19):
+        f = _ladder_frame([('GAP', share, 'currentRatio, bVpRatio', 0.0)])
+        expected = -ap.WEIGHT * math.ceil(share / pbr.IMPUTED_LADDER_STEP)
+        assert _charge(f, 'GAP') == pytest.approx(expected, abs=1e-12), (
+            'a pure vendor gap at share %.4f is no longer charged the pre-ruling amount'
+            % share)
+
+
+def test_the_UPLIFT_column_CHANGES_the_charge_and_this_test_names_NO_new_constant():
+    """THE BEHAVIOURAL PROOF, written so it does not depend on the new code EXISTING.
+
+    Every other test in this section reads `pbr.ADVERSE_ABSENCE_MULTIPLIER`, so against the
+    pre-ruling module they fail with `AttributeError` -- a true failure, but one that only
+    proves the constant is new, not that the ladder behaves differently.  This one builds the
+    fill report by hand with an explicit `adverse_charge_uplift` and asserts only that the
+    ladder READS it: on the pre-ruling ladder both names are charged identically, because it
+    looks at `imputed_weight_share` and nothing else.
+
+    That distinction is exactly the "test that pins the defect it covers" trap in its subtler
+    form -- a suite that goes red for the right reason by accident."""
+    f = pd.DataFrame([
+        {'pool': 'general', 'source': 'WITH_UPLIFT', 'n_imputed_cols': 2,
+         'n_weighted_cols': 19, 'imputed_weight_share': 0.0881,
+         'imputed_cols': 'someMetric, otherMetric',
+         'adverse_imputed_weight_share': 0.0567, 'adverse_charge_uplift': 0.0567},
+        {'pool': 'general', 'source': 'NO_UPLIFT', 'n_imputed_cols': 2,
+         'n_weighted_cols': 19, 'imputed_weight_share': 0.0881,
+         'imputed_cols': 'someMetric, otherMetric',
+         'adverse_imputed_weight_share': 0.0, 'adverse_charge_uplift': 0.0},
+    ])
+    book = ap.PenaltyBook()
+    pbr.imputation_ladder(f, penalty_book=book, pool_label='general', verbose=False)
+    got = book.penalty_series(['WITH_UPLIFT', 'NO_UPLIFT'])
+    with_u, without_u = float(got.iloc[0]), float(got.iloc[1])
+    assert with_u < without_u, (
+        'the ladder charges %+.4f with an uplift and %+.4f without one, on an IDENTICAL '
+        'imputed_weight_share -- `adverse_charge_uplift` is being ignored' % (with_u, without_u))
+
+
+def test_the_multiplier_does_NOT_move_the_EXCLUSION_CUT():
+    """THE INSTRUMENT THE CEO DID *NOT* ASK FOR.  He asked for a penalty multiplier.  If the
+    uplift were applied to the exclusion test as well, a name at 12% adverse-imputed weight
+    would cross 20% at x2.0 and be EJECTED from the ranked output -- a far larger consequence
+    than a charge, decided by a constant nobody ruled on.
+
+    The name below has an uplifted effective share ABOVE the cut and a raw share BELOW it: it
+    must be CHARGED, and it must still be in the pool."""
+    f = _ladder_frame([('EDGE', 0.15, 'EPStoEPSmean', 0.0567)])
+    assert 0.15 + 0.0567 > pbr.IMPUTED_EXCLUDE_AT > 0.15, \
+        'the row no longer straddles the cut, so it cannot test this'
+    book = ap.PenaltyBook()
+    excluded, n_charged = pbr.imputation_ladder(f, penalty_book=book, pool_label='general',
+                                                verbose=False)
+    assert excluded == set(), 'the multiplier EJECTED a name -- it may only charge'
+    assert n_charged == 1
+    assert _charge(f, 'EDGE') < 0
+
+
+def test_the_multiplier_can_NEVER_REACH_a_CALENDAR_GAPPED_name():
+    """THE SAFETY ARGUMENT, PINNED -- and it is mechanical rather than lucky.  A calendar-gap
+    refusal is NAME-LEVEL: `nan_policy` refuses EVERY windowed metric for a source that stopped
+    filing, so such a name arrives with a huge `imputed_weight_share` and is EJECTED by the top
+    rung, which does not charge.  An adverse absence is a single cell worth 5.67% of the vector.
+
+    Measured separation on the saved 2026-08-11 top-100 pool (offline, no pipeline): the 7
+    ADVERSE names sit at 0.0567-0.1368 with 1-3 imputed columns; the 2 GAP names -- STRT and
+    PET.TO, which are also the sparse names the share cap declines -- sit at 0.9317 and 0.9489
+    with 17.  The cut at 0.20 falls between them by a factor of ~7.
+
+    The frame below gives the gapped name an adverse column TOO, which is the adversarial case:
+    even then it must be excluded rather than charged."""
+    f = _ladder_frame([('STRT', 0.9317, 'EPStoEPSmean, and 16 more', 0.0567),
+                       ('PBYI', 0.0881, 'EPStoEPSmean, currentRatio', 0.0567)])
+    book = ap.PenaltyBook()
+    excluded, n_charged = pbr.imputation_ladder(f, penalty_book=book, pool_label='general',
+                                                verbose=False)
+    assert excluded == {'STRT'}
+    assert n_charged == 1
+    assert 'STRT' not in book.sources, (
+        'a calendar-gapped name was CHARGED as well as excluded -- the two rungs are supposed '
+        'to be exclusive, and this one would be a double-charged vendor gap')
+    assert _charge(f, 'STRT') == 0.0
+
+
+def test_the_table_is_a_SUBSET_of_nan_policy_TYPE_D():
+    """THE DERIVATION GUARD.  `nan_policy.TYPE_D` is the repo's existing answer to "for which
+    columns does absence say something about the company", and it is exactly two.  A column may
+    only earn a penalty multiplier if that answer covers it -- otherwise the multiplier is an
+    opinion about a metric rather than a consequence of the NaN policy, and the next one gets
+    added on a hunch."""
+    import nan_policy as npol
+    extra = set(pbr.ADVERSE_ABSENCE_MULTIPLIER) - set(npol.TYPE_D)
+    assert not extra, (
+        '%s carry an adverse-absence multiplier but are not Type D in nan_policy -- absence '
+        'on those columns is NOT established to mean anything about the company' % sorted(extra))
+
+
+def test_grahamNumberToPrice_is_DELIBERATELY_EXCLUDED_and_the_reason_is_recorded():
+    """THE OTHER TYPE-D COLUMN, AND ADDING IT WOULD DOUBLE-CHARGE.  Its adverse absence is
+    already punished in COLUMN space -- `nan_policy.BOUNDARY_LIMIT` imputes 0.0, the metric
+    floor, below every observed name -- so the cell is never NaN and never reaches the fill.
+    The only `grahamNumberToPrice` fills the ladder can see are the 0.9% that are genuine
+    missing-input gaps, which is exactly the population the CEO said not to punish.
+
+    Asserted, not left to a comment, because "why isn't the other Type-D column in here?" is
+    the first question anyone will ask of this table."""
+    import nan_policy as npol
+    assert 'grahamNumberToPrice' not in pbr.ADVERSE_ABSENCE_MULTIPLIER, (
+        'grahamNumberToPrice has an adverse-absence multiplier AND a boundary limit -- its '
+        'adverse case is charged twice and its vendor-gap case is charged once too often')
+    #  the premise: it really does take a boundary, and EPStoEPSmean really does not
+    assert 'grahamNumberToPrice' in npol.BOUNDARY_LIMIT
+    assert 'EPStoEPSmean' in npol.REFUSED_NOT_IMPUTED
+    assert 'EPStoEPSmean' not in npol.BOUNDARY_LIMIT, (
+        'EPStoEPSmean now takes a column-space boundary, so the penalty multiplier is a '
+        'SECOND charge on the same fact -- re-argue the table before shipping this')
+
+
+def test_the_adverse_absence_multiplier_LEVEL():
+    """THE CEO-FACING NUMBER, isolated the way `test_the_two_ceo_numbers` isolates the cap.
+    2.0 is chosen to NEUTRALISE the advantage the median fill confers rather than to add a
+    fresh punishment -- the counterfactual put PBYI's gain from having no data at +0.052
+    AggScore, and a lone adverse absence at x2.0 costs 5 points = -0.05.
+
+    That distinction is load-bearing: `stage2_metrics.eps_to_eps_mean` records the CEO saying
+    "I don't think we should punish them again for it" about this same NaN, which is why a
+    level that OVERSHOOTS into a net punishment (x3.0 costs PBYI -0.09 against a +0.052
+    advantage) is not the default."""
+    import math
+    assert pbr.ADVERSE_ABSENCE_MULTIPLIER == {'EPStoEPSmean': 2.0}
+    #  1.0 would be a no-op, so the level has to be > 1 to be an instrument at all
+    assert all(m > 1.0 for m in pbr.ADVERSE_ABSENCE_MULTIPLIER.values())
+    #  a LONE adverse absence at EPStoEPSmean's own weight share must land near the measured
+    #  +0.052 advantage -- neutralising it, not doubling it
+    w = abs(float(sw.DEPLOYED['EPStoEPSmean'])) / sw.sum_abs(sw.DEPLOYED)
+    pts = math.ceil(w * pbr.ADVERSE_ABSENCE_MULTIPLIER['EPStoEPSmean']
+                    / pbr.IMPUTED_LADDER_STEP)
+    cost = ap.WEIGHT * pts
+    assert 0.035 <= cost <= 0.075, (
+        'a lone adverse EPStoEPSmean absence now costs %.4f AggScore, which is no longer the '
+        'same order as the +0.052 advantage the multiplier is sized to remove' % cost)
+
+
+def test_the_fill_report_EMITS_the_adverse_columns_and_they_are_COMMENSURABLE():
+    """The two new columns must be shares of the SAME denominator as `imputed_weight_share`,
+    which is why they are computed in `missing_data_fill_report` and not in the ladder.  Two
+    denominators that must agree but are derived in two places is the defect this repo files
+    most often, so the agreement is asserted rather than trusted."""
+    wser = {'EPStoEPSmean': 0.0567, 'currentRatio': 0.05, 'bVpRatio': 0.10}
+    raw = pd.DataFrame({'source': ['ADV', 'GAP', 'CLEAN'],
+                        'EPStoEPSmean': [np.nan, 1.0, 1.0],
+                        'currentRatio': [np.nan, np.nan, 2.0],
+                        'bVpRatio': [3.0, 3.0, 3.0]})
+    norm = raw.copy()
+    for c in ('EPStoEPSmean', 'currentRatio', 'bVpRatio'):
+        norm[c] = pd.to_numeric(raw[c], errors='coerce').fillna(0.0)
+    col_df, name_df = pbr.missing_data_fill_report(raw, norm, wser, pool='general',
+                                                   csv=False, verbose=False)
+    assert name_df is not None
+    for c in ('adverse_imputed_weight_share', 'adverse_charge_uplift'):
+        assert c in name_df.columns, '%s is not emitted' % c
+    tot = sum(abs(v) for v in wser.values())
+    row = name_df.set_index('source')
+    #  ADV: EPStoEPSmean (adverse) + currentRatio (gap)
+    assert row.loc['ADV', 'adverse_imputed_weight_share'] == pytest.approx(
+        0.0567 / tot, abs=5e-5)
+    assert row.loc['ADV', 'adverse_charge_uplift'] == pytest.approx(
+        0.0567 / tot * (2.0 - 1.0), abs=5e-5)
+    #  GAP: currentRatio only -- nothing adverse, so both are exactly zero
+    assert row.loc['GAP', 'adverse_imputed_weight_share'] == 0.0
+    assert row.loc['GAP', 'adverse_charge_uplift'] == 0.0
+    assert row.loc['CLEAN', 'adverse_charge_uplift'] == 0.0
+    #  COMMENSURABLE: the adverse part can never exceed the whole
+    assert (row['adverse_imputed_weight_share'] <= row['imputed_weight_share'] + 1e-9).all()
+
+
+def test_a_fill_report_WITHOUT_the_adverse_columns_charges_the_OLD_amount_and_SAYS_SO(capsys):
+    """A frame produced before the ruling has no `adverse_charge_uplift`.  Two requirements,
+    and the second is the one this codebase keeps getting wrong: the charge must fall back to
+    exactly the pre-ruling amount, AND the log must say the split was not measured -- because
+    "no name has an adverse absence" and "nobody looked" read identically otherwise.  That is
+    the same distinction `imputation_ladder`'s own docstring already makes for a missing fill
+    report."""
+    import math
+    legacy = pd.DataFrame({'pool': 'general', 'source': ['X'], 'n_imputed_cols': [1],
+                           'n_weighted_cols': [19], 'imputed_weight_share': [0.0881],
+                           'imputed_cols': ['EPStoEPSmean']})
+    book = ap.PenaltyBook()
+    pbr.imputation_ladder(legacy, penalty_book=book, pool_label='general', verbose=True)
+    got = float(book.penalty_series(['X']).iloc[0])
+    assert got == pytest.approx(-ap.WEIGHT * math.ceil(0.0881 / pbr.IMPUTED_LADDER_STEP),
+                                abs=1e-12), \
+        'a legacy fill report no longer charges the pre-ruling amount'
+    text = capsys.readouterr().out
+    assert 'ADVERSE-ABSENCE MULTIPLIER: NOT APPLIED' in text
+    assert 'NOT a finding' in text, (
+        'the log does not distinguish "no adverse absence" from "the split was not measured"')
+
+
+def test_the_penalty_book_REASON_names_the_adverse_column_and_the_multiplier(capsys):
+    """`AdHocPenaltyBucket_<date>.csv` is the shipped artifact for this charge and the only
+    place a reader can see that part of it is a multiplier rather than plain imputed weight.
+    The entire justification for charging a median-filled cell is that we said which cell and
+    why, so the reason string is load-bearing and is asserted at value level."""
+    f = _ladder_frame([('PBYI', 0.0881, 'EPStoEPSmean, currentRatio', 0.0567)])
+    book = ap.PenaltyBook()
+    pbr.imputation_ladder(f, penalty_book=book, pool_label='general', verbose=True)
+    reasons = ' | '.join(str(x) for x in _book_reasons(book, 'PBYI'))
+    assert 'EPStoEPSmean' in reasons, 'the reason does not name the adverse column'
+    assert 'ADVERSE-ABSENCE' in reasons.upper()
+    assert 'x2.0' in reasons, 'the reason does not state the multiplier that was applied'
+    assert '2026-09-01' in reasons, 'the reason does not cite the ruling'
+    #  and the run log reports the multiplier's cost SEPARATELY from the ladder total, since
+    #  it is folded into that total
+    text = capsys.readouterr().out
+    assert 'ADVERSE-ABSENCE MULTIPLIER [EPStoEPSmean x2.0]' in text
+    assert 'The fill itself is UNCHANGED' in text, (
+        'the log does not say the median fill is untouched -- a reader will assume the metric '
+        'value was changed, which is the one thing this ruling does not do')
+
+
+def _book_reasons(book, source):
+    """Every reason string the book holds for `source`, via its PUBLIC `itemised()` frame.
+
+    NOT by reaching into `_items`.  A first version of this helper probed a list of guessed
+    attribute names and fell back to a hand-rolled scan; that is a test coupling itself to a
+    private field, and `itemised()` is the same data with the column names
+    (`pool/source/check/reason/points/penalty`) that `adhoc_penalty.write_evidence_csv`
+    actually ships."""
+    df = book.itemised()
+    return list(df.loc[df['source'] == source, 'reason'])
+
+
+def test_the_ladder_stays_MONOTONE_once_the_UPLIFT_is_added():
+    """The property that makes it a ladder: nowhere does MORE missing data buy softer
+    treatment.  The uplift only ever raises the effective share, so it can only raise the
+    charge -- checked across the whole charging band, with and without an adverse column."""
+    prev_gap = prev_adv = 0.0
+    for share in np.arange(0.005, pbr.IMPUTED_EXCLUDE_AT, 0.005):
+        s = float(share)
+        gap = -_charge(_ladder_frame([('G', s, 'currentRatio', 0.0)]), 'G')
+        adv = -_charge(_ladder_frame([('A', s, 'EPStoEPSmean', min(s, 0.0567))]), 'A')
+        assert gap >= prev_gap - 1e-12, 'the vendor-gap charge fell as the share rose'
+        assert adv >= prev_adv - 1e-12, 'the adverse charge fell as the share rose'
+        assert adv >= gap - 1e-12, (
+            'at share %.4f an ADVERSE absence is charged less than the same share of ordinary '
+            'vendor gap' % s)
+        prev_gap, prev_adv = gap, adv
+    #  ...and ejection is still strictly worse than the largest charge
+    worst = -_charge(_ladder_frame([('W', 0.199, 'EPStoEPSmean', 0.0567)]), 'W')
+    assert worst < 1.0, 'sanity: the worst charge is a charge, not an ejection'
 
 
 # --------------------------------------------------------------------------- #

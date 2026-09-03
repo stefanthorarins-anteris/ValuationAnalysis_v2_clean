@@ -45,7 +45,14 @@ import numpy as np
 import pandas as pd
 import pytest
 
+import adhoc_penalty as ap
 import metric_share_cap as msc
+#  `postBoRank` is IMPORTED here, while the `#  --- THE CALL SITE` section below deliberately
+#  parses the same file with `ast` instead.  Both are correct and the difference is the point:
+#  those tests assert LEXICAL order inside `postBoScoreRanking` and must not import the live
+#  data layer to do it, whereas the adverse-absence tests call `imputation_ladder` and
+#  `missing_data_fill_report` for real.  Neither function touches the network or the API key.
+import postBoRank as pbr
 import scoringWeights as sw
 
 _REPO = os.path.dirname(os.path.abspath(__file__))
@@ -59,19 +66,33 @@ def _frame(rows):
 
 @pytest.mark.parametrize('cap', [0.5, 0.4, 0.3, 0.25, 0.2, 0.15])
 def test_post_condition_holds_at_every_cap_level(cap):
-    """After the cap, NO metric exceeds `cap` of its name's absolute total -- for any name
-    and any cap level.  This is the whole claim; if it fails the module is decoration."""
+    """After the cap, no metric that HELPS a name exceeds `cap` of its absolute total -- for
+    any name and any cap level.  This is the whole claim; if it fails the module is
+    decoration.
+
+    STATED ON THE POSITIVE SIDE SINCE THE 2026-09-01 RULING, and the change is not cosmetic:
+    the old form asserted it over |contribution|, which is now FALSE BY DESIGN for a name
+    whose dominant metric is a penalty.  The second half of this test is what stops the
+    positive-only rule being weakened into "we capped the positives and stopped checking":
+    the property is recomputed from the RETURNED FRAME, not read out of the module's own
+    bookkeeping."""
     rng = np.random.default_rng(11)
     df = pd.DataFrame(rng.normal(size=(400, 9)) * rng.uniform(0.01, 0.4, size=9),
                       columns=list('abcdefghi'))
     capped, report = msc.apply_share_cap(df, cap=cap)
-    A = capped.abs()
-    share = A.div(A.sum(axis=1), axis=0)
-    assert share.to_numpy().max() <= cap + 1e-9
-    #  and the report must agree with a share recomputed from the returned frame, not with
-    #  its own internal bookkeeping
-    assert np.allclose(report['share_after'].to_numpy(),
-                       share.max(axis=1).to_numpy(), atol=1e-12)
+    base = capped.abs().sum(axis=1)
+    pos_share = capped.where(capped > 0).div(base, axis=0)
+    assert np.nanmax(pos_share.to_numpy()) <= cap + 1e-9, \
+        'a POSITIVE contribution left the cap above it'
+    #  the report must agree with a share recomputed from the returned frame
+    assert np.allclose(report['pos_share_after'].to_numpy(),
+                       pos_share.max(axis=1).to_numpy(), atol=1e-12, equal_nan=True)
+    #  ...and the panel must contain names the OLD symmetric assertion would have caught, or
+    #  this test has been re-pointed at data that cannot tell the two rules apart
+    all_share = capped.abs().div(base, axis=0)
+    assert (all_share.to_numpy().max() > cap + 1e-9) or cap >= 0.5, \
+        ('no name on this panel has ANY contribution over the cap, so the positive-only '
+         'assertion above is not distinguishable from the symmetric one it replaced')
 
 
 def test_capped_metrics_land_EXACTLY_on_the_cap_not_merely_under_it():
@@ -144,17 +165,57 @@ def test_a_thin_tail_CASCADES_and_that_is_the_fixed_point_not_a_defect():
     assert report['share_after'].iloc[0] == pytest.approx(0.25, abs=1e-12)
 
 
-def test_sign_is_preserved_and_a_negative_dominant_metric_is_also_truncated():
-    """The cap is stated on |contribution|, so it is SYMMETRIC: a large negative dominant
-    contribution is truncated too, which RAISES that name.  That is the shipped ruling (see
-    the module docstring); the test exists so the behaviour cannot change silently."""
+def test_a_CATASTROPHIC_PENALTY_is_left_at_FULL_VALUE_and_the_name_does_NOT_rise():
+    """THE 2026-09-01 RULING, AT VALUE LEVEL.  This test asserted the OPPOSITE until today.
+
+    It read "the cap is stated on |contribution|, so it is SYMMETRIC: a large negative
+    dominant contribution is truncated too, which RAISES that name -- that is the shipped
+    ruling", and it pinned `agg_delta > 0` on this exact row.  The CEO overruled that on
+    2026-09-01: the cap exists to stop one metric carrying a name UP, and cutting back a
+    catastrophic score on one metric is the opposite of it.  So the row is unchanged, and
+    `-0.9` keeps every bit of its magnitude.
+
+    `[-0.9, 0.05, 0.03, 0.01, 0.01]` is the shipped shape, not a synthetic one: it is
+    `JEN.DE`'s (share 0.4581 on a negative `freeCashFlowPerShareGrowth`, +0.1301 AggScore,
+    rank 82 -> 72 on the 2026-09-01 panel) taken to its limit."""
     df = _frame([[-0.9, 0.05, 0.03, 0.01, 0.01]])
-    capped, report = msc.apply_share_cap(df, cap=0.25)
-    assert capped.iloc[0]['a'] < 0                       # sign kept
-    assert report['agg_delta'].iloc[0] > 0               # the name's score ROSE
-    assert report['contrib_before'].iloc[0] < 0          # ...and the log's reason for it
-    A = capped.abs().iloc[0]
-    assert A['a'] / A.sum() == pytest.approx(0.25, abs=1e-12)
+    capped, report = msc.apply_share_cap(df, cap=0.25, sources=['JEN.DE'])
+    pd.testing.assert_frame_equal(capped, df)            # byte-for-byte: nothing truncated
+    assert report['n_capped'].iloc[0] == 0
+    assert report['agg_delta'].iloc[0] == 0.0, \
+        'the cap RESCUED a name whose dominant contribution is a penalty'
+    assert report['contrib_before'].iloc[0] < 0          # the driver is still reported...
+    assert report['share_before'].iloc[0] == pytest.approx(0.9, abs=1e-12)
+    #  ...and it is still OVER the cap after the module ran, which is now correct
+    assert report['share_after'].iloc[0] == pytest.approx(0.9, abs=1e-12)
+    assert report['status'].iloc[0] == msc.STATUS_OK, \
+        'a penalty-dominated row must be a plain no-bind, not a decline'
+    #  the log must not let it pass silently -- it ships single-metric-dominated
+    text = msc.format_report(report, 'general', cap=0.25)
+    assert 'JEN.DE' in text and 'DOMINATED BY A PENALTY' in text
+
+
+def test_the_cap_can_NEVER_RAISE_A_NAME_on_any_panel():
+    """THE RULING AS A PROPERTY, over random panels rather than one hand-built row: every
+    committed truncation replaces a POSITIVE contribution with a smaller positive one, so no
+    name's AggScore can ever rise.  `agg_delta <= 0`, everywhere, at every cap level.
+
+    This is the test the symmetric module could not have passed: on this data it RAISED
+    names, which is the whole reason the ruling exists."""
+    rng = np.random.default_rng(404)
+    df = pd.DataFrame(rng.normal(size=(600, 11)) * rng.uniform(0.01, 0.5, size=11),
+                      columns=list('abcdefghijk'))
+    for cap in (0.5, 0.3, 0.25, 0.15):
+        capped, report = msc.apply_share_cap(df, cap=cap)
+        d = report['agg_delta'].to_numpy(dtype='float64')
+        assert (d <= 0.0).all(), (
+            'cap=%.2f RAISED %d name(s), worst %+.6f -- the cap rescued instead of '
+            'penalising' % (cap, int((d > 0).sum()), float(d.max())))
+        #  and the sum actually moved, so "nothing rose" is not "nothing happened"
+        assert d.min() < 0.0, 'the cap bound on nobody at cap=%.2f' % cap
+        #  every capped cell is a POSITIVE that got smaller; no negative moved at all
+        moved = ~np.isclose(capped.to_numpy(), df.to_numpy(), rtol=0, atol=0)
+        assert (df.to_numpy()[moved] > 0).all(), 'a NEGATIVE contribution was modified'
 
 
 def test_untouched_when_nothing_exceeds_the_cap():
@@ -186,7 +247,10 @@ def test_the_absolute_base_is_never_negative_so_no_small_total_special_case_is_n
     assert abs(signed_total) < 1e-12                     # the pathological case for c/AggScore
     capped, report = msc.apply_share_cap(df, cap=0.25)
     assert 0.0 <= report['share_before'].iloc[0] <= 1.0
-    assert report['share_after'].iloc[0] <= 0.25 + 1e-9
+    #  ON THE POSITIVE SIDE since the 2026-09-01 ruling: `share_after` is the DOMINANT
+    #  metric's share and this row's dominant metric may be either sign, so asserting the cap
+    #  on it would now be asserting something the module deliberately does not establish.
+    assert report['pos_share_after'].iloc[0] <= 0.25 + 1e-9
 
 
 def test_cap_never_increases_a_metrics_absolute_contribution():
@@ -213,16 +277,27 @@ def test_cap_never_increases_a_metrics_absolute_contribution():
 #  from the current universe.  The behaviour pinned below is ship-UNCAPPED-and-SAY-SO: the
 #  name keeps the score it would have had if this module did not exist, and the log names it.
 
+#  THE ALL-NEGATIVE ROW LEFT THIS PARAMETRISATION ON 2026-09-03, and it is a change of
+#  STATUS with no change of OUTCOME.  `[-0.30, -0.10, 0, 0, 0]` used to be declined as
+#  `infeasible` by the count test; under positive-only there are no truncation CANDIDATES on
+#  it at all, so it is an ordinary no-bind.  Either way the row ships byte-for-byte unchanged
+#  -- which is the property that actually matters and is asserted in BOTH places below.
+
 @pytest.mark.parametrize('row,n_nonzero', [
     ([0.30, 0.10, 0.0, 0.0, 0.0], 2),
     ([0.30, 0.10, 0.05, 0.0, 0.0], 3),
     ([0.30, 0.0, 0.0, 0.0, 0.0], 1),
-    ([-0.30, -0.10, 0.0, 0.0, 0.0], 2),
 ])
 def test_a_row_the_cap_would_ANNIHILATE_ships_UNCAPPED_and_is_NOT_zeroed(row, n_nonzero):
-    """The four rows the pre-fix cap turned into all-zeros. Each must now come back EXACTLY
-    as it went in -- not zeroed, not ejected, and not raising."""
-    assert n_nonzero <= msc._k_max(0.25)                 # the row really is infeasible
+    """The rows the pre-fix cap turned into all-zeros. Each must come back EXACTLY as it went
+    in -- not zeroed, not ejected, and not raising.
+
+    ALL-POSITIVE, and that is now load-bearing rather than incidental: positive-only makes
+    infeasibility a JOINT condition (few enough contributions AND none of them negative), so
+    a row with a negative in it is no longer declined here.  See
+    `test_infeasibility_is_a_JOINT_condition_...` for the row that proves the difference."""
+    assert n_nonzero <= msc._k_max(0.25)                 # few enough...
+    assert all(v >= 0 for v in row)                      # ...and no negative to hold R up
     df = _frame([row])
     capped, report = msc.apply_share_cap(df, cap=0.25, sources=['SPARSE'])
     pd.testing.assert_frame_equal(capped, df)            # byte-for-byte unchanged
@@ -236,11 +311,68 @@ def test_a_row_the_cap_would_ANNIHILATE_ships_UNCAPPED_and_is_NOT_zeroed(row, n_
 def test_the_negative_sparse_row_is_NOT_promoted_to_zero():
     """The S1 harm, stated as the number that moves. `[-0.30, -0.10, 0, 0, 0]` sums to -0.40.
     The pre-fix cap made it exactly 0.0 -- a jump over every name scoring below zero. Its
-    AggScore must be untouched."""
+    AggScore must be untouched.
+
+    UNDER POSITIVE-ONLY THIS HARM IS UNREACHABLE BY CONSTRUCTION, not merely guarded against:
+    the row has no positive contribution, so the cap has nothing it is permitted to touch.
+    The assertion is unchanged and its meaning is stronger."""
     df = _frame([[-0.30, -0.10, 0.0, 0.0, 0.0]])
     capped, report = msc.apply_share_cap(df, cap=0.25)
     assert float(capped.iloc[0].sum()) == pytest.approx(-0.40, abs=1e-15)
     assert report['agg_delta'].iloc[0] == 0.0
+    assert report['status'].iloc[0] == msc.STATUS_OK
+    assert report['n_capped'].iloc[0] == 0
+    #  there is no candidate, so there is no positive share to report -- NaN, not 0.0, which
+    #  would read as "its best metric contributes nothing"
+    assert np.isnan(report['pos_share_before'].iloc[0])
+    assert report['metric_capped'].iloc[0] is None
+
+
+def test_infeasibility_is_a_JOINT_condition_and_ONE_NEGATIVE_makes_a_SPARSE_row_FEASIBLE():
+    """THE DEFECT THIS PINS, and it is one the positive-only change would have shipped if the
+    feasibility test had been left alone.  Infeasibility used to be `n_nonzero <= _k_max`, a
+    pure COUNT on the absolute row.  Under positive-only that test is wrong: a negative
+    contribution can never be truncated, so it stays inside `R` permanently and holds the
+    fixed point off zero.
+
+    `[+0.30, -0.30, -0.30]` has three non-zero contributions, so the count test declines it --
+    and the cap can honour it perfectly: R = 0.60, c = 0.20, the positive lands at exactly
+    25% of the post-cap base, and 80% of the name's mass survives.  Declining it would refuse
+    to cap a name the cap can cap, which is the same class of error as capping one it
+    cannot."""
+    df = pd.DataFrame([[0.30, -0.30, -0.30]], columns=list('abc'), dtype='float64')
+    assert (df.iloc[0].abs() > 0).sum() <= msc._k_max(0.25), \
+        'the row must be one the old COUNT test would have declined'
+    capped, report = msc.apply_share_cap(df, cap=0.25, sources=['FEASIBLE'])
+    assert report['status'].iloc[0] == msc.STATUS_OK
+    assert report['n_capped'].iloc[0] == 1
+    assert report['cap_value'].iloc[0] == pytest.approx(0.20, abs=1e-12)
+    assert capped.iloc[0]['a'] == pytest.approx(0.20, abs=1e-12)
+    #  the negatives are untouched, at full magnitude
+    assert capped.iloc[0]['b'] == pytest.approx(-0.30, abs=1e-15)
+    assert capped.iloc[0]['c'] == pytest.approx(-0.30, abs=1e-15)
+    assert report['pos_share_after'].iloc[0] == pytest.approx(0.25, abs=1e-12)
+    #  ...and the name went DOWN, which is the point
+    assert report['agg_delta'].iloc[0] == pytest.approx(-0.10, abs=1e-12)
+
+
+def test_R_is_SUMMED_and_NOT_SUBTRACTED_so_a_THIN_TAIL_is_not_cancelled_away():
+    """A DEFECT INTRODUCED AND CAUGHT DURING THE 2026-09-03 CHANGE, pinned so it cannot come
+    back.  `R` is "the absolute mass the truncation does not touch".  Written as
+    `base - sum(p[:k])` it is right in real arithmetic and wrong in float64: on
+    `[0.30, 0.10, 0.05, 1e-15]` the head sums to the same float as the whole base, so the
+    subtraction returns 0.0, the k = 3 fixed point is lost, the row finds no consistent k and
+    ships UNCAPPED -- and the `would_erase` guard that exists to decline it never runs.
+
+    Asserted as the OUTCOME rather than by reading the source, so it holds however the
+    expression is spelled."""
+    df = pd.DataFrame([[0.30, 0.10, 0.05, 1e-15]], columns=list('abcd'), dtype='float64')
+    _, report = msc.apply_share_cap(df, cap=0.25, sources=['THINTAIL'])
+    assert report['status'].iloc[0] == msc.STATUS_WOULD_ERASE, (
+        'the thin-tail fixed point was lost to float cancellation in R -- the row shipped '
+        'as %r instead of being declined' % report['status'].iloc[0])
+    assert report['cap_value'].iloc[0] == pytest.approx(1e-15, rel=1e-9), \
+        'the k=3 fixed point did not resolve at the tail value'
 
 
 def test_an_uncappable_name_does_NOT_stop_the_pool_and_the_others_are_STILL_capped():
@@ -542,29 +674,77 @@ def test_the_shipped_cap_level_is_on_the_SAFE_side_of_both_tolerances():
 
 #  --- THE RUN LOG: it is read by the CEO, so it must be true --------------------------- #
 
-def test_the_RAISED_label_follows_the_DOMINANT_metrics_SIGN_not_the_sign_of_agg_delta():
-    """`agg_delta` is the sum of the signed changes across ALL capped metrics.  On a k > 1
-    row with mixed signs it can be POSITIVE while the dominant contribution is positive too
-    -- and the log then told the reader that a POSITIVE dominant metric "was NEGATIVE".
+def test_the_log_carries_NO_RAISED_LABEL_because_the_cap_CANNOT_RAISE():
+    """THE THREE `RAISED` LABELS ARE GONE, AND THIS IS WHAT KEEPS THEM GONE.
 
-    `[+0.30, -0.29, -0.28, +0.10, +0.03]` resolves at k = 3 with `agg_delta = +0.14`, and
-    its dominant contribution is `+0.30`.  The docstring cites BOSS.DE and JEN.DE as exactly
-    this mechanism, so the label is load-bearing for how a mover is read."""
+    The test that stood here pinned the labels and, in its last two lines, REQUIRED the log
+    to print "RAISED: its dominant contribution was NEGATIVE" for the `BOSS.DE` shape.  That
+    is the overruled behaviour asserted as a requirement -- the twenty-ninth instance of a
+    test pinning the defect it covers, and the reason it is called out by name here.  Under
+    positive-only no row can rise, so any surviving `RAISED` label is dead prose that a
+    reader would take as evidence the cap still rescues.
+
+    `[+0.30, -0.29, -0.28, +0.10, +0.03]` is the old mixed-sign k = 3 row that produced
+    `agg_delta = +0.14`.  It must now go DOWN."""
+    #  THE ASSERTION IS ON THE LABEL MARKER `<-- RAISED`, NOT ON THE WORD, and the
+    #  distinction is not pedantry: the replacement disclosure block has to SAY what the
+    #  symmetric rule would have done ("would have truncated that penalty and RAISED these
+    #  names"), so banning the bare word would ban the explanation along with the defect.
+    #  What must never appear again is a label attached to a NAME's own line, plus the two
+    #  specific sentences the old labels printed.
+    _LABEL = '<-- RAISED'
+    _OLD_SENTENCES = ('dominant contribution was NEGATIVE and was truncated',
+                      'RAISED although its dominant contribution was POSITIVE')
+
     df = _frame([[0.30, -0.29, -0.28, 0.10, 0.03]])
     _, report = msc.apply_share_cap(df, cap=0.25, sources=['ACME'])
-    assert report['n_capped'].iloc[0] > 1
-    assert report['agg_delta'].iloc[0] > 0               # the score rose...
-    assert report['contrib_before'].iloc[0] > 0          # ...on a POSITIVE dominant metric
+    assert report['agg_delta'].iloc[0] <= 0.0, \
+        'the mixed-sign cascade still RAISES a name'
     text = msc.format_report(report, 'general', cap=0.25)
-    assert 'dominant contribution was NEGATIVE' not in text, \
-        'the log claims a positive dominant contribution was negative'
-    assert 'POSITIVE' in text, 'the log does not say what actually happened'
+    assert _LABEL not in text, (
+        'the run log still labels a name RAISED; under positive-only no name can rise, so '
+        'the label can only mislead: %s' % text)
+    for s in _OLD_SENTENCES:
+        assert s not in text, 'the overruled label sentence %r is still printed' % s
 
-    #  ...and the genuine case still gets the genuine label
+    #  ...and the shape the old label was written FOR is now a no-bind, disclosed differently
     neg = _frame([[-0.9, 0.05, 0.03, 0.01, 0.01]])
     _, rep2 = msc.apply_share_cap(neg, cap=0.25, sources=['BOSS.DE'])
-    assert 'RAISED: its dominant contribution was NEGATIVE' in \
-        msc.format_report(rep2, 'general', cap=0.25)
+    text2 = msc.format_report(rep2, 'general', cap=0.25)
+    assert _LABEL not in text2
+    for s in _OLD_SENTENCES:
+        assert s not in text2
+    assert 'BOSS.DE' in text2 and 'DELIBERATELY NOT CAPPED' in text2, (
+        'a name whose penalty the cap deliberately left alone is no longer named in the log '
+        '-- the disclosure was lost rather than replaced')
+
+
+def test_the_log_NAMES_every_penalty_dominated_name_it_DELIBERATELY_did_not_cap():
+    """THE DISCLOSURE THAT NEARLY WENT MISSING, and the case is real.  `PET.TO` on the saved
+    2026-08-11 panel has exactly two non-zero contributions and both are NEGATIVE.  The old
+    count-based feasibility test declined it as `infeasible`, so the loud UNCAPPABLE block
+    printed its name.  Positive-only turns it into an ordinary `status = 'ok'` no-bind -- its
+    score is identical either way, but it is a name sitting at 75% of its base on ONE penalty
+    metric and shipping uncapped, which is precisely what that block existed to surface.
+
+    A change of internal status must not cost a name its line in the run log.  The list is
+    also NOT truncated, for the same reason the uncappable block is not: a mitigation that
+    silently abbreviates itself is the same defect one level up."""
+    #  three penalty-dominated names over the cap, and one ordinary name to prove the filter
+    df = _frame([[-0.9, 0.05, 0.03, 0.01, 0.01],         # dominant penalty, no positives big
+                 [-0.30, -0.10, 0.0, 0.0, 0.0],          # NO positive contribution at all
+                 [-0.50, 0.20, 0.15, 0.10, 0.05],        # dominant penalty, positives too
+                 [0.20, 0.20, 0.20, 0.20, 0.20]])        # nothing dominates -- must NOT list
+    _, report = msc.apply_share_cap(df, cap=0.25,
+                                    sources=['PET.TO', 'ALLNEG', 'MIXED', 'PLAIN'])
+    text = msc.format_report(report, 'general', cap=0.25)
+    for name in ('PET.TO', 'ALLNEG', 'MIXED'):
+        assert name in text, '%s ships penalty-dominated and is NOT named in the log' % name
+    assert 'PLAIN' not in text, (
+        'the log names a name whose biggest driver is under the cap -- that name was never '
+        'touched by either rule and listing it buries the three that matter')
+    assert 'DOMINATED BY A PENALTY' in text
+    assert 'NO positive contribution at all' in text
 
 
 def test_the_log_PRINTS_n_capped_so_a_CASCADE_is_not_read_as_a_ONE_METRIC_TRIM():
@@ -617,8 +797,10 @@ def test_mutation_one_pass_cap_is_REJECTED_by_the_post_condition(monkeypatch):
     one-pass cut -- truncate to `cap x base_before` -- passes a casual read and leaves the
     capped metric above the cap of the base that ships.  Substituting it for the fixed point
     must make `apply_share_cap` itself raise."""
-    def one_pass(abs_row, cap):
-        return cap * float(np.sum(abs_row))              # the one-pass form
+    def one_pass(row, cap):
+        #  `np.abs` because `_cap_value` takes the SIGNED row since 2026-09-01; the naive
+        #  form being mutated in is still "truncate to cap x base_before".
+        return cap * float(np.sum(np.abs(row)))          # the one-pass form
 
     monkeypatch.setattr(msc, '_cap_value', one_pass)
     df = _frame([[0.9, 0.05, 0.03, 0.01, 0.01]])
@@ -698,9 +880,18 @@ def test_the_SPARSE_NAMES_on_a_saved_panel_keep_their_score_and_are_NAMED(relpat
         hit = report.index[report['source'] == name]
         assert len(hit) == 1, '%s not on panel %s' % (name, relpath)
         i = hit[0]
-        assert report.loc[i, 'status'] in (msc.STATUS_INFEASIBLE, msc.STATUS_WOULD_ERASE), (
-            '%s is no longer declined -- if the cap now COMMITS a truncation on it, check '
-            'what its AggScore became before assuming that is an improvement' % name)
+        #  THE ASSERTION IS ON THE OUTCOME, NOT ON THE STATUS LABEL, and it was widened on
+        #  2026-09-03 for a measured reason rather than to make a red test green.  `PET.TO`
+        #  has two non-zero contributions and BOTH ARE NEGATIVE, so under positive-only it
+        #  is not "declined" at all -- there is simply nothing the cap may touch, and it
+        #  reports `ok` / `n_capped = 0`.  `STRT`'s two contributions are both POSITIVE, so
+        #  it is still `infeasible`.  Two different statuses, one identical outcome, and the
+        #  outcome is what the run cared about: the name keeps its score and is named in the
+        #  log.  Pinning the LABEL here would have pinned an implementation detail of the
+        #  feasibility test.
+        assert report.loc[i, 'n_capped'] == 0, (
+            '%s is now COMMITTED to a truncation -- check what its AggScore became before '
+            'assuming that is an improvement' % name)
         assert report.loc[i, 'agg_delta'] == 0.0, '%s lost score to a declined cap' % name
         assert (capped.loc[i] == X.loc[i]).all(), '%s was modified' % name
         assert name in text, '%s ships uncapped and is NOT named in the run log' % name
@@ -1049,6 +1240,369 @@ def test_the_evidence_CSV_records_what_it_needs_from_OUTSIDE_this_module():
         'the module does not record that the transfer allow-list still needs '
         "'ShareCapReport_*.csv' -- written-but-unshipped is the same as unwritten")
     assert '_EVIDENCE_GLOBS' in src
+
+
+#  --- THE 2026-09-01 RULING: THE GUARD, THE MASS FLOOR, AND THE REAL PANELS ----------- #
+#
+#  "Positive-only -- the cap can penalise, never rescue."  The behavioural tests for the
+#  ruling sit beside the properties they replace, above.  What is gathered here is the part
+#  that needs a mutation or a real artifact: the invariant that enforces the ruling, the mass
+#  floor whose motivating case the ruling killed, and the two panels the outcome was measured
+#  on.
+
+def test_mutation_the_SYMMETRIC_mask_is_REJECTED_by_the_no_rescue_invariant(monkeypatch):
+    """INVARIANT 3, WATCHED TO FAIL.  This is the guard that enforces the CEO's ruling, and
+    like the collapse backstop it is UNREACHABLE in the shipped configuration -- `c` is always
+    positive, so `row > c` cannot select a negative and `agg_delta` cannot come out positive.
+    A guard nobody has seen fire is a guard nobody knows works.
+
+    THE MUTATION IS THE CANDIDATE-SELECTION HALF OF THE PRE-RULING RULE -- `np.abs(row) > c`,
+    the one-character difference that let the cap truncate penalties.  Restoring it must make
+    the module itself raise, so a future editor who "simplifies" the mask back to the absolute
+    row cannot ship a cap that rescues names.
+
+    STATED EXACTLY, BECAUSE THE MUTATION IS NOT THE WHOLE OF THE OLD MODULE: the shipped
+    assignment is now `C[i, over] = c` (the old one was `np.sign(...) * c`), so under this
+    mutation a selected negative is written as `+c` and the rescue is LARGER than the
+    pre-ruling one.  The invariant is about the SIGN of `agg_delta`, so that difference does
+    not affect what is being certified -- and the FAITHFUL pre-ruling rule is exercised
+    separately, on real panel data, by `_symmetric_reference` below.
+
+    The row is chosen so the mask alone is enough: `_cap_value` is NOT mutated, so it must
+    still find a fixed point from the POSITIVE side (`a` at 44% of the base does that), and
+    the negative `b` must exceed that fixed point (0.30 > 0.1667) so the mutated mask selects
+    it.  On the all-negative `JEN.DE` shape the positive-only `_cap_value` returns None and
+    nothing would happen at all -- which is why that row cannot certify this guard."""
+    df = _frame([[0.40, -0.30, 0.10, 0.06, 0.04]])
+    #  the un-mutated module: only the positive is truncated, and the name goes DOWN
+    _, clean = msc.apply_share_cap(df, cap=0.25, sources=['CTRL'])
+    assert clean['n_capped'].iloc[0] == 1
+    assert clean['agg_delta'].iloc[0] < 0
+
+    monkeypatch.setattr(msc, '_truncation_mask', lambda row, c: np.abs(row) > c)
+    with pytest.raises(AssertionError, match='RAISED by the cap'):
+        msc.apply_share_cap(df, cap=0.25, sources=['CTRL'])
+
+    #  THE SENSITIVITY HALF, AFTER `undo()` -- monkeypatch unwinds at teardown, not mid-test,
+    #  so running this under the live patch would prove nothing (the mistake this file already
+    #  records in `test_mutation_a_NO_OP_cap_is_REJECTED_by_the_post_condition`).
+    monkeypatch.undo()
+    _, again = msc.apply_share_cap(df, cap=0.25, sources=['CTRL'])
+    assert again['agg_delta'].iloc[0] < 0, \
+        'the REAL cap no longer binds on this row, so the raise above proves nothing'
+
+
+def test_the_post_condition_is_stated_on_the_POSITIVE_share_and_NOT_on_the_dominant_one():
+    """THE DEFECT THIS PINS, and it would have fired on live data the first night.  The
+    overshoot assertion read `share_after > cap`, where `share_after` is the DOMINANT
+    metric's share of the absolute base.  Under positive-only a dominant NEGATIVE is one the
+    cap is forbidden to touch, so that assertion raises on CORRECT behaviour -- and raises for
+    exactly the population the ruling protects.  `postBo.py:697` does not exception-guard the
+    general-pool call, so that is the whole run: no postRank, no top-20.
+
+    The row below is the trap in miniature: a bound row (its positive `b` is over the cap)
+    whose dominant contribution is a bigger negative.  `share_after` must be ABOVE the cap
+    and the module must NOT raise."""
+    df = _frame([[-0.50, 0.40, 0.05, 0.03, 0.02]])
+    capped, report = msc.apply_share_cap(df, cap=0.25, sources=['TRAP'])
+    assert report['n_capped'].iloc[0] == 1, 'the row must actually bind, or it proves nothing'
+    assert report['metric_capped'].iloc[0] == 'b'
+    assert report['metric_before'].iloc[0] == 'a', 'the dominant metric must be the negative'
+    #  the positive side obeys the cap...
+    assert report['pos_share_after'].iloc[0] <= 0.25 + 1e-9
+    #  ...and the dominant NEGATIVE is over it, and RISES, because the base shrank
+    assert report['share_after'].iloc[0] > 0.25
+    assert report['share_after'].iloc[0] > report['share_before'].iloc[0], (
+        'the untouched penalty should be a LARGER share of the smaller post-cap base -- if '
+        'this is false the row is not exercising the trap')
+    #  the log prints the pair the cap acted on, and says the driver was left alone
+    text = msc.format_report(report, 'general', cap=0.25)
+    assert 'LEFT AT FULL VALUE' in text
+    assert capped.iloc[0]['a'] == pytest.approx(-0.50, abs=1e-15)
+
+
+def test_metric_capped_NAMES_the_largest_HELPING_contribution_not_the_dominant_one():
+    """The CEO-facing field the ruling added.  `metric_before` answers "what drives this
+    name"; `metric_capped` answers "what the cap was allowed to act on".  They differ exactly
+    when the driver is a penalty, and a reader given only the first would be told the cap
+    trimmed a metric it never touched.
+
+    Built so no row's answer is the frame's first column, and cross-checked against an
+    independent recompute."""
+    df = _frame([[-0.60, 0.30, 0.05, 0.03, 0.02],        # driver is the negative 'a'
+                 [0.05, 0.20, -0.70, 0.03, 0.02],        # driver is the negative 'c'
+                 [0.05, 0.60, 0.03, 0.20, 0.12]])        # driver IS the positive 'b'
+    _, report = msc.apply_share_cap(df, cap=0.25, sources=['N1', 'N2', 'P1'])
+    assert list(report['metric_before']) == ['a', 'c', 'b']
+    assert list(report['metric_capped']) == ['b', 'b', 'b']
+    #  independent recompute: the argmax over the POSITIVE cells only
+    expected = list(df.where(df > 0).idxmax(axis=1))
+    assert list(report['metric_capped']) == expected
+    #  and where driver == capped, the two share columns agree before the cap
+    assert report['pos_share_before'].iloc[2] == pytest.approx(
+        report['share_before'].iloc[2], abs=1e-12)
+    #  ...while on the penalty-driven rows they must NOT agree, or the field is redundant
+    for i in (0, 1):
+        assert report['pos_share_before'].iloc[i] < report['share_before'].iloc[i] - 0.01
+
+
+#  --- THE MASS FLOOR, RE-EXAMINED UNDER THE RULING ------------------------------------- #
+#
+#  THE BRIEF FOR THIS CHANGE ASKED THE QUESTION DIRECTLY: with only positive contributions
+#  truncated, can annihilation still occur?  The answer is that the HARM the floor was built
+#  for is gone and the MECHANISM is not, so the floor is retained on a rewritten rationale.
+#  These two tests hold both halves, because a guard kept for a reason that no longer applies
+#  is how a codebase accumulates cargo.
+
+def test_the_mass_floor_CAN_STILL_FIRE_but_only_on_an_almost_entirely_POSITIVE_row():
+    """THE MECHANISM SURVIVES.  `base_after >= sum|negatives|`, because a negative is never
+    truncated, so this floor can only reach a name whose absolute mass is almost entirely
+    POSITIVE and whose positive tail is degenerate.  `[+0.30, -0.001, 0, 0, 0]` is the shape:
+    R = 0.001, so the fixed point lands at 3.3e-4 and 0.44% of the mass would survive.
+
+    What is declined here is a fabricated MAXIMAL DEMOTION, not the fabricated promotion the
+    symmetric rule produced -- and the size of it is set by the epsilon in the tail rather
+    than by anything about the company, which is why it is refused in either direction."""
+    df = _frame([[0.30, -0.001, 0.0, 0.0, 0.0]])
+    _, report = msc.apply_share_cap(df, cap=0.25, sources=['THIN'])
+    assert report['status'].iloc[0] == msc.STATUS_WOULD_ERASE
+    assert report['agg_delta'].iloc[0] == 0.0
+    #  the counterfactual: had it been committed, almost nothing would have survived
+    would_survive = (report['cap_value'].iloc[0] + 0.001) / report['base_before'].iloc[0]
+    assert would_survive < msc._MASS_FLOOR
+    #  and a row with a REAL negative tail is NOT reached by the floor, because the negative
+    #  mass alone keeps it far above -- this is the narrowing the ruling bought
+    ok = _frame([[0.30, -0.30, -0.30, 0.0, 0.0]])
+    _, r2 = msc.apply_share_cap(ok, cap=0.25, sources=['HELD'])
+    assert r2['status'].iloc[0] == msc.STATUS_OK
+    assert (r2['base_after'].iloc[0] / r2['base_before'].iloc[0]) > 10 * msc._MASS_FLOOR
+
+
+def test_the_mass_floor_RATIONALE_no_longer_rests_on_the_OVERRULED_promotion_argument():
+    """PROSE, AND LOAD-BEARING PROSE.  Every justification for this floor was written about
+    ONE harm: the cap replacing a real negative score with a fabricated 0.0, which on a pool
+    where 37 of 97 names score at or below zero is a large PROMOTION invented by the guard.
+    Positive-only makes `agg_delta <= 0` identically, so the cap cannot move any name upward
+    and that argument is spent.
+
+    The CEO found this floor hard to understand precisely because its rationale depended on
+    the symmetric behaviour.  A number kept in the code on a reason that no longer holds is
+    worse than no number, so the file must say which half died and which half did not."""
+    src = _module_source()
+    assert 'RE-EXAMINED UNDER POSITIVE-ONLY' in src, (
+        'the mass floor still carries only its pre-ruling rationale -- the motivating case '
+        'is gone and the file does not say so')
+    assert 'THE CASE IT WAS BUILT FOR IS NOW UNREACHABLE' in src
+    #  ...and it must still state that the MECHANISM survives, or the note has over-corrected
+    #  into "the floor is pointless", which is the other way to get this wrong
+    assert 'STILL REACHABLE' in src or 'is still reachable' in src
+    #  the retention must be argued, not merely asserted
+    assert 'WHY IT IS KEPT ANYWAY' in src
+
+
+def test_the_module_RECORDS_the_positive_only_ruling_and_does_NOT_defend_symmetry():
+    """The section that stood where the ruling now is DEFENDED the symmetric behaviour as
+    "the honest reading of no single metric decides a name", and offered positive-only as a
+    hypothetical the CEO might one day want.  A later reader would take that as the live
+    design.  It is not: it was overruled on 2026-09-01, and the file has to say so with the
+    date, because this project's own history is that a stale sentence gets believed and acted
+    on."""
+    src = _module_source()
+    assert 'the honest reading of "no single metric decides a name"' not in src, (
+        'the module still defends the SYMMETRIC behaviour as the honest reading -- that '
+        'reading was overruled')
+    assert 'THE CAP IS SYMMETRIC' not in src
+    assert '2026-09-01' in src, 'the ruling is not dated'
+    assert 'may penalise' in src and 'never' in src
+    #  the measurement that motivated it must be KEPT, not dropped with the section
+    assert '10 names instead of 13' in src, (
+        'the 08-31 positive-only measurement that motivated the ruling has been lost')
+    assert 'SAME top-20' in src
+    #  ...and it must be marked as NOT reproducible here, because it is not
+    assert 'NOT REPRODUCED HERE' in src, (
+        'the 08-31 numbers are inherited and cannot be re-derived from anything on disk; the '
+        'file must not present them as verified')
+
+
+def test_the_module_ARGUES_the_DENOMINATOR_choice_rather_than_leaving_it_implicit():
+    """The ruling fixes which contributions may be truncated; it does not say what the share
+    is a share OF, and the two candidates bind on different names.  The choice made was to
+    keep the FULL absolute base, and a future reader must be able to see that this was
+    decided rather than inherited -- the alternative (a positive-only denominator) tightens
+    the cap and would re-level the CEO's 0.25 by a developer's choice of denominator."""
+    src = _module_source()
+    assert 'THE DENOMINATOR STAYS' in src
+    assert 'NOT BUILT' in src, 'the rejected denominator is not named as rejected'
+    #  the decisive reason must be present, not just the conclusion
+    assert 'IT CHANGES WHAT 0.25 MEANS, AGAIN' in src
+
+
+#  --- THE REAL PANELS: what the ruling actually did ------------------------------------ #
+
+def test_the_SHIPPED_09_01_REPORT_shows_the_cap_RAISED_names_and_this_module_would_not():
+    """THE MEASUREMENT THE RULING WAS MADE ON, PINNED AGAINST THE SHIPPED ARTIFACT.
+
+    `ShareCapReport_2026-09-01.csv` is the evidence file from the last real run, and it
+    records the defect in its own numbers: 11 names bound and FOUR of them RAISED -- JEN.DE
+    +0.1301, BOSS.DE +0.1053, OII +0.0597, KFY +0.0019.  Every one of those four has a
+    NEGATIVE `contrib_before`, which is the mechanism.
+
+    The second half re-derives what THIS module would have done on those rows.  It is exact
+    rather than approximate, and only because every bound row on that panel has
+    `n_capped == 1`: for a k = 1 fixed point `c = CAP * base_after` with `base_after <
+    base_before`, and the scan's consistency test forces the second-largest contribution
+    below `CAP * base_before` -- so the dominant metric is the ONLY one over the cap as a
+    share of the original base.  A negative dominant therefore leaves no candidate at all.
+
+    SKIPS rather than fails when the artifact is absent: it is a run output, not a checkout
+    file, and on a machine without it this test proves nothing -- stated rather than hidden."""
+    path = os.path.join(_REPO, 'ShareCapReport_2026-09-01.csv')
+    if not os.path.exists(path):
+        pytest.skip('the 2026-09-01 evidence CSV is not present in this checkout')
+    r = pd.read_csv(path)
+    bound = r[r['n_capped'] > 0]
+    raised = bound[bound['agg_delta'] > 0]
+
+    #  the defect, as it shipped
+    assert len(bound) == 11, 'the 09-01 panel no longer has 11 bound names'
+    assert len(raised) == 4, 'the 09-01 panel no longer has 4 RAISED names'
+    assert set(raised['source']) == {'JEN.DE', 'BOSS.DE', 'OII', 'KFY'}
+    assert (raised['contrib_before'] < 0).all(), (
+        'a name was raised by the symmetric cap WITHOUT a negative dominant contribution -- '
+        'the mechanism in the module docstring is wrong')
+    assert float(raised['agg_delta'].max()) == pytest.approx(0.1301, abs=5e-5)
+
+    #  the premise of the derivation, checked and not assumed
+    assert (bound['n_capped'] == 1).all(), (
+        'the k=1 premise fails on this panel, so the reconstruction below is not exact and '
+        'this test must not claim it is')
+
+    #  what this module does instead: the 4 negative-dominant rows stop binding, the 7
+    #  positive-dominant ones are untouched cell for cell
+    keeps = bound[bound['contrib_before'] > 0]
+    assert len(keeps) == 7
+    #  THE TAIL IS SPREAD OVER MANY COLUMNS, and that is not cosmetic.  A two-column stand-in
+    #  ([dom, base - |dom|]) puts the whole remaining mass in ONE cell, which is then 66% of
+    #  the base and binds on its own -- so it would model every one of these names as a
+    #  two-metric name and answer a different question.  The real rows carry ~18 weighted
+    #  columns; 20 equal tail cells keeps each one far under the cap and preserves the two
+    #  facts the derivation uses: the base, and the dominant metric being the only cell over
+    #  the cap.  Asserted below rather than assumed.
+    _M = 20
+    for _, row in bound.iterrows():
+        tail = (row['base_before'] - abs(row['contrib_before'])) / _M
+        one = pd.DataFrame([[row['contrib_before']] + [tail] * _M],
+                           columns=['dom'] + ['t%d' % i for i in range(_M)],
+                           dtype='float64')
+        assert abs(tail) / row['base_before'] < msc.CAP, 'the stand-in tail binds on its own'
+        assert abs(tail) < abs(row['contrib_before']), 'the stand-in dominant is not dominant'
+        _, rep = msc.apply_share_cap(one, cap=msc.CAP, sources=[row['source']])
+        assert rep['agg_delta'].iloc[0] <= 0.0, (
+            '%s is still RAISED by this module' % row['source'])
+        if row['contrib_before'] < 0:
+            assert rep['n_capped'].iloc[0] == 0, (
+                '%s has a negative dominant contribution and is still being truncated'
+                % row['source'])
+            assert rep['agg_delta'].iloc[0] == 0.0, (
+                '%s stopped being capped but its score still moved' % row['source'])
+        else:
+            #  the positive-dominant rows must bind IDENTICALLY to the shipped run: same
+            #  fixed point, same cost.  This is the half that says positive-only is not
+            #  simply a weaker cap.
+            assert rep['n_capped'].iloc[0] == 1
+            assert rep['cap_value'].iloc[0] == pytest.approx(row['cap_value'], rel=1e-9)
+            assert rep['agg_delta'].iloc[0] == pytest.approx(row['agg_delta'], rel=1e-9)
+
+
+def _symmetric_reference(X, cap):
+    """THE PRE-RULING RULE, REIMPLEMENTED HERE ON PURPOSE, as a per-name `agg_delta` array.
+
+    This is the algorithm `metric_share_cap` shipped until 2026-09-03: the fixed-point scan
+    over the ABSOLUTE contributions, the count-based feasibility test, the mass floor, and a
+    SIGN-PRESERVING truncation.  It is written out rather than imported from git because the
+    claim "the old rule would have raised these names" has to be checkable in a hundred
+    years' checkout with no history, and because a regression that depends on the mutation
+    hook staying monkeypatchable is a regression that quietly stops running.
+
+    It is deliberately NOT used to assert what the module does -- only what the OLD rule did,
+    so that the panel assertion is a real before/after and not a tautology."""
+    A = X.abs().to_numpy(dtype='float64')
+    C0 = X.to_numpy(dtype='float64')
+    k_max = msc._k_max(cap)
+    out = np.zeros(len(A))
+    for i in range(len(A)):
+        base = A[i].sum()
+        if not np.isfinite(A[i]).all() or not np.isfinite(base) or base <= 0:
+            continue
+        if int((A[i] > 0).sum()) <= k_max:               # the old COUNT-based feasibility
+            continue
+        s = np.sort(A[i])[::-1]
+        c = None
+        for k in range(1, min(len(s), k_max) + 1):
+            denom = 1.0 - k * cap
+            if denom <= 0:
+                break
+            cand = cap * s[k:].sum() / denom
+            below = s[k] if k < len(s) else -np.inf
+            if cand < s[k - 1] and cand >= below:
+                c = cand
+                break
+        if c is None:
+            continue
+        over = A[i] > c                                  # the SYMMETRIC candidate mask
+        if float(np.where(over, c, A[i]).sum()) < msc._MASS_FLOOR * base:
+            continue
+        after = np.where(over, np.sign(C0[i]) * c, C0[i])   # SIGN-PRESERVING truncation
+        out[i] = after.sum() - C0[i].sum()
+    return out
+
+
+@pytest.mark.parametrize('relpath,sparse_names', _PANELS)
+def test_a_SAVED_PANEL_RAISES_NOBODY_and_the_pre_ruling_RULE_WOULD_HAVE(relpath, sparse_names):
+    """THE REGRESSION, on real contributions rather than a report.  Two claims, and the second
+    is what makes this a regression instead of an illustration:
+
+      * under positive-only, NO name on the panel has `agg_delta > 0`;
+      * under the pre-ruling ABSOLUTE mask, names DO -- measured on
+        `postRank_2026-08-11_fmp_stock_CUR3K.pickle`: 16 bound and 6 RAISED, worst +0.0726
+        (NRO.PA, which climbed 7 places), against 10 bound and 0 RAISED under the ruling.
+
+    Without the second half a broken cap that bound on nobody would pass.  The pre-ruling
+    rule is reproduced by substituting the absolute mask, which is exactly what the shipped
+    code did before 2026-09-03."""
+    pr, X = _panel_contributions(relpath)
+    _, report = msc.apply_share_cap(X, cap=msc.CAP, sources=list(pr['source']))
+    d = report['agg_delta'].to_numpy(dtype='float64')
+    assert (d <= 0.0).all(), (
+        '%d name(s) on %s were RAISED by the cap, worst %+.6f'
+        % (int((d > 0).sum()), relpath, float(d.max())))
+    assert int((report['n_capped'] > 0).sum()) > 0, 'the cap bound on nobody on this panel'
+
+    #  THE BEFORE/AFTER, and it is what makes this a regression rather than an assertion
+    #  that could pass on a cap which bound on nobody.  The pre-ruling rule, reimplemented
+    #  above, must RAISE names on this very panel.
+    d_old = _symmetric_reference(X, msc.CAP)
+    assert (d_old > 0).sum() > 0, (
+        'the pre-ruling symmetric rule raises NOBODY on %s, so this panel cannot tell the two '
+        'rules apart and the assertion above proves nothing' % relpath)
+    raised_old = [(pr['source'].iloc[i], float(d_old[i]))
+                  for i in range(len(d_old)) if d_old[i] > 0]
+    #  ...and every one of them must be flat under the ruling
+    for nm, amt in raised_old:
+        j = report.index[report['source'] == nm][0]
+        assert report.loc[j, 'agg_delta'] <= 0.0, (
+            '%s was raised %+.6f by the old rule and is still not penalised' % (nm, amt))
+
+    #  and the panel really does contain the shape -- otherwise the assertion above is empty
+    penalty_dominated = report[(report['contrib_before'] < 0)
+                               & (report['share_before'] > msc.CAP)]
+    assert len(penalty_dominated) > 0, (
+        'no name on %s is dominated by a penalty over the cap, so this panel cannot tell the '
+        'two rules apart and the assertion above proves nothing' % relpath)
+    #  every one of them must be named in the log, and none of them may have moved
+    text = msc.format_report(report, 'general', cap=msc.CAP)
+    for nm in penalty_dominated['source']:
+        assert nm in text, '%s ships penalty-dominated and is not named in the log' % nm
 
 
 #  --- THE WEIGHT TRANSFER -------------------------------------------------------------- #
