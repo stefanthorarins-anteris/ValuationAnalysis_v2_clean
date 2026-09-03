@@ -865,3 +865,670 @@ def test_the_vendor_check_passes_a_REAL_healthy_aggscore_csv():
     rep = dlv.aggscore_vendor_report(path)
     assert rep['all_dead'] is False, rep
     assert rep['rows'] > 0
+
+
+# =========================================================================== #
+#  10.  THE DECLARE-AFTER-WRITE HOLE (gap 1, closed 2026-09-03)                #
+# =========================================================================== #
+#  THE HOLE.  `writeResWrapper` appended the side-list, band and sidecar filenames to the
+#  declared set ONLY AFTER writing them, and the audit's expected set IS that declaration.
+#  So a side-list that failed to write REMOVED ITSELF from the declaration and the audit
+#  could not possibly report it: only the three unconditional names, the postRank pickle and
+#  the deck could be checked for ABSENCE at all.  Every test in this section drives the REAL
+#  `writeResWrapper`, because a source-order assertion is what let the hole ship -- the
+#  existing `inspect.getsource` test for `xlsx_report` proves an ordering, not a behaviour.
+
+#  The forensic columns `writeResWrapper` merges into every side-list (Q-66).  THE FIXTURE'S
+#  WIDTH IS LOAD-BEARING for the same reason it was for `_aggscore` above: the real 08-07
+#  side-lists predate this merge and carry 3 columns, while the CURRENT writer emits 17, and
+#  a 3-column stand-in would not be the shape of the artifact under test.
+_SIDELIST_FORENSIC_COLUMNS = [
+    'carveLabel', 'forensicValid', 'forensicReason', 'forensicNote', 'M_score_mean',
+    'M_flag_gt_-1.78', 'M_drivers', 'M_abstain_reason', 'C_score_mean', 'C_flag_ge_4',
+    'C_flags_fired', 'sloanAccruals', 'sloan_worstQuintile_inShortlist', 'forensicTag',
+]
+
+
+def _flag_table(sources):
+    """A forensic table of the real width, with the free-text columns actually populated:
+    `forensicReason` and `M_drivers` carry commas in the shipped artifacts, so the fixture
+    must too or the row counter is never asked the question that matters."""
+    cols = {'source': list(sources)}
+    for c in _SIDELIST_FORENSIC_COLUMNS:
+        cols[c] = [''] * len(sources)
+    cols['carveLabel'] = ['REIT'] * len(sources)
+    cols['forensicReason'] = ['REFUSED: accruals, margins and asset quality are not '
+                              'comparable on this cohort'] * len(sources)
+    cols['M_drivers'] = ['DSRI=1.02,GMI=0.98,AQI=1.01,SGI=1.10'] * len(sources)
+    cols['forensicValid'] = [False] * len(sources)
+    return pd.DataFrame(cols)
+
+
+def _drive_writeResWrapper(tmp_path, monkeypatch, fail_on=None):
+    """Run the REAL `postBo.writeResWrapper` in `tmp_path` with every API-touching stage
+    stubbed, and return the resdic it declared into.
+
+    `fail_on` -- a substring of a filename whose `to_csv` must raise, i.e. the write-failure
+    the audit is supposed to notice.  Patched at `pandas.DataFrame.to_csv` rather than at
+    the pipeline, because the point is to fail the WRITE and leave everything else real.
+
+    NO NETWORK: `writeBoAggToCSV`, `createPresentation`, `buildForensicFlagTable`,
+    `writeForensicFlagsCSV` and `volavg_report_frame` are all replaced; nothing else in this
+    function reaches the vendor.  EVERY WRITE LANDS IN `tmp_path` (chdir), so the repo write
+    guard is not tripped.
+
+    The three UNCONDITIONAL deliverables are therefore declared and never written -- their
+    writers are the stubs -- so a caller must assert on named files, never on list lengths.
+    """
+    import carveOut as co
+    import postBo as pb
+    monkeypatch.chdir(tmp_path)
+
+    fb = pd.DataFrame({'source': ['A', 'B', 'C', 'D', 'E'],
+                       'AggScore': [0.9, 0.8, 0.7, 0.6, 0.5],
+                       'rankOfRanks_diag': [1.0, 2.0, 3.0, 4.0, 5.0]})
+    flags = _flag_table(fb['source'])
+
+    resdic = {
+        'ntopagg': 100, 'ntopxlsx': 2,
+        'postRank': fb,
+        'cdx_df': pd.DataFrame({'source': list('ABCDE'),
+                                'date': pd.Timestamp('2025-01-01')}),
+        'SLmeanMscore': pd.DataFrame(), 'SLmeanCscore': pd.DataFrame(),
+        'baseurl': 'http://x/', 'api_key': 'k',
+        'tickerfilter': 'stock_TEST1', 'datasource': 'fmp',
+        'universe': 'stock_TEST1', 'universe_fingerprint': 'aaaabbbbccccdddd',
+        #  A THREE-NAME cohort and a ONE-NAME cohort.  One member is the real measured
+        #  minimum for a compact deliverable (the 2026-08-07 Micro band), so the fixture
+        #  carries the case any row FLOOR would have failed.
+        'carveout_sidelists': {'REIT': {'postRank': fb.head(3)},
+                               'Mining': {'postRank': fb.head(1)}},
+        'carveout_labels': {'A': 'REIT'},
+    }
+
+    monkeypatch.setattr(pb, 'writeBoAggToCSV', lambda *a, **k: flags)
+    monkeypatch.setattr(pb, 'createPresentation', lambda *a, **k: None, raising=False)
+    monkeypatch.setattr(pb.ff, 'buildForensicFlagTable', lambda *a, **k: flags)
+    monkeypatch.setattr(pb.ff, 'writeForensicFlagsCSV', lambda *a, **k: None)
+    monkeypatch.setattr(co, 'partition_by_marketcap', lambda *a, **k: {
+        'bands': {'General': fb.head(2), 'Micro_lt_50M': fb.head(1)},
+        'band_counts': {'General': 2, 'Micro_lt_50M': 1},
+        'unknown_mcap': 0, 'currency_pending': False,
+        'band_selective': {'General': True, 'Micro_lt_50M': False},
+        'band_note': {'General': '',
+                      'Micro_lt_50M': 'NOT A SELECTION: all 1 member(s) of '
+                                      'Micro_lt_50M shown (top-5 requested, band has '
+                                      'only 1)'}})
+    monkeypatch.setattr(co, 'volavg_report_frame', lambda names: pd.DataFrame(
+        {'source': list(names), 'volAvg_report': [''] * len(names),
+         'volAvg_asof': ['not-captured'] * len(names)}))
+
+    if fail_on is not None:
+        _real_to_csv = pd.DataFrame.to_csv
+
+        def _boom(self, path_or_buf=None, *a, **k):
+            if isinstance(path_or_buf, str) and fail_on in path_or_buf:
+                raise OSError(28, 'No space left on device')
+            return _real_to_csv(self, path_or_buf, *a, **k)
+
+        monkeypatch.setattr(pd.DataFrame, 'to_csv', _boom)
+
+    pb.writeResWrapper(resdic)
+    return resdic
+
+
+def test_a_sidelist_that_FAILED_TO_WRITE_IS_STILL_DECLARED(tmp_path, monkeypatch):
+    """THE HOLE ITS OWN AUTHOR NAMED AS THE LARGEST ONE.  The REIT side-list raises on
+    write.  Before the fix it removed itself from the declaration and the run exited 0 with
+    a cohort list silently absent; now it is declared before the attempt, so the audit sees
+    a declared file with nothing behind it.
+
+    The second half is the part the old single-try loop got wrong: the Mining cohort AFTER
+    the failed one must still be written and still be declared.  One `to_csv` raising used
+    to abandon every remaining cohort."""
+    resdic = _drive_writeResWrapper(tmp_path, monkeypatch, fail_on='SideList_REIT')
+    declared = resdic['declared_deliverables']
+    reit = 'SideList_REIT_Top100-%s_fmp_stock_TEST1.csv' % _today()
+    mining = 'SideList_Mining_Top100-%s_fmp_stock_TEST1.csv' % _today()
+
+    assert reit in declared, (
+        'the failed side-list removed itself from the declaration: %s' % declared)
+    assert not os.path.exists(str(tmp_path / reit)), 'the fixture did not fail the write'
+    assert mining in declared and os.path.exists(str(tmp_path / mining)), (
+        'a cohort AFTER the failed one was abandoned -- the per-file guard is not in place')
+
+    deck = _deck(tmp_path / ('presentation_%s.html' % _today()), 5)
+    res = dlv.audit_deliverables([n for n in declared if n.startswith('SideList_')],
+                                 _today(), repo_root=str(tmp_path),
+                                 deck_report=_ok_deck_report(deck, 5),
+                                 row_expectations=resdic['deliverable_rows'])
+    assert res['exit_code'] == 2
+    failed = {i['name']: ' '.join(i['why']) for i in res['failed']}
+    assert reit in failed and 'DOES NOT EXIST' in failed[reit], failed
+    assert mining not in failed, failed
+
+
+def test_a_band_CSV_that_FAILED_TO_WRITE_IS_STILL_DECLARED(tmp_path, monkeypatch):
+    """The band block had the identical shape and the identical hole.  Its filename depends
+    on `band_selective` (the `_ALLMEMBERS_NOT_A_SELECTION` marker), which the partition has
+    already decided before any write -- so there is nothing about the name that requires
+    waiting for `to_csv` to return."""
+    resdic = _drive_writeResWrapper(tmp_path, monkeypatch, fail_on='MarketCapBand_General')
+    declared = resdic['declared_deliverables']
+    general = 'MarketCapBand_General-%s_fmp_stock_TEST1.csv' % _today()
+    micro = ('MarketCapBand_Micro_lt_50M_ALLMEMBERS_NOT_A_SELECTION-%s_fmp_stock_TEST1.csv'
+             % _today())
+
+    assert general in declared, declared
+    assert not os.path.exists(str(tmp_path / general))
+    assert micro in declared and os.path.exists(str(tmp_path / micro)), (
+        'the band after the failed one was abandoned')
+
+    deck = _deck(tmp_path / ('presentation_%s.html' % _today()), 5)
+    res = dlv.audit_deliverables([n for n in declared if n.startswith('MarketCapBand_')],
+                                 _today(), repo_root=str(tmp_path),
+                                 deck_report=_ok_deck_report(deck, 5),
+                                 row_expectations=resdic['deliverable_rows'])
+    assert res['exit_code'] == 2
+    assert general in [i['name'] for i in res['failed']]
+
+
+def test_the_provenance_SIDECAR_declares_ITSELF_before_it_is_written(tmp_path, monkeypatch):
+    """The sidecar was appended to the declared set after `json.dump` returned, so a sidecar
+    that failed to write also vanished from the audit's expected set.  It now declares
+    itself first and therefore appears inside its own manifest, which is what a manifest
+    that covers the whole run has to do."""
+    import json
+    resdic = _drive_writeResWrapper(tmp_path, monkeypatch)
+    prov_name = 'RunProvenance-%s_fmp_stock_TEST1.json' % _today()
+    assert prov_name in resdic['declared_deliverables']
+    prov = json.load(io.open(str(tmp_path / prov_name), encoding='utf-8'))
+    assert prov_name in prov['deliverables'], (
+        'the sidecar does not name itself, so it is still declared only after its write')
+
+
+def test_the_sidecar_says_WHICH_declared_files_were_NOT_WRITTEN(tmp_path, monkeypatch):
+    """`declared` and `written` are now two different facts, and both have to be
+    representable or the sidecar becomes a manifest that lies.
+
+    WHY IN THE SIDECAR AND NOT ONLY IN THE AUDIT BANNER: the sidecar is an artifact that
+    TRAVELS to Drive, so the discrepancy is diagnosable from the transferred set on the
+    receiving machine.  The banner lives in the run log, which is the file the 2026-09-01
+    failure was already reported in -- at line 2209 of 5,222.
+
+    The semantics stamp is asserted too.  Two sidecars either side of this change would
+    otherwise make the same claim under the same key while meaning different things, which
+    is precisely the defect this sidecar exists to end (a universe NAME whose meaning
+    changed on 2026-08-02)."""
+    import json
+    resdic = _drive_writeResWrapper(tmp_path, monkeypatch, fail_on='SideList_REIT')
+    prov = json.load(io.open(str(tmp_path /
+                                 ('RunProvenance-%s_fmp_stock_TEST1.json' % _today())),
+                             encoding='utf-8'))
+    reit = 'SideList_REIT_Top100-%s_fmp_stock_TEST1.csv' % _today()
+    mining = 'SideList_Mining_Top100-%s_fmp_stock_TEST1.csv' % _today()
+    assert prov['deliverables_declaration'] == 'declared-intent-before-write'
+    absent = prov['deliverables_declared_not_written']
+    assert reit in absent, absent
+    assert mining not in absent, absent
+    #  and the counts travel with it, so a later offline audit of this run can be given the
+    #  producer's own expectations instead of having none
+    assert prov['deliverables_expected_rows'][mining] == 1
+
+
+def test_the_declared_but_absent_file_does_NOT_break_the_transfer_manifest(tmp_path):
+    """THE RIPPLE THE FIX HAD TO HANDLE.  `Sbocker.main` passes `writeResWrapper`'s return
+    value straight into `transfer_utils.copy_artifacts_to_transfer_dir`, so the declaration
+    is also the incremental transfer manifest -- and it may now name a file that does not
+    exist.  The copier's contract already covers it ("missing sources are skipped, not an
+    error"), and that is asserted here rather than assumed, because a declaration that made
+    a healthy run report a transfer ERROR would be the alarm fatigue this gate exists to
+    avoid.
+
+    `reconcile_transfer` is NOT affected and is not asserted here: its groups come from
+    `Sbocker.allowlist_patterns` globs, which resolve off the filesystem, so a declared name
+    with no file behind it never enters reconciliation."""
+    import transfer_utils as tu
+    src = tmp_path / 'src'
+    dest = tmp_path / 'dest'
+    src.mkdir()
+    dest.mkdir()
+    wrote = src / 'SideList_Mining_Top100-2026-09-03_fmp_stock_TEST1.csv'
+    io.open(str(wrote), 'w', encoding='utf-8').write('source,AggScore\nA,0.9\n')
+    never = str(src / 'SideList_REIT_Top100-2026-09-03_fmp_stock_TEST1.csv')
+
+    res = tu.copy_artifacts_to_transfer_dir(str(dest), [str(wrote), never], verbose=False)
+    assert res['status'] == 'success', res
+    assert res['copied'] == 1 and res['errors'] == 0, res
+    assert os.path.exists(str(dest / wrote.name))
+
+
+def _today():
+    from datetime import datetime
+    return datetime.today().strftime('%Y-%m-%d')
+
+
+# =========================================================================== #
+#  11.  COMPLETENESS ON THE COMPACT DELIVERABLES (gap 2, closed 2026-09-03)    #
+# =========================================================================== #
+#  Five `SideList_*` and up to four `MarketCapBand_*` CSVs are compact BY DESIGN -- 187 to
+#  1,647 bytes, 1 to 25 rows measured -- so they got `NONEMPTY` and nothing more, and A
+#  HEADER-ONLY SIDE-LIST PASSED THE GATE.  No byte number separates a legitimate five-row
+#  cohort list from a truncated one.  The fix is the declare-and-measure split the XLSX
+#  check already uses; the risk it must not create is a check that fires on a legitimately
+#  tiny cohort, which would be the byte-floor S1 rebuilt in a new place.
+
+def _sidelist(path, rows, declared_cols=None):
+    """A side-list of the CURRENT writer's width (source + AggScore + rankOfRanks_diag +
+    the 14 merged forensic columns), with the free-text columns populated."""
+    n = max(int(rows), 0)
+    base = pd.DataFrame({'source': ['T%d' % i for i in range(n)],
+                         'AggScore': [0.9 - 0.01 * i for i in range(n)],
+                         'rankOfRanks_diag': [float(i + 1) for i in range(n)]})
+    flags = _flag_table(base['source'])
+    out = base.merge(flags, on='source', how='left') if n else \
+        pd.concat([base, flags], axis=1)
+    out.to_csv(str(path), index=False)
+    return str(path)
+
+
+def test_a_HEADER_ONLY_sidelist_FAILS_when_the_producer_DECLARED_rows(tmp_path):
+    """THE DEFECT.  A cohort of 25 names whose CSV came out with a header and no rows is
+    ~150 bytes -- above `NONEMPTY`, below nothing -- so before this change it was reported
+    OK.  The producer's own count is what makes it decidable."""
+    p = tmp_path / ('SideList_REIT_Top100-2026-09-03_fmp_stock_CUR3K.csv')
+    _sidelist(p, 0)
+    assert 0 < os.path.getsize(str(p)) < 1024, os.path.getsize(str(p))
+
+    deck = _deck(tmp_path / 'presentation_2026-09-03.html', 5)
+    res = dlv.audit_deliverables([p.name], '2026-09-03', repo_root=str(tmp_path),
+                                 deck_report=_ok_deck_report(deck, 5),
+                                 row_expectations={p.name: 25})
+    assert res['exit_code'] == 2
+    why = ' '.join(res['failed'][0]['why'])
+    assert 'INCOMPLETE -- 0 of the 25' in why, why
+    assert 'HEADER-ONLY' in why, why
+    #  and the banner carries the two numbers, because `150 bytes` is not a readable
+    #  statement about a kind whose size says nothing
+    assert '0/25 rows' in dlv.format_banner(res)
+
+
+def test_a_TRUNCATED_sidelist_FAILS(tmp_path):
+    """The other half of the same event: some rows written, not all.  A 5-of-25 side-list is
+    a cohort the CEO reviews with four fifths of it silently absent."""
+    p = tmp_path / 'SideList_Mining_Top100-2026-09-03_fmp_stock_CUR3K.csv'
+    _sidelist(p, 5)
+    deck = _deck(tmp_path / 'presentation_2026-09-03.html', 5)
+    res = dlv.audit_deliverables([p.name], '2026-09-03', repo_root=str(tmp_path),
+                                 deck_report=_ok_deck_report(deck, 5),
+                                 row_expectations={p.name: 25})
+    assert res['exit_code'] == 2
+    assert 'INCOMPLETE -- 5 of the 25' in ' '.join(res['failed'][0]['why'])
+
+
+@pytest.mark.parametrize('rows', [1, 2, 5])
+def test_a_LEGITIMATELY_TINY_cohort_PASSES(tmp_path, rows):
+    """THE FALSE-POSITIVE CONTROL, AT THE REAL MEASURED FLOOR.  A cohort can have ONE
+    member: `MarketCapBand_Micro_lt_50M_ALLMEMBERS_NOT_A_SELECTION-2026-08-07_...csv` holds
+    exactly one, and the smallest real side-list holds five.  A row FLOOR would have failed
+    the first of those on the only run that ever produced one -- the byte-floor S1 in a new
+    place, which is what this parameterisation exists to stop.
+
+    Nothing here is a threshold: the expectation IS the producer's frame length, so a
+    one-row cohort declares 1, writes 1 and passes."""
+    p = tmp_path / ('MarketCapBand_Micro_lt_50M_ALLMEMBERS_NOT_A_SELECTION-2026-09-03_'
+                    'fmp_stock_CUR3K.csv')
+    _sidelist(p, rows)
+    deck = _deck(tmp_path / 'presentation_2026-09-03.html', 5)
+    res = dlv.audit_deliverables([p.name], '2026-09-03', repo_root=str(tmp_path),
+                                 deck_report=_ok_deck_report(deck, 5),
+                                 row_expectations={p.name: rows})
+    assert res['exit_code'] == 0, [(i['name'], i['why']) for i in res['failed']]
+    assert not res['degraded'], [(i['name'], i['why']) for i in res['degraded']]
+
+
+def test_an_EMPTY_BY_DESIGN_cohort_declares_ZERO_and_PASSES(tmp_path):
+    """A cohort with no members is a header-only CSV and that is CORRECT output.  The check
+    cannot fire on it, because the producer declares 0 and the file holds 0 -- which is the
+    property that separates this from any absolute floor: the same file that PASSES here is
+    the file that FAILS in `test_a_HEADER_ONLY_sidelist_...` above, and the only difference
+    is what the producer said it had."""
+    p = tmp_path / 'SideList_REIT_Top100-2026-09-03_fmp_stock_CUR3K.csv'
+    _sidelist(p, 0)
+    deck = _deck(tmp_path / 'presentation_2026-09-03.html', 5)
+    res = dlv.audit_deliverables([p.name], '2026-09-03', repo_root=str(tmp_path),
+                                 deck_report=_ok_deck_report(deck, 5),
+                                 row_expectations={p.name: 0})
+    assert res['exit_code'] == 0, [(i['name'], i['why']) for i in res['failed']]
+    assert not res['degraded']
+
+
+def test_a_compact_deliverable_with_NO_declared_count_DEGRADES_and_never_FAILS(tmp_path):
+    """THE DEGRADE PATH THE HISTORICAL RUNS NEED.  An older `resdic`, a loaded run, or an
+    offline audit of an artifact from before 2026-09-03 carries no counts.  Failing those
+    would fire on every replay -- so the verdict is UNVERIFIED at DEGRADED, exit 0, with the
+    reason named.  Silence was the other option and was rejected: a compact deliverable
+    whose completeness nobody checked is a fact worth one line."""
+    p = tmp_path / 'SideList_REIT_Top100-2026-08-07_fmp_stock_CUR3K.csv'
+    _sidelist(p, 0)
+    deck = _deck(tmp_path / 'presentation_2026-08-07.html', 5)
+    res = dlv.audit_deliverables([p.name], '2026-08-07', repo_root=str(tmp_path),
+                                 deck_report=_ok_deck_report(deck, 5))
+    assert res['exit_code'] == 0, [(i['name'], i['why']) for i in res['failed']]
+    assert [i['name'] for i in res['degraded']] == [p.name]
+    assert 'UNVERIFIED' in ' '.join(res['degraded'][0]['why'])
+
+
+def test_a_NON_compact_kind_with_no_declared_count_stays_SILENT(tmp_path):
+    """The other side of the same decision.  `AggScoreTop*` has a real byte floor AND a
+    vendor-block check, so "no row count was declared" says nothing new about it and must
+    not add a line to the banner.  Nine spurious DEGRADED entries per run is how a banner
+    stops being read."""
+    p = tmp_path / 'AggScoreTop100-2026-09-03_fmp_stock_CUR3K.csv'
+    _aggscore(p, 97)
+    deck = _deck(tmp_path / 'presentation_2026-09-03.html', 5)
+    res = dlv.audit_deliverables([p.name], '2026-09-03', repo_root=str(tmp_path),
+                                 deck_report=_ok_deck_report(deck, 5))
+    assert res['exit_code'] == 0 and not res['degraded'], (
+        [(i['name'], i['why']) for i in res['degraded']])
+
+
+def test_MORE_rows_than_declared_is_DEGRADED_not_FAILED(tmp_path):
+    """Nothing is missing from the file, so refusing the run would cost the operator a
+    banner for no recoverable fault -- but the producer's count and the file disagree, which
+    means one of the two measurements is wrong, and a disagreement between the only two
+    numbers this check has is not something to swallow."""
+    p = tmp_path / 'SideList_Mining_Top100-2026-09-03_fmp_stock_CUR3K.csv'
+    _sidelist(p, 7)
+    deck = _deck(tmp_path / 'presentation_2026-09-03.html', 5)
+    res = dlv.audit_deliverables([p.name], '2026-09-03', repo_root=str(tmp_path),
+                                 deck_report=_ok_deck_report(deck, 5),
+                                 row_expectations={p.name: 5})
+    assert res['exit_code'] == 0
+    assert [i['name'] for i in res['degraded']] == [p.name]
+    assert '7 data row(s) against the 5 declared' in ' '.join(res['degraded'][0]['why'])
+
+
+def test_the_ROW_CHECK_is_keyed_on_the_DECLARATION_not_on_the_KIND(tmp_path):
+    """A count declared for a kind that has no entry in `_ROWCOUNT_KINDS` is still honoured,
+    so a writer taught to declare one later needs no edit to the auditor.  This is the same
+    inversion the floor table uses: the auditor never decides on its own that a file ought
+    to have been bigger."""
+    p = tmp_path / 'ForensicFlagsTop100-2026-09-03_fmp_stock_CUR3K.csv'
+    _aggscore(p, 3)                     # real width, 3 rows, well under this kind's floor
+    item = dlv._check_file(str(p), '2026-09-03', expected_rows=100)
+    assert item['state'] == 'FAILED'
+    assert item['rows'] == 3 and item['expected_rows'] == 100
+    assert 'INCOMPLETE -- 3 of the 100' in ' '.join(item['why'])
+
+
+def test_a_row_expectation_on_a_NON_CSV_is_reported_not_silently_dropped(tmp_path):
+    """`count_csv_rows` on a workbook would be nonsense, so the expectation is not applied
+    -- but dropping it in silence would make a producer's declaration disappear, which is
+    the class of thing this whole change is about.  Named, DEGRADED, exit 0."""
+    #  TWENTY sheets, not two: this kind carries an 8 KB floor and a two-sheet workbook
+    #  lands under it, so a small fixture would make this test pass on the floor instead of
+    #  on the branch it is about (measured: 20 sheets -> 14,725 bytes).
+    x = _xlsx(tmp_path / 'PresentationTop20-2026-09-03_fmp_x.xlsx',
+              ['T%d' % i for i in range(20)])
+    item = dlv._check_file(x, '2026-09-03', expected_rows=20)
+    assert item['state'] == 'DEGRADED'
+    assert item['rows'] is None and item['expected_rows'] == 20
+    assert 'non-CSV' in ' '.join(item['why'])
+
+
+def test_an_UNREADABLE_csv_with_a_declared_count_FAILS(tmp_path):
+    """A directory where a CSV should be, a permission failure, a half-flushed handle: the
+    count cannot be taken, and "could not check" must not read as "checked and fine"."""
+    d = tmp_path / 'SideList_REIT_Top100-2026-09-03_fmp_stock_CUR3K.csv'
+    d.mkdir()
+    assert dlv.count_csv_rows(str(d)) == -1
+    item = dlv._check_file(str(d), '2026-09-03', expected_rows=5)
+    assert item['state'] == 'FAILED'
+    assert 'could not be checked' in ' '.join(item['why'])
+
+
+def test_a_QUOTED_EMBEDDED_NEWLINE_counts_as_ONE_row(tmp_path):
+    """THE HAZARD IN THE COUNTER ITSELF.  The side-lists carry free-text columns
+    (`forensicReason`, `M_drivers`), and a newline inside a quoted field would make a
+    line-count read HIGH -- which on the `<` comparison HIDES a truncation and on the `>`
+    comparison manufactures a spurious DEGRADED.  `csv.reader` is why this is one row."""
+    p = tmp_path / 'SideList_REIT_Top100-2026-09-03_fmp_stock_CUR3K.csv'
+    pd.DataFrame({'source': ['AAA'],
+                  'forensicReason': ['REFUSED: accruals are not comparable\n'
+                                     'on this cohort, see COHORT_FORENSIC_VALIDITY']
+                  }).to_csv(str(p), index=False)
+    assert dlv.count_csv_rows(str(p)) == 1
+    assert io.open(str(p), encoding='utf-8').read().count('\n') > 2, (
+        'the fixture does not actually contain the embedded newline')
+
+
+def test_the_ROWCOUNT_KINDS_are_DERIVED_from_the_floor_table_not_listed_again():
+    """`_EVIDENCE_GLOBS` versus `allowlist_patterns` is the same question asked twice and it
+    drifted the moment a writer was added; this module already carries that lesson in its
+    docstring.  So the set of kinds needing a row count is DERIVED: a kind with no
+    calibrated byte floor is exactly a kind whose completeness a byte floor cannot judge.
+
+    An UNRECOGNISED kind must NOT be in the set -- it matches no prefix in the table -- so a
+    deliverable added later is never nagged about a count nobody taught its writer to
+    declare."""
+    assert dlv._ROWCOUNT_KINDS == tuple(p for p, f, _m in dlv._KIND_FLOORS
+                                        if f == dlv.NONEMPTY)
+    assert set(dlv._ROWCOUNT_KINDS) == {'SideList_', 'MarketCapBand_'}
+    assert not 'SomeNewDeliverable-2026-09-03_fmp_x.csv'.startswith(dlv._ROWCOUNT_KINDS)
+
+
+@pytest.mark.parametrize('pattern', ['SideList_*.csv', 'MarketCapBand_*.csv'])
+def test_the_row_counter_AGREES_WITH_PANDAS_on_every_REAL_compact_artifact(pattern):
+    """THE FIXTURE-ONLY RISK, closed on real data.  Every historical artifact of both
+    compact kinds in the repo root is counted by `count_csv_rows` and by `pd.read_csv`, two
+    independent parsers, and they must agree on all of them -- including the Micro band,
+    whose one row carries a quoted `band_selection` sentence containing commas.
+
+    Measured 2026-09-03: SideList_ n=10, 5..25 rows; MarketCapBand_ n=7, 1..20 rows."""
+    import glob as _glob
+    files = sorted(_glob.glob(os.path.join(REPO, pattern)))
+    if len(files) < 5:
+        pytest.skip('only %d artifacts of %s on this machine' % (len(files), pattern))
+    for f in files:
+        assert dlv.count_csv_rows(f) == len(pd.read_csv(f)), f
+    assert min(dlv.count_csv_rows(f) for f in files) <= 5, (
+        'no artifact here is small enough to exercise the tiny-cohort case')
+
+
+@pytest.mark.parametrize('run_date,datasource,tickerfilter', [
+    ('2026-08-07', 'fmp', 'stock_CUR3K'),
+    ('2026-08-04', 'fmp', 'stock_TEST1'),
+])
+def test_a_REAL_historical_run_PASSES_with_its_rows_counted_INDEPENDENTLY(
+        run_date, datasource, tickerfilter):
+    """The false-positive control for gap 2 on real artifacts, and the non-circular version
+    of it: the expectations handed to the audit come from `pd.read_csv`, a DIFFERENT parser
+    from the `csv.reader` the audit uses, so an off-by-one in either would fail this.
+
+    The known-good runs must exit 0 with the row check ARMED, not merely with it absent --
+    the absent case is `test_the_audit_PASSES_a_REAL_historical_declared_set` above."""
+    declared = _real_declared_set(run_date, datasource, tickerfilter)
+    if len(declared) < 8:
+        pytest.skip('only %d of this run\'s artifacts are on this machine' % len(declared))
+    deck = os.path.join(REPO, 'presentations', 'presentation_2026-07-17.html')
+    if not os.path.exists(deck):
+        pytest.skip('no real deck on this machine')
+
+    rows = {n: len(pd.read_csv(os.path.join(REPO, n))) for n in declared
+            if n.startswith(('SideList_', 'MarketCapBand_'))}
+    assert len(rows) >= 5, rows
+    assert min(rows.values()) <= 5, ('this run has no small cohort, so it cannot exercise '
+                                     'the tiny-cohort case: %s' % rows)
+
+    res = dlv.audit_deliverables(declared, run_date, repo_root=REPO,
+                                 deck_report=_ok_deck_report(deck,
+                                                             dlv.count_deck_pages(deck)),
+                                 row_expectations=rows)
+    assert res['exit_code'] == 0, [(i['name'], i['rows'], i['expected_rows'], i['why'])
+                                   for i in res['failed']]
+    #  SCOPED TO THE COMPACT KINDS.  The XLSX of a historical run legitimately DEGRADES
+    #  here -- no `xlsx_report` survives a run that finished weeks ago, so its page
+    #  completeness is UNVERIFIED and says so.  That is a pre-existing verdict about a
+    #  different kind, and asserting it away would make this test about the wrong thing.
+    compact_degraded = [(i['name'], i['why']) for i in res['degraded']
+                        if i['name'].startswith(('SideList_', 'MarketCapBand_'))]
+    assert not compact_degraded, compact_degraded
+    counted = {i['name']: (i['rows'], i['expected_rows']) for i in res['items']
+               if i['name'] in rows}
+    assert counted and all(a == b for a, b in counted.values()), counted
+
+
+def test_writeResWrapper_DECLARES_A_ROW_COUNT_for_every_compact_file_it_declares(
+        tmp_path, monkeypatch):
+    """THE PRODUCER SIDE, END TO END.  A row check the producer never populates is an inert
+    guard, and an inert guard is this project's most-logged test defect -- so this drives
+    the real `writeResWrapper` and then audits its real output with its own declaration.
+
+    It is also the second false-positive control on the producer side: the writer's actual
+    files, judged by the writer's actual counts, must exit 0 -- including the ONE-ROW
+    Micro band, which is the case any floor would have failed."""
+    resdic = _drive_writeResWrapper(tmp_path, monkeypatch)
+    declared = resdic['declared_deliverables']
+    rows = resdic['deliverable_rows']
+    compact = [n for n in declared if n.startswith(('SideList_', 'MarketCapBand_'))]
+    assert len(compact) == 4, compact
+    assert set(compact) == set(rows), (
+        'a compact deliverable was declared with no row count: %s'
+        % sorted(set(compact) - set(rows)))
+    assert sorted(rows.values()) == [1, 1, 2, 3], rows
+
+    deck = _deck(tmp_path / ('presentation_%s.html' % _today()), 5)
+    res = dlv.audit_deliverables(compact, _today(), repo_root=str(tmp_path),
+                                 deck_report=_ok_deck_report(deck, 5),
+                                 row_expectations=rows)
+    assert res['exit_code'] == 0, [(i['name'], i['rows'], i['expected_rows'], i['why'])
+                                   for i in res['failed']]
+    assert not res['degraded'], [(i['name'], i['why']) for i in res['degraded']]
+
+
+def test_Sbocker_HANDS_the_row_declaration_to_the_audit():
+    """The wiring.  The producer declaring counts nobody passes to the auditor is a guard
+    that cannot fire, which is exactly the failure mode this file has logged four times.
+    Parsed, not imported: importing the orchestrator drags the whole pipeline graph in."""
+    import ast
+    with io.open(os.path.join(REPO, 'Sbocker.py'), encoding='utf-8') as fh:
+        tree = ast.parse(fh.read())
+    main = next(n for n in tree.body
+                if isinstance(n, ast.FunctionDef) and n.name == 'main')
+    call = next(n for n in ast.walk(main)
+                if isinstance(n, ast.Call)
+                and getattr(n.func, 'attr', None) == 'audit_deliverables')
+    kw = {k.arg for k in call.keywords}
+    assert 'row_expectations' in kw, (
+        'the audit is called without the row declaration, so the compact-deliverable '
+        'check can never fire in a real run: %s' % sorted(kw))
+    src = next(k.value for k in call.keywords if k.arg == 'row_expectations')
+    assert ast.dump(src).count('deliverable_rows') == 1, ast.dump(src)
+
+
+# =========================================================================== #
+#  12.  THE POST-PICK ANALYSIS SUITE IS GATED OFF (CEO ruling, 2026-09-03)     #
+# =========================================================================== #
+#  IN THIS FILE because it is the same `Sbocker.main` wiring block as the deck stage and
+#  the deliverable audit above, and because the two rulings pull in opposite directions and
+#  the pair only makes sense read together: BUILDING THE DELIVERABLES IS NOT OPTIONAL, and
+#  RUNNING THE DIAGNOSTICS IS.  The suite wrote ~3,000 of a 5,222-line run log and re-ran
+#  the carve 8+ times over the merged panel, and no per-run action depended on any of it.
+#
+#  THE FAILURE MODE THESE TESTS GUARD IS NOT THE SKIP, IT IS THE SILENCE.  A stage that
+#  quietly stops happening is how the deck went un-rendered from 2026-07-17 to 2026-09-02.
+
+def test_the_analysis_suite_is_OFF_by_default_and_ON_with_the_flag():
+    """Driven over the REAL config parser, because "default off" is a claim about parsing.
+    `-run_analysis` follows `-run_estimation`'s valued shape exactly, so a bare flag with no
+    value raises its own named error rather than defaulting to something."""
+    import configuration as cf
+    assert cf.getDataFetchConfiguration(['x'])['run_analysis'] == 0
+    assert cf.getDataFetchConfiguration(['x', '-run_analysis', '1'])['run_analysis'] == 1
+    assert cf.getDataFetchConfiguration(['x', '-run_analysis', '0'])['run_analysis'] == 0
+    with pytest.raises(Exception) as e:
+        cf.getDataFetchConfiguration(['x', '-run_analysis'])
+    assert '-run_analysis requires an integer argument' in str(e.value)
+
+
+def test_the_analysis_flag_does_not_disturb_the_INNER_estimation_gate():
+    """`-run_estimation` is the inner gate on the heavy parameter SEARCH inside the suite
+    and must keep its own default and its own meaning.  Two gates that quietly collapsed
+    into one would make `-run_estimation 1` silently start running the whole suite."""
+    import configuration as cf
+    c = cf.getDataFetchConfiguration(['x', '-run_estimation', '1'])
+    assert c['run_estimation'] == 1 and c['run_analysis'] == 0, c['run_analysis']
+
+
+def _main_tree():
+    import ast
+    with io.open(os.path.join(REPO, 'Sbocker.py'), encoding='utf-8') as fh:
+        tree = ast.parse(fh.read())
+    return ast, next(n for n in tree.body
+                     if isinstance(n, ast.FunctionDef) and n.name == 'main')
+
+
+def test_Sbocker_GATES_the_analysis_suite_on_run_analysis():
+    """The suite call must sit under a `configdic.get('run_analysis')` test.  Parsed, not
+    imported: importing the orchestrator drags the whole pipeline import graph in.
+
+    WHAT THIS CANNOT DETECT: that the gate is in the right PLACE.  It proves the call is
+    gated, not that the deliverables, the pick-log and the audit around it are untouched --
+    the neighbouring `test_Sbocker_runs_the_deck_stage_and_audits_with_a_nonzero_exit` is
+    what holds those in place."""
+    ast, main = _main_tree()
+    gates = [n for n in ast.walk(main)
+             if isinstance(n, ast.If)
+             and 'run_analysis' in ast.dump(n.test)
+             and 'run_analysis_suite' in ast.dump(ast.Module(body=n.body,
+                                                             type_ignores=[]))]
+    assert len(gates) == 1, (
+        'the analysis suite is not gated on run_analysis (%d matching guards)' % len(gates))
+    gate = gates[0]
+    assert 'configdic' in ast.dump(gate.test), ast.dump(gate.test)
+    #  and the suite is called NOWHERE ELSE in main, so the gate cannot be bypassed
+    calls = [n for n in ast.walk(main)
+             if isinstance(n, ast.Call)
+             and getattr(n.func, 'attr', None) == 'run_analysis_suite']
+    assert len(calls) == 1, 'run_analysis_suite is called %d times in main()' % len(calls)
+
+
+def test_the_SKIP_is_announced_and_names_the_flag_that_runs_it():
+    """THE POINT OF THE WHOLE SECTION.  A silently-skipped stage is the 2026-07-17 deck
+    failure: the operator cannot tell "did not run" from "ran and produced nothing", and
+    six weeks of work sat unrendered on that ambiguity.  So the else-branch must print, and
+    the line must carry the flag -- a skip notice that does not say how to un-skip sends the
+    reader to the source."""
+    ast, main = _main_tree()
+    gate = next(n for n in ast.walk(main)
+                if isinstance(n, ast.If)
+                and 'run_analysis' in ast.dump(n.test)
+                and 'run_analysis_suite' in ast.dump(ast.Module(body=n.body,
+                                                                type_ignores=[])))
+    assert gate.orelse, 'the skip path is SILENT -- there is no else branch'
+    prints = [n for n in ast.walk(ast.Module(body=gate.orelse, type_ignores=[]))
+              if isinstance(n, ast.Call) and getattr(n.func, 'id', None) == 'print']
+    assert len(prints) == 1, 'the skip must be ONE line, not %d' % len(prints)
+    text = ' '.join(c.value for c in ast.walk(prints[0])
+                    if isinstance(c, ast.Constant) and isinstance(c.value, str))
+    assert 'SKIPPED' in text, text
+    assert '-run_analysis 1' in text, text
+    #  and it explains WHY, so the operator is not left guessing whether it broke
+    assert 'no per-run action depended' in text, text
+
+
+def test_the_skip_notice_tells_run_estimation_it_is_the_INNER_gate():
+    """`-run_estimation 1` alone now runs nothing, and an operator who set it deserves to be
+    told that rather than to watch a silent run.  This is the one branch in the skip line,
+    and it exists because a flag that silently stops working is worse than one that is
+    rejected."""
+    ast, main = _main_tree()
+    gate = next(n for n in ast.walk(main)
+                if isinstance(n, ast.If)
+                and 'run_analysis' in ast.dump(n.test)
+                and 'run_analysis_suite' in ast.dump(ast.Module(body=n.body,
+                                                                type_ignores=[])))
+    dumped = ast.dump(ast.Module(body=gate.orelse, type_ignores=[]))
+    assert 'run_estimation' in dumped, (
+        'the skip line says nothing to an operator who set -run_estimation')

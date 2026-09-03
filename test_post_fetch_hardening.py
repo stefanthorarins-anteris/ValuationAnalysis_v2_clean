@@ -475,11 +475,15 @@ def test_the_row_guard_PADS_and_so_cannot_ragged_the_vectors():
     the whole reason the guard is workable.  Asserted structurally, since driving the real loop
     needs a full resdic.
 
-    THE COUNT MOVED 12 -> 11 ON 2026-08-13, and the DIRECTION is the point.  `ccyVec` (the new
-    `priceCurrency` column, register N-3) joined the tuple, and `dyVec` / `GNtPVec` LEFT it:
-    `dividendYield` and `GrahamNumberToPrice` are now computed from the run's own panel, so
-    they need no vendor response and must not sit inside a guard that nulls a row when one
-    fails -- a throttled call on one name would otherwise blank a number we already held.
+    THE COUNT MOVED 12 -> 11 ON 2026-08-13 AND 11 -> 10 ON 2026-09-03, and the DIRECTION is
+    the point both times: a vector leaves this tuple exactly when its value stops coming from
+    a vendor response.  `ccyVec` (the new `priceCurrency` column, register N-3) JOINED it;
+    `dyVec` / `GNtPVec` left in 2026-08-13 and `pEratioVec` left in 2026-09-03, because
+    `dividendYield`, `GrahamNumberToPrice` and now `PE-ratio` are all computed from the run's
+    own panel -- so they need no vendor response and must not sit inside a guard that nulls a
+    row when one fails.  A throttled call on one name would otherwise blank a number we
+    already held offline.  (The P/E's move is what the 2026-09-03 ruling made possible: it no
+    longer reads FMP's `priceEarningsRatio` at all, so it has nothing left in the loop.)
     The literal stays a literal on purpose: a new per-row vector that is NOT added to
     `_row_vectors` is invisible to the pad, would ragged on the first degraded row, and would
     take the whole CSV with it.  The number is a speed bump for whoever adds the next one.
@@ -488,16 +492,17 @@ def test_the_row_guard_PADS_and_so_cannot_ragged_the_vectors():
     import postBo
     src = inspect.getsource(postBo.writeBoAggToCSV)
     assert "_row_vectors = (" in src
-    assert "assert len(_row_vectors) == 11" in src, "the vector count must be pinned"
+    assert "assert len(_row_vectors) == 10" in src, "the vector count must be pinned"
     #  AND THE PIN MUST DESCRIBE THE REAL TUPLE, not just exist: bumping the literal without
     #  adding the vector would satisfy the line above and still ragged the frame.
     _tup = src[src.index("_row_vectors = ("):]
     _tup = _tup[:_tup.index(")")]
-    assert len([v for v in _tup.split("(")[1].split(",") if v.strip()]) == 11
+    assert len([v for v in _tup.split("(")[1].split(",") if v.strip()]) == 10
     assert "ccyVec" in _tup, "the priceCurrency vector must be covered by the pad guard"
-    assert "dyVec" not in _tup and "GNtPVec" not in _tup, (
-        "dividendYield / GrahamNumberToPrice are computed from the panel; putting them back "
-        "in the row guard would let a failed vendor call blank a value we already hold")
+    assert "dyVec" not in _tup and "GNtPVec" not in _tup and "pEratioVec" not in _tup, (
+        "dividendYield / GrahamNumberToPrice / PE-ratio are computed from the panel; putting "
+        "them back in the row guard would let a failed vendor call blank a value we already "
+        "hold")
     assert "finally:" in src
     i_fin = src.index("finally:")
     tail = src[i_fin:i_fin + 400]

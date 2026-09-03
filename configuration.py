@@ -94,7 +94,7 @@ def _build_parser():
                  '-boresultsfilename', '-manelimtickers', '-manelimfilename',
                  '-asof', '-delisted_max_pages', '-portfolioTest',
                  '-backtest_buy_years', '-backtest_eval_years', '-backtest_topn',
-                 '-run_estimation', '-transfer_dir'):
+                 '-run_estimation', '-run_analysis', '-transfer_dir'):
         p.add_argument(flag, **_VALUED)
     for flag in ('-newOnly', '-ingest_delisted', '-startfromlastindex',
                  '-runbacktest', '-no_transfer', '-force_rebuild_maps'):
@@ -503,6 +503,27 @@ def getDataFetchConfiguration(args):
     else:
         run_estimation = 0
 
+    # -run_analysis (VALUED, default 0): gate for the WHOLE post-pick analysis suite
+    # (`baseline_tools/pipeline_analysis.run_analysis_suite`).  DEFAULT 0 -> SKIPPED.
+    #
+    # WHY IT IS OFF BY DEFAULT (CEO ruling, 2026-09-03).  The suite writes roughly 3,000 of
+    # the 5,222 lines of a run log and re-runs the carve partition eight or more times over
+    # an ~11k dead-merged panel, and NO PER-RUN ACTION DEPENDS ON ANY OF IT -- it is a
+    # diagnostic readout, not a deliverable.  A measurement whose every outcome leads to the
+    # same action is waste, and the wall-clock and the log volume are what the run pays for
+    # it.  Nothing is deleted: `-run_analysis 1` runs the identical suite it always did.
+    #
+    # NOTE ON THE TWO GATES.  `-run_estimation` remains the INNER gate on the heavy
+    # parameter SEARCH inside the suite.  This is the OUTER gate on the suite as a whole, so
+    # `-run_estimation 1` without `-run_analysis 1` runs nothing -- and `Sbocker` says so on
+    # its skip line rather than silently ignoring the inner flag.
+    # Same valued-arg shape as -run_estimation (read via configdic.get('run_analysis')).
+    if _given(ns, 'run_analysis'):
+        run_analysis = int(_require(ns, 'run_analysis',
+                                    '-run_analysis requires an integer argument (0 or 1)'))
+    else:
+        run_analysis = 0
+
     # ---- Drive transfer target resolution (OPT-OUT, default ON) -------------
     # Transfer now runs BY DEFAULT (opt-out).  The pipeline copies the output
     # allowlist to the Google-Drive-synced folder at end-of-run so run outputs
@@ -641,7 +662,8 @@ def getDataFetchConfiguration(args):
                  'startfromlastindex': startfromlastindex,
                  'force_rebuild_maps': force_rebuild_maps, 'transfer_dir': transfer_dir,
                  'transfer_disabled_reason': transfer_disabled_reason,
-                 'run_estimation': run_estimation}
+                 'run_estimation': run_estimation,
+                 'run_analysis': run_analysis}
 
     # UNIVERSE-DEFINITION PROVENANCE (2026-08-02).
     #

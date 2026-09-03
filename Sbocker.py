@@ -1496,7 +1496,7 @@ def main():
             _tb.print_exc(file=sys.stderr)
             print(_pl_banner, flush=True)
 
-        # ---- POST-PICK ANALYSIS SUITE (strictly additive, guarded) -----------------
+        # ---- POST-PICK ANALYSIS SUITE -- GATED, DEFAULT OFF ------------------------
         # Promote the offline baseline_tools/ diagnostics into pipeline stages so a single
         # overnight run also emits the analysis.  Runs AFTER the pick-log (picks + pickle +
         # pick-log already written above => pick path is DONE and UNAFFECTED) and BEFORE the
@@ -1505,23 +1505,47 @@ def main():
         # picks.  The outer try here only guards the IMPORT (baseline_tools is a sys.path dir,
         # not a package), mirroring the pick-log stage's import guard.  NO commit/push; heavy
         # ESTIMATION sub-block is OFF unless -run_estimation 1.
-        try:
-            _bt_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'baseline_tools')
-            if _bt_dir not in sys.path:
-                sys.path.insert(0, _bt_dir)
-            import pipeline_analysis as _pa
-            _pa.run_analysis_suite(resdic, configdic)
-        except Exception:
-            import traceback as _tb
-            _pa_banner = ("\n" + "!" * 78 + "\n"
-                          "!!! ANALYSIS SUITE COULD NOT BE IMPORTED/STARTED -- RUN CONTINUES !!!\n"
-                          "!!! The post-pick analysis readouts were NOT produced this run;       !!!\n"
-                          "!!! the deliverables + pick-log above are UNAFFECTED. Investigate the  !!!\n"
-                          "!!! pipeline_analysis import.                                          !!!\n"
-                          + "!" * 78 + "\n")
-            print(_pa_banner, file=sys.stderr, flush=True)
-            _tb.print_exc(file=sys.stderr)
-            print(_pa_banner, flush=True)
+        #
+        # OFF BY DEFAULT SINCE 2026-09-03 (CEO ruling).  It wrote ~3,000 of the 5,222 lines
+        # of a run log and re-ran the carve partition eight or more times over an ~11k
+        # dead-merged panel, and NO PER-RUN ACTION DEPENDED ON ANY OF ITS OUTPUT -- every
+        # outcome led to the same next step, which is the definition of a measurement not
+        # worth running.  NOTHING IS DELETED: `-run_analysis 1` runs the identical suite
+        # against the identical `resdic`.
+        #
+        # THE SKIP IS PRINTED, NEVER SILENT, and that is the whole difference between this
+        # and the failure this file spent 2026-09-02 fixing.  A stage that quietly stops
+        # happening is how the deck went un-rendered from 2026-07-17 to 2026-09-02: nothing
+        # in the log said it was not running.  ONE line, naming the flag that runs it.
+        #
+        # PLACED BEFORE THE TRANSFER AND THE DELIVERABLE AUDIT, exactly where the suite was,
+        # so the gate cannot reorder anything: skipping is the only difference.
+        if configdic.get('run_analysis'):
+            try:
+                _bt_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'baseline_tools')
+                if _bt_dir not in sys.path:
+                    sys.path.insert(0, _bt_dir)
+                import pipeline_analysis as _pa
+                _pa.run_analysis_suite(resdic, configdic)
+            except Exception:
+                import traceback as _tb
+                _pa_banner = ("\n" + "!" * 78 + "\n"
+                              "!!! ANALYSIS SUITE COULD NOT BE IMPORTED/STARTED -- RUN CONTINUES !!!\n"
+                              "!!! The post-pick analysis readouts were NOT produced this run;       !!!\n"
+                              "!!! the deliverables + pick-log above are UNAFFECTED. Investigate the  !!!\n"
+                              "!!! pipeline_analysis import.                                          !!!\n"
+                              + "!" * 78 + "\n")
+                print(_pa_banner, file=sys.stderr, flush=True)
+                _tb.print_exc(file=sys.stderr)
+                print(_pa_banner, flush=True)
+        else:
+            print('\nPOST-PICK ANALYSIS SUITE SKIPPED -- default OFF since 2026-09-03: it '
+                  'wrote ~3,000 of a run log\'s 5,222 lines, re-ran the carve 8+ times over '
+                  'the merged panel, and no per-run action depended on its output. Run it '
+                  'with  -run_analysis 1%s'
+                  % ('   [NOTE: -run_estimation is set, and it is the INNER gate on the '
+                     'search INSIDE this suite -- it does nothing without -run_analysis 1]'
+                     if configdic.get('run_estimation') else ''), flush=True)
 
         # ---- Delisted-entity (survivorship) ingestion -- GATED, default OFF ----
         # ACQUIRES survivorship data (registry + dead fundamentals + dead prices) and
@@ -1617,7 +1641,17 @@ def main():
                 _declared, _run_date,
                 deck_report=_deck_report,
                 xlsx_report=resdic.get('xlsx_report'),
-                http_tally=resdic.get('deliverable_http'))
+                http_tally=resdic.get('deliverable_http'),
+                #  THE COMPACT DELIVERABLES' ROW DECLARATION (2026-09-03).  Five
+                #  `SideList_*` and up to four `MarketCapBand_*` CSVs are compact BY
+                #  DESIGN -- 187 to 1,647 bytes measured -- so a byte floor can only ever
+                #  say "something was written" about them, and A HEADER-ONLY SIDE-LIST
+                #  PASSED THE GATE.  `writeResWrapper` now states `len(frame)` for each
+                #  before it writes it and the audit counts the rows in the file, so the
+                #  two numbers come from different places.  `.get`, not `[...]`: an older
+                #  or loaded `resdic` carries no counts and must be reported UNVERIFIED
+                #  rather than failed.
+                row_expectations=resdic.get('deliverable_rows'))
             _exit_code = _dlv.emit_audit(_audit)
         except Exception:
             # THE AUDIT'S OWN FAILURE IS ITSELF LOUD, and it does NOT fail the run: an

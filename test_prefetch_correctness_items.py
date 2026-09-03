@@ -278,6 +278,13 @@ _VALUED_FLAGS = {
     '-boresultsfilename', '-manelimtickers', '-manelimfilename', '-asof',
     '-delisted_max_pages', '-portfolioTest', '-backtest_buy_years',
     '-backtest_eval_years', '-backtest_topn', '-run_estimation', '-transfer_dir',
+    #  ADDED 2026-09-03 (CEO): `-run_analysis`, the OUTER gate on the post-pick analysis
+    #  suite, now default OFF (it wrote ~3,000 of a 5,222-line run log and no per-run
+    #  action depended on it).  VALUED, mirroring `-run_estimation`, so `-run_analysis 0`
+    #  means off rather than turning it on.  Listed here rather than tolerated by loosening
+    #  the assertion -- same reason as `-force_rebuild_maps` below: the NEXT unplanned flag
+    #  must still fail this test.
+    '-run_analysis',
 }
 #  Truth comes from PRESENCE ALONE for these -- they take NO value, so no value
 #  can ever be misread as a truth.  `-startfromlastindex` is the named example.
@@ -776,93 +783,37 @@ def test_the_skip_reason_NAMES_the_missing_artifact():
 
 
 # =========================================================================== #
-#  THE PUBLISHED P/E IS COMPUTED, NOT CONSUMED  (CEO rule; 2026-08-10)         #
+#  THE PUBLISHED P/E MOVED TO A NEW BASIS -- ITS TESTS MOVED WITH IT            #
+#  (CEO ruling, 2026-09-03)                                                     #
 # =========================================================================== #
-def _pe_panel(rows):
-    import pandas as pd
-    return pd.DataFrame(rows)
-
-
-def test_the_published_PE_is_COMPUTED_from_our_own_panel_not_read_off_the_vendor():
-    """*** THE DEFECT: `086280.KS` displayed `PE-ratio = 66.28` AT RANK 4 of the shipped
-    2026-08-10 top-100. ***
-
-    The column was FMP's `priceEarningsRatio` from `v3/ratios/<symb>`, printed as received.
-    The panel's OWN newest row for that name gives `earningsYield = 0.021864` per quarter ->
-    an annualised P/E of 11.43, and `price / epsTTM = 207,500 / 22,306 = 9.30`.  Two
-    independent readings off our own data agree to within a third; the vendor's is 5.8x either.
-
-    NOT A COLUMN-WIDE ERROR, and that was checked before anything changed: across the same
-    100 names the displayed value tracks the panel's earnings yield with a MEDIAN RATIO OF
-    1.000.  Two cells deviate past 1.5x -- `086280.KS` at 5.80x and `281820.KS` at 3.94x --
-    and the next-largest is 1.43x.
-
-    The fix is the house rule rather than a per-name patch: the vendor supplies RAW INPUTS and
-    we compute the derived quantity.  Reconstruction is free here, because `earningsYield` is
-    already on the panel and is the exact field `earnYield` is SCORED on -- so the number on
-    the sheet and the number in the score become the same object, which they were not.
-    """
-    import postBo as pb
-    #  the real 086280.KS reading, annualised by its own rows-per-year
-    t = {'086280.KS': (0.021864, 4.0), 'SEMI.PA': (0.03, 2.0), 'LOSS': (-0.01, 4.0),
-         'ZERO': (0.0, 4.0), 'NAN': (float('nan'), 4.0)}
-    assert pb._pe_ratio_from_panel(t, '086280.KS') == pytest.approx(11.4341, abs=5e-4)
-    #  THE ANNUALISATION IS PER SOURCE, not a hard-coded 4: a semi-annual filer's per-period
-    #  yield is one HALF-year's, so it annualises by 2.  A hard 4 would halve its P/E.
-    assert pb._pe_ratio_from_panel(t, 'SEMI.PA') == pytest.approx(1.0 / (2 * 0.03), abs=1e-9)
-    #  REFUSED where no meaningful P/E exists -- a loss-maker's is negative, and publishing a
-    #  negative P/E invites it to be read as "cheap", which is the sign-inversion class this
-    #  repo keeps finding.  None -> the caller falls back / writes NaN.
-    for k in ('LOSS', 'ZERO', 'NAN', 'NOT_IN_PANEL'):
-        assert pb._pe_ratio_from_panel(t, k) is None, k
-
-
-def test_the_PE_panel_table_takes_the_NEWEST_row_BY_DATE():
-    """Nothing on this path guarantees ingestion order, so the table re-sorts rather than
-    assuming -- the same boundary rule Stage-1 and Stage-2 each establish for themselves."""
-    import pandas as pd
-    import postBo as pb
-    cdx = pd.DataFrame({
-        'source': ['A'] * 3,
-        'date': ['2024-06-30', '2026-03-31', '2025-06-30'],   # deliberately out of order
-        'earningsYield': [0.01, 0.05, 0.02],
-    })
-    got = pb._pe_panel_table(cdx)
-    assert got['A'][0] == pytest.approx(0.05), 'the newest row by DATE must win'
-    #  a frame with no earningsYield column degrades to {} rather than raising: this feeds a
-    #  REPORT column and must never cost the CSV.
-    assert pb._pe_panel_table(cdx.drop(columns=['earningsYield'])) == {}
-    assert pb._pe_panel_table(None) == {}
-
-
-def test_the_PE_vendor_FALLBACK_takes_the_SAME_sign_test_as_the_computed_value():
-    """*** reviewer S3, 2026-08-10: the refusal was defeated by its own fallback. ***
-
-    Our own P/E is refused precisely when `earningsYield <= 0` -- and the vendor's P/E on that
-    same name is then NEGATIVE for the same reason, so publishing the fallback handed 100% of
-    the refusing population exactly what the refusal was written to prevent.  MEASURED on the
-    shipped 2026-08-10 top-100: one name refuses, `NEXN` (`earningsYield = -0.013804`), and its
-    published `PE-ratio` was **-18.1111**.
-
-    The fallback is not removed -- a positive vendor P/E for a name whose newest row is simply
-    missing is still worth publishing -- it is SIGN-CHECKED, so the column's one promise (a
-    published P/E is a positive P/E) holds for every cell whatever its provenance.
-    THE CHECK MOVED WITH THE BEHAVIOUR (2026-09-01) AND GOT STRONGER.  It used to scan
-    `writeBoAggToCSV`'s source for `perat > 0` within 1,400 characters of `priceEarningsRatio`.
-    The decision now lives in `postBo._pe_cell`, extracted precisely because a source scan
-    cannot see a DELETED branch -- a mutation removing the refusal outcome passed the old
-    assertion.  So the promise is asserted BEHAVIOURALLY, on the real function, with the real
-    NEXN number: a published P/E is a positive P/E whatever its provenance.
-    """
-    import postBo as pb
-    #  THE MEASURED CASE.  NEXN's vendor P/E was -18.1111 and must not be published.
-    assert pb._pe_cell(None, 'NEXN', set(), -18.1111) == ('NaN', 'none'), (
-        'the vendor fallback publishes without a sign test, so a refused loss-maker still '
-        'gets a negative P/E on the CEO sheet')
-    #  a POSITIVE vendor value is still published -- sign-CHECKED, not removed
-    assert pb._pe_cell(None, 'OTHER', set(), 18.1111) == ('18.1111', 'vendor')
-    #  and the computed side refuses the same population, so the two agree on the promise
-    assert pb._pe_ratio_from_panel({'NEXN': (-0.013804, 4.0)}, 'NEXN') is None
+#  Three tests stood here and are DELETED rather than repaired, because what they pinned no
+#  longer exists.  They asserted that the published `PE-ratio` was
+#  `1 / (rpy x earningsYield)` on the newest single quarter -- which the 2026-09-03 finding
+#  identified as the defect itself, not the fix: at a cyclical peak it publishes one peak
+#  quarter as if the company earned that four times a year (TNK, rank 1 on the shipped
+#  2026-08-31 run, showed 2.4980 against a trailing-twelve-month 3.8130).  A test that pins
+#  the defect it covers is the failure mode this project has logged 32 times, and this is one
+#  of them: the 2026-08-10 fix these tests were written for was real -- the column HAD been
+#  FMP's `priceEarningsRatio` read straight off `v3/ratios` -- but the basis chosen to replace
+#  it was itself wrong, and these tests then froze it.
+#
+#  They also pinned the `vendor` outcome of `_pe_cell`, i.e. that a name our panel could not
+#  answer for still published FMP's number behind a positive-sign test.  The CEO removed that
+#  fallback outright ("compute, do not consume"), so the assertion now pins a behaviour the
+#  deliverable is required NOT to have.
+#
+#  WHERE THE COVERAGE WENT -- it is not lost, and this note exists so nobody re-derives it:
+#  `test_display_basis.py` carries all of it, and carries it BEHAVIOURALLY, by driving the
+#  real `writeBoAggToCSV` and reading the CSV rather than calling a helper --
+#    * the newest-row-BY-DATE rule           -> the `panel` fixture's deliberately unordered
+#                                               rows + `_pe_ttm_panel_table`
+#    * "a published P/E is a POSITIVE P/E"   -> test_the_vendor_priceEarningsRatio_NEVER_
+#                                               reaches_the_CSV (loss-maker -> blank)
+#    * the vendor's number must not appear   -> the same test, which greps the WHOLE artifact
+#                                               for the vendor value
+#    * refusal vs loss-maker stay distinct   -> test_a_REFUSED_input_and_a_LOSS_MAKER_get_
+#                                               DIFFERENT_basis_tokens
+#  The `_pe_panel` helper defined here went with them; it had no callers left even before this.
 
 # =========================================================================== #
 #  -fsMAnumber IS RETIRED, AND RETIRES AUDIBLY  (CEO, 2026-08-14)              #

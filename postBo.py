@@ -334,23 +334,32 @@ def postBoWrapper(dmdic, as_of=None, dollarvol_floor='auto'):
     # in the second.  Cleared HERE because postBoWrapper is exactly once per run.
     npol.reset_counts()
 
-    # PEG's SIGN-CROSSING SUBSTITUTION -- a CROSS-SECTIONAL BASELINE, so it belongs exactly here
-    # (CEO ruling, 2026-08-05; see calcMetrics.PEG_CROSSING_SUBSTITUTION).
+    # PEG'S SIGN-CROSSING SUBSTITUTION IS GONE.  THIS CALL IS A RETAINED NO-OP (CEO ruling,
+    # 2026-09-03) -- and this comment said the opposite for a day, which is why it is rewritten
+    # rather than trimmed.
     #
-    # A growth rate computed from a NEGATIVE base is not a growth rate, so a row where earnings
-    # crossed zero takes the POOL's median growth rate instead and its P/E has to stand on its
-    # own -- neither credit nor penalty, and no tuned constant.  The median cannot be computed in
-    # `calc_special`: that sees ONE source, and on the fetch path the panel is still being
-    # accumulated, so the crossing rows arrive here as NaN.
+    # WHAT IT USED TO DO (2026-08-05 to 2026-09-03).  A growth rate computed from a NEGATIVE base
+    # is not a growth rate, so a row whose earnings crossed zero took the POOL's median growth
+    # rate instead -- neither credit nor penalty, no tuned constant -- and that median is
+    # cross-sectional, which is why the call sat here rather than in `calc_special`.
     #
-    # WHY THIS LINE AND NOT THE BUILDERS.  It is the same class of object as `BoMetric_ave` and it
-    # gets the same treatment for the same reason (audit H-1): a cross-sectional baseline is
-    # recomputed on the frame ACTUALLY SCORED, never carried stale, and never frozen into the
-    # saved panel.  `bmdf` is a LOCAL, so the artifact on disk keeps the honest per-source
-    # pre-substitution column while the score uses the pooled one.  It is also the ONE seam every
-    # Stage-1 path passes through -- `build_bometric_rows` has four call sites and
-    # `fixAfterGetData` four, and a fix applied to three of four is this project's signature
-    # defect.
+    # WHAT REPLACED IT.  The CEO ruled: "refuse it -- score as fail like every other undefined
+    # criterion", because a loss-to-profit crossing is exactly when a PEG is least meaningful and
+    # most flattering.  `peg_local`'s domain check is now `prev > 0` rather than `prev != 0`, so a
+    # crossing row is already NaN when it arrives here and fails at Stage-1 on the path every
+    # other undefined criterion takes.  `calcMetrics.PEG_CROSSING_SUBSTITUTION` and
+    # `peg_pool_median_growth` survive as DEPRECATED structure that production no longer calls.
+    #
+    # SO NOTHING ON THIS LINE IS A CROSS-SECTIONAL BASELINE ANY MORE, and no pooled value is
+    # computed for it: the audit-H-1 argument that used to justify the position no longer applies
+    # to this call (it still applies to `BoMetric_ave` above, which is untouched).
+    #
+    # THE CALL AND ITS POSITION STAY ANYWAY, deliberately.  It is retained for API compatibility
+    # with its two call sites (here and `baseline_tools/depth_sensitivity.py`), it prints one line
+    # per run saying the substitution is disabled, and `test_nan_policy` pins BOTH that it appears
+    # exactly once in this file and that it appears before Stage-1 scores the panel -- so anyone
+    # reviving a cross-sectional baseline lands on the seam that was already reasoned about
+    # instead of inventing a second one.  It no longer mutates `bmdf`.
     bmdf, _peg_stats = cm.substitute_peg_crossing(bmdf, dmdic.get('cdx_df'),
                                                  freq_map=_freq_map, verbose=True)
 
@@ -961,6 +970,7 @@ def _veto_provenance(resdic):
 
 
 def writeResWrapper(resdic):
+    import os as _os
     ntopagg = resdic['ntopagg']
     ntopxlsx = resdic['ntopxlsx']
     fidag = datetime.today().strftime('%Y-%m-%d')
@@ -1118,7 +1128,30 @@ def writeResWrapper(resdic):
     # vehicles) as its own compact CSV alongside the main deliverables. Best-effort
     # and self-contained: never raises, and is a no-op when no side-lists are
     # present (e.g. an older resdic), so the main path is unchanged.
+    #
+    #  DECLARED BEFORE IT IS WRITTEN (2026-09-03, CEO ruling).  This block used to append
+    #  each filename to the deliverable list AFTER `to_csv` returned -- so a side-list that
+    #  FAILED to write REMOVED ITSELF FROM THE DECLARATION, and the end-of-run audit, whose
+    #  expected set IS this declaration, could not possibly report it missing.  A
+    #  deliverable that never declares itself is invisible to a gate that checks
+    #  declarations, and that was the largest hole in the 2026-09-02 gate as shipped.
+    #
+    #  THE SHAPE THAT FIXES IT: build every frame and every filename FIRST, declare them,
+    #  then write in a second loop with ONE GUARD PER FILE.  Two consequences, both wanted:
+    #    * a write that raises leaves a DECLARED-BUT-ABSENT file and the audit exits 2;
+    #    * cohort 3 failing no longer takes cohorts 4 and 5 down with it (the old single
+    #      try/except around the whole loop abandoned every remaining cohort silently).
+    #  The declared ROW COUNT is `len(sl_out)` -- the frame this file is written FROM, taken
+    #  AFTER the forensic merge below, so producer and auditor are measuring the same thing
+    #  from two different places.  A merge that fans rows out is therefore counted as
+    #  written, not as an expectation the writer cannot meet.
+    #
+    #  WHAT IS STILL NOT COVERED: a cohort whose FRAME PREPARATION raises before its
+    #  filename is known is not declared.  Preparation is pure pandas over a <=100-row
+    #  frame; the write is the I/O and the write is what is now covered.
     sidelist_fnames = []
+    sidelist_rows = {}
+    _sidelist_plan = []
     try:
         sidelists = resdic.get('carveout_sidelists') or {}
         for label, sdic in sidelists.items():
@@ -1146,11 +1179,27 @@ def writeResWrapper(resdic):
                                       'forensicTag'] if c in flag_df.columns]
                 if len(_fcols) > 1:
                     sl_out = sl_out.merge(flag_df[_fcols], on='source', how='left')
-            sl_out.to_csv(fname_sidelist, index=False)
+            _sidelist_plan.append((fname_sidelist, sl_out))
             sidelist_fnames.append(fname_sidelist)
-            print(f'Carve-out side-list written to: {fname_sidelist}')
+            sidelist_rows[fname_sidelist] = int(len(sl_out))
     except Exception as _e:
-        print(f'WARNING: carve-out side-list writing skipped ({_e})')
+        print(f'WARNING: carve-out side-list PREPARATION failed '
+              f'({type(_e).__name__}: {_e}); {len(_sidelist_plan)} cohort side-list(s) '
+              f'were prepared and are DECLARED, so any that then fail to write will be '
+              f'reported by the end-of-run deliverable audit.', flush=True)
+    for _sl_fname, _sl_out in _sidelist_plan:
+        try:
+            _sl_out.to_csv(_sl_fname, index=False)
+            print(f'Carve-out side-list written to: {_sl_fname} '
+                  f'({len(_sl_out)} row(s) declared)')
+        except Exception as _e:
+            #  DECLARED ALREADY, so this is loud twice: here, and in the audit banner at
+            #  the tail of the log.  The 2026-09-01 lesson is that one WARNING at line
+            #  2209 of 5,222 is not a report.
+            print(f'!!! CARVE-OUT SIDE-LIST FAILED TO WRITE: {_sl_fname} '
+                  f'({type(_e).__name__}: {_e}). It is DECLARED, so the end-of-run '
+                  f'deliverable audit will report it MISSING and the run will exit 2.',
+                  flush=True)
 
     # Market-cap band CSVs -- one compact CSV per band, MIRRORING the SideList block
     # above. General (>$300M) top-20 + Mid/Small/Micro top-5. Best-effort + self-
@@ -1158,7 +1207,13 @@ def writeResWrapper(resdic):
     # entirely when currency data is pending, so no misbanded file ever ships (the
     # General-band CSV would just duplicate the top-20 and the sub-bands would be
     # misbanded) -- the feature becomes correct automatically once reportedCurrency flows.
+    #  DECLARED BEFORE WRITTEN, for the same reason and in the same shape as the
+    #  side-lists above (2026-09-03).  Every input to the filename is known before the
+    #  write: the `_ALLMEMBERS_NOT_A_SELECTION` marker comes from `band_selective`, which
+    #  `carveOut.partition_by_marketcap` has already decided.
     band_fnames = []
+    band_rows = {}
+    _band_plan = []
     try:
         if marketcap_bands and not marketcap_bands.get('currency_pending', True):
             _sel_map = marketcap_bands.get('band_selective') or {}
@@ -1191,15 +1246,27 @@ def writeResWrapper(resdic):
                 _marker = '' if _selective else '_ALLMEMBERS_NOT_A_SELECTION'
                 fname_band = (f'MarketCapBand_{label}{_marker}-{fidag}_'
                               f'{datasource}_{tickerfilter}.csv')
-                out_band.to_csv(fname_band, index=False)
+                _band_plan.append((fname_band, out_band, _note))
                 band_fnames.append(fname_band)
-                print(f'Market-cap band CSV written to: {fname_band}'
-                      + (f'   [{_note}]' if _note else ''))
+                band_rows[fname_band] = int(len(out_band))
         elif marketcap_bands and marketcap_bands.get('currency_pending', True):
             print('Market-cap band CSVs SKIPPED this run: reportedCurrency not yet in the '
                   'data (correct automatically from the next full fetch).', flush=True)
     except Exception as _e:
-        print(f'WARNING: market-cap band CSV writing skipped ({_e})')
+        print(f'WARNING: market-cap band CSV PREPARATION failed '
+              f'({type(_e).__name__}: {_e}); {len(_band_plan)} band CSV(s) were prepared '
+              f'and are DECLARED.', flush=True)
+    for _b_fname, _b_out, _b_note in _band_plan:
+        try:
+            _b_out.to_csv(_b_fname, index=False)
+            print(f'Market-cap band CSV written to: {_b_fname} '
+                  f'({len(_b_out)} row(s) declared)'
+                  + (f'   [{_b_note}]' if _b_note else ''))
+        except Exception as _e:
+            print(f'!!! MARKET-CAP BAND CSV FAILED TO WRITE: {_b_fname} '
+                  f'({type(_e).__name__}: {_e}). It is DECLARED, so the end-of-run '
+                  f'deliverable audit will report it MISSING and the run will exit 2.',
+                  flush=True)
 
     # READ-ONLY review-reference DATA artifacts (RawMetricsTop100 + CohortMetricStats).
     # Computed AFTER scoring from the RAW metrics captured before normalizeAndDropNA
@@ -1235,6 +1302,41 @@ def writeResWrapper(resdic):
     # ------------------------------------------------------------------------------ #
     deliverables = ([fname_AggScoretop, fname_presentationtop, fname_forensic]
                     + sidelist_fnames + band_fnames + reviewref_fnames)
+
+    #  THE ROW DECLARATION (2026-09-03).  {filename: len(frame it was written from)} for the
+    #  two COMPACT kinds -- the ones no byte floor can judge, because a five-row cohort list
+    #  is correct at 187 bytes and a header-only one is correct-looking at 50.
+    #  `deliverables.audit_deliverables` counts the rows in the written file and compares;
+    #  the two numbers come from different places, which is the only reason a producer that
+    #  declared 25 and wrote 0 is catchable.  There is deliberately NO MINIMUM: a cohort can
+    #  have one member (the 2026-08-07 Micro band did), so the expectation is always this
+    #  run's own frame length.
+    _deliverable_rows = {}
+    _deliverable_rows.update(sidelist_rows)
+    _deliverable_rows.update(band_rows)
+
+    #  DECLARED-BUT-NOT-WRITTEN, MEASURED HERE AND RECORDED IN THE SIDECAR.  Now that the
+    #  declaration is INTENT rather than a post-hoc record of success, "declared" and
+    #  "written" are two different facts and both have to be representable.  Every write
+    #  above has already happened by this point, so this is the complete discrepancy for
+    #  everything except the sidecar itself (which is in flight) -- and it is stated in the
+    #  artifact that TRAVELS TO DRIVE, not only in the run log, so the discrepancy is
+    #  diagnosable from the transferred set alone.
+    _declared_absent = [n for n in deliverables if not _os.path.exists(n)]
+    if _declared_absent:
+        print('!!! DECLARED BUT NOT WRITTEN: %d deliverable(s) -- %s. The end-of-run '
+              'deliverable audit will report these MISSING and the run will exit 2.'
+              % (len(_declared_absent), ', '.join(_declared_absent)),
+              flush=True)
+
+    #  THE SIDECAR DECLARES ITSELF, BEFORE IT IS WRITTEN.  It was appended after
+    #  `json.dump` returned, i.e. it had the same hole: a sidecar that failed to write
+    #  removed itself from the set the audit measures.  Listing itself inside its own
+    #  `deliverables` block is not a problem -- a manifest that names itself is a normal
+    #  manifest, and no consumer reads that key programmatically (checked 2026-09-03:
+    #  `test_universes` asserts only that it is non-empty; nothing else reads it).
+    fname_prov = f'RunProvenance-{fidag}_{datasource}_{tickerfilter}.json'
+    deliverables = deliverables + [fname_prov]
     try:
         import json as _json
         _prov = {k: resdic.get(k) for k in (
@@ -1268,23 +1370,36 @@ def writeResWrapper(resdic):
                       #  can carry a PREVIOUS run's FX stamp. carveOut's state always
                       #  describes the process that is writing this file.
                       'fx_rates': _fx_provenance(resdic),
-                      'deliverables': list(deliverables)})
+                      'deliverables': list(deliverables),
+                      #  WHAT `deliverables` NOW MEANS, SAID IN THE FILE (2026-09-03).
+                      #  Before this change the key was a record of files that HAD been
+                      #  written; it is now the producer's INTENT, declared before each
+                      #  write.  Two sidecars either side of this change would otherwise
+                      #  make the same claim while meaning different things -- which is the
+                      #  exact defect this sidecar was created to end (a universe NAME whose
+                      #  meaning changed on 2026-08-02).  So the semantics are stamped, and
+                      #  the discrepancy is published beside them rather than left to be
+                      #  inferred from a directory listing.
+                      'deliverables_declaration': 'declared-intent-before-write',
+                      'deliverables_declared_not_written':
+                          list(_declared_absent),
+                      'deliverables_expected_rows': dict(_deliverable_rows)})
         if not _prov.get('universe_fingerprint'):
             _prov['universe_fingerprint'] = 'unknown-not-stamped'
             _prov['warning'] = ('this run carried no universe stamp; its membership is '
                                 'NOT establishable from the artifacts')
-        fname_prov = f'RunProvenance-{fidag}_{datasource}_{tickerfilter}.json'
         with open(fname_prov, 'w') as _f:
             _json.dump(_prov, _f, indent=1, default=str)
-        deliverables = deliverables + [fname_prov]
         _vp = _prov.get('stage1_veto') or {}
         print(f'Universe provenance sidecar written to: {fname_prov} '
               f"(universe={_prov.get('universe')} "
               f"fingerprint={_prov.get('universe_fingerprint')} "
               f"stage1_veto={_vp.get('status')} pools={_vp.get('pools')})", flush=True)
     except Exception as _e:
-        print(f'WARNING: universe-provenance sidecar skipped '
-              f'({type(_e).__name__}: {_e}); deliverables unaffected.', flush=True)
+        print(f'!!! UNIVERSE-PROVENANCE SIDECAR FAILED: {fname_prov} '
+              f'({type(_e).__name__}: {_e}). The other deliverables are unaffected, but '
+              f'the sidecar is DECLARED, so the end-of-run audit will report it MISSING '
+              f'and the run will exit 2.', flush=True)
 
     # ------------------------------------------------------------------------------ #
     #  INDUSTRY COUNTER -- top-100 and top-20 (CEO, 2026-08-04).                       #
@@ -1335,6 +1450,7 @@ def writeResWrapper(resdic):
     #  same list the RunProvenance sidecar carries -- deliberately not a second
     #  enumeration.  `deliverables.audit_deliverables` measures reality against THIS.
     resdic['declared_deliverables'] = list(deliverables)
+    resdic['deliverable_rows'] = dict(_deliverable_rows)
 
     # Return the human-readable top-N deliverables just written (same pattern as
     # utils.saveWrapper returning its pickle name) so Sbocker.main can copy them to
@@ -1345,7 +1461,7 @@ def writeResWrapper(resdic):
 def _current_ratio_panel_table(cdx_df):
     """{source: currentRatio} for the published `currentRatio` column, COMPUTED from the
     run's OWN panel.  Newest row per source, taken by DATE (same reason as
-    `_pe_panel_table`).  Returns {} on any failure -- this feeds a REPORT column, so it
+    `_pe_ttm_panel_table`).  Returns {} on any failure -- this feeds a REPORT column, so it
     degrades to the vendor fallback rather than costing the CSV.
 
     *** THE DEFECT THAT FORCED THIS (2026-08-24). ***  The column was FMP's `currentRatio`
@@ -1376,9 +1492,12 @@ def _current_ratio_panel_table(cdx_df):
     call -- a whole class of divergence, not one bad cell.
 
     *** THIS DOES NOT REMOVE AN API CALL, AND AN EARLIER FRAMING SAID IT WOULD. ***  The
-    same `v3/ratios` response still supplies `grossProfitMargin` and the
-    `priceEarningsRatio` vendor fallback further down the loop, so the call stays.  What is
-    removed is the DIVERGENCE, not the request.
+    same `v3/ratios` response still supplies `grossProfitMargin`, so the call stays.  What is
+    removed is the DIVERGENCE, not the request.  (It also supplied the `priceEarningsRatio`
+    vendor fallback until 2026-09-03; that fallback is gone, and `currentRatio` is now the
+    LAST vendor field this response is read for besides `grossProfitMargin` -- so if the
+    margin ever moves to the panel too, the whole `v3/ratios` call goes with it, ~97 GETs
+    per run.  Not done here: `grossProfitMargin`'s panel reconstruction has not been checked.)
 
     SCORING IS UNAFFECTED AND THIS IS MEASURED, NOT ASSUMED.  `uCurrentRatio` is
     `FIELD_EVIDENCE='counts'`, so a 0 behaves in Stage-1 exactly as a NaN does, and of the
@@ -1434,56 +1553,150 @@ def _current_ratio_value(v):
     return f
 
 
-def _pe_cell(pe_ours, symb, refused_sources, vendor_pe):
-    """The published `PE-ratio` cell and WHY -- ('value-or-NaN', tag).
+# =========================================================================== #
+#  ONE P/E, ON ONE BASIS, AND THE BASIS IS PUBLISHED WITH IT                    #
+#  (CEO ruling, 2026-09-03)                                                     #
+# =========================================================================== #
+#  THE DEFECT.  On the shipped 2026-08-31 run the #1 name showed the SAME FACT as two
+#  different numbers in two deliverables the CEO reads side by side:
+#
+#      TNK, 2026-08-31          AggScoreTop100      PresentationTop20.xlsx
+#      P/E                      2.4980              5.26
+#      GrahamNumberToPrice      2.2941              1.31
+#
+#  Three price bases and two earnings bases between them, and not one label anywhere.  The
+#  CSV's 2.4980 was `1 / (rpy x earningsYield)` on the NEWEST SINGLE QUARTER, annualised --
+#  so a name at a cyclical peak published a quarter's peak earnings as if it earned that
+#  four times a year.  TNK is a crude tanker owner at a freight peak, which is exactly the
+#  shape that flatters most: its newest quarter annualises to EPS 25.97 against a
+#  trailing-twelve-month 17.01, so the published P/E was a THIRD too cheap.
+#
+#  THE RULING, TWO STANDING RULES MEETING.
+#    (a) COMPUTE, DO NOT CONSUME.  One basis, and it is OURS: TTM EPS over the price the
+#        ratio is actually taken at.  FMP's `priceEarningsRatio` is DROPPED FROM THE
+#        DELIVERABLE ENTIRELY -- not relabelled and shown beside ours.  A vendor second
+#        opinion on a quantity we compute is not extra information, it is a contradiction
+#        the reader has to arbitrate with no basis for doing so.
+#    (b) WHERE TWO OF OUR OWN BASES BOTH APPLY, PUBLISH THE LESS FLATTERING ONE.  The CEO:
+#        "we should always side with being more careful and pick the 'lesser' [depending on
+#        direction of good] number."  For a P/E, less flattering is HIGHER, and at a
+#        cyclical peak TTM is the higher one.  The caveat he accepted rather than had
+#        hidden from him: less flattering is NOT always more accurate -- a company whose
+#        newest quarter just collapsed shows a WORSE single-quarter P/E than TTM, and this
+#        rule will understate its cheapness.  For a preserve-capital list that is the right
+#        error to make, and the `PE-ratio_basis` column is what lets him overrule it by eye.
+#
+#  WHY THIS IS NOT MERELY A DIFFERENT WINDOW.  `epsTTM` is stamped at ingest by
+#  `getData_fmp.stamp_frequency_and_graham` as `sum(netIncome over rpy rows) /
+#  weightedAverageShsOut` -- rpy-aware, so a semi-annual filer sums 2 rows for a real
+#  twelve months, and on the SAME share basis as the panel `price`
+#  (`marketCap / weightedAverageShsOut`).  So `price / epsTTM` is:
+#    * FX-FREE BY CONSTRUCTION.  Both legs are `reportedCurrency` quantities off one row of
+#      one panel, so no rate can be stale or wrong.  This is the property that makes the
+#      Graham ratio safe (register N-3) and it now covers the P/E too.  Dividing the CSV's
+#      `price` COLUMN by `epsTTM` would NOT have it: that column is a live profile quote in
+#      the TRADING currency (SHEL.L quotes GBp and reports USD), so it would have restored
+#      exactly the currency-mixing defect N-3 exists to remove, on the CEO's own front page.
+#      That is the one reading of "at the displayed price" this deliberately does not take,
+#      and `PE-ratio_basis` says so on every row.
+#    * INDEPENDENT OF THE VENDOR'S PRICE.  `earningsYield` is FMP's own field, computed
+#      against FMP's price -- the very price `nan_policy` section 5 refuses on the ATRI and
+#      QBY0.DE shapes.  The new basis reads the run's own corrected panel instead.
+#    * NOT THE SCORED METRIC, AND THAT STAYS ON PURPOSE.  Stage-2's `earnYield` is a
+#      SIXTEEN-QUARTER windowed mean (`stage2_metrics.STAGE2_METRIC_SPEC`, WINDOW_SCORING).
+#      A report column is the P/E a reader would compute from today's statements; a score
+#      wants a cycle-length average.  They share a panel and a sign convention, not a value.
+#
+#  WHAT A READER SEES.  `PE-ratio` carries the number and `PE-ratio_basis`, immediately
+#  beside it, carries one of the four tokens below -- so a blank is never ambiguous between
+#  "loss-maker", "we refused a corrupt input" and "the panel had nothing".
+PE_BASIS_TTM = 'epsTTM/periodEndPrice(reportedCurrency)'
+PE_BASIS_REFUSED = 'refused-input'
+PE_BASIS_NO_TTM_EPS = 'no-positive-ttm-eps'
+PE_BASIS_UNAVAILABLE = 'unavailable'
 
-    EXTRACTED SO THE DECISION CAN BE TESTED (2026-09-01).  It lived inline in a ~300-line
-    function beside two API responses, so the only way to check it was to read the source and
-    assert on the ORDER OF TOKENS -- which a mutation that deletes the branch survives, because
-    the token still appears where the set is built.  A three-way decision that picks what the
-    CEO reads deserves to be callable.
+#  THE PANEL FIELDS THE PUBLISHED P/E IS BUILT FROM, listed so `_pe_refused_sources` cannot
+#  drift away from `_pe_ttm_panel_table`.  `price` and `epsTTM` are what the ratio divides;
+#  the other three are what THEY are derived from at ingest, and a section-5 refusal lands on
+#  the RAW field, so checking only the derived pair would miss the refusal that caused the gap.
+PE_INPUT_FIELDS = ('price', 'epsTTM', 'marketCap', 'weightedAverageShsOut', 'netIncome')
 
-    THE THREE OUTCOMES:
-      'ours'    our own panel answered -- 1/(rpy x earningsYield), the normal case.
-      'refused' section 5 judged this name's price side a units error.  PUBLISH NaN AND DO NOT
-                FALL BACK: the vendor's `priceEarningsRatio` is derived from the SAME price the
-                refusal rejected, so falling back republishes the defect (1/1000 of the truth
-                on the ATRI shape, ~100x too small on the QBY0.DE shape) as an absurdly CHEAP
-                positive P/E beside a name in the CEO's list.
-      'vendor'  our panel could not answer for an ORDINARY reason -- a loss-maker, no positive
-                earningsYield -- and the vendor's positive value is a different, honest read.
-    The vendor value keeps its existing sign test: a negative P/E invites "cheap".
+
+def _pe_cell(pe_ours, symb, refused_sources):
+    """The published `PE-ratio` cell and WHY -- ('value-or-NaN', basis-token).
+
+    EXTRACTED SO THE DECISION CAN BE TESTED (2026-09-01), and it earns the extraction: it
+    used to be an inline four-branch chain in the middle of a ~300-line function, beside two
+    API responses, so the only way to check it was to assert on the ORDER OF TOKENS in this
+    file -- and a mutation that DELETED the refusal branch survived that assertion, because
+    the token still appears where the set is built.  A three-way decision that picks what
+    the CEO reads deserves to be callable.
+
+    THE THREE OUTCOMES, and the vendor is no longer one of them (CEO ruling, 2026-09-03):
+      PE_BASIS_TTM          our own panel answered -- `price / epsTTM`, the normal case.
+      PE_BASIS_REFUSED      section 5 refused one of `PE_INPUT_FIELDS` on this name's newest
+                            row.  Publish NaN.
+      PE_BASIS_NO_TTM_EPS   the panel is intact and there is simply no positive trailing
+                            EPS -- a loss-maker.  Publish NaN: a negative P/E on a value
+                            screen invites the reading "cheap", which is the sign-inversion
+                            class this repo keeps finding.
+    (`PE_BASIS_UNAVAILABLE` is the caller's token for a name absent from the panel table
+    altogether; it never reaches this function's refusal branches.)
+
+    THE REFUSAL IS TESTED FIRST, AND THAT ORDER IS NOW LOAD-BEARING (found while testing
+    the new basis, 2026-09-03).  It used to be tested SECOND, after the computed value, and
+    that was harmless only because of what the old basis read: a section-5 refusal NULLED
+    `earningsYield` itself, so a refused name could never produce a computed value and the
+    order could not be observed.  The new basis reads `price` and `epsTTM`, and both are
+    DERIVED COLUMNS STAMPED BEFORE THE REFUSAL RUNS -- `getData_fmp` calls
+    `stamp_frequency_and_graham` during frame assembly and `refuse_impossible_cells` after it,
+    per ticker.  So section 5 can refuse `marketCap` (which is exactly what the price-scale
+    rule refuses -- not `price`) and leave a perfectly finite `price` behind it, derived from
+    the very market cap just judged corrupt.  Tested value-first, that name would publish a
+    P/E built on a refused input and label it as ours.
+    That is also `refuse_impossible_cells`'s own stated rule, applied one layer out: when a
+    relation is violated BOTH sides are refused, because "using either one as if it were the
+    sound half is exactly the assumption that produced the finding in the first place".
+
+    THE FOURTH OUTCOME IS DELETED, NOT DISABLED.  There used to be a `vendor` branch that
+    published FMP's `priceEarningsRatio` for any name our panel could not answer for, behind
+    a positive-sign test.  It is gone under (a) COMPUTE, DO NOT CONSUME.  Two things are
+    lost with it and they are named rather than glossed: a genuine loss-maker whose VENDOR
+    P/E was positive on a different (fiscal-year) window now shows NaN instead of a number,
+    and so does a name whose panel row is simply missing.  Both were mixing a second,
+    unlabelled basis into a column whose whole promise is that it has one -- which is what
+    the CSV was doing on the shipped runs, and the reason a reader could not tell the 2.4980
+    from the 5.26.
     """
-    if pe_ours is not None:
-        return "{:.4f}".format(pe_ours), 'ours'
     if str(symb) in (refused_sources or ()):
-        return 'NaN', 'refused'
-    if isinstance(vendor_pe, (int, float)) and not isinstance(vendor_pe, bool) and vendor_pe > 0:
-        return "{:.4f}".format(vendor_pe), 'vendor'
-    return 'NaN', 'none'
+        return 'NaN', PE_BASIS_REFUSED
+    if pe_ours is not None:
+        return "{:.4f}".format(pe_ours), PE_BASIS_TTM
+    return 'NaN', PE_BASIS_NO_TTM_EPS
 
 
 def _pe_refused_sources(cdx_df):
-    """Sources whose NEWEST row had `earningsYield` REFUSED by nan_policy section 5.
+    """Sources whose NEWEST row had ANY of `PE_INPUT_FIELDS` REFUSED by nan_policy section 5.
 
-    WHY THE P/E NEEDS THIS AND THE OTHER COLUMNS DO NOT.  `_pe_ratio_from_panel` returns None
-    for a missing OR non-positive yield, and the caller then publishes FMP's
-    `priceEarningsRatio`.  That is right for a LOSS-MAKER -- our panel genuinely cannot answer
-    and the vendor's number is a different, honest reading.  It is WRONG for a units-error
-    refusal: the vendor's P/E is derived from the SAME price the pipeline just judged corrupt,
-    so the fallback republishes the defect the refusal exists to remove.  On the ATRI shape the
-    vendor P/E is 1/1000 of the truth; on the QBY0.DE shape the vendor EPS is ~100x large and
-    the P/E ~100x small.  Either way the deliverable shows an absurdly CHEAP positive P/E
-    beside a name in the CEO's list -- the sign-inversion class this file keeps finding, in a
-    new costume.
+    A REFUSAL AND AN ABSENCE ARE DIFFERENT FACTS AND MUST NOT PRINT AS ONE.  Both give a
+    blank `PE-ratio`, but "the pipeline judged this name's inputs to contradict each other"
+    and "this company has no positive trailing earnings" are different things to know about a
+    name in the CEO's top 20, so they get different `PE-ratio_basis` tokens.  This mirrors the
+    `_cr_refused` idiom the `currentRatio` column already uses.
 
-    The neighbouring columns were checked and need no equivalent: the dividend yield computes
-    from our own `marketCap` and correctly goes absent with its own banner,
-    `grahamNumberToPrice`'s panel fallback yields non-finite and drops out, and `price` comes
-    from the live profile response rather than from `cdx`.
+    IT USED TO WATCH ONE FIELD, AND IT WATCHED THE WRONG ONE AS OF 2026-09-03: it checked
+    `earningsYield`, because the published P/E was `1 / (rpy x earningsYield)`.  The P/E is
+    now `price / epsTTM`, so the fields that can make it wrong are the ones in
+    `PE_INPUT_FIELDS` -- the two the ratio divides plus the three they are derived from at
+    ingest, since a section-5 refusal lands on the RAW field.  Watching a field the number no
+    longer reads would have mislabelled every refusal as a loss-maker.
 
-    Mirrors the `_cr_refused` idiom this file already uses for `currentRatio`: a refusal and an
-    absence are different facts and must not print as one.
+    THE VENDOR-FALLBACK ARGUMENT THAT USED TO LIVE HERE IS RETIRED WITH THE FALLBACK.  It ran:
+    a refused name must not fall back to FMP's `priceEarningsRatio`, because that is derived
+    from the SAME price the refusal rejected (1/1000 of the truth on the ATRI shape, ~100x too
+    small on the QBY0.DE shape), so the fallback republishes the defect the refusal exists to
+    remove.  There is no fallback now, so the hazard is structural rather than guarded --
+    but the DISTINCTION is kept, because it is what the basis column reports.
     """
     try:
         import nan_policy as _npol
@@ -1494,93 +1707,81 @@ def _pe_refused_sources(cdx_df):
         df['date'] = pd.to_datetime(df['date'], errors='coerce')
         newest = df.sort_values(['source', 'date'], ascending=[True, False]).groupby(
             'source', sort=False).head(1)
-        mask = _npol.refused_fields_mask(newest, 'earningsYield').fillna(False)
+        mask = None
+        for _f in PE_INPUT_FIELDS:
+            m = _npol.refused_fields_mask(newest, _f).fillna(False)
+            mask = m if mask is None else (mask | m)
+        if mask is None:
+            return set()
         return set(newest.loc[mask.to_numpy(dtype=bool), 'source'].astype(str))
     except Exception:
-        #  A REPORT column: degrade to the pre-existing behaviour rather than cost the CSV.
+        #  A REPORT column: degrade to "not refused" rather than cost the CSV.  The cell is
+        #  still blank; only the reason it gives is coarser.
         return set()
 
 
-def _pe_panel_table(cdx_df):
-    """{source: (newest earningsYield, rows-per-year)} from the run's OWN panel.
+def _pe_ttm_panel_table(cdx_df):
+    """{source: (period-end price, trailing-twelve-month EPS)} from the run's OWN panel.
 
     Newest row per source, taken by DATE rather than by arrival order, because nothing on
     this path guarantees the ingestion order (the same reason Stage-1 and Stage-2 both
     re-sort at their own boundary).  Returns {} on any failure -- this feeds a REPORT column,
-    so it degrades to the vendor fallback rather than costing the CSV.
+    so it degrades to a blank rather than costing the CSV.
+
+    BOTH LEGS COME OFF ONE ROW OF ONE PANEL, which is the whole point: `price` is
+    `marketCap / weightedAverageShsOut` and `epsTTM` is
+    `sum(netIncome over rpy rows) / weightedAverageShsOut`, both stamped at ingest by
+    `getData_fmp.stamp_frequency_and_graham`, both in `reportedCurrency`, both on the same
+    share basis.  Their ratio therefore has no currency in it and no rpy correction left to
+    apply -- unlike the `1 / (rpy x earningsYield)` reading this replaces, which needed a
+    per-source annualisation factor and inherited FMP's price.
+
+    IT REPLACES `_pe_panel_table`, WHICH IS DELETED RATHER THAN KEPT BESIDE IT.  Two
+    definitions of one published ratio drifting apart is the defect class this file keeps
+    finding; a superseded helper left in place under its old name is how the second
+    definition gets there.
     """
     try:
-        if cdx_df is None or 'earningsYield' not in getattr(cdx_df, 'columns', []):
+        cols = getattr(cdx_df, 'columns', [])
+        if cdx_df is None or 'price' not in cols or 'epsTTM' not in cols:
             return {}
-        import reporting_period as _rp
         df = cdx_df.copy()
         df['date'] = pd.to_datetime(df['date'], errors='coerce')
         df = df.sort_values(['source', 'date'], ascending=[True, False])
         newest = df.groupby('source', sort=False).head(1)
-        try:
-            freq = _rp.frequency_by_source(df, verbose=False)
-        except Exception:
-            freq = None
-        out = {}
-        for _, r in newest.iterrows():
-            s = r['source']
-            try:
-                rpy = _rp.rows_per_year(freq, s) if freq is not None else _rp.DEFAULT_ROWS_PER_YEAR
-            except Exception:
-                rpy = _rp.DEFAULT_ROWS_PER_YEAR
-            out[s] = (pd.to_numeric(r.get('earningsYield'), errors='coerce'), float(rpy))
-        return out
+        px = pd.to_numeric(newest['price'], errors='coerce')
+        eps = pd.to_numeric(newest['epsTTM'], errors='coerce')
+        return {s: (float(p), float(e))
+                for s, p, e in zip(newest['source'].astype(str), px, eps)}
     except Exception:
         return {}
 
 
-def _pe_ratio_from_panel(table, symb):
+def _pe_ttm_ratio(table, symb):
     """The published `PE-ratio` for `symb`, COMPUTED, or None if the panel cannot answer.
 
-    THE DEFECT THAT FORCED THIS (2026-08-10).  The column was FMP's `priceEarningsRatio`
-    read straight off `v3/ratios/<symb>` and printed.  On the 2026-08-10 shipped top-100
-    `086280.KS` displayed **66.28 at RANK 4** while the panel's own newest row gives
-    `earningsYield = 0.021864` per quarter -> an annualised P/E of **11.43**, and
-    `price / epsTTM = 207,500 / 22,306 = 9.30`.  Two independent readings off our own data
-    agree to within a third; the vendor's is 5.8x either of them.
+    `price / epsTTM` on the newest panel row -- see the ruling block above this group for
+    why that basis and not the other three that were in circulation.
 
-    IT IS NOT A COLUMN-WIDE ERROR, AND THAT WAS CHECKED BEFORE CHANGING ANYTHING: across the
-    same 100 names the displayed value tracks the panel's earnings yield with a MEDIAN RATIO
-    OF 1.000.  So the column is right about the population and wrong about individual cells --
-    `086280.KS` at 5.80x and `281820.KS` at 3.94x, with the next-largest deviation 1.43x.
-    (The brief that raised this called it a single isolated cell; there are TWO past 1.5x.)
+    NONE (-> a blank cell, never a fallback) when either leg is missing, non-finite, or NOT
+    POSITIVE.
+      * a non-positive `epsTTM` is a LOSS-MAKER over the trailing year.  There is no
+        meaningful P/E; publishing the negative one invites it to be read as "cheap", which
+        is the sign-inversion class this repo keeps finding.
+      * a non-positive `price` is corrupt, not cheap: `marketCap / weightedAverageShsOut`
+        cannot be <= 0 for a live listing, so the honest answer is that we do not know.
 
-    WHY COMPUTE RATHER THAN PATCH THE CELL.  A per-name correction would be a hard-coded
-    number with no rule behind it, and the next bad cell would arrive unannounced.  The house
-    rule is the general one: the vendor supplies RAW INPUTS, we compute the derived quantity.
-    Here the reconstruction is free -- the panel already carries `earningsYield`, which is the
-    same FIELD that Stage-2's `earnYield` is built from.
-
-    THEY ARE NOT THE SAME OBJECT, AND AN EARLIER VERSION OF THIS NOTE SAID THEY WERE
-    (corrected, reviewer S3).  `earnYield` is a SIXTEEN-QUARTER windowed mean of that field
-    (`stage2_metrics.STAGE2_METRIC_SPEC` declares it WINDOW_SCORING); this is the NEWEST ROW
-    only.  So the published P/E and the scored cheapness share an input and a sign convention,
-    not a value -- a name whose newest quarter is unrepresentative can read cheap here and
-    ordinary in the score.  Newest-row is the right basis for a REPORT column (it is the P/E a
-    reader would compute from today's statements) and the wrong one for a score, which is why
-    the two differ on purpose.
-
-    THE BASIS, STATED: `P/E = 1 / (rpy * earningsYield)` on the newest row.  `rpy` is the
-    source's own rows-per-year (4 quarterly, 2 semi-annual), so a semi-annual filer's
-    per-period yield is annualised by 2 rather than by a hard-coded 4 -- the same treatment
-    every other flow quantity in this pipeline gets.
-
-    REFUSED (None -> the vendor fallback, then 'NaN') when the yield is missing or NOT
-    POSITIVE.  A loss-maker has no meaningful P/E; publishing a negative one invites it to be
-    read as "cheap", which is the sign-inversion class this repo keeps finding.  `price /
-    epsTTM` is deliberately NOT used as a second fallback: it is a DIFFERENT basis, and
-    silently mixing two bases in one column is how a column stops meaning one thing.
+    NO SECOND FALLBACK BASIS, deliberately.  `1 / (rpy x earningsYield)` still computes for
+    some of the names this refuses, and using it would put two bases in one column again --
+    which is the exact defect being fixed.  One name, one number, or nothing.
     """
     try:
-        ey, rpy = table.get(symb, (None, None))
-        if ey is None or not np.isfinite(ey) or ey <= 0 or not rpy:
+        px, eps = table.get(symb, (None, None))
+        if px is None or eps is None:
             return None
-        return 1.0 / (float(rpy) * float(ey))
+        if not np.isfinite(px) or not np.isfinite(eps) or px <= 0 or eps <= 0:
+            return None
+        return float(px) / float(eps)
     except Exception:
         return None
 
@@ -1615,8 +1816,22 @@ def _pe_ratio_from_panel(table, symb):
 #  column itself is a raw quote in the LINE'S OWN currency (000660.KS = 1,616,000 KRW next
 #  to TNK = 76.21 USD).  Converting it would be wrong -- the CEO reads it as the price he
 #  would pay -- so it is LABELLED instead, by the new `priceCurrency` column beside it.
-GRAHAM_BASIS_SCORED = 'scored'          # the Stage-2 metric that ranked this name
-GRAHAM_BASIS_PANEL = 'panel-latest'     # newest panel row, for a name Stage-2 could not score
+#  THE TOKENS NAME A BASIS, NOT A CODE PATH (CEO requirement, 2026-09-03).  They used to
+#  read `scored` / `panel-latest`, which told a reader WHERE the number came from inside this
+#  program and nothing about WHICH PRICE or WHICH EARNINGS it divides -- and the price is the
+#  whole question, because the XLSX was simultaneously publishing FMP's annual `grahamNumber`
+#  over the DCF endpoint's quote under the same English name (TNK, 2026-08-31: 2.2941 here
+#  against 1.31 there).  That vendor column is now deleted; these say what survives.
+#
+#  BOTH BASES ARE FX-FREE and both divide by the PERIOD-END price
+#  (`marketCap / weightedAverageShsOut`, `reportedCurrency`) -- NOT the `price` column in this
+#  same CSV, which is a live profile quote in the trading currency.  `grahamNumber` is
+#  `sqrt(22.5 x epsTTM x bookValuePerShare)`, stamped at ingest, so both legs are statement
+#  currency and no rate can be stale or wrong.  The two differ only in WINDOW: the scored one
+#  is Stage-2's sixteen-quarter mean of the per-row ratio (the literal number that RANKED the
+#  name), the fallback is the newest row alone.
+GRAHAM_BASIS_SCORED = 'scored:16q-mean of ttmGraham/periodEndPrice'
+GRAHAM_BASIS_PANEL = 'panel-latest:ttmGraham/periodEndPrice'
 
 
 def _graham_to_price_panel_latest(cdx_df):
@@ -1628,7 +1843,7 @@ def _graham_to_price_panel_latest(cdx_df):
     so their ratio has no currency in it at all and no rate can be stale or wrong.
 
     This is the FALLBACK basis, not the primary -- see `_graham_to_price_published`.  Newest
-    row taken by DATE, not by arrival order, for the same reason `_pe_panel_table` does it.
+    row taken by DATE, not by arrival order, for the same reason `_pe_ttm_panel_table` does.
     Returns {} on any failure: this feeds a report column and must not cost the CSV.
     """
     try:
@@ -1669,7 +1884,7 @@ def _graham_to_price_published(raw_df, cdx_df):
 
     THE MIX IS NAMED, NOT SILENT -- and from 2026-08-13 it is a COLUMN, not just a log line
     (`GrahamNumberToPrice_basis`, reviewer H-2).  The basis map is returned so the caller can
-    publish and log which names fell back, as `_pe_vendor_fallback` does for the P/E.  A column
+    publish and log which names fell back, as `PE-ratio_basis` now does for the P/E.  A column
     that quietly carries two bases is a column that has stopped meaning one thing.
 
     NO VENDOR FALLBACK AT ALL, unlike the P/E.  The vendor's value here IS the defect: it is
@@ -1784,9 +1999,11 @@ def writeBoAggToCSV(fb_df, mscore, cscore, baseurl, api_key, ntopagg, fname_AggS
     source of the published `GrahamNumberToPrice` (register N-3).
 
     cdx_df : resdic['cdx_dftop100'] -- the run's OWN fundamentals panel for these names.
-    Used to COMPUTE the published `PE-ratio`, `dividendYield` and the fallback
-    `GrahamNumberToPrice` instead of consuming FMP's -- see `_pe_ratio_from_panel`,
-    `_dividend_yield_ttm_from_panel` and `_graham_to_price_published`.
+    Used to COMPUTE the published `PE-ratio`, `dividendYield`, `currentRatio` and the
+    fallback `GrahamNumberToPrice` instead of consuming FMP's -- see `_pe_ttm_ratio`,
+    `_dividend_yield_ttm_from_panel`, `_current_ratio_panel_table` and
+    `_graham_to_price_published`.  Since 2026-09-03 the P/E has NO vendor fallback at all, so
+    this frame is the only source the column has.
 
     missing_fill_df : resdic['missing_fill_by_name'] -- the run's own per-name imputation
     audit (postBoRank.missing_data_fill_report).  Supplies `imputed_weight_share`, so a
@@ -1811,7 +2028,6 @@ def writeBoAggToCSV(fb_df, mscore, cscore, baseurl, api_key, ntopagg, fname_AggS
     betaVec = []
     sectorVec = []
     ratingVec_fmp = []
-    pEratioVec = []
     mscoreVec = []
     cscoreVec = []
     #  THE TRADING CURRENCY OF THE `price` COLUMN (register N-3).  Captured from the SAME
@@ -1820,13 +2036,30 @@ def writeBoAggToCSV(fb_df, mscore, cscore, baseurl, api_key, ntopagg, fname_AggS
     #  IOB `0*.L` lines are foreign issuers).  `carveOut.trading_currency` is the offline
     #  fallback for a name whose profile call degraded.
     ccyVec = []
-    #  The published P/E is COMPUTED from this table, not read off the vendor -- see
-    #  `_pe_ratio_from_panel`.  Built ONCE for the whole CSV rather than per name: it is a
-    #  groupby over the panel, and doing it inside the loop would be 100 passes over it.
-    _pe_panel = _pe_panel_table(cdx_df)
+    #  THE P/E IS RESOLVED HERE, BEFORE THE LOOP, AND NO LONGER INSIDE IT (2026-09-03).
+    #  It reads NOTHING from a vendor response any more -- `price` and `epsTTM` are both on
+    #  the run's own panel -- so it takes the same treatment `dividendYield` and
+    #  `GrahamNumberToPrice` took on 2026-08-13, and for the identical reason: a value we
+    #  already hold offline must not sit inside the pad-to-length row guard, where a
+    #  throttled `profile` or `rating` call on ONE name would blank it.  A degraded row must
+    #  cost only what actually came from the vendor, which is what the DEGRADED-ROW SUMMARY
+    #  below claims it costs.  (This is why `_row_vectors` is 10 and not 11.)
+    #  Built ONCE for the whole CSV: it is a groupby over the panel, and doing it inside the
+    #  loop would be 100 passes over it.
+    _pe_ttm = _pe_ttm_panel_table(cdx_df)
     _pe_panel_refused = _pe_refused_sources(cdx_df)
-    _pe_vendor_fallback = []
-    _pe_refused = []
+    _pe_vals, _pe_basis = {}, {}
+    for _s in symblist:
+        if _s not in _pe_ttm:
+            #  Absent from the panel altogether -- a different fact from "refused" and from
+            #  "loss-maker", so it gets its own token rather than being folded into either.
+            _pe_vals[_s], _pe_basis[_s] = 'NaN', PE_BASIS_UNAVAILABLE
+            continue
+        _pe_vals[_s], _pe_basis[_s] = _pe_cell(
+            _pe_ttm_ratio(_pe_ttm, _s), _s, _pe_panel_refused)
+    _pe_refused = [s for s in symblist if _pe_basis.get(s) == PE_BASIS_REFUSED]
+    _pe_no_eps = [s for s in symblist if _pe_basis.get(s) == PE_BASIS_NO_TTM_EPS]
+    _pe_unavail = [s for s in symblist if _pe_basis.get(s) == PE_BASIS_UNAVAILABLE]
     #  COMPUTED, NOT CONSUMED -- both built once, for the same reason as the P/E table.  See
     #  the register N-3 block above `_graham_to_price_panel_latest` for what these replace and
     #  why an FX patch on the vendor's numbers was the wrong fix.
@@ -1871,9 +2104,16 @@ def writeBoAggToCSV(fb_df, mscore, cscore, baseurl, api_key, ntopagg, fname_AggS
     # `try/except: continue` leaves them RAGGED and the assignment raises "Length of values does
     # not match length of index" -- a one-name fault becoming total loss.  Padding in `finally`
     # to a per-row target length cannot ragged them, which is what makes the guard workable.
-    _row_vectors = (priceVec, ccyVec, pEratioVec, betaVec, sectorVec, ratingVec_fmp, crVec,
+    #  THE COUNT MOVED 11 -> 10 ON 2026-09-03, and the DIRECTION is the point (it moved
+    #  12 -> 11 on 2026-08-13 for exactly this reason).  `pEratioVec` LEFT the tuple:
+    #  `PE-ratio` is now computed from the run's own panel like `dividendYield` and
+    #  `GrahamNumberToPrice`, so it needs no vendor response and must not sit inside a guard
+    #  that nulls a row when one fails.  The literal stays a literal on purpose -- a new
+    #  per-row vector that is NOT added here is invisible to the pad, would ragged on the
+    #  first degraded row, and would take the whole CSV with it.
+    _row_vectors = (priceVec, ccyVec, betaVec, sectorVec, ratingVec_fmp, crVec,
                     margin, dcf2p, mscoreVec, cscoreVec)
-    assert len(_row_vectors) == 11, len(_row_vectors)
+    assert len(_row_vectors) == 10, len(_row_vectors)
     _rows_degraded = []
     # TOTAL TAKEN FROM THE FRAME THE LOOP ITERATES, not from the REQUESTED count: `fb_df` can
     # be shorter than `ntopagg` (a small universe, or a carve-out cohort with fewer members
@@ -2051,28 +2291,12 @@ def writeBoAggToCSV(fb_df, mscore, cscore, baseurl, api_key, ntopagg, fname_AggS
             else:
                 sectorVec.append(temp_resp_pr[0]['sector'])
             
-            # PE-ratio -- COMPUTED FROM OUR OWN PANEL, NOT READ OFF THE VENDOR.
-            # See `_pe_ratio_from_panel` for the defect that forced this and the basis chosen.
-            # The vendor's `priceEarningsRatio` is still READ, but only as a FALLBACK for a
-            # name the panel cannot answer for, and it is labelled as such in the log.
-            _pe_ours = _pe_ratio_from_panel(_pe_panel, symb)
-            #  THE DECISION LIVES IN `_pe_cell`, AND THAT IS THE POINT.  It used to be an
-            #  inline four-branch chain in the middle of this ~300-line function, beside two
-            #  API responses, so the only way to check it was to read this source and assert
-            #  on the ORDER OF TOKENS -- and a mutation that DELETED the refusal branch
-            #  survived that assertion, because the token still appears where the set is
-            #  built.  A three-way decision that picks what the CEO reads is now callable.
-            #  The three outcomes, the vendor sign test and the reason a refused name must NOT
-            #  fall back are all documented on `_pe_cell`.
-            _pe_vendor_raw = (temp_resp_fr[0].get('priceEarningsRatio')
-                              if len(temp_resp_fr) and isinstance(temp_resp_fr[0], dict)
-                              else None)
-            _pe_val, _pe_tag = _pe_cell(_pe_ours, symb, _pe_panel_refused, _pe_vendor_raw)
-            pEratioVec.append(_pe_val)
-            if _pe_tag == 'refused':
-                _pe_refused.append(symb)
-            elif _pe_tag == 'vendor':
-                _pe_vendor_fallback.append(symb)
+            #  `PE-ratio` USED TO BE APPENDED HERE and is now resolved BEFORE the loop --
+            #  see the block above `_pe_ttm`.  It no longer reads FMP's `priceEarningsRatio`
+            #  (CEO ruling, 2026-09-03: compute, do not consume), so it needs no vendor
+            #  response and must not sit inside the row guard that nulls a row when one
+            #  fails.  Same move `dividendYield` and `GrahamNumberToPrice` made on
+            #  2026-08-13, for the same reason.
 
             # Check rating
             # Use bulk rating data if available, otherwise fallback to individual call
@@ -2155,24 +2379,38 @@ def writeBoAggToCSV(fb_df, mscore, cscore, baseurl, api_key, ntopagg, fname_AggS
     #  SAY HOW MANY CELLS THE VENDOR STILL SUPPLIED.  A silently-mixed column is the thing
     #  this change exists to stop, so the count of fallback cells is printed rather than left
     #  to be inferred from the numbers.
+    #  THREE REASONS A P/E CELL IS BLANK, COUNTED SEPARATELY.  They are different facts
+    #  about the run and a bare 'NaN' cannot tell them apart; each name also carries its
+    #  reason in the `PE-ratio_basis` column beside the value, so the log and the artifact
+    #  say the same thing.
     if _pe_refused:
         gdg.bar_print(
-            "PE-ratio: %d of %d name(s) publish NaN because section 5 REFUSED their newest "
-            "`earningsYield` as a units error: %s. The vendor's `priceEarningsRatio` was "
-            "DELIBERATELY NOT used for these -- it is derived from the same price the refusal "
-            "rejected, so the fallback would republish the defect. This is NOT the "
-            "loss-maker case reported below."
-            % (len(_pe_refused), len(BoComp_tocsv),
+            "PE-ratio: %d of %d name(s) publish NaN because nan_policy section 5 REFUSED one "
+            "of %r on their newest panel row -- the vendor's numbers for that row contradict "
+            "each other: %s. FMP's `priceEarningsRatio` is NOT used as a fallback for these, "
+            "or for anything else (CEO ruling, 2026-09-03)."
+            % (len(_pe_refused), len(BoComp_tocsv), list(PE_INPUT_FIELDS),
                ', '.join(map(str, _pe_refused[:20]))))
-    if _pe_vendor_fallback:
+    if _pe_no_eps:
         gdg.bar_print(
-            "PE-ratio: %d of %d name(s) fell back to FMP's `priceEarningsRatio` because our "
-            "own panel could not answer (no positive earningsYield on the newest row, i.e. a "
-            "LOSS-MAKER -- a refused newest row is counted in the line above instead): %s. "
-            "Every OTHER cell is COMPUTED as 1/(rpy x earningsYield) from the run's own "
-            "panel -- see postBo._pe_ratio_from_panel."
-            % (len(_pe_vendor_fallback), len(BoComp_tocsv),
-               ', '.join(map(str, _pe_vendor_fallback[:20]))))
+            "PE-ratio: %d of %d name(s) publish NaN because they have NO POSITIVE trailing-"
+            "twelve-month EPS on the newest panel row -- a LOSS-MAKER over the trailing year, "
+            "which has no meaningful P/E: %s. Publishing the negative value would invite it to "
+            "be read as 'cheap'."
+            % (len(_pe_no_eps), len(BoComp_tocsv), ', '.join(map(str, _pe_no_eps[:20]))))
+    if _pe_unavail:
+        gdg.bar_print(
+            "PE-ratio: %d of %d name(s) are ABSENT from the panel P/E table altogether: %s.%s"
+            % (len(_pe_unavail), len(BoComp_tocsv), ', '.join(map(str, _pe_unavail[:20])),
+               #  THE SYMMETRIC LINE THE GRAHAM COLUMN LEARNED THE HARD WAY (reviewer L-2).
+               #  `_pe_ttm_panel_table` returns {} on ANY failure -- a renamed panel column, a
+               #  bad frame -- which writes an ALL-BLANK column and, without this, says nothing
+               #  at all.  A silently empty column is worse than a wrong one, because nobody
+               #  goes looking for a number that was never there.
+               ("  THE WHOLE COLUMN IS EMPTY: this is a FAILURE of the computation, not a "
+                "property of these companies -- `price` or `epsTTM` is missing from the panel, "
+                "or postBo._pe_ttm_panel_table raised. Check it before reading this run."
+                if len(_pe_unavail) == len(symblist) else '')))
     #  currentRatio: the SAME two lines the P/E gets, and for the same reason.  The first
     #  reports how many cells did NOT come from our own balance sheet; the second reports
     #  values the vendor supplied and this REFUSED, which a bare 'NaN' cannot distinguish
@@ -2238,7 +2476,19 @@ def writeBoAggToCSV(fb_df, mscore, cscore, baseurl, api_key, ntopagg, fname_AggS
     #  IMMEDIATELY BESIDE `price`, deliberately: column order is what a human reads, and the
     #  defect was that 1,443,000 and 76.21 sat in one column with nothing to distinguish them.
     BoComp_tocsv['priceCurrency'] = ccyVec
-    BoComp_tocsv['PE-ratio'] = pEratioVec
+    BoComp_tocsv['PE-ratio'] = [_pe_vals.get(s, 'NaN') for s in symblist]
+    #  WHICH PRICE AND WHICH EARNINGS BASIS, AS A COLUMN (CEO requirement, 2026-09-03).
+    #  Immediately beside the value, deliberately -- `priceCurrency` sits beside `price` and
+    #  `GrahamNumberToPrice_basis` beside its value for the same reason: column order is what
+    #  a human reads.  It matters MORE here than for Graham, because the `price` column two
+    #  to the left is a DIFFERENT price (a live profile quote in the trading currency) from
+    #  the one this ratio was taken at, so a reader who divides the two gets a number that
+    #  means nothing.  The token says which.
+    #  POSITIONAL over `symblist` is safe here: this runs before the flag_df merge, so the
+    #  frame is still exactly one row per requested name in order (the same reason the
+    #  dividendYield / Graham block below can do it).
+    BoComp_tocsv['PE-ratio_basis'] = [
+        _pe_basis.get(s, PE_BASIS_UNAVAILABLE) for s in symblist]
     BoComp_tocsv['beta'] = betaVec
     BoComp_tocsv['sector'] = sectorVec
     BoComp_tocsv['rating_fmp'] = ratingVec_fmp
@@ -2523,7 +2773,19 @@ def createPresentation(finalBoRank_df, mscore, cscore, baseurl, api_key, topn, f
         lastlast_5th = almago.replace(day=5)
     else:
         lastlast_5th = (almago - timedelta(days=almago.day)).replace(day=5)
-    ll5 = lastlast_5th.strftime('%Y-%d-%m')
+    #  `%Y-%m-%d`, NOT `%Y-%d-%m` (fix, 2026-09-03).  The format had DAY AND MONTH SWAPPED, and
+    #  the corruption was invisible in the SHAPE of the string, which is what let it live:
+    #  `lastlast_5th` is always the 5th of some month, so the emitted string was always
+    #  `YYYY-05-<real month number>` -- a real, parseable, in-range date every single time
+    #  (May has 31 days and the month number is at most 12, so it never even fails to parse).
+    #
+    #  THE CONSEQUENCE, STATED PLAINLY: every run all year asked
+    #  `v4/sector_price_earning_ratio` for a date in MAY.  On 2026-09-03 the intent is
+    #  `2026-07-05` and the request said `2026-05-07`.  So the `Sector Average PE-ratio` cell on
+    #  the CEO's XLSX pages has been a MAY reading presented as a recent one for as long as this
+    #  line has existed -- the S2 shape exactly: a right page carrying a wrong number, with
+    #  nothing on the page or in the log to say so, because the endpoint answered happily.
+    ll5 = lastlast_5th.strftime('%Y-%m-%d')
     wb = openpyxl.Workbook()
     print(f'Writing top {topn} stocks to an .xlsx file for presentation')
     # Total from `symblist`, the list the loop iterates, not from the REQUESTED `topn`:
@@ -2603,25 +2865,101 @@ def createPresentation(finalBoRank_df, mscore, cscore, baseurl, api_key, topn, f
             label='sector-PE')
         nspe_df = pd.DataFrame(NYSEspe) if isinstance(NYSEspe, list) and len(NYSEspe) > 0 else pd.DataFrame()
         nspe_has_data = not nspe_df.empty and 'sector' in nspe_df.columns and 'pe' in nspe_df.columns
+        # =================================================================== #
+        #  THE VENDOR'S P/E, THE VENDOR'S GRAHAM AND `priceFairValue` ARE GONE #
+        #  (CEO ruling, 2026-09-03)                                           #
+        # =================================================================== #
+        #  THE DEFECT.  This sheet is the artifact the CEO actually reviews, and for the
+        #  #1 name on the 2026-08-31 run it disagreed with the AggScore CSV about two of
+        #  its own facts:
+        #
+        #      TNK, 2026-08-31        CSV                XLSX (this table)
+        #      P/E                    2.4980             5.26
+        #      Graham-number-to-price 2.2941             1.31
+        #
+        #  Not one number rounded two ways -- FOUR different quantities under two names.
+        #  The CSV's P/E was the newest single quarter annualised; this one was FMP's
+        #  fiscal-year `peRatio`.  The CSV's Graham was our Stage-2 metric; this one was
+        #  FMP's annual `grahamNumber` over the DCF endpoint's `Stock Price`.  Three price
+        #  bases and two earnings bases across two deliverables, none of them labelled.
+        #
+        #  THE RULING, AND IT IS TWO STANDING RULES MEETING.  (a) COMPUTE, DO NOT CONSUME:
+        #  there is to be ONE basis and it is OURS, so the vendor's P/E and the vendor's
+        #  Graham are DROPPED FROM THE DELIVERABLES ENTIRELY rather than relabelled and
+        #  shown beside ours -- a second reading of a fact we compute is not extra
+        #  information, it is a contradiction the reader has to arbitrate.  (b) Where two
+        #  of OUR OWN bases both genuinely apply, publish the LESS FLATTERING one; TNK sits
+        #  at a freight peak, so the trailing-twelve-month basis gives the higher, less
+        #  flattering P/E, and that is the one the AggScore CSV now leads with.
+        #
+        #  WHERE THE NUMBERS WENT, so this reads as a move and not a loss: the ONE P/E and
+        #  the ONE Graham-to-price now live in `AggScoreTop100`, each beside a `_basis`
+        #  column naming its price and earnings basis, and the HTML deck reads the CSV's
+        #  P/E.  They are NOT recomputed here because this table is a TEN-YEAR ANNUAL
+        #  history off `v3/key-metrics?period=annual` while our figures are single
+        #  point-in-time readings off the run's own quarterly panel -- writing one number
+        #  down a ten-row annual column would be a third basis, not a fix.
+        #
+        #  `priceFairValue` GOES FOR A DIFFERENT REASON (finding 2): it was not merely
+        #  redundant, it was MISNAMED.  Published as `Price-to-fair value`, it is
+        #  identical to the `Price-to-book` column on every row inspected -- it IS P/B.  A
+        #  vendor field that duplicates a computed one under a name implying a DCF or
+        #  fair-value comparison is worse than a missing column, because the reader believes
+        #  he is seeing a second, independent opinion.  Deleted rather than relabelled.
+        #
+        #  EVERY REMAINING COLUMN NAMES ITS BASIS IN ITS OWN HEADER.  What is left in this
+        #  table is FMP's reported annual history and nothing else, and the headers now say
+        #  so -- so no cell here can be mistaken for one of the run's computed figures, and
+        #  a reader can tell the vendor's fiscal-year price from the live profile quote in
+        #  the CSV's `price` column and from the DCF endpoint's quote in `Price` below.
+        #
+        #  KNOWN AND DELIBERATELY NOT FIXED HERE (flagged, not smoothed over): `Earnings
+        #  yield %` is the reciprocal of the vendor P/E that was just removed, so a reader
+        #  who divides 100 by it recovers the vendor's number.  It is kept because the
+        #  ruling named the P/E, the Graham and `priceFairValue`, and dropping a fourth
+        #  column is a product call, not a cleanup -- the header is what stops it being
+        #  read as ours.  Same for `Current ratio`, which is the VENDOR's here while the
+        #  AggScore CSV computes ours from the panel: the same two-numbers-for-one-fact
+        #  shape as the P/E, one column over, still open.
         symb_df = pd.DataFrame(
-            columns=['Symbol', 'Date', 'Earnings yield', 'PE-ratio', 'Price-to-book', 'Current ratio',
-                     'Dividend yield', 'Price-to-fair value', 'Price'])
+            columns=['Symbol', 'Date', XL_EARNYIELD_COL, XL_PTB_COL, XL_CURRATIO_COL,
+                     XL_DIVYIELD_COL, XL_PRICE_COL])
         symb_df['Symbol'] = fr['symbol']
         symb_df['Date'] = fr['date']
-        symb_df['Earnings yield'] = (km.earningsYield * 100).apply(format_num)
-        symb_df['PE-ratio'] = km.peRatio.apply(format_num)
-        symb_df['Price-to-book'] = km.ptbRatio.apply(format_num)
-        symb_df['Current ratio'] = km.currentRatio.apply(format_num)
-        symb_df['Dividend yield'] = (km.dividendYield.fillna(0)*100).apply(format_num)
-        symb_df['Price-to-fair value'] = fr.priceFairValue.apply(format_num)
+        #  `_xl_num`, NOT `format_num` (finding 3, 2026-09-03).  `format_num` is a bare
+        #  `"{:.4f}".format(x)`: it renders a missing value as the literal text `nan` and
+        #  raises TypeError on a `None`.  `_xl_num` renders every shape of absence as the
+        #  `'N/A'` this sheet already uses for `beta`, `Company` and the DCF cells -- one
+        #  absence marker per artifact.
+        #  `pd.to_numeric(..., errors='coerce')` ON EVERY LEG, AND IT IS NOT DECORATION.
+        #  FMP returns JSON `null` freely on non-US listings, and pandas builds an OBJECT
+        #  column of `None` from a response whose field is null on every row -- on which
+        #  `col * 100` raises TypeError.  Nothing in this loop catches that: the page guard
+        #  above tests only for an EMPTY response, so a healthy 200 with one all-null field
+        #  would take the page, and (before `writeResWrapper` guarded the call) the workbook
+        #  with it.  `.fillna(0)` used to mask exactly this on the dividend column, which is
+        #  the second reason it was there and the reason removing it needs this line.
+        #  `errors='coerce'` turns every unparseable shape into NaN, which `_xl_num` renders
+        #  as `'N/A'` -- absence stays absence, and no page can die of a null.
+        symb_df[XL_EARNYIELD_COL] = (
+            pd.to_numeric(km.earningsYield, errors='coerce') * 100).apply(_xl_num)
+        symb_df[XL_PTB_COL] = pd.to_numeric(km.ptbRatio, errors='coerce').apply(_xl_num)
+        symb_df[XL_CURRATIO_COL] = pd.to_numeric(km.currentRatio, errors='coerce').apply(_xl_num)
+        #  NO `.fillna(0)` (finding 3, 2026-09-03).  This column WAS
+        #  `(km.dividendYield.fillna(0)*100)`, so a company FMP holds no dividend figure for
+        #  printed `0.0000` -- an affirmative claim that it pays nothing, on the page the CEO
+        #  reviews, made out of an absence.  A zero is a finding; a blank is a gap; they are
+        #  different facts, and this is the same rule the AggScore CSV's TTM yield already
+        #  follows (it refuses a partial window rather than summing 3 of 4 quarters and
+        #  calling it a year).
+        symb_df[XL_DIVYIELD_COL] = (
+            pd.to_numeric(km.dividendYield, errors='coerce') * 100).apply(_xl_num)
         # Handle empty DCF data (common for non-US stocks)
         if dcf_has_data:
-            price = dcf['Stock Price'].apply(format_num)
-            symb_df['Price'] = price
-            symb_df['Graham number to price'] = (km.grahamNumber/dcf['Stock Price']).apply(format_num)
+            symb_df[XL_PRICE_COL] = pd.to_numeric(
+                dcf['Stock Price'], errors='coerce').apply(_xl_num)
         else:
-            symb_df['Price'] = 'N/A'
-            symb_df['Graham number to price'] = 'N/A'
+            symb_df[XL_PRICE_COL] = 'N/A'
 
         fcf = cf.freeCashFlow
         shares = fcf/km.freeCashFlowPerShare
@@ -2849,6 +3187,51 @@ def resize_columns(ws):
 
 def format_num(x):
     return "{:.4f}".format(x)
+
+
+#  WHICH PRICE, AND WHICH EARNINGS BASIS -- IN THE HEADER (CEO requirement, 2026-09-03).
+#  Every displayed ratio with a price in it has to say which price, so a reader can tell a
+#  vendor fiscal-year price from a period-end synthetic one from a live quote WITHOUT going
+#  to the source.  These are the XLSX per-name history table's headers.  What survives in
+#  that table is FMP's reported ANNUAL series and nothing else -- our own P/E and
+#  Graham-to-price live in `AggScoreTop100`, on a basis named in their own `_basis` columns
+#  -- so every header here says `FMP annual`, and the two that divide by a price say WHOSE.
+#
+#  CONSTANTS, NOT LITERALS, because each header string is used twice per column (the frame's
+#  `columns=` list and the assignment below it) and a typo in either would silently create a
+#  second, empty column beside the real one instead of raising.
+XL_EARNYIELD_COL = 'Earnings yield % (FMP annual, vendor price)'
+XL_PTB_COL = 'Price-to-book (FMP annual, vendor price)'
+XL_CURRATIO_COL = 'Current ratio (FMP annual)'
+XL_DIVYIELD_COL = 'Dividend yield % (FMP annual, vendor price)'
+XL_PRICE_COL = 'Price (FMP DCF-endpoint quote, trading currency)'
+
+
+def _xl_num(v):
+    """`"{:.4f}"` of a number for an XLSX cell, or `'N/A'` for every shape of absence.
+
+    THE `_fmt4` RULE, WITH THIS ARTIFACT'S OWN ABSENCE MARKER.  The CSV writes the string
+    `'NaN'`; this sheet already writes `'N/A'` for `beta`, `Company`, the rating and the DCF
+    cells, so one marker per artifact rather than two.
+
+    IT REPLACES A BARE `format_num`, WHICH HAD BOTH FAILURE MODES.  `"{:.4f}".format(None)`
+    raises TypeError -- and this is a per-page loop whose page guard only checks for EMPTY
+    responses, so a present-but-null cell inside a healthy 200 cost the page.  A NaN did not
+    raise; it rendered as the literal text `nan`, which is the shape `forensicFlags.cell_text`
+    exists to stop one artifact over ("Why there is no M / C score: nan" on five Mining pages
+    of the 2026-08-31 deck).
+
+    bool is excluded for the same reason `_fmt4` excludes it: it is an int subclass, and a
+    boolean in a ratio column is corrupt data, not a number.
+    """
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return 'N/A'
+    try:
+        if v != v:                      # NaN
+            return 'N/A'
+        return "{:.4f}".format(v)
+    except (TypeError, ValueError):
+        return 'N/A'
 
 def moatIdentifier(symblist, cdx_df, n=20, freq_map=None):
     """Per-name 0-11 moat criteria count.  DISPLAY-ONLY (merged into postRank AFTER

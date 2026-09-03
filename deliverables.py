@@ -34,20 +34,37 @@ is this project's most-logged test defect:
   * A DELIVERABLE NOBODY DECLARED.  The audit measures the declared set.  A writer that
     produces a file and puts it in no list is unaudited (and also unshipped -- see the
     Sbocker manifest note, where the transfer gap is the louder symptom).
-  * THE OPTIONALLY-APPENDED FILES.  `writeResWrapper` appends the side-list, band and
-    review-reference filenames to its list ONLY AFTER writing them, so their absence
-    removes them from the declaration too and this audit can never see it.  Only the
-    three unconditional names (AggScore CSV, presentation XLSX, forensic CSV) plus the
-    postRank pickle and the deck can be checked for ABSENCE.
+  * THE REVIEW-REFERENCE PAIR, AND ONLY IT.  The declare-after-write hole was closed on
+    2026-09-03 (CEO ruling): `writeResWrapper` now declares the side-list, band and
+    provenance-sidecar filenames BEFORE attempting each write, so a failed write leaves a
+    declared-but-absent file that `_check_file` reports as `DOES NOT EXIST`.  TWO RESIDUALS
+    REMAIN and neither is closable from here:
+      - `RawMetricsTop100` / `CohortMetricStats` are still appended after the fact, because
+        both the filenames AND the three preconditions that decide whether they are
+        produced at all live inside `reviewReference.emit_live`.  Re-deriving either in
+        `postBo` would be the second-enumeration defect this module exists to avoid, so the
+        fix belongs in `emit_live` (return the intended names before writing them) and is
+        not made here.  Their ABSENCE is therefore still invisible to this audit.
+      - A cohort or band whose FRAME PREPARATION raises (before its filename is known) is
+        not declared either.  Preparation is pure pandas over a <=100-row frame; the write
+        is the I/O, and the write is what is now covered.
+  * A DELIVERABLE NOBODY DECLARED A ROW COUNT FOR.  The row check below is
+    declare-and-measure: it can only fire when the producer stated a number.  An older
+    `resdic` (or an offline audit of a historical run) carries no counts, and the compact
+    kinds are then reported DEGRADED -- `UNVERIFIED`, never FAILED.
   * A DELIVERABLE THAT IS COMPLETE AND WRONG.  Every check here is structural -- the file
     exists, is not a stub, has its sheets/pages/columns.  A full XLSX carrying twenty
     pages of bad numbers passes every check in this module.
-  * CONTENT, FOR MOST OF THE SET.  Only THREE deliverables get a structural check: the
-    presentation XLSX (per-ticker sheet count), the deck (name-page count) and the
-    AggScore CSV (the vendor block).  The forensic CSV, the side-lists, the band CSVs, the
-    RunProvenance sidecar and the postRank pickle get existence plus a byte floor and
-    nothing more -- so a forensic CSV with a header and no rows is caught (byte floor) but
-    one with rows and no verdicts is not.
+  * CONTENT, FOR MOST OF THE SET.  FIVE kinds get a completeness check: the presentation
+    XLSX (per-ticker sheet count), the deck (name-page count), the AggScore CSV (the vendor
+    block) and -- since 2026-09-03 -- the side-lists and band CSVs (DECLARED ROW COUNT vs
+    counted rows).  The forensic CSV, the RunProvenance sidecar and the postRank pickle
+    still get existence plus a byte floor and nothing more, so a forensic CSV with a header
+    and no rows is caught (byte floor) but one with rows and no verdicts is not.
+  * WHETHER THE ROWS ARE THE RIGHT ROWS.  A declared count of 25 against 25 written rows
+    says the writer did not truncate; it says nothing about WHICH names are in them, and a
+    side-list holding twenty-five wrong tickers passes.  Both numbers come from the same
+    frame, so this check is a truncation detector, not a correctness one.
   * WHETHER CWD IS THE REPO ROOT.  The pipeline writes its top-N deliverables with bare
     relative filenames (so: to CWD) while `transfer_utils.EVIDENCE_DIR` and this module
     resolve to the MODULE's directory.  The two coincide in the only supported
@@ -141,6 +158,39 @@ _KIND_FLOORS = (
     ('postRank_',          64 * 1024, 1550666),
     ('presentation_',      50 * 1024, 1488054),  # structural page count is the real gate
 )
+
+#  THE COMPACT KINDS, DERIVED FROM THE TABLE ABOVE RATHER THAN LISTED AGAIN (2026-09-03).
+#
+#  A kind with no calibrated byte floor is PRECISELY a kind whose completeness a byte floor
+#  cannot judge -- that is why its floor is `NONEMPTY` -- so it is precisely the kind that
+#  needs a DECLARED ROW COUNT instead.  Deriving the set from `_KIND_FLOORS` means the two
+#  facts cannot drift apart the way `conftest._EVIDENCE_GLOBS` and
+#  `Sbocker.allowlist_patterns` did; a kind moved onto or off a real floor moves itself in
+#  or out of here in the same edit.
+#
+#  WHAT IT IS USED FOR IS NARROW: deciding whether the ABSENCE of a declared row count is
+#  worth reporting.  The row check itself is keyed on the producer having declared a number
+#  for that filename, NOT on the kind -- so a count declared later for the forensic CSV is
+#  honoured without touching this module.  An UNRECOGNISED kind is deliberately not in here
+#  (it matches no prefix), so a deliverable added later is never nagged about a count nobody
+#  has taught its writer to declare -- the same safe-default inversion as the floors.
+#
+#  MEASURED 2026-09-03 over every historical artifact of these two kinds in the repo root,
+#  because "the legitimate floor is low" has to be a number and not a belief:
+#
+#      kind                n     min rows   median   max rows
+#      SideList_*.csv     10            5       22         25
+#      MarketCapBand_*     7            1        5         20
+#
+#  THE MINIMUM IS ONE ROW, and it is a real shipped artifact:
+#  `MarketCapBand_Micro_lt_50M_ALLMEMBERS_NOT_A_SELECTION-2026-08-07_fmp_stock_CUR3K.csv`
+#  holds exactly one member.  A one-name cohort is correct output.  SO THERE IS NO ROW
+#  FLOOR HERE AND THERE MUST NEVER BE ONE: the expectation is the producer's own frame
+#  length, and a legitimately tiny cohort declares 1 and writes 1.  A minimum-rows rule
+#  would be the byte-floor S1 rebuilt in a new place -- it would have failed the Micro band
+#  on the only run that ever produced one.
+_ROWCOUNT_KINDS = tuple(prefix for prefix, floor, _measured in _KIND_FLOORS
+                        if floor == NONEMPTY)
 
 #  The columns whose SIMULTANEOUS death is the quota signature on the AggScore CSV.
 #  All four are filled from per-name vendor calls in `writeBoAggToCSV`; on 2026-09-01 all
@@ -309,6 +359,35 @@ def count_deck_pages(path):
         return -1
 
 
+def count_csv_rows(path):
+    """DATA rows in a CSV -- the header is not one of them.  -1 when the file cannot be
+    read at all.
+
+    `csv.reader`, NOT a newline count.  The side-lists carry quoted free-text columns
+    (`forensicReason`, `M_drivers`, `C_flags_fired`), and one embedded newline inside a
+    quoted field would make a line count read HIGH -- which on the `<` comparison below is
+    the direction that HIDES a truncation, and on the `>` comparison is the direction that
+    manufactures a spurious DEGRADED.  Verified 2026-09-03 against all 17 historical
+    `SideList_*`/`MarketCapBand_*` artifacts on disk: this function and `len(pd.read_csv())`
+    agree on every one of them (5..25 and 1..20 rows respectively).
+
+    Wholly-blank rows are not counted: a blank line is not a deliverable row, and pandas
+    would not have written one.  `errors='replace'` so a mojibake byte cannot turn a
+    completeness question into an unreadable-file failure."""
+    import csv
+    try:
+        n = 0
+        with io.open(path, 'r', encoding='utf-8', errors='replace', newline='') as fh:
+            for i, row in enumerate(csv.reader(fh)):
+                if i == 0:
+                    continue
+                if row and any(str(c).strip() for c in row):
+                    n += 1
+        return n
+    except Exception:
+        return -1
+
+
 def xlsx_page_report(path):
     """{'sheets': n_total, 'pages': n_per_ticker, 'names': [...]} or {'error': ...}.
 
@@ -408,7 +487,7 @@ def _min_bytes(path):
 
 
 def audit_deliverables(declared, run_date, repo_root=None, deck_report=None,
-                       xlsx_report=None, http_tally=None):
+                       xlsx_report=None, http_tally=None, row_expectations=None):
     """Check every declared deliverable and return a verdict.
 
     `declared`      -- the producer's list of filenames (postBo.writeResWrapper's return,
@@ -421,6 +500,14 @@ def audit_deliverables(declared, run_date, repo_root=None, deck_report=None,
                        a count was met.
     `http_tally`    -- a `getData_gen.http_tally_delta()` dict covering the deliverable
                        stages, used ONLY to attribute a failure to throttling.
+    `row_expectations` -- {basename: expected data-row count}, the producer's declaration
+                       (`postBo.writeResWrapper` -> `resdic['deliverable_rows']`).  THE
+                       SECOND MEASUREMENT is taken here, off the written file, which is what
+                       makes a producer that declared 25 and wrote 0 catchable at all -- no
+                       byte number can separate a legitimate 187-byte five-row cohort list
+                       from a header-only one.  Keyed on BASENAME because the declaration
+                       carries filenames and this function is handed paths.  Absent -> the
+                       compact kinds are reported UNVERIFIED (DEGRADED), never FAILED.
 
     Verdict: {'failed': [...], 'degraded': [...], 'ok': [...], 'exit_code': 0|2,
               'quota_suspected': bool, 'items': [...]}
@@ -428,9 +515,12 @@ def audit_deliverables(declared, run_date, repo_root=None, deck_report=None,
     root = repo_root or os.path.dirname(os.path.abspath(__file__))
     items = []
 
+    rows_by_name = {os.path.basename(str(k)): v
+                    for k, v in dict(row_expectations or {}).items()}
     for name in list(declared or []):
         path = name if os.path.isabs(name) else os.path.join(root, name)
-        items.append(_check_file(path, run_date, xlsx_report=xlsx_report))
+        items.append(_check_file(path, run_date, xlsx_report=xlsx_report,
+                                 expected_rows=rows_by_name.get(os.path.basename(path))))
 
     #  THE DECK IS AUDITED WHETHER OR NOT THE STAGE REPORTED SUCCESS, and that ordering
     #  matters: the 2026-07-17 failure is precisely a deck that nothing claimed to have
@@ -458,10 +548,11 @@ def audit_deliverables(declared, run_date, repo_root=None, deck_report=None,
             'exit_code': 2 if failed else 0}
 
 
-def _check_file(path, run_date, xlsx_report=None):
+def _check_file(path, run_date, xlsx_report=None, expected_rows=None):
     base = os.path.basename(path)
     item = {'name': base, 'path': path, 'state': 'OK', 'why': [],
             'bytes': None, 'expected': None, 'actual': None,
+            'rows': None, 'expected_rows': None,
             'shortfall': False, 'missing_input': False}
 
     if not os.path.exists(path):
@@ -480,6 +571,10 @@ def _check_file(path, run_date, xlsx_report=None):
     if item['bytes'] < floor:
         item['state'] = 'FAILED'
         item['why'].append(_floor_message(item['bytes'], floor, measured))
+
+    #  THE ROW CHECK RUNS BEFORE the kind-specific branches below, because two of those
+    #  branches `return` early and this verdict has to survive them.
+    _check_declared_rows(item, base, path, expected_rows)
 
     if base.lower().endswith('.xlsx') and base.startswith('PresentationTop'):
         rep = xlsx_page_report(path)
@@ -536,6 +631,80 @@ def _check_file(path, run_date, xlsx_report=None):
                                   AGGSCORE_VENDOR_NULL_FRAC * 100, rep['rows']))
             item['shortfall'] = True
 
+    return item
+
+
+def _check_declared_rows(item, base, path, expected_rows):
+    """DECLARE-AND-MEASURE on the compact deliverables (2026-09-03, CEO ruling).
+
+    THE HOLE THIS CLOSES.  Five `SideList_*` and up to four `MarketCapBand_*` CSVs are
+    compact BY DESIGN -- 187 to 1,647 bytes measured -- so they got `NONEMPTY` and nothing
+    more, and A HEADER-ONLY SIDE-LIST PASSED THE GATE.  No byte number can separate a
+    legitimate five-row cohort list from a truncated one, so the check has to stop being a
+    property of the file and become a comparison of TWO INDEPENDENT MEASUREMENTS: the
+    producer states `len(frame)` before it writes, this counts the rows afterwards.  Same
+    split the XLSX page check already uses, and the reason that one caught 2026-09-01.
+
+    THERE IS NO ROW FLOOR AND THERE MUST NEVER BE ONE -- see `_ROWCOUNT_KINDS` above.  The
+    smallest real artifact of these kinds holds ONE row.  A rule of the form "at least N
+    rows" would fail a one-name cohort, i.e. it would be the byte-floor S1 rebuilt in a new
+    place.
+
+    THE THREE VERDICTS, and why they are not all the same severity:
+      * fewer rows than declared -> FAILED.  The truncation / header-only event: the
+        producer had the names and the file does not carry them.
+      * MORE rows than declared -> DEGRADED, not FAILED.  Nothing is missing from the
+        deliverable, but the two measurements disagree, so one of them is wrong -- loud,
+        exit 0, because refusing a run over a file carrying MORE than promised would be
+        alarm fatigue bought for nothing.
+      * no declaration at all -> DEGRADED with UNVERIFIED, for the compact kinds only.  An
+        older `resdic`, or an offline audit of a historical run, carries no counts and must
+        not be failed for it.  Other kinds stay silent: they have a byte floor or a
+        structural check, so a missing row count says nothing new about them.
+    """
+    if expected_rows is None:
+        if base.startswith(_ROWCOUNT_KINDS):
+            item['why'].append(
+                'the producer declared no expected row count for this compact kind, so '
+                'completeness is UNVERIFIED -- a header-only file of this kind cannot be '
+                'told from a correct one by size alone')
+            if item['state'] == 'OK':
+                item['state'] = 'DEGRADED'
+        return item
+
+    item['expected_rows'] = int(expected_rows)
+    if not base.lower().endswith('.csv'):
+        item['why'].append('a row expectation (%d) was declared for a non-CSV '
+                           'deliverable, so it was NOT counted; the structural check for '
+                           'this kind is the one that applies'
+                           % item['expected_rows'])
+        if item['state'] == 'OK':
+            item['state'] = 'DEGRADED'
+        return item
+
+    n = count_csv_rows(path)
+    item['rows'] = n
+    if n < 0:
+        item['state'] = 'FAILED'
+        item['why'].append('unreadable as a CSV, so the %d declared row(s) could not be '
+                           'checked' % item['expected_rows'])
+        return item
+    if n < item['expected_rows']:
+        item['state'] = 'FAILED'
+        item['why'].append(
+            'INCOMPLETE -- %d of the %d data row(s) the producer declared. The declared '
+            'count is len(frame) taken from the frame this file was written FROM, so a '
+            'shortfall is rows the run HAD and did not write%s.'
+            % (n, item['expected_rows'],
+               ' (a HEADER-ONLY file is the n=0 case)' if n == 0 else ''))
+        item['shortfall'] = True
+    elif n > item['expected_rows']:
+        if item['state'] == 'OK':
+            item['state'] = 'DEGRADED'
+        item['why'].append(
+            '%d data row(s) against the %d declared. Nothing is MISSING, but the count '
+            'the producer stated and the file itself disagree, so one of the two is wrong.'
+            % (n, item['expected_rows']))
     return item
 
 
@@ -702,6 +871,13 @@ def _size_note(i):
     if i.get('actual') is not None:
         bits.append('%s/%s' % (i['actual'],
                                i['expected'] if i.get('expected') is not None else '?'))
+    #  ROWS ARE PRINTED EVEN WHEN THEY MATCH.  The whole point of the compact kinds is that
+    #  their size says nothing about them, so `809 bytes` is not a readable statement and
+    #  `25/25 rows` is.
+    if i.get('rows') is not None or i.get('expected_rows') is not None:
+        bits.append('%s/%s rows' % ('?' if i.get('rows') is None else i['rows'],
+                                    '?' if i.get('expected_rows') is None
+                                    else i['expected_rows']))
     return '(%s)' % ', '.join(bits) if bits else ''
 
 
