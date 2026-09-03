@@ -16,10 +16,22 @@ WHAT THIS FILE CANNOT DETECT, stated per test as well as here:
     behaviour, so none of these would fail if `PRICE_SCALE_PB_ALARM` were 0.05 or 0.005.
     `test_there_is_exactly_one_definition_of_contaminated` pins the only property about the
     number that is checkable here: that the reporting side and the refusing side share it.
-  * It cannot detect the rule's measured UNDER-REACH.  Rows between 0.02 and 0.10 carry the
-    same share-count corruption signature at the same rate and are deliberately left alone
-    (density table in `nan_policy`, beside the constant).  Nothing here fails if that
-    population grows.
+  * It cannot tell whether the THRESHOLDS are right -- and since Q-75 there are TWO of them,
+    `PRICE_SCALE_PB_ALARM` (unconditional) and `PRICE_SCALE_PB_WIDE` (witness required).  What
+    the tests below DO pin is the STRUCTURE: that the shipped rule is the UNION of the two
+    levels and not the conjunction the widening was first framed as, that each level fires on a
+    real row the other cannot reach, and that the witnessed level does nothing without its
+    witness.  Those are the properties the measurement actually established.
+  * It STILL cannot detect the residual under-reach.  Rows between `PRICE_SCALE_PB_WIDE` and
+    0.20 carry the share-count signature at 7.5-12.4% against a 1.1-1.8% base rate and are
+    deliberately left alone; so is every contaminated row whose share count is sound (the ATRI
+    and 0CHZ.L shape) and every majority-corrupt source above the floor.  Nothing here fails if
+    those populations grow.
+  * IT CANNOT DETECT AN OVER-REFUSAL IT WAS NOT SHOWN.  The widened band's measured
+    false-refusal rate is 11.4% of rows I could adjudicate and up to 31.4% counting the
+    unresolved ones, by two named mechanisms (dilution ramps; real >=5:1 consolidations).  ONE
+    fixture below stands for the first mechanism.  A test suite cannot bound a rate -- read the
+    measured table in `nan_policy` beside the constants for that.
   * It cannot see a name ABSENT FROM THE PANEL, which is the population ATRI is actually in.
 
 ONE MEASUREMENT LEAD, RECORDED AND DELIBERATELY NOT CHASED.  Re-scoring the saved 2026-08-29
@@ -30,6 +42,7 @@ explanation, unconfirmed: `Sbocker's getAves2-on-the-filtered-frame note` record
 frame moves 26 of 36 medians by more than 1%, which would produce exactly that signature with no
 defect present at all.
 """
+import inspect
 import os
 import sys
 
@@ -269,6 +282,16 @@ def test_there_is_exactly_one_definition_of_contaminated():
     assert 'PB_ALARM = npol.PRICE_SCALE_PB_ALARM' in src, (
         'price_scale_audit re-declared its own alarm literal -- the reporting side and the '
         'refusing side can now disagree about which names are contaminated.')
+    #  SINCE Q-75 THE RULE HAS TWO LEVELS, so pinning only the floor would leave the widened
+    #  band free to drift -- and the widened band is where the coverage actually grew.  A
+    #  reporting side that knows the floor and not the band under-reports by construction.
+    assert psa.PB_WIDE == npol.PRICE_SCALE_PB_WIDE
+    assert 'PB_WIDE = npol.PRICE_SCALE_PB_WIDE' in src, (
+        'price_scale_audit re-declared the widened band -- the audit can now name a different '
+        'population than the refusal does in the 0.02-0.10 band.')
+    #  and the floor must stay BELOW the band, or the union collapses to one level and the
+    #  measured argument for the witness is silently gone.
+    assert npol.PRICE_SCALE_PB_ALARM < npol.PRICE_SCALE_PB_WIDE
 
 
 def test_run_audit_says_what_was_refused_so_a_quiet_check_A_is_not_an_all_clear():
@@ -929,20 +952,40 @@ def test_the_rule_STILL_fires_when_the_equity_leg_is_sound():
     assert pd.isna(out.loc[0, 'marketCap'])
 
 
-def test_a_refused_newest_earningsYield_does_NOT_fall_back_to_the_vendor_PE():
+def test_a_price_scale_refusal_is_DETECTED_by_the_PE_column_on_the_REAL_ATRI_SHAPE():
     """THE DELIVERABLE, one function away from the market-cap band the author already swept.
 
-    `_pe_ratio_from_panel` returns None for a missing OR non-positive yield and the caller then
-    publishes FMP's `priceEarningsRatio`.  That is right for a LOSS-MAKER.  It is wrong for a
-    units-error refusal: the vendor's P/E is derived from the SAME price the refusal rejected,
-    so on the ATRI shape it is 1/1000 of the truth and on the QBY0.DE shape ~100x too small --
-    an absurdly CHEAP positive P/E beside a name in the CEO's list.
+    A units-error refusal and a company with no earnings both produce a BLANK `PE-ratio`, and
+    they are not the same fact about the run.  This is the half that proves the pipeline can
+    still TELL THEM APART on the shape that motivated the refusal in the first place: the real
+    ATRI panel, run through the real `nan_policy.refuse_impossible_cells`, not through a
+    hand-stamped `sanityRefusedFields` fixture.
+
+    WHY IT STAYS HERE AND IS NOT FOLDED INTO `test_display_basis.py`.  That file drives the
+    published cell end-to-end, which is the stronger instrument for the CELL -- but its panel
+    fixture stamps the refusal by hand.  This one earns the refusal from the rule, so together
+    they close the loop: the rule really fires on this shape, and the artifact really goes
+    blank for a name the rule fired on.  Neither test is redundant with the other.
+
+    RENAMED AND CUT BACK ON 2026-09-03, and the old name is worth recording because it names a
+    mechanism that no longer exists: `test_a_refused_newest_earningsYield_does_NOT_fall_back_
+    to_the_vendor_PE`.  There is no vendor fallback any more -- the CEO deleted FMP's
+    `priceEarningsRatio` from the deliverable outright ("compute, do not consume") -- so every
+    assertion about the `vendor` / `ours` / `none` outcomes of `_pe_cell`, and the structural
+    block that checked `_pe_tag == 'vendor'` and `_pe_vendor_fallback.append` inside
+    `writeBoAggToCSV`, was pinning behaviour the deliverable is now required NOT to have.  The
+    column no longer reads `earningsYield` either; it reads `price` and `epsTTM`, so the field
+    named in the old title is not even an input.  Those assertions are DELETED rather than
+    repaired.  What replaced them is behavioural and lives in `test_display_basis.py`:
+    `test_a_REFUSED_input_and_a_LOSS_MAKER_get_DIFFERENT_basis_tokens` (the two blanks carry
+    different `PE-ratio_basis` tokens in the written CSV) and
+    `test_the_REFUSAL_beats_a_derived_value_that_OUTLIVED_it` (the ordering, which became
+    load-bearing under the new basis).
 
     CANNOT DETECT: whether any refused name actually reaches the top-N in a real run.  That is
     unmeasured; `carveOut.marketcap_fallback_report` existing at all is the evidence that
     refused newest rows do survive into the deliverable stages.
     """
-    import inspect
     import postBo
 
     raw = _atri_shape(n=6, broken=(0,))          # newest row refused
@@ -950,35 +993,23 @@ def test_a_refused_newest_earningsYield_does_NOT_fall_back_to_the_vendor_PE():
     assert postBo._pe_refused_sources(refused) == {'ATRISHAPE'}
     #  a clean panel names nobody -- the branch must not fire unconditionally
     assert postBo._pe_refused_sources(_atri_shape(n=6, broken=())) == set()
-    #  ... and our own P/E is indeed unavailable for it, i.e. the vendor branch is reachable
-    assert postBo._pe_ratio_from_panel(postBo._pe_panel_table(refused), 'ATRISHAPE') is None
 
-    #  THE ORDERING IS THE BEHAVIOUR: the refusal check must be consulted BEFORE the vendor
-    #  fallback, or the fallback wins and the check is decoration.  Same idiom as
-    #  `test_vendor_contamination.test_the_quarantine_runs_BEFORE_the_arithmetic_checks`.
-    #  THE DECISION ITSELF, called rather than read.  A source-order assertion survives the
+    #  AND THE DETECTOR WATCHES THE FIELDS THE NUMBER ACTUALLY READS.  It watched
+    #  `earningsYield` until 2026-09-03 because the P/E was built from it; watching a field the
+    #  published number no longer reads would silently relabel every refusal as a loss-maker.
+    #  `marketCap` is the one this shape refuses -- the price-scale rule refuses the cap, NOT
+    #  the derived `price` -- so its presence in the list is what makes the assertions above
+    #  fire at all.
+    assert 'marketCap' in postBo.PE_INPUT_FIELDS
+    assert {'price', 'epsTTM'} <= set(postBo.PE_INPUT_FIELDS)
+
+    #  THE CELL THAT RESULTS, called rather than read.  A source-order assertion survives the
     #  branch being deleted, because the token still appears where the set is built -- which is
-    #  exactly what a mutation showed.
-    assert postBo._pe_cell(None, 'ATRISHAPE', {'ATRISHAPE'}, 5.0) == ('NaN', 'refused'), (
-        'a REFUSED name still publishes the vendor P/E, which is derived from the price the '
-        'refusal rejected')
-    #  a loss-maker is NOT collateral damage: it keeps the vendor fallback
-    assert postBo._pe_cell(None, 'OTHER', {'ATRISHAPE'}, 5.0) == ('5.0000', 'vendor')
-    #  and our own answer still wins outright
-    assert postBo._pe_cell(2.0, 'ATRISHAPE', {'ATRISHAPE'}, 5.0) == ('2.0000', 'ours')
-    #  the vendor sign test survives the extraction
-    assert postBo._pe_cell(None, 'OTHER', set(), -3.0) == ('NaN', 'none')
-
-    #  THE LOG'S BOOKKEEPING, which decides whether a refused name is REPORTED as a refusal or
-    #  misattributed as a loss-maker.  The cell itself is pinned behaviourally above; this half
-    #  lives inside a ~300-line function and is asserted STRUCTURALLY, which is weaker and is
-    #  said so.  Both branches must exist and must feed DIFFERENT lists.
-    src = inspect.getsource(postBo.writeBoAggToCSV)
-    assert "_pe_tag == 'refused'" in src and '_pe_refused.append' in src, (
-        'a refused name no longer reaches the refused list, so the log will report it as a '
-        'loss-maker that fell back -- the misattribution this fix exists to remove')
-    assert "_pe_tag == 'vendor'" in src and '_pe_vendor_fallback.append' in src
-    assert src.index("_pe_tag == 'refused'") < src.index("_pe_tag == 'vendor'")
+    #  exactly what a mutation showed, and the reason the decision lives in `_pe_cell` at all.
+    assert postBo._pe_cell(None, 'ATRISHAPE', {'ATRISHAPE'}) == (
+        'NaN', postBo.PE_BASIS_REFUSED)
+    #  a name the rule did NOT name is not collateral damage
+    assert postBo._pe_cell(2.0, 'OTHER', {'ATRISHAPE'}) == ('2.0000', postBo.PE_BASIS_TTM)
 
 
 def test_the_equity_guard_drops_ONLY_the_rows_whose_own_equity_was_refused():
@@ -1179,3 +1210,499 @@ def test_the_refused_and_fallback_market_caps_are_on_the_SAME_basis():
         #  and when the row claims USD, the refused value must actually BE converted
         assert ref_v != pytest.approx(4.0e6, rel=1e-9), (
             'the row claims a USD basis while carrying the raw reporting-currency value')
+
+
+# --------------------------------------------------------------------------- #
+#  Q-75 -- THE TWO-LEVEL RULE.  Each level is pinned by a REAL row the other        #
+#  level cannot reach, so neither can be deleted without a failure here.       #
+# --------------------------------------------------------------------------- #
+#  EVERY FIXTURE IN THIS SECTION IS VERBATIM PANEL DATA, extracted from
+#  `baseline_tools/resdic_2026-07-17_CORRECTED.pickle` and
+#  `Bometric_dic-fmp_stock_CUR3K_all_2026-08-11...pickle` rather than typed, because the whole
+#  claim being tested is about what the vendor actually serves.
+_QBY0_MAJORITY_CORRUPT = [
+    {'source': 'QBY0.DE', 'date': '2023-04-01', 'price': 3.26, 'marketCap': 649802.76,
+     'bookValuePerShare': 541.3593811143554, 'earningsYield': -4.682959487583586,
+     'weightedAverageShsOut': 199326.0, 'totalStockholdersEquity': 106780000.0},
+    {'source': 'QBY0.DE', 'date': '2023-10-01', 'price': 3.13, 'marketCap': 623890.38,
+     'bookValuePerShare': 498.6554689302951, 'earningsYield': -7.834709680889775,
+     'weightedAverageShsOut': 199326.0, 'totalStockholdersEquity': 97846000.0},
+    {'source': 'QBY0.DE', 'date': '2024-01-01', 'price': 2.86, 'marketCap': 570072.36,
+     'bookValuePerShare': 493.0867021863681, 'earningsYield': -2.401449528266903,
+     'weightedAverageShsOut': 199326.0, 'totalStockholdersEquity': 96478000.0},
+    {'source': 'QBY0.DE', 'date': '2024-04-01', 'price': 4.13, 'marketCap': 823216.38,
+     'bookValuePerShare': 489.0480920702768, 'earningsYield': -1.2244654315551884,
+     'weightedAverageShsOut': 199326.0, 'totalStockholdersEquity': 95470000.0},
+    {'source': 'QBY0.DE', 'date': '2024-07-01', 'price': 3.89, 'marketCap': 775378.14,
+     'bookValuePerShare': 484.512808163511, 'earningsYield': -1.2445540443015328,
+     'weightedAverageShsOut': 199326.0, 'totalStockholdersEquity': 94469000.0},
+]
+#  WDH (Waterdrop): shares 361.9M -> 36.1M on the NEWEST TWO rows with `price` flat and equity
+#  flat.  pb 0.093 and 0.079 -- ABOVE the floor, so only the witnessed band can reach it.
+_WDH_NEWEST_ROW_BREAK = [
+    {'source': 'WDH', 'date': '2024-07-01', 'price': 8.42052, 'marketCap': 3051966950.88,
+     'bookValuePerShare': 12.999655119135646, 'earningsYield': 0.030408258507924123,
+     'weightedAverageShsOut': 362444000.0, 'totalStockholdersEquity': 4621198000.0},
+    {'source': 'WDH', 'date': '2024-10-01', 'price': 8.612584, 'marketCap': 3118608053.816,
+     'bookValuePerShare': 13.459214192803625, 'earningsYield': 0.03391994061920077,
+     'weightedAverageShsOut': 362099000.0, 'totalStockholdersEquity': 4797435000.0},
+    {'source': 'WDH', 'date': '2025-01-01', 'price': 10.811738, 'marketCap': 3914260002.044,
+     'bookValuePerShare': 13.627171733353958, 'earningsYield': 0.0276412399645147,
+     'weightedAverageShsOut': 362038000.0, 'totalStockholdersEquity': 4861361000.0},
+    {'source': 'WDH', 'date': '2025-04-01', 'price': 9.670185, 'marketCap': 3489247751.80716,
+     'bookValuePerShare': 13.892026140869442, 'earningsYield': 0.04016883006585259,
+     'weightedAverageShsOut': 360825336.0, 'totalStockholdersEquity': 5012595000.0},
+    {'source': 'WDH', 'date': '2025-07-01', 'price': 13.453965, 'marketCap': 4870048074.393285,
+     'bookValuePerShare': 14.013851408125456, 'earningsYield': 0.03253889850353106,
+     'weightedAverageShsOut': 361978649.0, 'totalStockholdersEquity': 5072715000.0},
+    {'source': 'WDH', 'date': '2025-10-01', 'price': 13.285940147093456,
+     'marketCap': 480011026.48749596, 'bookValuePerShare': 142.59715405538302,
+     'earningsYield': 0.33307246537630264, 'weightedAverageShsOut': 36129248.0,
+     'totalStockholdersEquity': 5151928000.0},
+    {'source': 'WDH', 'date': '2026-01-01', 'price': 11.173950186349142,
+     'marketCap': 402010424.0890201, 'bookValuePerShare': 144.70996819131315,
+     'earningsYield': 0.24322013843687926, 'weightedAverageShsOut': 35977467.0,
+     'totalStockholdersEquity': 5097275875.0},
+]
+#  CHLL.L: five real rows sitting INSIDE the widened band (pb 0.021-0.074) whose share count is
+#  within 1.5x of the source's own median.  No witness, so no refusal.  This is the fixture
+#  that stands for the measured false-refusal population -- ALDBT.PA and URU.L are refused by
+#  the shipped rule and this name, in the same band, is not.
+_CHLL_IN_BAND_NO_WITNESS = [
+    {'source': 'CHLL.L', 'date': '2016-01-01', 'price': 1.484, 'marketCap': 102522.14,
+     'bookValuePerShare': 20.17695592386191, 'earningsYield': -8.859896018557553,
+     'weightedAverageShsOut': 69085.0, 'totalStockholdersEquity': 1393925.0},
+    {'source': 'CHLL.L', 'date': '2017-01-01', 'price': 2.649, 'marketCap': 183006.165,
+     'bookValuePerShare': 101.44998190634725, 'earningsYield': -10.43736969188989,
+     'weightedAverageShsOut': 69085.0, 'totalStockholdersEquity': 7008672.0},
+    {'source': 'CHLL.L', 'date': '2017-07-01', 'price': 2.3, 'marketCap': 181161.8,
+     'bookValuePerShare': 111.30995607241704, 'earningsYield': -12.635555619341385,
+     'weightedAverageShsOut': 78766.0, 'totalStockholdersEquity': 8767440.0},
+    {'source': 'CHLL.L', 'date': '2018-01-01', 'price': 2.213, 'marketCap': 257810.074,
+     'bookValuePerShare': 80.41048773369499, 'earningsYield': -6.544185701602956,
+     'weightedAverageShsOut': 116498.0, 'totalStockholdersEquity': 9367661.0},
+    {'source': 'CHLL.L', 'date': '2018-07-01', 'price': 1.69, 'marketCap': 198127.15,
+     'bookValuePerShare': 53.344922591376296, 'earningsYield': -22.156675649955094,
+     'weightedAverageShsOut': 117235.0, 'totalStockholdersEquity': 6253892.0},
+]
+
+
+def test_the_FLOOR_alone_refuses_a_majority_corrupt_source_the_witness_cannot_see():
+    """QBY0.DE -- why the CEO-ruled bare conjunction could not ship, as an executable fact.
+
+    22 of this source's 24 real rows carry a share count of ~199,326 against a true
+    24,915,897, so THE CORRUPTION IS THE MAJORITY OF THE HISTORY and 199,326 IS the source's
+    own median.  The witness ratio is therefore 1.000 on every contaminated row -- it does not
+    merely miss, it would point at the two SOUND rows instead.  Only the unconditional floor
+    reaches these.
+
+    THIS TEST IS THE GUARD ON THE UNION.  Replace the shipped disjunction with the conjunction
+    `pb < PB_WIDE and witness` and all five rows go unrefused: MEASURED, the conjunction drops
+    QBY0.DE, 0CHZ.L and CMCM entirely and takes the panel from 265 refused rows to 160.
+
+    CANNOT DETECT: whether 0.02 is the right floor.  Every row here is 3x inside it.
+    """
+    df = _frame(_QBY0_MAJORITY_CORRUPT)
+    #  the witness is SILENT -- stated first, so a reader knows which level is on trial
+    wr = npol.share_count_witness_ratio(df)
+    assert wr.max() == pytest.approx(1.0), (
+        'the fixture no longer has a silent witness, so it no longer tests the floor: %s'
+        % wr.tolist())
+    hits = npol.price_scale_hits(df)
+    assert sorted(hits['row']) == [0, 1, 2, 3, 4], hits
+    #  and the floor limb ALONE accounts for all five: collapsing the widened band onto the
+    #  floor changes nothing here
+    floor_only = npol.price_scale_hits(df, pb_wide=npol.PRICE_SCALE_PB_ALARM)
+    assert sorted(floor_only['row']) == [0, 1, 2, 3, 4], floor_only
+    #  the CONJUNCTION, evaluated here rather than described: it refuses nothing
+    pb = (pd.to_numeric(df['marketCap']) / pd.to_numeric(df['totalStockholdersEquity']))
+    conjunction = ((pb < npol.PRICE_SCALE_PB_WIDE)
+                   & (wr >= npol.PRICE_SCALE_WITNESS_FACTOR))
+    assert not bool(conjunction.any()), (
+        'the conjunction now fires on this fixture, so it has stopped being the '
+        'counter-example the union rests on')
+
+
+def test_the_WITNESSED_BAND_catches_a_newest_row_break_no_other_guard_can_reach():
+    """WDH -- what the widening is FOR, and the strongest single case for it.
+
+    Shares fall 361.9M -> 36.1M (exactly 10x) on the source's NEWEST TWO rows while `price`
+    stays 13.45 -> 13.29 and equity stays 5.1bn.  price/book lands at 0.093 and 0.079, so:
+      * the FLOOR misses it -- 0.079 is four times the floor;
+      * the SPIKE rule cannot see it -- `weightedAverageShsOut` is not in `SCALE_SPIKE_FIELDS`,
+        and even if it were, a two-sided neighbour test is structurally blind on a newest row
+        and both broken rows are adjacent;
+      * `balance_sheet_identity` cannot see it -- the balance sheet is sound.
+    A real ~$400M company whose current-period market cap is 10x too low, feeding 21.3% of the
+    Stage-1 gate.  Before this change nothing in the pipeline touched it.
+
+    CANNOT DETECT: whether 5.0 is the right witness factor.  This row is at 10.0x.
+    """
+    df = _frame(_WDH_NEWEST_ROW_BREAK)
+    wr = npol.share_count_witness_ratio(df)
+    assert wr.iloc[5] == pytest.approx(10.0, abs=0.1)
+    assert wr.iloc[6] == pytest.approx(10.1, abs=0.1)
+    assert wr.iloc[:5].max() < 1.01, 'the sound rows must sit AT the median'
+    hits = npol.price_scale_hits(df)
+    assert sorted(hits['row']) == [5, 6], hits
+    #  the floor reaches NONE of it -- this is the coverage the widening bought
+    assert not len(npol.price_scale_hits(df, pb_wide=npol.PRICE_SCALE_PB_ALARM))
+    #  the spike rule reaches none of it either, and it is not close: the field is not one it
+    #  looks at.  Stated as an assertion because "the spike rule would have caught it" is the
+    #  obvious objection to this test existing.
+    assert npol.PRICE_SCALE_WITNESS_FIELD not in npol.SCALE_SPIKE_FIELDS
+    assert not len(npol.scale_spike_hits(df))
+    #  end to end: the cap side goes, the balance sheet stays
+    out, rep = npol.refuse_impossible_cells(df, verbose=False)
+    for r in (5, 6):
+        for f in npol.PRICE_SCALE_REFUSE:
+            assert pd.isna(out.at[r, f]), (f, r)
+        assert out.at[r, 'totalStockholdersEquity'] == df.at[r, 'totalStockholdersEquity']
+        assert out.at[r, 'weightedAverageShsOut'] == df.at[r, 'weightedAverageShsOut'], (
+            'the witness field must never be refused -- the rule reads it and asserts '
+            'nothing about it')
+    #  and the SOUND rows are untouched, so this is a row refusal and not a source refusal
+    for r in range(5):
+        assert out.at[r, 'marketCap'] == df.at[r, 'marketCap']
+
+
+def test_a_row_inside_the_WIDENED_BAND_with_no_witness_is_LEFT_ALONE():
+    """CHLL.L -- the witness is a REQUIREMENT of the widened band, not decoration.
+
+    Five real rows at price/book 0.021-0.074, i.e. squarely inside `PRICE_SCALE_PB_WIDE`, whose
+    share count sits within 1.5x of the source's own median.  Nothing refuses them.
+
+    THIS IS THE OVER-REFUSAL GUARD.  Drop the `& witness` conjunct -- make the band
+    unconditional -- and ALL FIVE rows are refused, which would invent a Stage-1 FAIL
+    (`calcScore.calcByTier` scores a NaN as a FAIL) against a real company on no evidence at
+    all.  That is the error this module calls the invisible one, because nothing downstream
+    reports it.
+
+    CANNOT DETECT: the measured 11.4%-31.4% of widened-band refusals that ARE over-reaches.
+    This name is on the right side of the cut; ALDBT.PA and URU.L, in the same band with
+    dilution-ramp witness ratios, are not, and are refused. See `nan_policy` for that table.
+    """
+    df = _frame(_CHLL_IN_BAND_NO_WITNESS)
+    pb = (pd.to_numeric(df['marketCap']) / pd.to_numeric(df['totalStockholdersEquity']))
+    #  the premise: EVERY row is in the band and above the floor, so the witness is the
+    #  only thing standing between this name and five invented FAILs
+    in_band = (pb >= npol.PRICE_SCALE_PB_ALARM) & (pb < npol.PRICE_SCALE_PB_WIDE)
+    assert int(in_band.sum()) == len(df), pb.tolist()
+    wr = npol.share_count_witness_ratio(df)
+    assert wr.max() < npol.PRICE_SCALE_WITNESS_FACTOR, wr.tolist()
+    assert not len(npol.price_scale_hits(df)), npol.price_scale_hits(df)
+    #  the unconditional band, evaluated here rather than described: it takes all five
+    assert int(in_band.sum()) == 5
+    out, _ = npol.refuse_impossible_cells(df, verbose=False)
+    assert out['marketCap'].notna().all()
+    assert npol.SANITY_REFUSED_COLUMN not in out.columns or out[
+        npol.SANITY_REFUSED_COLUMN].fillna('').eq('').all()
+
+
+def test_the_shipped_rule_is_a_SUPERSET_of_the_floor_never_a_replacement_for_it():
+    """The structural property the widening had to have, on one mixed frame.
+
+    A conjunction cannot be a superset of its own conjunct.  That is the whole reason the
+    ruled form could not ship, and it is checkable without any threshold: refusing with the
+    band collapsed onto the floor must yield a SUBSET of refusing with the band open.
+
+    CANNOT DETECT: whether the rows the band ADDS are the right ones.  That is adjudication,
+    not a property, and it lives in `nan_policy`'s measured table.
+    """
+    df = _frame(_QBY0_MAJORITY_CORRUPT + _WDH_NEWEST_ROW_BREAK + _CHLL_IN_BAND_NO_WITNESS)
+    union = set(npol.price_scale_hits(df)['row'])
+    floor = set(npol.price_scale_hits(df, pb_wide=npol.PRICE_SCALE_PB_ALARM)['row'])
+    assert floor and union, (floor, union)
+    assert floor < union, (
+        'the widened rule is no longer a strict superset of the floor -- it has become a '
+        'REPLACEMENT for it, which is exactly the defect that made the conjunction '
+        'un-shippable: floor=%s union=%s' % (sorted(floor), sorted(union)))
+    #  and the three sources are doing three different jobs on the same frame
+    got = {str(df.at[r, 'source']) for r in union}
+    assert got == {'QBY0.DE', 'WDH'}, got
+
+
+def test_the_WITNESS_FIELD_is_refused_by_no_producer_in_this_module():
+    """The widening reads a field, so it could have added an 18th read/refuse coupling.  It
+    does not -- and that is one edit away from being false.
+
+    `share_count_witness_ratio` reads `weightedAverageShsOut` off the SAME pre-blanking frame
+    every other producer runs on.  If any producer refused that field, the witness would be
+    computed from a cell this pass had already rejected: the Q-72 defect, freshly grown on the
+    rule that was being fixed.
+
+    CANNOT DETECT: a producer added OUTSIDE this module's three tables.
+    """
+    refusers = set(npol.PRICE_SCALE_REFUSE) | set(npol.SCALE_SPIKE_FIELDS)
+    for _n, _num, _den, _f, _t, refuse in npol.IMPOSSIBLE_RELATIONS:
+        refusers |= set(refuse)
+    assert npol.PRICE_SCALE_WITNESS_FIELD not in refusers, (
+        '%s is now refused by a producer in this module, so the price-scale witness reads a '
+        'cell the same pass can reject -- the coupling class Q-72 exists for. Either stop '
+        'refusing it or give the witness a pre-refusal copy of the column.'
+        % npol.PRICE_SCALE_WITNESS_FIELD)
+
+
+def test_the_witness_abstains_when_there_are_too_few_rows_to_have_a_median():
+    """Two rows and a 100x break put BOTH rows ~10x off their midpoint, so a median witness
+    would corroborate a refusal of the SOUND row as readily as the broken one.
+    `PRICE_SCALE_WITNESS_MIN_ROWS` refuses to answer instead.
+
+    CANNOT DETECT: whether 4 is the right minimum.  Measured cost on all five saved panels is
+    0 rows, so no shipped refusal turns on the exact number.
+    """
+    two = _frame([
+        {'source': 'ZZTWO', 'date': '2025-01-01', 'price': 1.0, 'marketCap': 1.0e5,
+         'bookValuePerShare': 1.0, 'earningsYield': 0.1,
+         'weightedAverageShsOut': 1.0e5, 'totalStockholdersEquity': 2.0e6},
+        {'source': 'ZZTWO', 'date': '2025-04-01', 'price': 1.0, 'marketCap': 1.0e7,
+         'bookValuePerShare': 1.0, 'earningsYield': 0.1,
+         'weightedAverageShsOut': 1.0e7, 'totalStockholdersEquity': 2.0e6},
+    ])
+    assert npol.share_count_witness_ratio(two).isna().all(), (
+        'a two-row source now gets a witness verdict, so the widened band can fire on a '
+        'median that is a midpoint between a sound and a broken value')
+    #  pb here is 0.05 -- inside the band, outside the floor -- so the ONLY thing keeping this
+    #  frame unrefused is the row minimum.
+    assert not len(npol.price_scale_hits(two))
+    #  the same shape with enough rows DOES get a verdict, so the guard is a row-count guard
+    #  and not an accidental all-abstain.
+    four = _frame(_QBY0_MAJORITY_CORRUPT[:4])
+    assert npol.share_count_witness_ratio(four).notna().all()
+
+
+# --------------------------------------------------------------------------- #
+#  Q-72 -- THE READ/REFUSE COUPLING GUARD                                      #
+# --------------------------------------------------------------------------- #
+#  081580.KQ 2020-10, verbatim from CUR3K_2026-08-11 with its two date-neighbours (the spike
+#  rule needs both).  `totalAssets` is served 1,000x too small for exactly this quarter; every
+#  other cell on the row is sound and continuous with its neighbours.
+_KQ_CORRUPT_TOTALASSETS = [
+    {'source': '081580.KQ', 'date': '2020-07-01', 'totalAssets': 129836984000.0,
+     'totalLiabilities': 28125493000.0, 'totalStockholdersEquity': 101032317000.0,
+     'totalCurrentAssets': 67500638000.0, 'totalCurrentLiabilities': 24684627000.0,
+     'propertyPlantEquipmentNet': 48774780000.0},
+    {'source': '081580.KQ', 'date': '2020-10-01', 'totalAssets': 111489851.0,
+     'totalLiabilities': 23737056599.0, 'totalStockholdersEquity': 97439627358.0,
+     'totalCurrentAssets': 57821671.0, 'totalCurrentLiabilities': 21315026075.0,
+     'propertyPlantEquipmentNet': 43397726255.0},
+    {'source': '081580.KQ', 'date': '2021-01-01', 'totalAssets': 126716636000.0,
+     'totalLiabilities': 27479082000.0, 'totalStockholdersEquity': 98783151000.0,
+     'totalCurrentAssets': 68345388000.0, 'totalCurrentLiabilities': 25266706000.0,
+     'propertyPlantEquipmentNet': 43298339000.0},
+]
+
+
+def test_a_relation_does_not_blank_a_sound_leg_off_a_cell_the_spike_rule_refused():
+    """Q-72, the nine couplings the measurement justified closing.
+
+    On this real row FOUR producers fire on the same pre-blanking frame:
+    `isolated_scale_spike:totalAssets`, `isolated_scale_spike:totalCurrentAssets`,
+    `balance_sheet_identity` (which DIVIDES BY the corrupt `totalAssets` and blanks
+    `totalLiabilities` and `totalStockholdersEquity` off it) and `ppe_within_assets` (which
+    divides by it and blanks `propertyPlantEquipmentNet`).
+
+    BEFORE the guard, five cells were refused and three of them -- `totalLiabilities`,
+    `totalStockholdersEquity`, `propertyPlantEquipmentNet` -- are sound and continuous with
+    their own neighbours.  AFTER, only the two cells a producer's own evidence NAMES are
+    refused.
+
+    CANNOT DETECT: the eight MUTUAL couplings (two containment relations reading each other
+    with no spike hit to break the tie).  Ordering is not the instrument for those; they are
+    left, with their measured incidence recorded in `nan_policy`.
+    """
+    df = _frame(_KQ_CORRUPT_TOTALASSETS)
+    rel = npol.impossible_relation_hits(df)
+    spike = npol.scale_spike_hits(df)
+    #  the premise, asserted rather than assumed: all four producers really do fire
+    assert set(rel['relation']) == {'balance_sheet_identity', 'ppe_within_assets'}, rel
+    assert set(spike['relation']) == {'isolated_scale_spike:totalAssets',
+                                      'isolated_scale_spike:totalCurrentAssets'}, spike
+    assert set(rel['row']) == {1} and set(spike['row']) == {1}
+    out, rep = npol.refuse_impossible_cells(df, verbose=False)
+    #  the two cells the spike rule named are gone
+    assert pd.isna(out.at[1, 'totalAssets'])
+    assert pd.isna(out.at[1, 'totalCurrentAssets'])
+    #  the three the relations would have taken as collateral survive, with their real values
+    for f in ('totalLiabilities', 'totalStockholdersEquity', 'propertyPlantEquipmentNet'):
+        assert out.at[1, f] == df.at[1, f], (
+            '%s was blanked off a `totalAssets` this same pass had already refused' % f)
+    #  the report says so too -- an audit reading the CSV must see the same two cells
+    assert sorted(rep['field']) == ['totalAssets', 'totalCurrentAssets'], rep
+    assert set(rep['relation']) == {'isolated_scale_spike:totalAssets',
+                                    'isolated_scale_spike:totalCurrentAssets'}, rep
+    #  and the stamp records an ABSTENTION on exactly those two, so a downstream reader cannot
+    #  mistake either for an absence
+    assert npol.refused_fields_mask(out, 'totalAssets').iloc[1]
+    assert not npol.refused_fields_mask(out, 'totalStockholdersEquity').iloc[1]
+    #  the neighbours are untouched: this is a row abstention, not a window deletion
+    for r in (0, 2):
+        assert out.loc[r].notna().all()
+
+
+def test_the_coupling_guard_never_drops_a_SPIKE_hit():
+    """The guard is ASYMMETRIC and that is what makes it acyclic.
+
+    The spike rule refuses exactly the one field its own evidence names and reads none of the
+    sibling fields, so it has no collateral and is never a drop target.  A symmetric version
+    of this guard could drop both sides of a mutual pair and lose the refusal entirely --
+    silently, since fewer refusals reads like a cleaner panel.
+
+    CANNOT DETECT: a future producer added with the spike prefix that DOES read siblings.
+    """
+    df = _frame(_KQ_CORRUPT_TOTALASSETS)
+    hits = pd.concat([npol.impossible_relation_hits(df), npol.scale_spike_hits(df)],
+                     ignore_index=True)
+    kept = npol._drop_relation_hits_the_spike_rule_already_explained(hits)
+    def _spikes(h):
+        return sorted(h.loc[h['relation'].astype(str).str.startswith(
+            npol.SCALE_SPIKE_RELATION_PREFIX), 'relation'])
+    assert _spikes(kept) == _spikes(hits), (_spikes(hits), _spikes(kept))
+    assert len(kept) == 2 and len(hits) == 4, (hits, kept)
+    #  NOR A PRICE-SCALE HIT.  The price-scale rule is a READER in the coupling sweep, never a
+    #  refuser of a field a relation reads, and it has its OWN guard
+    #  (`_drop_price_scale_on_already_refused_equity`).  If this guard also dropped it the row
+    #  would lose its cheapness refusal silently -- fewer refusals reads like a cleaner panel.
+    withps = pd.concat([hits, pd.DataFrame([{
+        'row': 1, 'relation': npol.PRICE_SCALE_RELATION, 'ratio': 0.001,
+        'fields': npol.PRICE_SCALE_REFUSE}])], ignore_index=True)
+    kept2 = npol._drop_relation_hits_the_spike_rule_already_explained(withps)
+    assert (kept2['relation'] == npol.PRICE_SCALE_RELATION).sum() == 1, kept2
+    #  and it is a NO-OP when no spike hit is present: a relation firing alone keeps its hit
+    lone = npol._drop_relation_hits_the_spike_rule_already_explained(
+        npol.impossible_relation_hits(df))
+    assert len(lone) == 2, lone
+
+
+def test_the_spike_relation_label_has_exactly_one_home():
+    """The guard identifies spike hits BY PREFIX, so a second literal would make it a silent
+    no-op -- fewer drops, no error, no test failure anywhere else.  One fact, one home.
+
+    CANNOT DETECT: a THIRD module building the label itself.
+    """
+    src = open(npol.__file__, encoding='utf-8').read()
+    #  the literal appears where the constant is DEFINED and nowhere else in code
+    import re
+    code = [ln for ln in src.splitlines()
+            if "'isolated_scale_spike:" in ln and not ln.lstrip().startswith('#')]
+    assert len(code) == 1 and 'SCALE_SPIKE_RELATION_PREFIX =' in code[0], code
+    assert npol.scale_spike_relation('totalAssets') == 'isolated_scale_spike:totalAssets'
+    #  and the producer really does use the helper
+    assert 'scale_spike_relation(field)' in src
+
+
+def test_the_coupling_guard_runs_BEFORE_the_price_scale_equity_guard():
+    """ORDER IS LOAD-BEARING, and running it the other way is a silent wrong answer.
+
+    `_drop_price_scale_on_already_refused_equity` asks "did another producer refuse this row's
+    `totalStockholdersEquity`".  The coupling guard can DROP the `balance_sheet_identity` hit
+    that was the only such refusal -- so a price-scale hit that used to be dropped now stands.
+    Measured on the two NA1_EU1 panels: +2 price-scale hits each.  Run in the other order, the
+    equity guard answers from a hit set that does not ship.
+
+    CANNOT DETECT: the correctness of the resulting refusal.  It pins the ORDER, which is what
+    a future edit is likely to get wrong.
+    """
+    src = inspect.getsource(npol.refuse_impossible_cells)
+    i_cpl = src.index('_drop_relation_hits_the_spike_rule_already_explained(hits')
+    i_eq = src.index('_drop_price_scale_on_already_refused_equity(hits')
+    assert i_cpl < i_eq, (
+        'the price-scale equity guard now runs before the coupling guard, so it decides '
+        'whether to trust a row\'s equity from hits that the coupling guard then removes')
+
+
+def test_the_coupling_guard_does_not_change_which_sources_are_EJECTED():
+    """The section-5 contract is ABSTAIN, NEVER EJECT, and this guard moves cells the primary
+    limbs read -- `totalStockholdersEquity` is a primary limb and `totalAssets` is a
+    `SANITY_IMPOSSIBLE` one.
+
+    THE MECHANISM OF CONCERN, stated so the fixture can be checked against it: a dropped hit
+    means a cell keeps its RAW value instead of becoming a stamped blank, and `_limb_fails`
+    reads a raw value rather than an absence.  Blanking never ejects (`NaN <= 0` is False, and
+    `refused_fields_mask` subtracts a stamped blank from the NaN limbs), so the only way this
+    guard could ADD an eject is by restoring a raw `totalAssets <= 0` on the row the verdict is
+    taken from.
+
+    IT STRUCTURALLY CANNOT, and that is what the last assertion pins rather than asserts by
+    example.  `primary_eject` reads each source's NEWEST row only.  The guard drops a hit only
+    where the SPIKE rule fired, and the spike rule requires BOTH date-neighbours -- so it can
+    never fire on a newest row.  The two sets are disjoint by construction.
+
+    THE FIXTURE EXERCISES THE GUARD, which an earlier version of this test did not (found in
+    independent review -- it put the corrupt cell on the NEWEST row, where no spike hit can
+    exist, so the guard dropped nothing and the test passed with or without it).  Here the
+    spike fires on the INTERIOR row 1 and `balance_sheet_identity` fires on the same row and
+    reads the spiked field, so there is a real hit to drop; the newest row carries a SEPARATE
+    `totalAssets <= 0` that ejects on raw values and must still be blanked-and-stamped.
+
+    CANNOT DETECT: whether dropping the relation hit was RIGHT on a row where TWO cells are
+    independently corrupt -- the spike names F, and the relation's other leg G is also bad.
+    The guard spares G, and nothing here would notice.  Unmeasured; no evidence it occurs on
+    any saved panel; named because it is the guard's one theoretical over-spare.
+    """
+    common = {'price': 10.0, 'marketCap': 1.0e9, 'weightedAverageShsOut': 1.0e8,
+              'netIncome': 1.0e7, 'netCashProvidedByOperatingActivities': 1.0e7,
+              'revenue': 5.0e8}
+    df = _frame([
+        dict(source='ZZEJ', date='2024-07-01', totalAssets=2.0e9,
+             totalLiabilities=1.999e9, totalStockholdersEquity=1.0e6, **common),
+        #  INTERIOR: `totalLiabilities` served 500x too small for one quarter.  The spike rule
+        #  names that one cell; `balance_sheet_identity` divides by it (A/(L+E) = 408) and
+        #  would blank `totalAssets` and `totalStockholdersEquity` as collateral.
+        dict(source='ZZEJ', date='2024-10-01', totalAssets=2.0e9,
+             totalLiabilities=3.9e6, totalStockholdersEquity=1.0e6, **common),
+        dict(source='ZZEJ', date='2025-01-01', totalAssets=2.0e9,
+             totalLiabilities=1.999e9, totalStockholdersEquity=1.0e6, **common),
+        #  NEWEST: a non-positive `totalAssets`, which is a `SANITY_IMPOSSIBLE` eject on raw
+        #  values.  The identity fires here too and MUST keep firing -- there is no spike hit
+        #  on a newest row, so the guard must not reach it.
+        dict(source='ZZEJ', date='2025-04-01', totalAssets=-5.0,
+             totalLiabilities=1.999e9, totalStockholdersEquity=1.0e6, **common),
+    ])
+    rel = npol.impossible_relation_hits(df)
+    spike = npol.scale_spike_hits(df)
+    #  the premise: the guard has something to drop, and only on the interior row
+    assert sorted(rel['row']) == [1, 3] and set(rel['relation']) == {'balance_sheet_identity'}
+    assert list(spike['row']) == [1], spike
+    assert list(spike['relation']) == ['isolated_scale_spike:totalLiabilities'], spike
+    hits = pd.concat([rel, spike], ignore_index=True)
+    kept = npol._drop_relation_hits_the_spike_rule_already_explained(hits)
+    assert len(hits) - len(kept) == 1, (hits, kept)
+    dropped = set(map(tuple, hits[['row', 'relation']].values.tolist())) - set(
+        map(tuple, kept[['row', 'relation']].values.tolist()))
+    assert dropped == {(1, 'balance_sheet_identity')}, dropped
+
+    out, rep = npol.refuse_impossible_cells(df, verbose=False)
+    #  INTERIOR ROW: only the cell the spike rule NAMED is refused; the identity's two other
+    #  legs keep their real values.  This is the guard working.
+    assert pd.isna(out.at[1, 'totalLiabilities'])
+    assert out.at[1, 'totalAssets'] == 2.0e9
+    assert out.at[1, 'totalStockholdersEquity'] == 1.0e6
+    #  NEWEST ROW: untouched by the guard, so the identity still blanks AND stamps, which is
+    #  what keeps `primary_eject` off a source the guard has no evidence about.
+    for f in ('totalAssets', 'totalLiabilities', 'totalStockholdersEquity'):
+        assert pd.isna(out.at[3, f]), f
+        assert npol.refused_fields_mask(out, f).iloc[3], f
+
+    #  THE EJECT COMPARISON, and `before` is deliberately NON-EMPTY so it can fail: the raw
+    #  frame DOES eject on `totalAssets <= 0`, and the refusal is what removes it.
+    ej_before = npol.primary_eject(df)
+    before = set(ej_before['source'])
+    after = set(npol.primary_eject(out)['source'])
+    assert before == {'ZZEJ'}, ej_before
+    assert 'totalAssets' in set(ej_before['field']), ej_before
+    assert not (after - before), (
+        'the refusal pass now EJECTS a source it did not eject on raw values: %s'
+        % sorted(after - before))
+    assert not after, 'the refusal must REMOVE this eject, not merely fail to add one'
+
+    #  THE STRUCTURAL REASON, pinned rather than argued: every hit the guard drops sits on a
+    #  row that has BOTH date-neighbours, and `primary_eject` reads only the newest row.  A
+    #  future edit that let the guard reach an endpoint would fail here first.
+    newest = pd.to_datetime(df['date']).max()
+    oldest = pd.to_datetime(df['date']).min()
+    for row, _rel in dropped:
+        d = pd.to_datetime(df.at[row, 'date'])
+        assert oldest < d < newest, (
+            'the coupling guard dropped a hit on an ENDPOINT row (%s); the spike rule cannot '
+            'fire there, so this can only mean the guard stopped keying on spike hits' % d)

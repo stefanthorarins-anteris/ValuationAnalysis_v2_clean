@@ -902,6 +902,19 @@ IMPOSSIBLE_RELATIONS = (
 #  which is exactly the discrimination the two-sided form buys.  The identity limbs are what
 #  cover the endpoint today; closing the rest of the gap needs a different instrument.
 SCALE_SPIKE_FACTOR = 500.0
+#  ONE HOME FOR THE RELATION LABEL.  It was built inline as a format string in exactly one
+#  place and is now READ BACK by `_drop_relation_hits_the_spike_rule_already_explained`, which
+#  identifies spike hits BY THIS PREFIX.  Two literals would be this repo's recorded worst bug
+#  class (one fact stated twice, drifting apart) on a string that silently decides whether the
+#  coupling guard fires at all -- a typo would make it a no-op that no assertion would notice.
+SCALE_SPIKE_RELATION_PREFIX = 'isolated_scale_spike:'
+
+
+def scale_spike_relation(field):
+    """The relation label the isolated-scale-spike rule reports for `field`."""
+    return SCALE_SPIKE_RELATION_PREFIX + str(field)
+
+
 #  field -> allowed spike direction: 'both' (a stock cannot move either way) or 'up'.
 SCALE_SPIKE_FIELDS = {
     'totalAssets': 'both',
@@ -1070,12 +1083,218 @@ SCALE_SPIKE_FIELDS = {
 #  is worse than none", in that module's own words.  `price_scale_audit.run_audit` therefore
 #  reads the `SANITY_REFUSED_COLUMN` stamp and reports refused-upstream sources by name, so
 #  "found nothing" and "already refused" can never print as the same line.
+#  ---- THE WIDENING (Q-75), AND THE FORM IT COULD *NOT* TAKE -----------------------------
+#  THE CEO RULED: ship the conjunction -- `marketCap/equity < 0.10` AND a share count >= 5x off
+#  the source's own median -- on the argument that TWO conditions are NARROWER PER ROW than one,
+#  so false refusals should fall even as coverage rises.  The first half of that is true.  THE
+#  SECOND HALF IS FALSE, AND IT IS FALSE IN THE DIRECTION THAT MATTERS: a conjunction cannot be
+#  a superset of one of its own conjuncts, so `pb < 0.10 AND witness` does not WIDEN `pb < 0.02`
+#  -- it REPLACES it with something narrower on the rows they share.
+#  MEASURED, five saved panels, rows refused:
+#      panel                 pb<0.02   CONJUNCTION   UNION (shipped)
+#      resdic_2026-07-17        265         160            354
+#      CUR3K_2026-08-11          59          48             94
+#      CUR3K_2026-08-07          67          53            101
+#      NA1_EU1_2026-01-08       599         318            713
+#      NA1_EU1_2025-12-09       636         342            779
+#  The conjunction alone LOSES 46-437 rows per panel, and the rows it loses are THIS RULE'S OWN
+#  HEADLINE CASES.  Hand-checked on `resdic_2026-07-17`:
+#    * QBY0.DE -- 22 of its 24 rows sit at pb 0.006-0.013 with a share count of ~199,326.  The
+#      CORRUPTION IS THE MAJORITY OF THE HISTORY, so 199,326 *is* the source's own median: the
+#      witness ratio is 1.000 on all 22 contaminated rows and 125.0 on the TWO SOUND ones
+#      (2025-10 and 2026-01, shares 24,915,897).  The witness does not merely miss here, it
+#      points at the wrong rows.  Under the conjunction QBY0.DE is refused on ZERO rows.
+#    * 0CHZ.L -- the SAME company's other listing carries the SOUND share count (24,915,897)
+#      throughout and the SAME low `marketCap`, so pb is 0.006-0.013 on 22 rows with a witness
+#      ratio of 1.000 everywhere.  This is the ATRI shape: the price side is broken, the share
+#      count is not, and there is no share-count evidence to find.  Under the conjunction, ZERO.
+#      (CORRECTION, because the note beside `PRICE_SCALE_REFUSE` has this wrong: QBY0.DE and
+#      0CHZ.L are NOT "the same break on both".  They differ in EXACTLY the share count --
+#      199,326 against 24,915,897, a factor of 125 -- while carrying IDENTICAL `marketCap` and
+#      `totalStockholdersEquity` on every matching date.  So the cap side is contaminated on
+#      BOTH listings and the share count on only one, which is why `marketCap = price x shares`
+#      cannot be the whole mechanism on that pair.)
+#    * CMCM -- share count flat at 574k-620k (witness ratio <= 1.11 on every row), equity
+#      $1.5-3.8bn, marketCap $8-44M, pb 0.0024-0.016 on all 23 rows.  Conjunction: ZERO rows.
+#  Two shipped fixtures pin exactly this: `test_the_ATRI_shape_is_refused...` and
+#  `test_the_QBY0_shape_refuses_only_the_contaminated_ROWS...`.  The conjunction fails both.
+#
+#  SO THE SHIPPED FORM IS THE UNION, AND IT IS ONE RULE WITH TWO LEVELS -- NOT TWO DEFINITIONS
+#  OF CONTAMINATED, AND NOT ONE NUMBER EITHER.  Said plainly, because the brief asked for one
+#  definition and this is what one definition actually costs here:
+#      refuse iff  pb < PRICE_SCALE_PB_ALARM                       (the unconditional floor)
+#              or (pb < PRICE_SCALE_PB_WIDE and the witness fires) (the witnessed band)
+#  The DEFINITION of contaminated is unchanged and singular -- "the market-cap side contradicts
+#  this company's own balance sheet".  What the witness buys is a WEAKER price/book requirement,
+#  because it supplies independent evidence for the same conclusion.  There is no way to widen
+#  only-where-a-witness-fires with a single number, and pretending otherwise would be the
+#  drifting-constant defect this module keeps recording.  Both numbers are exported and both are
+#  pinned to `price_scale_audit` by `test_there_is_exactly_one_definition_of_contaminated`, so
+#  the reporting side and the refusing side still cannot name different rows.
+#
+#  THE WITNESS IS THE SOURCE'S OWN MEDIAN SHARE COUNT, computed from `weightedAverageShsOut`
+#  which is ALREADY ON THE FRAME -- no fetch, no new vendor field.  `PRICE_SCALE_WITNESS_MIN_ROWS`
+#  exists because a median over one or two rows cannot separate the outlier from the level: with
+#  two rows and a 100x break the median is the midpoint and BOTH rows land 10x off it, so the
+#  rule would refuse the sound one too.  Measured cost of the minimum: 0 rows on all five panels
+#  (every source there carries 16-24 rows), so it guards a shape the panels happen not to hold.
+#
+#  IT INTRODUCES NO NEW READ/REFUSE COUPLING, which is the one thing that could have made it
+#  unsafe.  `weightedAverageShsOut` is refused by NO producer in this module -- not in
+#  `PRICE_SCALE_REFUSE`, not in `SCALE_SPIKE_FIELDS`, named in no relation's refuse tuple -- so
+#  the witness cannot read a cell this same pass has already rejected.
+#  `test_the_witness_field_is_refused_by_NO_producer` pins that, because it is one edit away
+#  from being false.
+#
+#  MEASURED FALSE-REFUSAL RATE OF THE WIDENED BAND -- 35 newly-refused rows over 19 sources on
+#  CUR3K_2026-08-11, EVERY ONE ADJUDICATED BY HAND against the source's own share, price, equity
+#  and book-value series:
+#      24 rows / 14 sources  GENUINE VENDOR BREAK
+#         WDH        2 rows, and the single best case for widening: shares 361.9M -> 36.1M
+#                    (exactly 10x) on the NEWEST TWO ROWS with `price` flat at 13.45 -> 13.29 and
+#                    equity flat at 5.1bn.  pb is 0.093 and 0.079, so THE CURRENT RULE MISSES IT
+#                    ENTIRELY, and the spike rule is structurally blind on a newest row.  A real
+#                    ~$400M company whose current-period market cap is 10x too low, feeding
+#                    21.3% of the Stage-1 gate, with no existing guard able to see it.
+#         MTVA       6 rows, share count 6,183-10,099 against an own-median of 460,674 with
+#                    `price` pinned at exactly 27.83 for 21 consecutive quarters.  THREE of its
+#                    rows were already refused at pb<0.02; the widening picks up six contiguous
+#                    siblings of the same break, which is the shape the floor half-caught.
+#         AGMR.TO    3 rows, 186M -> 22.9M shares with `price` unchanged at ~0.05.
+#         025560.KS  2 rows, isolated 5-6x dips against 16.8-22.4M, `price` continuous.
+#         CHLL.L     2 rows, the alternating 38,057 / 69,085 shape (cf. NRP.AS above).
+#         058650.KS  1 row, 432,000 shares for one quarter against 3.896M in all 23 others.
+#         003380.KQ  1 row, 16.9M against 97.3M, `price` continuous 7,340 -> 10,630 -> 13,550.
+#         DLCG.TO    1 row, 784,240 between 52.8M and 78.3M, `price` continuous.
+#         PYC.L      1 row, 2.0M between 135M and 276M, `price` continuous.
+#         0QAU.L / VMX.PA / VK.PA  1 row each -- one company, three listings, the same isolated
+#                    8x share-count break on 2025-10.
+#         BLNE       1 row; this name's vendor share count is chaotic throughout (211,600 ->
+#                    1.86M -> 9.8M -> 193,018 -> 27.9M) and no row of it is usable.
+#         LAT.PA     1 row, genuinely broken (mcap 8.2M against 100.9M of equity, for a real
+#                    aerospace supplier) but flagged for the WRONG REASON -- see ramp mechanism
+#                    1 below.  Counted sound in OUTCOME, not in EVIDENCE.
+#       4 rows /  2 sources  FALSE REFUSAL, both by one mechanism: ALDBT.PA 3, URU.L 1.
+#       7 rows /  3 sources  UNRESOLVED, named rather than counted as wins:
+#         XNET       5 rows.  Shares fall 63.5M -> 12.5M, a factor of 5.06 -- the witness fires
+#                    by 1.2% -- and stay there while `price` roughly triples.  That is the
+#                    signature of a REAL 1-for-5 ADS-ratio change, not a break, and a
+#                    simultaneous equity restatement (318M -> 1.05bn) muddies it further.
+#         VIVK 1, VEEE 1 -- both on the ramp mechanism, and on both the FLAGGED row is
+#                    plausibly the CORRECT one rather than the broken one.
+#  So 24 sound / 4 false / 7 unresolved: a false-refusal rate of 11.4% on the rows I can call,
+#  and 31.4% if every unresolved row is counted against it.  For comparison, the balance-sheet
+#  restatement's own 14 newly-refused rows adjudicated 10 unambiguous / 1 earned / 1
+#  misattributed / 3 unresolved -- so the widened band sits in the same range and slightly
+#  worse.  THIS IS NOT A CLEAN CHANGE AND MUST NOT BE REPORTED AS ONE.
+#
+#  THE TWO MECHANISMS THAT PRODUCE THE FALSE REFUSALS, because a rate with no mechanism cannot
+#  be improved:
+#    1. MONOTONE DILUTION RAMPS -- the dominant one; 5 of the 6 non-genuine sources.  A source
+#       whose share count grows more than 5x ACROSS ITS WHOLE HISTORY has BOTH ENDS >= 5x off
+#       its own median with NO row anomalous: ALDBT.PA ramps 1,440 -> 5.02M (3,500x), URU.L
+#       138,000 -> 59.1M (430x), LAT.PA 1.15M -> 12.5bn, VEEE and VIVK ~22x.  The witness is
+#       measuring the ramp, not a break.  URU.L is the clearest demonstration that the 5x cut
+#       then slices ARBITRARILY: six adjacent early rows all sit at pb 0.02-0.05 with witness
+#       ratios 2.4-5.6, and exactly the one row whose ratio crosses 5.0 is refused while five
+#       indistinguishable siblings are not.
+#    2. LEGITIMATE >= 5:1 REVERSE SPLITS AND ADS-RATIO CHANGES -- XNET, at 5.06x.  Any real
+#       consolidation of 5:1 or more puts one half of a history >= 5x off its own median.
+#
+#  A NEIGHBOUR-RELATIVE RAMP GUARD WAS BUILT, MEASURED AND REJECTED; the numbers are recorded so
+#  nobody spends a day rediscovering it.  The candidate: additionally require the row to be
+#  FURTHER off its source's own median than BOTH of its date-adjacent rows are -- true for an
+#  isolated break, false on a ramp where every row is a similar distance out.  MEASURED on
+#  CUR3K_2026-08-11 it took the 35 new rows to 17, and the split is fatal:
+#      adjudicated GENUINE     24 -> 13        adjudicated FALSE  4 -> 2
+#      adjudicated UNRESOLVED   7 ->  2
+#  It kills WDH's 2025-10 row, five of MTVA's six and two of AGMR.TO's three, while KEEPING half
+#  the false refusals.  THE REASON IS STRUCTURAL, not a tuning miss: THE CORRUPTION USUALLY
+#  ARRIVES AS A CONTIGUOUS BLOCK OF ROWS, so each broken row's neighbour is broken too and
+#  nothing "stands out".  That is the same fact that makes the spike rule blind on endpoints,
+#  restated one field along.  NOT SHIPPED.
+#  WHAT WOULD PROBABLY WORK AND IS *NOT* MEASURED, so it is a lead and not a plan: a share-count
+#  break moves `marketCap` while leaving `price` CONTINUOUS (WDH: shares /10, price 13.45 ->
+#  13.29), a real reverse split multiplies `price` by the split factor and leaves `marketCap`
+#  continuous, and a dilution ramp moves both gradually.  A price-vs-shares consistency witness
+#  would separate all three where the median witness cannot.  Do not ship it on this paragraph.
+#
+#  WHAT THE WIDENING STILL MISSES, because it under-reaches in named directions:
+#    * THE MAJORITY-CORRUPT SOURCE.  QBY0.DE's 22 contaminated rows are held ONLY by the pb<0.02
+#      floor and carry a witness ratio of 1.000 on every one.  The median cannot see a defect
+#      that IS the median, so raising the floor would lose them to nothing.
+#    * THE SOUND-SHARE-COUNT SHAPE (ATRI, 0CHZ.L, CMCM).  No share-count evidence exists, so the
+#      witnessed band cannot reach these at all -- only the floor can.
+#    * THE 0.10-0.20 BAND, which still carries the witness at 7.5-12.4% against a whole-panel
+#      base rate of 1.1-1.8% (measured, five panels).  A 5-8x enrichment left deliberately
+#      untouched: a real equity CAN trade at 15% of book, and an over-refusal here invents a
+#      Stage-1 FAIL that nothing downstream reports.
+#    * The widening touches NO source in the saved panel's own deployed top-100 (checked against
+#      `resdic_2026-07-17`'s `postRank`; the current rule touches none either), so it does not
+#      move the CEO's list on that panel and did not need a rescore to ship.  That is a fact
+#      about THAT PANEL, not a property of the rule.
+#  WHAT THE WIDENING DOES DOWNSTREAM, measured because it lands on the number the CEO's list is
+#  banded by.  `carveOut.marketcap_usd_by_source` takes the latest NON-NaN market cap, so
+#  refusing a source's NEWEST one does not make it unknown -- it silently becomes an earlier
+#  quarter's, and `carveOut.marketcap_fallback_report` exists to record exactly that.  The
+#  widening gives that report MORE ROWS: sources with a refused newest market cap go 33 -> 40 on
+#  resdic_2026-07-17 and 7 -> 10 on CUR3K_2026-08-11.  Every added case, with where `last()` then
+#  lands:
+#      WDH      402.0M -> 4.870bn (2 quarters back)   0QAU.L  2.540M -> 21.98M (1)
+#      XNET      70.0M ->  54.97M (4)                 MPL.L   1.069M -> 6.912M (3)
+#      NXTT      18.3M ->  61.28M (2)                 KTTA/KTTAW 5.216M -> 9.070M (1)
+#      ALDBT.PA 169.2k ->  1.857M (2)
+#  WDH is the case that matters and the fallback is RIGHT: 4.87bn is the pre-break market cap, so
+#  the name moves out of a micro band it never belonged in.  ALDBT.PA is one of the two
+#  adjudicated FALSE refusals and its fallback moves a nano-cap 11x, from 169k to 1.86M -- still
+#  a nano-cap, so it reaches no band the CEO reads, but it is the shape an over-refusal takes
+#  downstream and is named rather than netted off against WDH.
+#  NOTE FOR WHOEVER OWNS `carveOut`: that function's docstring records "seven sources have a
+#  refused newest market cap" from the 2026-08-29 CUR6K panel.  That figure is now LOW by about
+#  40% and needs re-measuring on the next panel; it was not edited here because this change does
+#  not own that file.
 PRICE_SCALE_PB_ALARM = 0.02
+#  The widened band's upper edge.  Reached ONLY with the witness (see above).
+PRICE_SCALE_PB_WIDE = 0.10
 PRICE_SCALE_RELATION = 'price_scale:price_vs_bookValuePerShare'
 PRICE_SCALE_REFUSE = ('price', 'marketCap', 'bookValuePerShare', 'earningsYield')
+#  The witness: this field, against the SOURCE'S OWN median of it.  Refused by no producer.
+PRICE_SCALE_WITNESS_FIELD = 'weightedAverageShsOut'
+PRICE_SCALE_WITNESS_FACTOR = 5.0
+PRICE_SCALE_WITNESS_MIN_ROWS = 4
 
 
-def price_scale_hits(df, pb_alarm=None):
+def share_count_witness_ratio(df, source_col='source'):
+    """Series: how many times off its SOURCE'S OWN median each row's share count sits.
+
+    Symmetric -- `max(shares/median, median/shares)` -- because a break can be in either
+    direction and the witness asserts nothing about which.  NaN where the ratio is not
+    computable: an absent or non-positive share count, or a source with fewer than
+    `PRICE_SCALE_WITNESS_MIN_ROWS` usable rows, where a median cannot separate an outlier from
+    the level.
+
+    A frame with no `source` column is treated as ONE source, which is exactly what it is on
+    the live path: the hook in `getData_fmp.getFundamentalsData` passes `tempfund`, one
+    ticker's whole history, so the source's own median is already in hand with no groupby.
+    """
+    if PRICE_SCALE_WITNESS_FIELD not in df.columns:
+        return pd.Series(np.nan, index=df.index, dtype='float64')
+    sh = pd.to_numeric(df[PRICE_SCALE_WITNESS_FIELD], errors='coerce')
+    sh = sh.where(sh > 0)
+    if source_col in df.columns:
+        grp = df[source_col].astype(str)
+        med = sh.groupby(grp).transform('median')
+        cnt = sh.groupby(grp).transform('count')
+    else:
+        med = pd.Series(sh.median(), index=df.index, dtype='float64')
+        cnt = pd.Series(float(sh.count()), index=df.index, dtype='float64')
+    with np.errstate(divide='ignore', invalid='ignore'):
+        ratio = pd.concat([sh / med, med / sh], axis=1).max(axis=1)
+    ratio = ratio.replace([np.inf, -np.inf], np.nan)
+    return ratio.where(cnt >= PRICE_SCALE_WITNESS_MIN_ROWS)
+
+
+def price_scale_hits(df, pb_alarm=None, pb_wide=None, source_col='source'):
     """DataFrame [row, relation, ratio, fields] -- one row per price-scale contradiction.
 
     `ratio` is the price/book multiple itself, so the refusal CSV carries the number that
@@ -1162,11 +1381,21 @@ def price_scale_hits(df, pb_alarm=None):
     if 'marketCap' not in df.columns or 'totalStockholdersEquity' not in df.columns:
         return empty
     cut = PRICE_SCALE_PB_ALARM if pb_alarm is None else float(pb_alarm)
+    wide = PRICE_SCALE_PB_WIDE if pb_wide is None else float(pb_wide)
     mcap = pd.to_numeric(df['marketCap'], errors='coerce')
     equity = pd.to_numeric(df['totalStockholdersEquity'], errors='coerce')
     with np.errstate(divide='ignore', invalid='ignore'):
         pb = (mcap / equity).replace([np.inf, -np.inf], np.nan)
-    bad = ((mcap > 0) & (equity > 0) & pb.notna() & (pb < cut)).fillna(False)
+    #  THE DOMAIN LIMB IS FACTORED OUT OF BOTH LEVELS, deliberately: the witness widens the
+    #  price/book requirement and NOTHING ELSE.  Strictly positive on both legs, so negative
+    #  book equity (insolvency -- a real state of a real company) and a non-positive market cap
+    #  (already a primary limb) still never fire here, at either level.
+    domain = ((mcap > 0) & (equity > 0) & pb.notna()).fillna(False)
+    #  ONE RULE, TWO LEVELS.  Read the block above the constants for why the CEO-ruled bare
+    #  conjunction was measured, falsified and could not ship, and what the union costs.
+    witness = (share_count_witness_ratio(df, source_col=source_col)
+               >= float(PRICE_SCALE_WITNESS_FACTOR)).fillna(False)
+    bad = (domain & ((pb < cut) | ((pb < wide) & witness))).fillna(False)
     if not bool(bad.any()):
         return empty
     rows = [{'row': idx, 'relation': PRICE_SCALE_RELATION,
@@ -1242,7 +1471,7 @@ def scale_spike_hits(df, date_col='date'):
         bad = (ok & (up if direction == 'up' else (up | down))).fillna(False)
         for idx in v.index[bad]:
             r = max(float(v.loc[idx] / prev.loc[idx]), float(prev.loc[idx] / v.loc[idx]))
-            out.append({'row': idx, 'relation': 'isolated_scale_spike:%s' % field,
+            out.append({'row': idx, 'relation': scale_spike_relation(field),
                         'ratio': r, 'fields': (field,)})
     return pd.DataFrame(out, columns=['row', 'relation', 'ratio', 'fields']) if out else empty
 
@@ -1318,6 +1547,165 @@ def _normalise_refusal_date(v):
         return None if pd.isna(t) else t.normalize()
     except Exception:
         return str(v)
+
+
+
+#  ---- Q-72: THE SEVENTEEN OTHER READ/REFUSE COUPLINGS, MEASURED --------------------------
+#  Every producer in this pass is computed on the SAME PRE-BLANKING FRAME, so one producer can
+#  read a field another producer in the same call has already condemned.  The sweep is DERIVED,
+#  not enumerated by hand: a coupling is (P reads f, Q refuses f, Q != P), taken over the four
+#  `IMPOSSIBLE_RELATIONS` and the price-scale rule as READERS.  It finds 19.  Two are the
+#  price-scale rule reading `totalStockholdersEquity`, closed by
+#  `_drop_price_scale_on_already_refused_equity`.  SEVENTEEN WERE LIVE.
+#
+#  THE COUNTERFACTUAL IS EXACT, WHICH IS WHY THESE COUNTS MEAN SOMETHING.  Every producer's
+#  fire test is `ratio.notna() & ...`, so a producer CANNOT fire on a row whose input is already
+#  NaN.  Therefore every row in (Q refuses f) AND (P fires) is a row where P's blanking would
+#  NOT HAVE HAPPENED had the pass been ordered -- not "might have differed".
+#
+#  MEASURED INCIDENCE, five saved panels [resdic_2026-07-17 176,781 rows / 7,729 sources;
+#  CUR3K_2026-08-11 61,255 / 2,624; CUR3K_2026-08-07 61,007 / 2,613; NA1_EU1_2026-01-08 211,978
+#  / 9,012; NA1_EU1_2025-12-09 215,288 / 9,155], rows summed across all five:
+#      READER                                  READS                      REFUSED BY          n
+#      ppe_within_assets                       totalAssets                spike:totalAssets  31
+#      balance_sheet_identity                  totalAssets                ppe_within_assets  26
+#      ppe_within_assets                       totalAssets                balance_sheet_id.  26
+#      balance_sheet_identity                  totalAssets                spike:totalAssets  24
+#      current_assets_within_assets            totalAssets                ppe_within_assets  18
+#      ppe_within_assets                       totalAssets                current_assets_wa  18
+#      balance_sheet_identity                  totalAssets                current_assets_wa  15
+#      current_assets_within_assets            totalAssets                balance_sheet_id.  15
+#      balance_sheet_identity                  totalLiabilities           current_liab_wl    12
+#      current_liabilities_within_liabilities  totalLiabilities           balance_sheet_id.  12
+#      ppe_within_assets                       propertyPlantEquipmentNet  spike:PPE          11
+#      current_assets_within_assets            totalAssets                spike:totalAssets  10
+#      current_assets_within_assets            totalCurrentAssets         spike:TCA           9
+#      current_liabilities_within_liabilities  totalCurrentLiabilities    spike:TCL           4
+#      balance_sheet_identity                  totalLiabilities           spike:totalLiabs.   2
+#      balance_sheet_identity                  totalStockholdersEquity    spike:TSE           2
+#      current_liabilities_within_liabilities  totalLiabilities           spike:totalLiabs.   0
+#  SO "LEAVE IT, INCIDENCE IS ZERO" WAS NOT AVAILABLE: sixteen of the seventeen fire on real
+#  rows, on every panel.  The recorded number for the seventeenth is 0 and it stays -- that is
+#  evidence for the next reader, not a hunch.
+#
+#  THE SEVENTEEN SPLIT CLEANLY INTO TWO KINDS, AND ONLY ONE OF THEM IS AN ORDERING PROBLEM.
+#    NINE have the SPIKE RULE as the refuser.  The spike rule is the only producer in this
+#    module that IDENTIFIES A SINGLE CELL: its evidence is the field's own value against its two
+#    date-adjacent periods, so it reads NONE of the sibling fields and refuses EXACTLY the one
+#    field its evidence names -- it has no collateral at all.  That makes spike-before-relations
+#    a well-founded and ACYCLIC order: a containment hit can be dropped because the spike
+#    condemned its input, and the spike hit can never be dropped in return.
+#    EIGHT are containment/identity pairs reading EACH OTHER (bsi <-> ca_in_a, bsi <-> ppe_in_a,
+#    ca_in_a <-> ppe_in_a on `totalAssets`; bsi <-> cl_in_l on `totalLiabilities`).  THESE ARE
+#    MUTUAL AND ORDERING IS NOT THE INSTRUMENT FOR THEM.  Whichever side you drop, the other's
+#    read was equally corrupt; drop both and the refusal disappears entirely, which is worse
+#    than the coupling.  They are LEFT, with the numbers above, and what the fix would need is
+#    stated below rather than guessed at.
+#
+#  WHAT THE FIX BUYS, MEASURED per panel -- hits kept, and distinct (row, field) cells no longer
+#  blanked:
+#      resdic_2026-07-17    hits 674 -> 658 (-16)   cells 1,510 -> 1,490  (20 cells spared)
+#      CUR3K_2026-08-11     hits 319 -> 298 (-21)   cells   528 ->   500  (28 cells spared)
+#      CUR3K_2026-08-07     hits 329 -> 308 (-21)   cells   563 ->   535  (28 cells spared)
+#      NA1_EU1_2026-01-08   hits 1,235 -> 1,220 (-15) cells 3,123 -> 3,104 (19 cells spared)
+#      NA1_EU1_2025-12-09   hits 1,325 -> 1,305 (-20) cells 3,336 -> 3,314 (22 cells spared)
+#  Spared cells by field on CUR3K_2026-08-11: propertyPlantEquipmentNet 9, totalLiabilities 9,
+#  totalStockholdersEquity 7, totalAssets 2, totalCurrentAssets 1.  Hits dropped by relation:
+#  ppe_within_assets 10, balance_sheet_identity 8, current_assets_within_assets 2,
+#  current_liabilities_within_liabilities 1.
+#  THE WORKED CASE, so "spared" is a fact and not a hope.  `081580.KQ` 2020-10 is one of the
+#  three Korean KOSDAQ names the `ppe_within_assets` note already describes as "totalAssets is
+#  the 1,000x-too-small cell the identity limb also flags".  BEFORE: the spike rule refuses
+#  `totalAssets`, and on the same pre-blanking frame `balance_sheet_identity` divides by that
+#  same corrupt `totalAssets` and blanks `totalLiabilities` and `totalStockholdersEquity`, while
+#  `ppe_within_assets` divides by it and blanks `propertyPlantEquipmentNet` -- four cells, three
+#  of them sound.  AFTER: only `totalAssets` is refused, by the producer whose evidence actually
+#  names it.  Three sound cells recovered on one row.
+#
+#  IT ALSO PARTLY RESOLVES THE MUTUAL EIGHT, as a side effect and not by design: when a spike
+#  hit is present it breaks the tie for every relation on that row, so the mutual incidence
+#  falls too -- 4 -> 0, 50 -> 32, 52 -> 34, 16 -> 0, 20 -> 0 on the five panels in the order
+#  above.  The residual is the rows where two containment relations fire with NO spike witness,
+#  and there ordering genuinely cannot help.
+#  WHAT WOULD CLOSE THE REMAINING EIGHT, RECORDED AND DELIBERATELY NOT SHIPPED: when two
+#  containment/identity producers fire on the same row and their refused-field sets INTERSECT,
+#  the shared field is the one the evidence JOINTLY names, so refusing the INTERSECTION rather
+#  than the UNION would spare the rest.  That is a change to what "both sides are refused" MEANS
+#  -- the semantics this section's own docstring defends -- with unenumerated cases (an empty
+#  intersection, three-way agreement), and it is NOT MEASURED.  It is a design question, not an
+#  ordering bug, and it goes back to the CEO rather than into this patch.
+#
+#  THE SECOND DIRECTION, SWEPT.  This guard runs BEFORE
+#  `_drop_price_scale_on_already_refused_equity`, and the order is load-bearing: that guard asks
+#  "did another producer refuse this row's equity", and dropping a `balance_sheet_identity` hit
+#  can REMOVE the only such refusal, so a price-scale hit that used to be dropped now STANDS.
+#  MEASURED: +2 price-scale hits on NA1_EU1_2026-01-08 (596 -> 598) and +2 on NA1_EU1_2025-12-09
+#  (633 -> 635); zero change on the other three panels.  That is the CORRECT outcome, not a
+#  regression -- the equity was never independently condemned, only condemned by a verdict that
+#  itself rested on a corrupt `totalAssets` -- but it is a real behaviour change and is reported
+#  rather than absorbed.  Run in the other order the guard would read a stale hit set.
+#  NO NEW EJECT PATH, checked in both directions: a dropped hit means a cell keeps its RAW
+#  value, and `_limb_fails` reads a raw value, not a blank, so no primary limb newly sees an
+#  absence.  The only field where that could bite is `totalAssets` under `SANITY_IMPOSSIBLE`
+#  (`<= 0`), and a hit is dropped ONLY when the spike rule refused that same field -- which
+#  leaves it blanked AND stamped, so `refused_fields_mask` still subtracts it.
+#  `test_the_coupling_guard_does_not_change_which_sources_are_EJECTED` pins that.
+#
+#  WHAT THIS GUARD CANNOT DETECT: it is keyed on a field a spike hit NAMES, so a corrupt cell
+#  the spike rule misses -- which is every source's newest and oldest row, 8.6% of panel rows --
+#  leaves its coupling wide open.  The guard makes the ordering honest where evidence exists; it
+#  does not manufacture evidence.
+IMPOSSIBLE_RELATION_READS = {
+    #  DERIVED FROM THE TABLE, never typed alongside it: a relation reads exactly its numerator
+    #  and denominator fields.  A new relation is therefore covered by the guard the moment it
+    #  is added to `IMPOSSIBLE_RELATIONS`, which is the failure mode the price-scale note calls
+    #  "re-arms silently the moment any future relation names a primary field".
+    name: tuple(num_f) + tuple(den_f)
+    for name, num_f, den_f, _factor, _two_sided, _refuse in IMPOSSIBLE_RELATIONS
+}
+
+
+def _drop_relation_hits_the_spike_rule_already_explained(hits, verbose=False):
+    """Drop a containment/identity hit whose READ field the spike rule refused on that row.
+
+    Q-72.  See the block above `IMPOSSIBLE_RELATION_READS` for the measured per-coupling
+    incidence, which nine of the seventeen this closes, why the other eight are left, and the
+    second-direction sweep.
+
+    ASYMMETRIC AND ACYCLIC, for the same reason
+    `_drop_price_scale_on_already_refused_equity` is: the spike rule refuses only the one field
+    its own evidence names and reads none of the sibling fields, so it has no collateral and is
+    never itself a drop target.  The containment relations refuse BOTH legs and assert nothing
+    about which is sound -- so when a spike hit names one of those legs, the OTHER leg's
+    blanking is collateral off a cell this same pass has condemned.
+    """
+    if hits is None or not len(hits) or 'relation' not in getattr(hits, 'columns', []):
+        return hits
+    rel = hits['relation'].astype(str)
+    is_spike = rel.str.startswith(SCALE_SPIKE_RELATION_PREFIX)
+    if not bool(is_spike.any()):
+        return hits
+    #  {row: fields the SPIKE rule refused on it}
+    spiked = {}
+    for h in hits[is_spike].itertuples(index=False):
+        spiked.setdefault(h.row, set()).update(h.fields or ())
+    if not spiked:
+        return hits
+    reads = IMPOSSIBLE_RELATION_READS
+    drop = pd.Series(
+        [(r in reads) and bool(set(reads[r]) & spiked.get(row, set()))
+         for r, row in zip(rel, hits['row'])],
+        index=hits.index).fillna(False)
+    n = int(drop.sum())
+    if not n:
+        return hits
+    if verbose:
+        print('INPUT SANITY: %d relation hit(s) DROPPED -- a field the relation DIVIDES BY or '
+              'SUMS was already refused on that row by the isolated-scale-spike rule, which '
+              'names one cell rather than a contradictory pair, so the relation\'s other leg '
+              'would have been blanked off a number this pass has itself rejected.'
+              % n, flush=True)
+    return hits[~drop].reset_index(drop=True)
 
 
 #  The one field the price-scale rule DIVIDES BY that another producer in the same pass can
@@ -1420,7 +1808,8 @@ def refuse_impossible_cells(df, date_col='date', source_col='source', verbose=Fa
     #  cross-field impossibility at one instant, the isolated scale spike along TIME, and
     #  the price-scale contradiction.  The third is per-ROW and needs no neighbours, so it
     #  runs on the whole frame like the first rather than per source like the spike rule.
-    parts = [impossible_relation_hits(df), price_scale_hits(df)]
+    parts = [impossible_relation_hits(df),
+             price_scale_hits(df, source_col=source_col)]
     if source_col in df.columns and df[source_col].nunique() > 1:
         for _, sub in df.groupby(source_col, sort=False):
             parts.append(scale_spike_hits(sub, date_col=date_col))
@@ -1443,6 +1832,12 @@ def refuse_impossible_cells(df, date_col='date', source_col='source', verbose=Fa
             _k = (_s, _d)
             _occ[_i] = _seen.get(_k, 0)
             _seen[_k] = _occ[_i] + 1
+    #  ORDER IS LOAD-BEARING (Q-72).  The spike-priority guard runs FIRST because the
+    #  equity guard below asks "did another producer refuse this row's equity", and dropping a
+    #  `balance_sheet_identity` hit can remove the only such refusal.  Run the other way round,
+    #  the equity guard would answer from a hit set that no longer ships.  Measured effect of
+    #  the coupling: +2 price-scale hits on each NA1_EU1 panel, 0 on the other three.
+    hits = _drop_relation_hits_the_spike_rule_already_explained(hits, verbose=verbose)
     hits = _drop_price_scale_on_already_refused_equity(hits, verbose=verbose)
     out = df.copy()
     rec = []

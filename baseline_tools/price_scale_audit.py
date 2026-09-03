@@ -160,6 +160,14 @@ import nan_policy as npol
 #  REFUSING side owns it.  The derivation above is the record of how it was set and
 #  is unchanged; only its home moved.
 PB_ALARM = npol.PRICE_SCALE_PB_ALARM
+#  THE REFUSING RULE HAS TWO LEVELS SINCE Q-75 AND THIS SIDE MUST CARRY BOTH, for exactly the
+#  reason the paragraph above gives.  `PB_ALARM` alone is no longer "the number the refusal
+#  uses": a row between `PB_ALARM` and `PB_WIDE` is ALSO refused when the share-count witness
+#  fires, and an audit that named only the floor would under-report the refusal it exists to
+#  make legible -- the same drift the single-constant rule was written to prevent, one level
+#  along.  Both are IMPORTED, never re-declared, and
+#  `test_there_is_exactly_one_definition_of_contaminated` pins both.
+PB_WIDE = npol.PRICE_SCALE_PB_WIDE
 PB_WATCH = 0.05
 #  Fewest quarters before a name's median price/book is worth reporting.  A single
 #  quarter with a stale marketCap is noise, not a scaling defect -- the defect is
@@ -395,8 +403,26 @@ def refused_upstream(panel, report=None):
     if not bool(mask.any()):
         return {}
     hit = panel.loc[mask.to_numpy(dtype=bool), "source"].astype(str)
-    out = {src: {"rows": int(n), "worst_ratio": float("nan")}
+    out = {src: {"rows": int(n), "worst_ratio": float("nan"), "witness": float("nan")}
            for src, n in hit.value_counts().to_dict().items()}
+    #  THE WITNESS IS RECOVERABLE FROM THE PANEL AND THE RATIO IS NOT, and that asymmetry is
+    #  the point of reporting it here.  `marketCap` is one of the cells this rule blanks, so
+    #  the price/book multiple can only come from the refusal report -- but
+    #  `weightedAverageShsOut` is refused by NO producer, so the share-count witness can always
+    #  be recomputed from the panel in hand.  Without it a reader of A0 cannot tell WHICH LEVEL
+    #  refused a source: under `PB_ALARM` unconditionally, or in the witnessed band above it.
+    #  That distinction is the whole content of the Q-75 widening.
+    try:
+        wr = npol.share_count_witness_ratio(panel)
+        wsrc = panel["source"].astype(str)
+        for src_name, g in wr[mask.to_numpy(dtype=bool)].groupby(
+                wsrc[mask.to_numpy(dtype=bool)]):
+            if str(src_name) in out and g.notna().any():
+                out[str(src_name)]["witness"] = float(g.max())
+    except Exception:
+        #  A panel without the share-count column reports the rows and the ratio and says
+        #  nothing about the witness -- never a wrong number in place of an absent one.
+        pass
     #  THE RATIO, WHEN THE RUN'S REFUSAL REPORT IS TO HAND.  `price_scale_hits` records it per
     #  cell precisely so the cut can be argued with, and A0 that names a source without saying
     #  HOW FAR under the cut it sat carries strictly less than the check A line it replaces.
@@ -581,8 +607,10 @@ def _containment_lines(internal, panel, stage1_scores, shipped_sources, topn_sta
         #  reading a corrupted vendor number is a BUG.  It is actioned now, upstream, per ROW
         #  -- so a name still reaching this paragraph is one whose SURVIVING rows read this
         #  way, which is a different and smaller statement than the old one.
-        L.append("    ACTIONED UPSTREAM per row (`nan_policy.price_scale_hits`): a row under "
-                 "price/book %g has its" % PB_ALARM)
+        L.append("    ACTIONED UPSTREAM per row (`nan_policy.price_scale_hits`): a row "
+                 "under price/book %g -- or under %g" % (PB_ALARM, PB_WIDE))
+        L.append("    with a share count %gx off its source's own median -- has its"
+                 % npol.PRICE_SCALE_WITNESS_FACTOR)
         L.append("    price/marketCap/book-per-share/earningsYield refused at ingest.  A name "
                  "listed here still has")
         L.append("    enough SURVIVING rows to read this way -- see the A0 block for what was "
@@ -624,7 +652,17 @@ def run_audit(panel, prices_csv=None, supp_csv=None, log=print, out_csv=None,
             "`price`/`marketCap`/`bookValuePerShare`/"
             % (len(_refused), sum(v["rows"] for v in _refused.values())))
         log("[price-scale]     `earningsYield` set to NaN at ingest by "
-            "`nan_policy.price_scale_hits` (price/book < %g)." % PB_ALARM)
+            "`nan_policy.price_scale_hits`.  TWO LEVELS (Q-75):")
+        log("[price-scale]       (i)  marketCap/equity < %g            -- unconditional floor"
+            % PB_ALARM)
+        log("[price-scale]       (ii) marketCap/equity < %g AND the share count >= %gx off "
+            "the source's" % (PB_WIDE, npol.PRICE_SCALE_WITNESS_FACTOR))
+        log("[price-scale]            OWN median -- the corroborated band.  `witness` below "
+            "is that multiple, so a")
+        log("[price-scale]            source with witness < %g was refused by (i) and one "
+            "at or above it may be" % npol.PRICE_SCALE_WITNESS_FACTOR)
+        log("[price-scale]            either.  Measured false-refusal rate of band (ii): "
+            "11.4%-31.4% -- see `nan_policy`.")
         log("[price-scale]     THOSE ROWS ARE INVISIBLE TO CHECK A BELOW -- its two legs are "
             "the cells that were refused.  The")
         log("[price-scale]     ALARM count is therefore a count of what SURVIVED the refusal, "
@@ -632,9 +670,12 @@ def run_audit(panel, prices_csv=None, supp_csv=None, log=print, out_csv=None,
         for _s, _d in sorted(_refused.items(),
                              key=lambda kv: (-kv[1]["rows"], kv[0]))[:25]:
             _wr = _d.get("worst_ratio", float("nan"))
+            _wt = _d.get("witness", float("nan"))
             log("[price-scale]     refused %-14s %3d row(s)   worst marketCap/equity %s"
+                "   share-count witness %s"
                 % (_s, _d["rows"],
-                   ("%.5f" % _wr) if _wr == _wr else "n/a (no refusal report passed)"))
+                   ("%.5f" % _wr) if _wr == _wr else "n/a (no refusal report passed)",
+                   ("%.2fx" % _wt) if _wt == _wt else "n/a"))
         if len(_refused) > 25:
             log("[price-scale]     ... and %d more (full list in the run's input-sanity CSV)."
                 % (len(_refused) - 25))
