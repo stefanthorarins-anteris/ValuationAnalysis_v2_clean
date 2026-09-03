@@ -211,19 +211,19 @@ def test_PEG_does_not_read_the_vendor_field_at_all():
             'the vendor PEG field (=%r) still influences the criterion' % vendor)
 
 
-def test_PEG_domain_is_a_POSITIVE_TRAILING_EPS_and_the_crossing_is_DEFERRED():
-    """The four sign states, asserted directly on `peg_local`.
+def test_PEG_domain_is_POSITIVE_TRAILING_EPS_BOTH_LEGS():
+    """The four sign states, asserted directly on `peg_local` (CEO ruling, 2026-09-03).
 
     NEWEST-FIRST frames.  The legs are TRAILING-YEAR sums, so each state is built by holding a
     whole year of EPS at one sign -- the single-period frames the old guard used cannot express a
     TTM condition.
 
-    THE CROSSING STATE IS IN DOMAIN BUT NOT YET ANSWERABLE.  A growth rate computed from a
-    NEGATIVE base is not a growth rate, so the row cannot take `|E_prev|` growth (that is the
-    2026-08-05 nerf) and it cannot take a build-time constant either -- it takes the POOL's median
-    growth, which `calc_special` cannot see.  So it comes out NaN here and is filled by
-    `calcMetrics.substitute_peg_crossing`.  Both halves are asserted, because "NaN at build" alone
-    is indistinguishable from the pre-fix refusal.
+    THE CROSSING STATE IS REFUSED (CEO ruling, 2026-09-03: "Refuse it — score as fail like every
+    other undefined criterion").  A growth rate computed from a NEGATIVE prior base is not a
+    growth rate -- it is an artifact of the base's sign. Previously (2026-08-05 to 2026-09-03)
+    the substitution rule supplied the pool median growth. Now it is refused entirely, just like
+    every other undefined criterion, and the crossing_growth parameter is ignored for backward
+    compatibility.
     """
     def peg(now, prev, crossing_growth=None):
         #  4 rows at `now` (this trailing year) then 8 at `prev`, so the one-year lag lands.
@@ -236,17 +236,18 @@ def test_PEG_domain_is_a_POSITIVE_TRAILING_EPS_and_the_crossing_is_DEFERRED():
     assert not np.isfinite(peg(-1.0, -0.8)), 'still loss-making -> refuse'
     assert not np.isfinite(peg(1.0, 0.0)), 'a zero prior base is division by zero'
 
-    #  THE TURNAROUND: deferred at build, answerable once the pool supplies a median.
+    #  THE CROSSING/TURNAROUND: REFUSED (new behavior, CEO ruling 2026-09-03).
+    #  Loss-to-profit crossing (prev < 0, now > 0) produces an undefined growth rate.
     assert not np.isfinite(peg(1.0, -0.8)), (
-        'the crossing row must NOT be answered at build time -- under |E_prev| growth it would '
-        'saturate near +100%/yr and, worse, grow with the DEPTH of the prior loss, which is the '
-        'over-reward the CEO ruled against')
-    assert np.isfinite(peg(1.0, -0.8, crossing_growth=25.0)), (
-        'the crossing row must become answerable once the POOL median is supplied -- otherwise '
-        'this is the pre-fix refusal, and the 5,089 recovering rows stay failed')
-    #  and the answer no longer depends on how bad the prior year was
-    assert peg(1.0, -0.8, crossing_growth=25.0) == pytest.approx(
-        peg(1.0, -8.0, crossing_growth=25.0))
+        'the crossing row is REFUSED: (E_now - E_prev)/|E_prev| for E_prev < 0 saturates '
+        'near +100%/yr and grows with the DEPTH of the prior loss, so it is not a growth rate '
+        '-- CEO ruling 2026-09-03')
+    #  Even if crossing_growth is supplied, it is NOW IGNORED (the parameter is kept for
+    #  backward API compatibility, but has no effect).
+    assert not np.isfinite(peg(1.0, -0.8, crossing_growth=25.0)), (
+        'the crossing row stays refused even when crossing_growth is supplied -- the parameter '
+        'is ignored (CEO ruling 2026-09-03: "Refuse it — score as fail like every other '
+        'undefined criterion")')
 
     #  the OLDEST rows have no prior trailing year -> inadmissible, never silently admitted
     df = pd.DataFrame({'netIncomePerShare': [1.0] * 5, 'price': [10.0] * 5})
@@ -286,15 +287,15 @@ def test_PEG_criterion_end_to_end_through_the_real_scorer():
     assert _score(down, 'PEG', 'special', 'PEG') == 0.0
 
 
-def test_PEG_turnaround_row_is_MEASURED_after_the_pool_substitution():
-    """End to end across BOTH stages: the real Stage-1 construction, then the real
-    cross-sectional substitution.
+def test_PEG_turnaround_row_is_REFUSED_CEO_ruling_2026_09_03():
+    """End to end: the real Stage-1 construction, then the real cross-sectional substitution
+    which is now a no-op (CEO ruling, 2026-09-03).
 
-    Only ONE row of a single sign-crossing can be the turnaround (the trailing-year legs straddle
-    the crossing for the rows around it), so this is asserted per ROW rather than through the
-    8-row window mean.  The pool needs GROWERS as well as the crossing name, or there is no
-    in-domain row for a median and the substitution correctly refuses -- which is the honest
-    behaviour and is asserted separately below.
+    A turnaround (loss-to-profit) row is ONE row of a sign-crossing; it straddles the crossing
+    for the rows around it. Previously, substitute_peg_crossing would fill it with the pool median
+    to make it MEASURABLE. Now (CEO ruling 2026-09-03) it is REFUSED (stays NaN) and fails at
+    Stage-1 scoring, like every other undefined criterion. The definite treatment is refusal, not
+    measurement.
     """
     eps_turn = [0.5] * 4 + [-0.5] * (_PEG_ROWS - 4)     # newest trailing year +, prior year -
     eps_grow = [0.5 * (0.95 ** i) for i in range(_PEG_ROWS)]
@@ -313,14 +314,17 @@ def test_PEG_turnaround_row_is_MEASURED_after_the_pool_substitution():
     assert np.isnan(raw), 'the crossing row must be NaN out of the build (see peg_local)'
 
     out, stats = cm.substitute_peg_crossing(bm, cdx, verbose=False)
-    assert np.isfinite(stats['median_growth']) and stats['n_filled'] >= 1
+    # FIXED CODE: No substitution occurs (n_filled == 0)
+    # HEAD CODE: Would fill crossing rows (n_filled >= 1, median_growth is finite)
+    assert stats['n_filled'] == 0, (
+        'the turnaround row must NOT be filled (CEO ruling 2026-09-03)')
     v = pd.to_numeric(out.loc[out['source'] == 'TURN', 'PEG'], errors='coerce').iloc[0]
-    assert np.isfinite(v), (
-        'the turnaround row is STILL not computable after the substitution -- the point of the '
-        'whole two-stage design is that these rows become MEASURABLE rather than auto-failed')
+    assert np.isnan(v), (
+        'the turnaround row stays NaN and fails at Stage-1 scoring, '
+        'treating loss-to-profit as an undefined criterion (CEO ruling 2026-09-03)')
 
-    #  NO POOL, NO SUBSTITUTION: with only the crossing name there is no in-domain row, so the
-    #  median does not exist and the row stays refused rather than being filled with an invention.
+    #  NO POOL, NO SUBSTITUTION (unchanged): with only the crossing name there is no in-domain
+    #  row, so the median cannot exist and the row stays refused rather than invented.
     only_turn = cdx[cdx['source'] == 'TURN'].reset_index(drop=True)
     out2, stats2 = cm.substitute_peg_crossing(
         bm[bm['source'] == 'TURN'].reset_index(drop=True), only_turn, verbose=False)

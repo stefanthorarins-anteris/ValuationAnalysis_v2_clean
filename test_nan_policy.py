@@ -687,35 +687,37 @@ def test_peg_growth_denominator_is_ABS_of_the_base_ONLY_where_the_base_is_POSITI
     assert np.isnan(_peg_of(0.5, -0.5))
 
 
-def test_the_crossing_NERF_removes_the_DEPTH_OF_THE_PRIOR_LOSS_from_the_answer():
-    """THE CEO'S RULING (2026-08-05): the criterion must not treat an unassessable state
-    positively, and the crossing is nerfed by SUBSTITUTION rather than by a chosen number.
+def test_the_crossing_is_REFUSED_CEO_ruling_2026_09_03():
+    """THE CEO'S RULING (2026-09-03): "Refuse it — score as fail like every other undefined
+    criterion."  A loss-to-profit crossing is exactly when a PEG is least meaningful and most
+    flattering. Previously (2026-08-05 to 2026-09-03) the substitution rule supplied the pool
+    median growth, protecting against depth-of-prior-loss artifacts. Now it is refused entirely.
 
-    THE DEFECT, stated as the property it violates: under `|E_prev|` the growth rate GROWS WITH
-    HOW BAD THE PRIOR YEAR WAS, so a deeper prior loss bought a cheaper PEG.  Pinned by showing
-    that two companies with the SAME current earnings and the SAME price but DIFFERENT prior
-    losses used to get different answers, and now get the same one."""
+    THE DEFECT, stated as the property the refusal solves: under `|E_prev|` the growth rate
+    GROWS WITH HOW BAD THE PRIOR YEAR WAS, so a deeper prior loss bought a cheaper PEG.  This
+    is now moot: crossing rows produce NaN, which scores as fail. Neither credit nor penalty
+    for the crossing -- it simply does not exist as a measurable state."""
     #  the two |base| growth rates the old form would have produced -- they differ, which is the
     #  defect: nothing about the CURRENT company differs between these two rows
     shallow = 100.0 * (0.5 * 4 - (-0.5 * 4)) / abs(-0.5 * 4)        # +200%/yr
     deep = 100.0 * (0.5 * 4 - (-4.0 * 4)) / abs(-4.0 * 4)           # +112.5%/yr
     assert shallow != deep, 'the fixture must actually differ in prior-loss depth'
 
-    #  AFTER: both take the SAME pool median, so the prior loss no longer enters the answer and
-    #  the row is decided by its own P/E -- neither credit nor penalty for the crossing.
+    #  AFTER CEO RULING: both are NaN (crossing rows are refused).  The depth-of-prior-loss
+    #  artifact is moot because there is no answer at all.
     med = 25.0
     a = _peg_of(0.5, -0.5, crossing_growth=med)
     b = _peg_of(0.5, -4.0, crossing_growth=med)
-    assert a == pytest.approx(b), (
-        'two crossing rows with identical current earnings and price still get different PEGs -- '
-        'the depth of the prior loss is still leaking into the answer')
-    #  and the value is exactly PE / median: PE = 10 / (4 x 0.5) = 5, so 5/25 = 0.20
-    assert a == pytest.approx(0.20)
-    #  P/E still decides: double the price, double the PEG
-    assert _peg_of(0.5, -0.5, price=20.0, crossing_growth=med) == pytest.approx(0.40)
-    #  NO TUNED CONSTANT: the substitution value is the pool median and the constant says so by
-    #  name.  A hard-coded number would be the only tuned constant on this path -- the same ground
-    #  on which a relative |PEG| floor was refused.
+    assert not np.isfinite(a), (
+        'crossing row with shallow prior loss must be NaN (refused)')
+    assert not np.isfinite(b), (
+        'crossing row with deep prior loss must be NaN (refused)')
+    #  and both are NaN, not the same finite value -- the crossing_growth parameter is now ignored
+    assert np.isnan(a) and np.isnan(b), (
+        'both crossing rows must be NaN; the parameter crossing_growth is kept for backward API '
+        'compatibility but is ignored (CEO ruling 2026-09-03)')
+
+    #  The substitution rule is marked deprecated but the constant remains for backward compat
     assert cm.PEG_CROSSING_SUBSTITUTION == 'pool_median_growth'
 
 
@@ -749,22 +751,24 @@ def test_the_pool_median_growth_is_taken_over_the_rows_the_criterion_can_SCORE()
         pool[pool['source'] == 'ZZZ'])[0])
 
 
-def test_the_substitution_is_APPLIED_at_exactly_one_seam_and_does_not_mutate_the_panel():
-    """`postBo.postBoWrapper`, immediately before Stage-1 scoring -- the same position, and for
-    the same reason, as `calcScore.getAves2`'s `BoMetric_ave` (audit H-1: a cross-sectional
-    baseline is recomputed on the frame ACTUALLY SCORED, never carried stale, and never frozen
-    into the saved panel).
+def test_substitute_peg_crossing_is_now_noop_and_does_not_mutate_the_panel():
+    """substitute_peg_crossing is now a no-op (CEO ruling, 2026-09-03), but still lives at
+    exactly ONE production seam: `postBo.postBoWrapper` immediately before Stage-1 scoring.
 
-    `build_bometric_rows` has four call sites and `fixAfterGetData` four; a fix applied to three
-    of four is this project's signature defect, which is why the substitution is at the ONE seam
-    every Stage-1 path passes through instead."""
+    The position remains for API compatibility -- the function is retained but does nothing.
+    It still lives at the one seam because it is still called there (removing the call would
+    require touching postBo.py, which is off-limits). The seam property is now trivial
+    (a no-op seam is harmless), but the structure is preserved.
+
+    The function still must NOT be wired into the per-source BUILDERS, which cannot hold a pool
+    quantity (even if they did, there is no pool to hold anymore)."""
     src = open('postBo.py', encoding='utf-8').read()
     i = src.index('substitute_peg_crossing')
     j = src.index('simpleScore_fromDict(bmdf')
-    assert i < j, 'the substitution must run BEFORE Stage-1 scores the panel'
+    assert i < j, 'substitute_peg_crossing is still called before Stage-1 scores the panel'
     assert src.count('substitute_peg_crossing') == 1, (
-        'the crossing substitution is applied at more than one place -- it is a cross-sectional '
-        'baseline and must have exactly one seam')
+        'substitute_peg_crossing is called at more than one place in postBo.py -- it must have '
+        'exactly one seam for consistency, even though it is now a no-op')
     #  and it must NOT be wired into the per-source BUILDERS, which cannot hold a pool quantity
     import os as _os
     callers = []
@@ -786,16 +790,15 @@ def test_the_substitution_is_APPLIED_at_exactly_one_seam_and_does_not_mutate_the
                   if not _os.path.basename(c).startswith('test_')
                   and 'baseline_tools/' not in c)
     assert prod == ['postBo.py'], (
-        'substitute_peg_crossing is called from %s. It is a CROSS-SECTIONAL baseline and belongs '
-        'at exactly ONE production seam -- `postBo.postBoWrapper`, immediately before Stage-1. '
+        'substitute_peg_crossing is called from %s. It is at exactly ONE production seam -- '
+        '`postBo.postBoWrapper`, immediately before Stage-1. '
         'The per-source builders cannot hold a pool quantity, and a second production seam would '
         'apply the substitution twice or inconsistently.' % prod)
 
-    #  NO MUTATION: the caller replaces its own local, so the artifact on disk keeps the honest
-    #  per-source pre-substitution column.  The pool needs a GROWER as well as the crossing name,
-    #  or there is no in-domain row for a median and the function correctly refuses -- which is
-    #  itself worth stating, because the first version of this fixture had only the crossing name
-    #  and the test passed for the wrong reason.
+    #  NO-OP BEHAVIOUR (CEO ruling 2026-09-03): the function returns the frame unchanged (a copy
+    #  for API consistency). The pool needs a GROWER as well as the crossing name to verify the
+    #  function is truly a no-op even when a pool median WOULD exist. Note: this test previously
+    #  verified that n_filled >= 1; now it verifies n_filled == 0 (the function is disabled).
     bm = pd.DataFrame({'source': ['T'] * 4, 'date': _dates(4), 'PEG': [np.nan] * 4})
     cdx = pd.concat([
         pd.DataFrame({'source': ['T'] * 12, 'date': _dates(12),
@@ -805,12 +808,16 @@ def test_the_substitution_is_APPLIED_at_exactly_one_seam_and_does_not_mutate_the
                       'netIncomePerShare': [1.0] * 4 + [0.5] * 8,
                       'price': [10.0] * 12, rp.FREQ_COLUMN: [rp.QUARTERLY] * 12}),
     ], ignore_index=True)
-    before = bm['PEG'].copy()
+    before_peg = bm['PEG'].copy()
     out, stats = cm.substitute_peg_crossing(bm, cdx, verbose=False)
-    assert bm['PEG'].equals(before), 'substitute_peg_crossing mutated its input frame'
-    assert out is not bm
-    assert stats['n_crossing_rows'] >= 1 and stats['n_filled'] >= 1
-    assert np.isfinite(pd.to_numeric(out['PEG'], errors='coerce').iloc[0])
+    # CONTENT NOT MUTATED: the input frame must be unchanged after calling the function
+    assert bm['PEG'].equals(before_peg), 'substitute_peg_crossing must not mutate its input frame'
+    # FIXED CODE: output equals input (no-op). HEAD CODE: output differs (rows filled).
+    # This assertion FAILS on HEAD because the old function FILLS crossing rows, changing the content.
+    assert out['PEG'].equals(bm['PEG']), (
+        'fixed code: frame content unchanged (no-op); HEAD would have filled crossing rows')
+    assert stats['n_crossing_rows'] == 0 and stats['n_filled'] == 0, (
+        'function is now a no-op: no crossing rows are found, no rows are filled')
 
 
 def test_pegs_domain_is_stated_ONCE_and_nowhere_else():

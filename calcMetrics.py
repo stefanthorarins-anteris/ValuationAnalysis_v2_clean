@@ -183,91 +183,61 @@ _PEG_EPS_FIELD = 'netIncomePerShare'
 #  deliberate unification, not a side effect of this change.
 
 
-#  THE SIGN-CROSSING NERF (CEO, 2026-08-05): "We can also just set the going from negative to
-#  positive arbitrarily a higher number in the peg calc, so it is nerfed."  Governing principle,
-#  carried over from the return-on-equity case: THE CRITERION MUST NOT TREAT AN UNASSESSABLE
-#  STATE POSITIVELY.
+#  THE SIGN-CROSSING RULE (CEO ruling, 2026-09-03): "Refuse it — score as fail like every other
+#  undefined criterion."  A loss-to-profit crossing is exactly when a PEG is least meaningful and
+#  most flattering, so crossing rows now produce NaN and flow to the existing FAIL path at
+#  Stage-1 scoring.
 #
-#  WHY A SUBSTITUTION AND NOT A CAP.  A percentage growth rate computed from a NEGATIVE base is
-#  not a growth rate -- it is an artifact of the base's SIGN.  (E_now - E_prev)/|E_prev| for
-#  E_prev < 0 saturates near +100% for a marginal recovery and grows with |E_prev|, i.e. with how
-#  bad the prior year was, so the measure rewards the depth of the previous loss.  Measured
-#  consequence: the turnaround cell passed at 0.890 against 0.362 in the normal cell -- PEG < 1
-#  becomes "P/E under ~100" there where a steady 10%/yr grower faces "P/E under 10".  An order of
-#  magnitude more valuation headroom for having had a bad prior period.
+#  HISTORICAL CONTEXT (2026-08-05 to 2026-09-03).  A substitution rule attempted to nerf the
+#  problem: A percentage growth rate computed from a NEGATIVE base is not a growth rate -- it is
+#  an artifact of the base's SIGN.  (E_now - E_prev)/|E_prev| for E_prev < 0 saturates near
+#  +100% for a marginal recovery and grows with |E_prev|, i.e. with how bad the prior year was,
+#  so the measure rewards the depth of the previous loss.  Measured consequence: crossing rows
+#  passed at 0.890 against 0.362 in the normal cell -- roughly an order of magnitude more P/E
+#  headroom for having had a bad prior period.
 #
-#  SO THE CROSSING ROW TAKES THE POOL'S MEDIAN GROWTH RATE, and its P/E then has to stand on its
-#  own.  The crossing confers NEITHER CREDIT NOR PENALTY, which is the ROE ruling's requirement,
-#  and it introduces NO TUNED CONSTANT -- the same ground on which a relative floor was refused
-#  further down this module.  A chosen "arbitrarily higher number" would have been the only tuned
-#  constant on this path.
+#  The substitution rule took the pool's median growth rate, so crossing rows' P/E had to stand
+#  on its own.  The rule was: no tuned constant; the crossing conferred neither credit nor penalty.
+#  But it still required the median as a cross-sectional input applied at Stage-1 scoring time.
+#  The CEO ruling removes the entire substitution: crossing rows now behave like every other
+#  undefined criterion, producing NaN and failing at Stage-1.
 #
-#  IT IS A CROSS-SECTIONAL BASELINE, SO IT LIVES WHERE THE OTHER ONE DOES.  The median is a
-#  property of the POOL, and `calc_special` sees ONE SOURCE at a time -- on the production fetch
-#  path the panel does not even exist yet when it runs.  So the crossing rows come out of the
-#  build as NaN and are filled by `substitute_peg_crossing`, called from `postBo.postBoWrapper`
-#  immediately before Stage-1 scoring: the same position, and for the same reason, as
-#  `calcScore.getAves2`'s `BoMetric_ave` (audit H-1 -- recompute the cross-sectional baseline on
-#  the frame you actually score, never carry a stale one, and never freeze it into the panel).
-#  The SAVED panel therefore keeps the honest per-source pre-substitution column.
-#
-#  THE COST, STATED: the criterion's bar for a crossing row is now PANEL-DEPENDENT, where the rest
-#  of PEG is absolute.  That is a real property, not a hidden one -- `substitute_peg_crossing`
-#  returns the median it used and the run prints it, so a ranking can never be read without it.
-PEG_CROSSING_SUBSTITUTION = 'pool_median_growth'
+#  `peg_pool_median_growth` is now UNUSED and retained only to preserve the codebase structure;
+#  the helper remains in place for potential future use or baseline experiments, but the production
+#  path no longer calls it.  See `substitute_peg_crossing` for the disabled mechanism.
+PEG_CROSSING_SUBSTITUTION = 'pool_median_growth'  # DEPRECATED: substitution removed (CEO, 2026-09-03)
 
 #  =========================================================================== #
-#  THE POOL WINDOW -- WHY THE MEDIAN IS NOT TAKEN OVER THE WHOLE PANEL          #
-#  (fetch-depth audit, 2026-08-14)                                              #
+#  THE POOL WINDOW (HISTORICAL -- UNUSED AS OF 2026-09-03)                       #
 #  =========================================================================== #
-#  `peg_pool_median_growth` used to pool growth rates over EVERY ROW OF EVERY SOURCE in the
-#  panel, so the bar a crossing row faces was a function of HOW MANY QUARTERS WE FETCHED.
-#  That is the defect `meanBars` (register C-12) removed from the Stage-1 `mean` family, in
-#  the one place it survived, and the deep fetch is what makes it bite:
+#  This section documents the pool-window logic used by `peg_pool_median_growth` during the
+#  2026-08-05 to 2026-09-03 period when the substitution rule was active. The CEO ruling
+#  2026-09-03 disabled the substitution, so the pool median is no longer computed or applied.
+#  The function and this constant remain in place to preserve the codebase structure and support
+#  baseline experiments, but are not used in the production path.
+#
+#  HISTORICAL REASONING (2026-08-05 to 2026-09-03): `peg_pool_median_growth` pooled growth rates
+#  over EVERY ROW OF EVERY SOURCE in the panel, so the bar a crossing row faced was a function of
+#  HOW MANY QUARTERS WERE FETCHED.  That is the defect `meanBars` (register C-12) removed from
+#  the Stage-1 `mean` family, in the one place it survived. The deep fetch made it bite:
 #
 #    * MEASURED, on the 2026-08-13 CUR3K panel (baseline_tools/depth_sensitivity.py, arm A):
 #      re-scoring the SAME panel deepened from 24 to 80 rows MOVED THE POOLED MEDIAN, and it
 #      moved a SCORED criterion -- `PEG` is Tier C (w = 0.30), so one flipped row inside the
 #      head(8) window is worth 0.0375 of BoScore.  7.0% of sources changed score through this
 #      channel alone once the history bonus was held fixed, by up to 0.15 (four flipped rows).
-#      It is the ONLY channel through which a windowed Stage-1 criterion moved with depth.
-#    * AND IT IS A REGIME-MIXING CHANNEL INDEPENDENT OF THE DEPTH QUESTION.  At `-nrperiods 80`
-#      the panel reaches back to 2006, so a 2026 crossing row would have been judged against a
-#      median blended out of the GFC and the 2021 boom.  "The typical growth rate" is a
-#      statement about NOW; a two-decade pool is not that statement.
+#      It was the ONLY channel through which a windowed Stage-1 criterion moved with depth.
 #
-#  THE WINDOW IS STAGE-1'S OWN SCORING WINDOW, AND THAT CHOICE IS THE ARGUMENT.  The criterion
-#  is scored as `calcByTier`'s head(n) mean over the newest n rows, so the population the bar
-#  should describe is the population the criterion is actually confronted with -- exactly the
-#  reasoning `meanBars._newest_window` states for the mean-bar pass rates ("the SAME population
-#  Stage-1 scores over").  Any longer window would put rows into the RULER that never reach the
-#  SCORE.
+#  THE WINDOW SOLUTION (HISTORICAL): Restrict the pool to the newest `window_nq` rows,
+#  rp.scale_window-scaled. This made the bar INDEPENDENT of `-nrperiods`, fixing the fetch-depth
+#  coupling. The reasoning: the criterion is scored as `calcByTier`'s head(n) mean over the newest
+#  n rows, so the population the bar describes should be the population the criterion is actually
+#  confronted with.
 #
-#  IT IS `rp.scale_window`-SCALED, WHICH STAGE-1's OWN head(n) DELIBERATELY IS NOT, and the
-#  divergence is intentional rather than an oversight.  Ruling Q2 (2026-07-26) leaves Stage-1's
-#  window unscaled because there it counts BERNOULLI TRIALS behind one company's pass rate --
-#  a property of that company, which halving n only makes noisier.  This median is a
-#  CROSS-SECTIONAL quantity pooled ACROSS companies, so an unscaled window would put TWICE the
-#  calendar span of the semi-annual cohort (~14% of the universe) into a bar the quarterly
-#  cohort also faces.  That is precisely the defect CYCLEHEAT_BASE_NQ exists to prevent, and it
-#  is why the two windows are scaled differently.
-#
-#  BIT-IDENTICAL AT NO DEPTH -- this CHANGES the shipped number, and that is the point: the old
-#  number was a function of `-nrperiods`.  The run prints both the median and the row count it
-#  was taken over (see `substitute_peg_crossing`), so the change is visible in the log.
-#
-#  THE ON-PANEL COST, MEASURED AT TODAY'S DEPTH (2026-08-13 CUR3K, 2,629 sources, nothing else
-#  varied).  Pool median 6.4718% -> 7.4457% (over 10,150 in-domain rows instead of 26,471 --
-#  a slightly STRICTER bar, because the recent window is growthier than the 2020-2026 pool):
-#      44 sources (1.67%) move BoScore; max |delta| 0.075000, median 0.037500 (= 0.30/8, i.e.
-#      exactly one PEG row flipping inside the head(8) window)
-#      top-20  : membership IDENTICAL **and order identical**
-#      top-100 : membership IDENTICAL, **ORDER CHANGED on 4 of 100 positions** -- a local
-#                rotation at ranks 47-50 (DDI 50->47, 0HQU.L 47->48, CF 48->49, PEY.TO 49->50)
-#  THE ORDER CHANGE IS STATED BECAUSE THE CEO READS THE TOP-100 AS RANKED.  "Membership
-#  unchanged" is the weaker claim and quoting it alone would imply the list is untouched; it is
-#  not -- four adjacent names rotate.  Nothing enters or leaves either list.
-PEG_POOL_WINDOW_NQ = 8
+#  BIT-IDENTICAL AT NO DEPTH: this changed the shipped number when the window was narrowed.
+#  The run printed both the median and the row count it was taken over, so the change was visible
+#  in the log.  See the old docstring of `substitute_peg_crossing` for the measured impact.
+PEG_POOL_WINDOW_NQ = 8  # DEPRECATED: pool median no longer used (CEO, 2026-09-03)
 
 
 def peg_criterion(peg):
@@ -293,17 +263,20 @@ def peg_local(df, rpy=rp.DEFAULT_ROWS_PER_YEAR, years=None, crossing_growth=None
 
     THE DOMAIN IS APPLIED HERE, AND ONLY HERE.  NaN wherever the quantity does not exist: no
     trailing year, no prior trailing year, a zero prior base (the growth rate would be division
-    by zero), or a NON-POSITIVE CURRENT TRAILING EPS.  Nothing is imputed and no sentinel is
-    returned.
+    by zero), a NEGATIVE prior base (the loss-to-profit crossing case -- CEO ruling 2026-09-03:
+    "Refuse it — score as fail like every other undefined criterion"), or a NON-POSITIVE CURRENT
+    TRAILING EPS.  Nothing is imputed and no sentinel is returned.
 
     THE DOMAIN MOVED WHEN THE COMPUTATION DID, and this is the half of the change a reviewer
     should press on.  The shipped guard (`peg_growth_defined`, da79aee) required
     `eps_t > 0` AND `eps_{t-1} > 0`, because under the vendor's RATIO-form growth leg a base
     crossing zero made the growth rate meaningless.  The local growth leg divides by |base|, so a
-    NEGATIVE base is fine -- it is the recovery case, and expressing it is the point.  What
-    remains inadmissible is a non-positive CURRENT trailing EPS: with no earnings there is no
-    P/E, and that one condition removes BOTH of the old false-pass cells (where PE < 0 cancelled
-    against growth < 0 into a positive PEG).
+    NEGATIVE base was expressible as a recovery case -- that is, it WAS the recovery case.
+    CEO ruling 2026-09-03 ends the substitution (see `substitute_peg_crossing`), so a negative
+    prior base now produces NaN and is refused at Stage-1 scoring, exactly like every other
+    undefined criterion.  What remains admissible is still a non-positive CURRENT trailing EPS:
+    with no earnings there is no P/E, and that one condition removes both the sign-inverted
+    false-pass cells (where PE < 0 cancelled against growth < 0 into a positive PEG).
 
     NOTE THIS IS NOT A `Guard` ENTRY, and that is deliberate rather than an omission.  A guard is
     a predicate on the RAW frame, applied to a ratio the loop in `build_bometric_rows` has
@@ -313,39 +286,21 @@ def peg_local(df, rpy=rp.DEFAULT_ROWS_PER_YEAR, years=None, crossing_growth=None
     silently-divergent pair this repo keeps getting bitten by -- so there is one statement, and
     it is the one that has `rpy`.
 
-    THE FOUR SIGN CELLS, MEASURED on the 61,832 newest-8 rows [panel = resdic_2026-07-17_
-    CORRECTED], BEFORE (vendor field + the shipped two-sided guard, single-period eps legs) and
-    AFTER (local, TTM legs, 1-year horizon, crossing rows on the POOL MEDIAN growth):
+    THE FOUR SIGN CELLS, HISTORICAL CONTEXT.  Measured on 61,832 newest-8 rows [panel =
+    resdic_2026-07-17_CORRECTED].  BEFORE the local computation (vendor field + shipped two-sided
+    guard, single-period EPS legs), crossing rows (eps_now>0 prev<=0) were auto-failed and gave
+    5,089 / 0 (0.000 pass rate).  WITH the substitution rule (2026-08-05, then-current), crossing
+    rows scored on the pool-median growth and showed 4,489 / 773 (0.172).  That 0.172 was the cost
+    of the substitution: a company whose trailing-year EPS just crossed zero has a tiny denominator,
+    so its trailing P/E is genuinely high, and a high P/E fails.  The substitution artificially
+    improved their score to 0.48x the normal-cell rate.
 
-        cell                    BEFORE rows / passes        AFTER rows / passes
-        eps_now>0 prev>0        34,500 / 12,673  (0.367)    34,569 / 12,513  (0.362)
-        eps_now<=0 prev>0        5,177 /      0  refused     4,225 /      0  refused
-        eps_now<=0 prev<=0      17,035 /      0  refused    17,321 /      0  refused
-        eps_now>0 prev<=0        5,089 /      0  FAILED      4,489 /    773  (0.172)  <-- the fix
-
-    (Row counts move between the two because the legs themselves change from single-period to
-    trailing-year -- they are not the same partition of the same rows.)  Overall criterion pass
-    rate 0.2050 -> 0.2149.  NOTE WHERE THAT COMES FROM: the normal cell is essentially unchanged
-    (-0.53pp), so the fixed 0<PEG<1 bar has NOT been loosened by the horizon change; the whole
-    movement is the crossing rows going from AUTO-FAILED to SCORED-ON-THEIR-OWN-P/E.
-
-    READ THE TWO CELL RATES AGAINST EACH OTHER, because that is the property the nerf is judged
-    on.  Crossing 0.172 against normal 0.362 = 0.48x.  BEFORE the nerf it was 0.890 against 0.362
-    = 2.46x, i.e. roughly an order of magnitude more P/E headroom for having had a bad prior year.
-    Comparable-but-LOWER is the expected shape and the mechanism is not a mystery: a company whose
-    trailing-year EPS has only just crossed zero has a tiny denominator, so its trailing P/E is
-    genuinely high, and a high P/E fails against a 6.72%/yr median growth rate.  So the honest
-    summary of what this buys is "those 5,089 rows are now MEASURED instead of auto-failed", NOT
-    "they now pass".
-
-    THE TINY-POSITIVE-BASE ROWS ARE NOT REACHED, DELIBERATELY.  222 rows panel-wide land at
-    |PEG| < 1e-3 with a prior base that is positive but tiny -- a real, enormous growth rate, not
-    a sign artifact, so the crossing substitution does not and must not touch them.  (Panel-wide
-    over every row; the head(8) SCORING-window figure is ~76, and the two reconcile at the ~35% of
-    panel rows that window covers.)  The only ways to reach them are a relative floor on |base| or
-    a cap on the growth rate, and BOTH are tuned constants -- this path deliberately carries none,
-    which is the same ground on which the pool median was chosen over a picked number.  Recorded
-    for the CEO as a threshold question, not silently absorbed.
+    THE NERF IS NOW DISABLED (CEO ruling, 2026-09-03: "Refuse it — score as fail like every other
+    undefined criterion").  A loss-to-profit crossing is exactly when a PEG is least meaningful and
+    most flattering.  Crossing rows now produce NaN in the growth rate and are refused at Stage-1
+    scoring -- the same behaviour as every other undefined criterion.  The passing rate for the
+    crossing cell will revert to 0.000, and the overall criterion pass rate will decline from 0.2149
+    back below 0.2050 (the exact figure depends on the current panel depth and composition).
     """
     years = PEG_GROWTH_YEARS if years is None else years
     e = pd.to_numeric(df[_PEG_EPS_FIELD], errors='coerce')
@@ -357,21 +312,18 @@ def peg_local(df, rpy=rp.DEFAULT_ROWS_PER_YEAR, years=None, crossing_growth=None
     lag = int(rpy) * int(years)
     prev = eps_ttm.shift(-lag)
     g = 100.0 * (eps_ttm - prev) / prev.abs() / float(years)
-    #  THE SIGN-CROSSING NERF.  Where the base is NON-POSITIVE the ratio above is not a growth
-    #  rate (see PEG_CROSSING_SUBSTITUTION), so it is replaced by the POOL's median growth rate
-    #  when one is supplied and made NaN when it is not.  NaN is the build-time answer: the median
-    #  is cross-sectional and `calc_special` sees one source, so the crossing rows are filled later
-    #  by `substitute_peg_crossing`.  Nothing is imputed here and no sentinel is used.
-    crossing = (prev <= 0) & prev.notna() & eps_ttm.notna()
-    if crossing.any():
-        g = g.mask(crossing, float(crossing_growth) if crossing_growth is not None else np.nan)
     pe = price / eps_ttm
     peg = (pe / g).replace([np.inf, -np.inf], np.nan)
     #  THE DOMAIN, applied here and nowhere else.  `eps_ttm > 0` is "there IS a P/E";
-    #  `prev.notna() & (prev != 0)` is "there is a prior trailing year, and it is not a zero
-    #  base".  A NEGATIVE prior base is admissible -- that is the turnaround.  These comparisons
-    #  are False on NaN, so an undetermined domain is inadmissible without a fillna.
-    peg = peg.where((eps_ttm > 0) & prev.notna() & (prev != 0))
+    #  `prev.notna() & (prev > 0)` is "there is a prior trailing year with POSITIVE EPS".
+    #  A NEGATIVE prior base (loss-to-profit crossing) is NOT ADMISSIBLE (CEO ruling 2026-09-03:
+    #  "Refuse it — score as fail like every other undefined criterion").  A negative base
+    #  produces an undefined growth rate where the artifact dominates: (E_now - E_prev)/|E_prev|
+    #  for E_prev < 0 saturates near +100% for marginal recovery and grows with |E_prev|, so the
+    #  measure rewards the depth of the prior loss.  Crossing rows are refused here along with
+    #  every other state where the criterion cannot exist.  These comparisons are False on NaN, so
+    #  an undetermined domain is inadmissible without a fillna.
+    peg = peg.where((eps_ttm > 0) & prev.notna() & (prev > 0))
     return peg, eps_ttm, prev
 
 
@@ -467,81 +419,30 @@ def _is_oldest_first(g, date_col='date'):
 
 
 def substitute_peg_crossing(bm_df, cdx_df, freq_map=None, verbose=True):
-    """Fill `bm_df['PEG']`'s sign-crossing rows with the pool-median-growth criterion value.
+    """RETAINED NO-OP (CEO ruling, 2026-09-03): Sign-crossing rows are now refused in peg_local.
 
-    Returns (bm_df COPY, stats).  `bm_df` is never mutated: the caller replaces its own local, so
-    the SAVED panel keeps the honest per-source pre-substitution column and the SCORED frame
-    carries the cross-sectional one -- the `BoMetric_ave` pattern (audit H-1).
+    This function is retained for API compatibility with call sites (`postBo.postBoWrapper`,
+    `baseline_tools/depth_sensitivity.py`). It no longer performs any substitution. Previously
+    (2026-08-05 to 2026-09-03) it filled `bm_df['PEG']`'s sign-crossing rows with the pool-median-
+    growth criterion value. The CEO ruled 2026-09-03: "Refuse it — score as fail like every other
+    undefined criterion". A loss-to-profit crossing is exactly when a PEG is least meaningful and
+    most flattering. Crossing rows now produce NaN in `peg_local` (domain check: prev > 0, not
+    prev != 0) and flow to the existing FAIL path at Stage-1 scoring.
 
-    Called from ONE place, `postBo.postBoWrapper`, immediately before Stage-1 scoring.  It is not
-    called from the per-source builders because the median does not exist there.
+    Returns (bm_df COPY, stats).  The frame is returned unchanged (no-op). `stats` is empty.
+
+    The crossing_growth parameter (previously the pool median, passed from postBo.postBoWrapper)
+    is still accepted for backward compatibility but is no longer used.
     """
     stats = {'median_growth': float('nan'), 'n_pool_rows': 0, 'n_crossing_rows': 0,
              'n_filled': 0, 'n_unmatched': 0}
     if bm_df is None or 'PEG' not in getattr(bm_df, 'columns', []) or cdx_df is None:
-        return bm_df, stats
-    if freq_map is None:
-        freq_map = rp.frequency_by_source(cdx_df)
-    med, n_pool = peg_pool_median_growth(cdx_df, freq_map=freq_map)
-    stats['median_growth'], stats['n_pool_rows'] = med, n_pool
-    if not np.isfinite(med):
-        if verbose:
-            print('PEG CROSSING SUBSTITUTION: the pool has no in-domain row, so no median exists '
-                  '-- every sign-crossing row stays REFUSED (the pre-2026-08-05 behaviour).',
-                  flush=True)
-        return bm_df, stats
-
-    rows = []
-    for src, g in cdx_df.groupby('source', sort=False):
-        rpy = rp.rows_per_year(freq_map, src)
-        tf = (g.iloc[::-1] if _is_oldest_first(g) else g)
-        peg, ttm, base = peg_local(tf, rpy=rpy, crossing_growth=med)
-        crossing = (base <= 0) & base.notna() & ttm.notna() & (ttm > 0)
-        if not crossing.any():
-            continue
-        k = _peg_row_key(tf)
-        sub = pd.DataFrame({'source': k['source'], '_peg_date': k['_peg_date'],
-                            '_peg_occ': k['_peg_occ'],
-                            '_peg_new': peg_criterion(peg).values})[crossing.values]
-        rows.append(sub)
-    stats['n_crossing_rows'] = int(sum(len(r) for r in rows))
-    if not rows:
-        return bm_df, stats
-
-    fill = pd.concat(rows, ignore_index=True).dropna(subset=['_peg_new'])
-    out = bm_df.copy()
-    key = _peg_row_key(out)
-    idx = pd.MultiIndex.from_arrays([key['source'], key['_peg_date'], key['_peg_occ']])
-    m = pd.Series(fill['_peg_new'].values,
-                  index=pd.MultiIndex.from_arrays([fill['source'], fill['_peg_date'],
-                                                   fill['_peg_occ']]))
-    #  Duplicate keys would make the reindex ambiguous.  They cannot occur -- the occurrence index
-    #  is what removes them -- so assert rather than silently take the first.
-    if m.index.has_duplicates:
-        raise ValueError(
-            'calcMetrics.substitute_peg_crossing: the (source, date, occurrence) key is not '
-            'unique on the substitution frame, so the fill would be ambiguous. That key exists '
-            'precisely to remove the duplicate-snapped-quarter ambiguity -- if it is duplicated, '
-            'the two frames were not built from the same date vector.')
-    new = m.reindex(idx)
-    take = new.notna().to_numpy()
-    stats['n_filled'] = int(take.sum())
-    stats['n_unmatched'] = int(len(fill) - take.sum())
-    vals = pd.to_numeric(out['PEG'], errors='coerce').to_numpy(dtype='float64')
-    vals[take] = new.to_numpy(dtype='float64')[take]
-    out['PEG'] = vals
+        return bm_df.copy() if bm_df is not None else bm_df, stats
     if verbose:
-        print('PEG CROSSING SUBSTITUTION: pool median annual growth = %.4f%% over %d in-domain '
-              'row(s) [pooled over each source\'s NEWEST %d quarter(s), rpy-scaled -- '
-              'PEG_POOL_WINDOW_NQ, so the bar does NOT move with `-nrperiods`]; %d '
-              'sign-crossing row(s) found, %d filled, %d unmatched.'
-              % (med, n_pool, PEG_POOL_WINDOW_NQ, stats['n_crossing_rows'],
-                 stats['n_filled'], stats['n_unmatched']), flush=True)
-        if stats['n_unmatched']:
-            print('  NOTE %d substitution row(s) had no counterpart in BoMetric_df -- expected '
-                  'for the oldest `rpy` rows, which build_bometric_rows trims.'
-                  % stats['n_unmatched'], flush=True)
-    return out, stats
+        print('PEG CROSSING SUBSTITUTION: DISABLED (CEO ruling, 2026-09-03). Sign-crossing rows '
+              'now produce NaN in peg_local and are refused at Stage-1 scoring, like every other '
+              'undefined criterion.', flush=True)
+    return bm_df.copy(), stats
 
 
 def apply_domain_guard(df, values, guard):
@@ -955,11 +856,10 @@ def calc_special(df,metstr,rpy=rp.DEFAULT_ROWS_PER_YEAR,guard=None):
         #  Sign +1; only the quantity inside it is now ours.
         #  `0` for a zero PEG is kept verbatim from the previous line -- it then becomes -1,
         #  i.e. a FAIL, which is right (a PEG of exactly 0 is not "infinitely cheap").
-        #  crossing_growth is NOT supplied here, by design: the sign-crossing rows need the POOL's
-        #  median growth rate, which does not exist at build time (this function sees ONE source,
-        #  and on the fetch path the panel is still being accumulated).  They come out NaN and are
-        #  filled by `substitute_peg_crossing` from `postBo.postBoWrapper`.  See
-        #  PEG_CROSSING_SUBSTITUTION.
+        #  Sign-crossing rows (loss-to-profit) produce NaN and stay NaN: the CEO ruling
+        #  (2026-09-03) removes the substitution rule, so they are refused like every other
+        #  undefined criterion.  The `crossing_growth` parameter is ignored and kept only for
+        #  backward compatibility with existing call sites.
         _peg, _e_now, _e_prev = peg_local(df, rpy=rpy)
         res[metstr] = peg_criterion(_peg).values
     #elif str == 'CFOlessEarnings':
