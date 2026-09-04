@@ -346,13 +346,74 @@ def _opposing_clusters():
 #  and the mechanism is not noise: as the pool deepens the PRIOR's own beat-rate approaches its
 #  ceiling, which compresses the headroom any multiplier can add.  So "bigger is better" is false
 #  here, and that is the part worth remembering if this ever needs moving again.
+#
+#  CORRECTION (2026-09-04).  "Clearing on every draw" above was a THREE-SEED SAMPLE reported as
+#  a property, and it is not one.  Re-measured on the SAME E-2 weight vector and the SAME 23-key
+#  column set that comment was written against, seed base 300 gives 0.72x WITH THE PRIOR NOT
+#  DISPLACED AT ALL -- so the configuration this file called deterministic was already producing
+#  clean failures on the day it was recorded.  Stated as the evidence and not as a rate, because
+#  over-reading a handful of draws is the mistake being corrected: 1 of the 4 bases measured
+#  fails, and 4 draws does not pin a frequency.  n is not the knob that fixes it, and neither is
+#  `strength`; see PLANTED_ANCHORS.
 PLANTED_POOL_N = 250
+
+#  ANCHORS PER PLANTED FIXTURE.  Raised 4 -> 8 (2026-09-04).  This is the fix for the knife
+#  edge, so the mechanism matters more than the number.
+#
+#  AT 4 ANCHORS THE GATE ITSELF IS THE NOISY QUANTITY, in BOTH halves.  `floor` is the 99th
+#  percentile of the shuffled selection-max gain -- the multiplicity guard, and the half this
+#  test exists to exercise.  `se` is sd(per-anchor beat-rate)/sqrt(n_anchors), i.e. a THREE-
+#  DEGREE-OF-FREEDOM sd estimate at 4 anchors.  Measured across seed bases at k=4: `se` ran
+#  0.0144-0.1297 and `floor` ran 0.049-0.096, and WHICH ONE BINDS swaps from draw to draw
+#  (`floor` bound on the seed this test actually uses, `se` bound on others).  So the denominator
+#  of the margin moved by a factor of ~2.5 for reasons that have nothing to do with the guard
+#  being tested -- which is why 1.19x was never a clean reading of anything.  (It was not pure
+#  noise either: the 2026-08 budget changes really did cut the reachable improvement ~11%.  The
+#  defect is that the single number could not tell the two apart, and now it can -- see below.)
+#
+#  WHY ANCHOR COUNT IS THE RIGHT LEVER AND `strength` / `n` ARE NOT.  The planted effect is a
+#  PER-ANCHOR quantity, so its size does not depend on how many anchors carry it; both halves of
+#  the gate DO shrink with anchor count (`se` as 1/sqrt(k), and `floor` because the selection-max
+#  gain is averaged over k anchors before the percentile is taken).  So k raises the ratio
+#  without touching the plant, the gate or the bar -- which is exactly what `strength` (saturated)
+#  and `n` (non-monotonic) cannot do.  Measured at k=8: `se` 0.0243-0.0582 and `floor`
+#  0.0485-0.0649, with `floor` the binding half on 11 of 12 seed bases -- i.e. the guard this
+#  test is about is the one that decides the answer, nearly always.
+#
+#  IT IS A FIXTURE PARAMETER, NOT A CLAIM ABOUT THE DEPLOYMENT.  PREREG still ships 4 train
+#  anchors and that is untouched; nothing in `_select` / `selection_noise_floor` special-cases
+#  the count, and the n-dependence of the SE itself has its own test above
+#  (test_one_se_is_sd_over_sqrt_n_not_the_sd_of_jackknife_means).  The overfit-diagnostic test
+#  below deliberately stays at 4 -- it needs differing folds, not margin.
+PLANTED_ANCHORS = 8
 
 #  THE MARGIN THE TEST DEMANDS, so it cannot silently drift back to the knife edge.  Nothing
 #  previously pinned HOW FAR above the gate the improvement sat, which is precisely how E-2's
 #  budget change was able to walk it from a clean pass to a clean fail with no intermediate
-#  warning.  1.3x is inside the measured 1.58-1.93x band with room to spare, and a future change
-#  that erodes the margin now fails while it is still passing -- which is the point.
+#  warning.
+#
+#  1.3x IS UNCHANGED FROM WHEN IT WAS FIRST SET, AND THAT IS THE POINT.  The 2026-09-04 fix
+#  moved the FIXTURE up to the bar, never the bar down to the fixture: a bar re-fitted to
+#  whatever its own fixture happens to measure is the pooled median with a longer time constant,
+#  which this repo has already rejected once (see meanBars).  What 1.3x was missing was not a
+#  different number but a statement of WHAT LIES ON EITHER SIDE OF IT, measured through the
+#  IDENTICAL procedure at PLANTED_ANCHORS / PLANTED_POOL_N:
+#
+#    A REAL SIGNAL   12 seed bases (0, 100, ... 1100): 1.87 1.87 1.99 2.04 2.11 2.14 2.17 2.17
+#                    2.56 2.70 2.72 2.93  (min 1.87, median 2.16).  Prior displaced 12/12,
+#                    direction correct 12/12.
+#    A NULL          6 seed bases with the outcome drawn INDEPENDENTLY of every column:
+#                    0.14 0.55 0.66 0.67 0.69 0.96  (max 0.96).  Prior retained 6/6, so a null
+#                    never even reaches this assertion -- it fails the `imp > gate` one above.
+#
+#  1.3x therefore sits in the EMPTY BAND between a null's 0.96x ceiling and a real signal's
+#  1.87x floor, with ~30% headroom on each side.  That is what makes a future erosion fail while
+#  the gate is still firing, and it is what makes the failure diagnosable rather than mysterious:
+#  the message below prints `se` and `floor` separately, and a ratio near 1.0 with `se > floor`
+#  means the anchor scatter blew up, while a ratio near 1.0 with `floor` binding and the prior
+#  retained means the plant stopped being REACHABLE (a shrinking fitted-cluster budget does
+#  this -- it is what the 2026-08-06 / 08-10 / thesis-transfer budget changes did, moving
+#  cheapness 0.2600 -> 0.2393 and profitability 0.1517 -> 0.1431).
 PLANTED_MARGIN_X = 1.3
 
 
@@ -365,11 +426,36 @@ def _planted_anchor(tag, n, seed, strength=2.0, noise=0.3):
     enough of a unit-total weight vector for a 1.33x cap to move the objective past the gate
     (measured: 0/4 displacements at every strength up to 1.6).  Opposing clusters make the
     effect reachable, and `_opposing_clusters` picks WHICH two from the live prior.
+
+    TWO THINGS THE FIXTURE STOPPED DOING TO ITSELF (2026-09-04).  Both are about making the
+    plant REACHABLE by the multipliers; neither touches the gate, the bar, or `strength`.
+
+    1. THE UNFITTED COLUMNS ARE NO LONGER INDEPENDENT NOISE.  It used to fill all 25 canonical
+       metric columns with iid N(0,1).  Only 9 of those sit in a fitted cluster; the other 16
+       (10 of them carrying non-zero weight) contribute `Sigma w^2` = 0.0364 against the fitted
+       clusters' 0.0307 -- i.e. 54% of the score's variance was noise NO multiplier can touch,
+       sitting between the plant and the objective.  That is the fixture handicapping its own
+       signal for no reason: the deployed pool's metric columns are strongly cross-correlated
+       (they are valuation and quality measures of the same names), so sixteen independent noise
+       dimensions is not the realistic choice, it is simply the one that suppresses the
+       reachable improvement most.
+       Measured effect of holding them at their normalised centre instead: improvement rises
+       from 0.072-0.104 to 0.116-0.154 at k=8, a ~40% recovery.
+    2. THE PLANT LOADS PROPORTIONALLY TO THE PRIOR WEIGHT WITHIN EACH CLUSTER, not equally.  The
+       reachable direction is `Delta w` (proportional to `w_m` inside a cluster, since a cluster
+       multiplier scales every member by the same factor), so by Cauchy-Schwarz the contrast that
+       the multipliers can exploit best is the one aligned with `w`.  Equal loadings gave
+       `Delta cov / sd(sig)` = 0.0196 against 0.0222 for weight-proportional -- a free ~14%.
+       (Note for anyone tempted by the opposite move: CONCENTRATING the plant on each cluster's
+       largest member is WORSE, 0.0175, because it raises `sd(sig)` faster than `Delta cov`.
+       That corrects the `_opposing_clusters` note above, which worried about the wrong thing.)
     """
     rng = np.random.default_rng(seed)
+    prior = refit.prior_weights()
     up_name, down_name = _opposing_clusters()
     up = refit.CLUSTERS[up_name]
     down = refit.CLUSTERS[down_name]
+    fitted = {m for members in refit.CLUSTERS.values() for m in members}
     #  EVERY canonical metric key, taken from the single source of truth rather than listed --
     #  a key added to the vector and forgotten here is the drift class the weights refactor
     #  exists to remove (E-2 added `shareCountChange` / `longTermDebtChange`).
@@ -377,9 +463,18 @@ def _planted_anchor(tag, n, seed, strength=2.0, noise=0.3):
     src = ["%s_%03d" % (tag, i) for i in range(n)]
     d = {"source": src}
     for c in cols:
-        d[c] = rng.normal(size=n)
+        #  DRAWN FOR EVERY KEY -- so the column set still has to be complete, and a key added to
+        #  the vector still moves this fixture -- but HELD AT ZERO outside the fitted clusters.
+        #  See point 1 in the docstring.
+        d[c] = rng.normal(size=n) * (1.0 if c in fitted else 0.0)
     df = pd.DataFrame(d)
-    sig = df[up].mean(axis=1).to_numpy() - df[down].mean(axis=1).to_numpy()
+    #  Loadings proportional to |w| inside each cluster (docstring point 2), each side divided by
+    #  its own cluster budget so the two sides stay a unit-scale contrast rather than the larger
+    #  cluster simply dominating.
+    Wu = sum(abs(prior[m]) for m in up)
+    Wd = sum(abs(prior[m]) for m in down)
+    sig = (sum(df[m].to_numpy() * abs(prior[m]) / Wu for m in up)
+           - sum(df[m].to_numpy() * abs(prior[m]) / Wd for m in down))
     ex = strength * sig + rng.normal(scale=noise, size=n)
     return dict(buy=tag, eval="x", normed=df, group_of={s: s for s in src},
                 excess={s: float(v) for s, v in zip(src, ex)}, bench=0.0,
@@ -403,9 +498,15 @@ def test_gate_FIRES_on_a_planted_signal_and_finds_the_RIGHT_DIRECTION():
     Crossover sits at a sustained ~+2.5 to +4pp per-anchor advantage, i.e. sensibly BELOW the
     10.95pp holdout adoption bar -- the gate is meant to pass real-but-small signal through to
     the holdout test, not to pre-empt it.
+
+    THE 2026-09-04 FIX, in one line: (3) was asserting a DETERMINISTIC bound on a quantity whose
+    4-anchor draw-to-draw spread runs 0.56x-2.2x, calibrated from a THREE-draw sample.  The bar
+    is unchanged; the fixture is now measured over 12 seed bases and clears it 12/12.  See
+    PLANTED_ANCHORS for the mechanism and PLANTED_MARGIN_X for the null-vs-signal bands.
     """
     prior = refit.prior_weights()
-    anchors = [_planted_anchor("P%d" % i, PLANTED_POOL_N, i) for i in range(4)]
+    anchors = [_planted_anchor("P%d" % i, PLANTED_POOL_N, i)
+               for i in range(PLANTED_ANCHORS)]
     floor, _s = refit.selection_noise_floor(anchors, prior, lam=0.02, n_perm=25, seed=11)
     mult, g, se, _n = refit._select(anchors, prior, lam=0.02, verbose=False,
                                     noise_floor=floor)
@@ -414,14 +515,25 @@ def test_gate_FIRES_on_a_planted_signal_and_finds_the_RIGHT_DIRECTION():
                       ["objective"].iloc[0])
     gate = max(se, floor)
     imp = best - prior_obj
+    #  WHICH HALF OF THE GATE BINDS is the diagnosis, not a detail, so both messages report it:
+    #  `se > floor` means the per-anchor scatter blew up (a fixture-noise failure, and
+    #  PLANTED_ANCHORS is the lever); `floor >= se` means the planted signal stopped being
+    #  REACHABLE by the multipliers, which is a real erosion worth reporting.
+    _binds = "se" if se > floor else "floor"
     assert imp > gate, \
-        "planted signal did not clear the gate (improvement %.4f vs gate %.4f)" % (imp, gate)
+        ("planted signal did not clear the gate (improvement %.4f vs gate %.4f; se %.4f, "
+         "floor %.4f, binding=%s, anchors=%d)"
+         % (imp, gate, se, floor, _binds, PLANTED_ANCHORS))
     assert imp > PLANTED_MARGIN_X * gate, (
         "the gate fired, but only by %.2fx against a required %.2fx margin (improvement %.4f, "
-        "gate %.4f). The fixture has drifted toward the knife edge: read PLANTED_POOL_N before "
-        "touching anything -- `strength` is SATURATED and will not fix this, and a deeper pool "
-        "is not monotonically better (n=400 is worse than n=250)."
-        % (imp / gate, PLANTED_MARGIN_X, imp, gate))
+        "gate %.4f; se %.4f, floor %.4f, binding=%s). READ PLANTED_MARGIN_X FIRST: it records "
+        "the measured null band (max 0.96x) and real-signal band (min 1.87x) that 1.3x sits "
+        "between, so the bar is not the thing to move. If binding=se the anchor scatter is the "
+        "problem and PLANTED_ANCHORS is the lever; if binding=floor the plant is no longer "
+        "REACHABLE, which is a fact about the deployed cluster budgets and belongs in a report, "
+        "not in a re-tuned fixture. `strength` is SATURATED and will not fix either, and a "
+        "deeper pool is not monotonically better (n=400 is worse than n=250)."
+        % (imp / gate, PLANTED_MARGIN_X, imp, gate, se, floor, _binds))
     assert not all(v == 1.0 for v in mult.values()), \
         "improvement cleared the gate but the prior was still returned -- the gate is a " \
         "rubber stamp"
@@ -439,6 +551,9 @@ def test_planted_signal_also_makes_the_overfit_diagnostic_able_to_fire():
     exactly why the MEAN version (an identity at 0 when all folds retain the prior) was the
     wrong quantity to gate on."""
     prior = refit.prior_weights()
+    #  STAYS AT 4 ANCHORS, deliberately: this test needs the folds to DIFFER, not a margin to
+    #  clear a bar, and `lowo` re-runs the whole selection once per fold -- so PLANTED_ANCHORS
+    #  here would double its runtime to buy a property it does not assert.
     anchors = [_planted_anchor("Q%d" % i, PLANTED_POOL_N, 50 + i) for i in range(4)]
     folds = refit.lowo(anchors, prior, lam=0.02, verbose=False, n_perm=8)
     gaps = [abs(f["IN_sample_mean_on_other_folds"] - f["OUT_of_sample_fit"]) for f in folds]
